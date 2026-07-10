@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+/* Disable tap highlight on mobile */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Prevent pull-to-refresh on PWA */
+html,
+body {
+  overscroll-behavior: none;
+}
