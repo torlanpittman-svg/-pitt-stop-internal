@@ -13,40 +13,124 @@
 import { queryVision } from '@/platform/ai'
 import type { VehicleOCRResult } from '../types'
 
+// Supported color values — must match COLORS in vehicle-data.ts exactly
+const SUPPORTED_COLORS = [
+  'Black', 'White', 'Silver', 'Gray', 'Red', 'Blue',
+  'Green', 'Brown', 'Tan', 'Gold', 'Orange', 'Yellow', 'Purple',
+]
+
 const EXTRACTION_PROMPT = `
-You are reading a handwritten vehicle key tag. Extract exactly these five fields.
-Return ONLY a valid JSON object with this exact structure — no markdown, no explanation:
+You are reading a photograph of a handwritten Pitt Stop dealership vehicle key tag.
+Your only job is to extract five fields. This is NOT generic OCR — these tags are
+handwritten by service writers, often in marker, and may be faded, smudged, or abbreviated.
+
+FIELDS TO EXTRACT:
+  year        — Vehicle model year (4-digit)
+  make        — Manufacturer name
+  model       — Vehicle model name
+  color       — Exterior color
+  stockNumber — Dealership stock number
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIELD RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+YEAR
+• Must be a 4-digit year between 1990 and 2030, or null.
+• Writers sometimes abbreviate (e.g. "19" for 2019, "22" for 2022).
+  Expand only if you are certain of the decade — otherwise return null.
+• If not clearly readable, return null.
+
+MAKE
+• Normalize abbreviations and nicknames to official manufacturer names:
+    Chevy / Chev         → Chevrolet
+    VW                   → Volkswagen
+    Merc / MB            → Mercedes-Benz
+    Land Rover           → Land Rover (keep as-is)
+• Never use slang, shorthand, or unofficial names in the returned value.
+• If not clearly readable, return null.
+
+MODEL
+• Return the model name with standard capitalization (e.g. "Silverado", "F-150").
+• Only return a value if confidence is 60 or higher.
+• If the handwriting is ambiguous between two models, return null.
+• If not readable, return null.
+
+COLOR
+• Prefer one of these exact supported values (match case exactly):
+    ${SUPPORTED_COLORS.join(', ')}
+• If the written color matches one above, return that exact string.
+• If it does not match (e.g. "Maroon", "Burgundy", "Beige"), return "Other"
+  and explain the raw text in the reasoning field.
+• If not readable, return null.
+
+STOCK NUMBER
+• This is the most important field. It identifies the specific vehicle.
+• Copy it EXACTLY as written — every character, digit, letter, dash, and space.
+• Do NOT correct spelling, reformat, add dashes, or guess missing characters.
+• If only partially readable, return what you can read and lower confidence.
+• If completely unreadable, return null.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONFIDENCE (integer 0–100 per field)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 100 = perfectly legible, no ambiguity
+  80 = clearly readable, minor uncertainty
+  60 = probably correct, handwriting is difficult
+  40 = uncertain, human must verify
+ < 40 = return null instead of a guess
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REASONING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+For every field with confidence below 80, include a short note in the "reasoning"
+object explaining why (e.g. "last digit smudged", "could be Silverado or Sierra").
+Omit reasoning for fields at 80 or above.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT — STRICT JSON ONLY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Return ONLY a valid JSON object. No markdown, no code fences, no explanation.
 
 {
-  "year": "4-digit year or null",
-  "make": "manufacturer name or null",
-  "model": "model name or null",
-  "color": "color or null",
-  "stockNumber": "stock number or null",
+  "year":        "2019",
+  "make":        "Chevrolet",
+  "model":       "Silverado",
+  "color":       "Black",
+  "stockNumber": "PS-1234",
   "confidence": {
-    "year": 0.0,
-    "make": 0.0,
-    "model": 0.0,
-    "color": 0.0,
-    "stockNumber": 0.0
+    "year":        95,
+    "make":        88,
+    "model":       72,
+    "color":       91,
+    "stockNumber": 65
+  },
+  "reasoning": {
+    "model":       "Tag reads 'Silverdo' — likely Silverado but one letter unclear.",
+    "stockNumber": "Third digit smudged, could be PS-1234 or PS-1284."
   }
 }
-
-Rules:
-- Return null for any field you cannot read clearly. Never guess.
-- year must be a 4-digit year between 1990 and 2030, or null.
-- Confidence is 0.0 (cannot read) to 1.0 (completely certain) per field.
-- Return ONLY the JSON object. Nothing else.
 `.trim()
 
+type FieldKey = 'year' | 'make' | 'model' | 'color' | 'stockNumber'
+
 interface RawOCRJson {
-  year?: string | null
-  make?: string | null
-  model?: string | null
-  color?: string | null
+  year?:        string | null
+  make?:        string | null
+  model?:       string | null
+  color?:       string | null
   stockNumber?: string | null
-  confidence?: Partial<Record<'year' | 'make' | 'model' | 'color' | 'stockNumber', number>>
+  // Confidence is 0–100 integers in the prompt; we convert to 0.0–1.0 for storage
+  confidence?:  Partial<Record<FieldKey, number>>
+  // Reasoning notes for fields below 80 confidence
+  reasoning?:   Partial<Record<FieldKey, string>>
 }
+
+const FIELDS: FieldKey[] = ['year', 'make', 'model', 'color', 'stockNumber']
+
+// Confidence threshold below which we treat a returned value as a non-answer.
+// Prompt says "return null for confidence < 40", but this is a defensive backstop.
+const NULL_BELOW_CONFIDENCE = 40
 
 function parseResponse(
   content: string,
@@ -55,6 +139,7 @@ function parseResponse(
 ): VehicleOCRResult {
   let parsed: RawOCRJson = {}
   try {
+    // Strip accidental markdown fences the model might add despite instructions
     const cleaned = content
       .replace(/^```(?:json)?\s*/i, '')
       .replace(/\s*```$/, '')
@@ -64,20 +149,34 @@ function parseResponse(
     // Parse failure → all fields null, zero confidence
   }
 
+  // Convert 0–100 → 0.0–1.0 for all confidence values
+  const conf: Record<FieldKey, number> = {} as Record<FieldKey, number>
+  for (const f of FIELDS) {
+    const raw = parsed.confidence?.[f]
+    conf[f] = typeof raw === 'number' ? raw / 100 : 0
+  }
+
+  // Apply null-below-threshold: if the model returned a value but confidence
+  // is too low, discard the value rather than mislead the employee.
+  function fieldValue(f: FieldKey): string | null {
+    const val = parsed[f] ?? null
+    if (val === null) return null
+    if ((conf[f] * 100) < NULL_BELOW_CONFIDENCE) return null
+    return val
+  }
+
   return {
-    year:        parsed.year        ?? null,
-    make:        parsed.make        ?? null,
-    model:       parsed.model       ?? null,
-    color:       parsed.color       ?? null,
-    stockNumber: parsed.stockNumber ?? null,
-    confidence: {
-      year:        parsed.confidence?.year        ?? 0,
-      make:        parsed.confidence?.make        ?? 0,
-      model:       parsed.confidence?.model       ?? 0,
-      color:       parsed.confidence?.color       ?? 0,
-      stockNumber: parsed.confidence?.stockNumber ?? 0,
-    },
-    rawResponse,
+    year:        fieldValue('year'),
+    make:        fieldValue('make'),
+    model:       fieldValue('model'),
+    color:       fieldValue('color'),
+    stockNumber: fieldValue('stockNumber'),
+    confidence:  conf,
+    // Store parsed JSON (including reasoning) as the raw response so the
+    // admin panel can show it without any additional plumbing.
+    rawResponse: parsed.reasoning
+      ? { ...( rawResponse as object ), reasoning: parsed.reasoning }
+      : rawResponse,
     providerName,
   }
 }
