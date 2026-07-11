@@ -2,6 +2,8 @@ import { notFound } from 'next/navigation'
 import { getVehicleEntry } from '@/apps/vehicle-entry/db'
 import ConfirmForm from './ConfirmForm'
 
+export const dynamic = 'force-dynamic'
+
 export default async function ConfirmPage({
   params,
   searchParams,

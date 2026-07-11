@@ -3,6 +3,8 @@ import { notFound } from 'next/navigation'
 import { getVehicleEntry } from '@/apps/vehicle-entry/db'
 import StatusChanger from './StatusChanger'
 
+export const dynamic = 'force-dynamic'
+
 function fmt(d: Date | string) {
   return new Date(d).toLocaleString('en-US', {
     weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',

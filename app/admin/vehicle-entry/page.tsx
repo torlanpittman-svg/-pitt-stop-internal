@@ -1,6 +1,8 @@
 import Link from 'next/link'
 import { listVehicleEntries } from '@/apps/vehicle-entry/db'
 
+export const dynamic = 'force-dynamic'
+
 const STATUS_COLORS: Record<string, string> = {
   ready_for_quickbooks: 'bg-blue-900/60 text-blue-300 border-blue-700',
   pending_quickbooks:   'bg-yellow-900/60 text-yellow-300 border-yellow-700',
