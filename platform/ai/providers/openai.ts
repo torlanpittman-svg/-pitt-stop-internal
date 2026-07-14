@@ -48,5 +48,6 @@ export async function queryWithOpenAI(
     content,
     rawResponse: response,
     providerName: 'openai',
+    modelName:    response.model,
   }
 }

@@ -119,6 +119,13 @@ export type VehicleEntryRow = {
   ocrCompletedAt:      Date | null
   employeeConfirmedAt: Date | null
   isPilotEntry:        boolean
+  // Original AI predictions — never overwritten by employee corrections
+  aiYear:        string | null
+  aiMake:        string | null
+  aiModel:       string | null
+  aiColor:       string | null
+  promptVersion: string | null
+  modelName:     string | null
 }
 
 type NewEntry = {
@@ -143,6 +150,12 @@ type NewEntry = {
   photoTakenAt?: Date | null
   ocrCompletedAt?: Date | null
   isPilotEntry?: boolean
+  aiYear?: string | null
+  aiMake?: string | null
+  aiModel?: string | null
+  aiColor?: string | null
+  promptVersion?: string | null
+  modelName?: string | null
 }
 
 type EntryUpdate = {
@@ -202,6 +215,12 @@ export async function createVehicleEntry(data: NewEntry): Promise<string> {
       ocrCompletedAt:          data.ocrCompletedAt          ?? null,
       employeeConfirmedAt:     null,
       isPilotEntry:            data.isPilotEntry             ?? false,
+      aiYear:                  data.aiYear                  ?? null,
+      aiMake:                  data.aiMake                  ?? null,
+      aiModel:                 data.aiModel                 ?? null,
+      aiColor:                 data.aiColor                 ?? null,
+      promptVersion:           data.promptVersion           ?? null,
+      modelName:               data.modelName               ?? null,
     })
     return id
   }
@@ -231,6 +250,12 @@ export async function createVehicleEntry(data: NewEntry): Promise<string> {
       photoTakenAt:            data.photoTakenAt            ?? null,
       ocrCompletedAt:          data.ocrCompletedAt          ?? null,
       isPilotEntry:            data.isPilotEntry             ?? false,
+      aiYear:                  data.aiYear                  ?? null,
+      aiMake:                  data.aiMake                  ?? null,
+      aiModel:                 data.aiModel                 ?? null,
+      aiColor:                 data.aiColor                 ?? null,
+      promptVersion:           data.promptVersion           ?? null,
+      modelName:               data.modelName               ?? null,
     })
     .returning({ id: vehicleEntries.id })
   return row.id

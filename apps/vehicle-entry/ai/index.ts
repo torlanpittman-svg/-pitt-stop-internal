@@ -1,17 +1,20 @@
 /**
  * Vehicle Entry — AI extraction layer.
  *
- * This file owns:
- *   - the VE-specific extraction prompt
- *   - parsing the AI response into VehicleOCRResult
+ * Runs two pipelines in parallel:
+ *   1. General extraction (year, make, model, color) via the platform vision layer
+ *   2. Dedicated stock number pipeline (detect region → crop → extract)
  *
- * It delegates the actual API call to platform/ai (provider-agnostic).
- * To swap providers: set OCR_PROVIDER env var.
- * To change what's extracted: edit EXTRACTION_PROMPT below.
+ * Stock number is kept separate because it is the highest-priority field and
+ * requires exact character-level accuracy.
  */
 
 import { queryVision } from '@/platform/ai'
+import { extractStockNumber } from './stock-number'
 import type { VehicleOCRResult } from '../types'
+
+// Increment when the EXTRACTION_PROMPT changes so re-runs can be compared.
+export const EXTRACTION_PROMPT_VERSION = 'v1'
 
 // Supported color values — must match COLORS in vehicle-data.ts exactly
 const SUPPORTED_COLORS = [
@@ -21,15 +24,13 @@ const SUPPORTED_COLORS = [
 
 const EXTRACTION_PROMPT = `
 You are reading a photograph of a handwritten Pitt Stop dealership vehicle key tag.
-Your only job is to extract five fields. This is NOT generic OCR — these tags are
-handwritten by service writers, often in marker, and may be faded, smudged, or abbreviated.
+Extract four fields. Ignore the stock number — it is handled separately.
 
 FIELDS TO EXTRACT:
-  year        — Vehicle model year (4-digit)
-  make        — Manufacturer name
-  model       — Vehicle model name
-  color       — Exterior color
-  stockNumber — Dealership stock number
+  year   — Vehicle model year (4-digit)
+  make   — Manufacturer name
+  model  — Vehicle model name
+  color  — Exterior color
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FIELD RULES
@@ -64,13 +65,6 @@ COLOR
   and explain the raw text in the reasoning field.
 • If not readable, return null.
 
-STOCK NUMBER
-• This is the most important field. It identifies the specific vehicle.
-• Copy it EXACTLY as written — every character, digit, letter, dash, and space.
-• Do NOT correct spelling, reformat, add dashes, or guess missing characters.
-• If only partially readable, return what you can read and lower confidence.
-• If completely unreadable, return null.
-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CONFIDENCE (integer 0–100 per field)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -93,53 +87,44 @@ OUTPUT — STRICT JSON ONLY
 Return ONLY a valid JSON object. No markdown, no code fences, no explanation.
 
 {
-  "year":        "2019",
-  "make":        "Chevrolet",
-  "model":       "Silverado",
-  "color":       "Black",
-  "stockNumber": "PS-1234",
+  "year":  "2019",
+  "make":  "Chevrolet",
+  "model": "Silverado",
+  "color": "Black",
   "confidence": {
-    "year":        95,
-    "make":        88,
-    "model":       72,
-    "color":       91,
-    "stockNumber": 65
+    "year":  95,
+    "make":  88,
+    "model": 72,
+    "color": 91
   },
   "reasoning": {
-    "model":       "Tag reads 'Silverdo' — likely Silverado but one letter unclear.",
-    "stockNumber": "Third digit smudged, could be PS-1234 or PS-1284."
+    "model": "Tag reads 'Silverdo' — likely Silverado but one letter unclear."
   }
 }
 `.trim()
 
-type FieldKey = 'year' | 'make' | 'model' | 'color' | 'stockNumber'
+type FieldKey = 'year' | 'make' | 'model' | 'color'
 
 interface RawOCRJson {
-  year?:        string | null
-  make?:        string | null
-  model?:       string | null
-  color?:       string | null
-  stockNumber?: string | null
-  // Confidence is 0–100 integers in the prompt; we convert to 0.0–1.0 for storage
-  confidence?:  Partial<Record<FieldKey, number>>
-  // Reasoning notes for fields below 80 confidence
-  reasoning?:   Partial<Record<FieldKey, string>>
+  year?:    string | null
+  make?:    string | null
+  model?:   string | null
+  color?:   string | null
+  confidence?: Partial<Record<FieldKey, number>>
+  reasoning?:  Partial<Record<FieldKey, string>>
 }
 
-const FIELDS: FieldKey[] = ['year', 'make', 'model', 'color', 'stockNumber']
+const FIELDS: FieldKey[] = ['year', 'make', 'model', 'color']
 
-// Confidence threshold below which we treat a returned value as a non-answer.
-// Prompt says "return null for confidence < 40", but this is a defensive backstop.
 const NULL_BELOW_CONFIDENCE = 40
 
 function parseResponse(
   content: string,
   rawResponse: unknown,
   providerName: string
-): VehicleOCRResult {
+): Omit<VehicleOCRResult, 'stockNumber' | 'stockCropBase64' | 'stockCropMimeType' | 'modelName' | 'promptVersion'> {
   let parsed: RawOCRJson = {}
   try {
-    // Strip accidental markdown fences the model might add despite instructions
     const cleaned = content
       .replace(/^```(?:json)?\s*/i, '')
       .replace(/\s*```$/, '')
@@ -149,15 +134,13 @@ function parseResponse(
     // Parse failure → all fields null, zero confidence
   }
 
-  // Convert 0–100 → 0.0–1.0 for all confidence values
-  const conf: Record<FieldKey, number> = {} as Record<FieldKey, number>
+  // stockNumber is handled by the dedicated pipeline; default to 0 here
+  const conf = { year: 0, make: 0, model: 0, color: 0, stockNumber: 0 }
   for (const f of FIELDS) {
     const raw = parsed.confidence?.[f]
     conf[f] = typeof raw === 'number' ? raw / 100 : 0
   }
 
-  // Apply null-below-threshold: if the model returned a value but confidence
-  // is too low, discard the value rather than mislead the employee.
   function fieldValue(f: FieldKey): string | null {
     const val = parsed[f] ?? null
     if (val === null) return null
@@ -166,18 +149,18 @@ function parseResponse(
   }
 
   return {
-    year:        fieldValue('year'),
-    make:        fieldValue('make'),
-    model:       fieldValue('model'),
-    color:       fieldValue('color'),
-    stockNumber: fieldValue('stockNumber'),
-    confidence:  conf,
-    // Store parsed JSON (including reasoning) as the raw response so the
-    // admin panel can show it without any additional plumbing.
+    year:    fieldValue('year'),
+    make:    fieldValue('make'),
+    model:   fieldValue('model'),
+    color:   fieldValue('color'),
+    confidence: conf,
     rawResponse: parsed.reasoning
-      ? { ...( rawResponse as object ), reasoning: parsed.reasoning }
+      ? { ...(rawResponse as object), reasoning: parsed.reasoning }
       : rawResponse,
     providerName,
+    // Filled in by extractVehicleData after the stock pipeline runs
+    stockDebugOverlayBase64: null,
+    stockDebugData:          null,
   }
 }
 
@@ -185,10 +168,25 @@ export async function extractVehicleData(
   imageBase64: string,
   mimeType: string
 ): Promise<VehicleOCRResult> {
-  const { content, rawResponse, providerName } = await queryVision({
-    imageBase64,
-    mimeType,
-    prompt: EXTRACTION_PROMPT,
-  })
-  return parseResponse(content, rawResponse, providerName)
+  const [visionResult, stockResult] = await Promise.all([
+    queryVision({ imageBase64, mimeType, prompt: EXTRACTION_PROMPT }),
+    extractStockNumber(imageBase64, mimeType),
+  ])
+
+  const base = parseResponse(visionResult.content, visionResult.rawResponse, visionResult.providerName)
+
+  return {
+    ...base,
+    modelName:     visionResult.modelName,
+    promptVersion: EXTRACTION_PROMPT_VERSION,
+    stockNumber: stockResult.stockNumber,
+    confidence: {
+      ...base.confidence,
+      stockNumber: stockResult.confidence,
+    },
+    stockCropBase64:          stockResult.cropBase64,
+    stockCropMimeType:        stockResult.cropMimeType,
+    stockDebugOverlayBase64:  stockResult.debugOverlayBase64,
+    stockDebugData:           stockResult.debugData as unknown as Record<string, unknown>,
+  }
 }

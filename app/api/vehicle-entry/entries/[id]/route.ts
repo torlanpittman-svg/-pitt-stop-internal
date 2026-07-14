@@ -30,14 +30,15 @@ export async function PATCH(
   }
 
   const updated = await updateVehicleEntry(id, {
-    year:         typeof body.year === 'string'           ? body.year              : undefined,
-    make:         typeof body.make === 'string'           ? body.make              : undefined,
-    model:        typeof body.model === 'string'          ? body.model             : undefined,
-    color:        typeof body.color === 'string'          ? body.color             : undefined,
-    customColor:  typeof body.customColor === 'string'    ? body.customColor       : undefined,
-    stockNumber:  typeof body.stockNumber === 'string'    ? body.stockNumber       : undefined,
-    wasCorrected: typeof body.wasCorrected === 'boolean'  ? body.wasCorrected      : undefined,
-    status:       typeof body.status === 'string'         ? (body.status as never) : undefined,
+    year:                typeof body.year === 'string'           ? body.year              : undefined,
+    make:                typeof body.make === 'string'           ? body.make              : undefined,
+    model:               typeof body.model === 'string'          ? body.model             : undefined,
+    color:               typeof body.color === 'string'          ? body.color             : undefined,
+    customColor:         typeof body.customColor === 'string'    ? body.customColor       : undefined,
+    stockNumber:         typeof body.stockNumber === 'string'    ? body.stockNumber       : undefined,
+    wasCorrected:        typeof body.wasCorrected === 'boolean'  ? body.wasCorrected      : undefined,
+    status:              typeof body.status === 'string'         ? (body.status as never) : undefined,
+    employeeConfirmedAt: new Date(),
   })
 
   if (!updated) {

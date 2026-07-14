@@ -16,6 +16,15 @@ export default async function ConfirmPage({
 
   if (!entry) return notFound()
 
-  // Manual entries start in edit mode so the employee fills in all fields
-  return <ConfirmForm entry={entry} startInEditMode={mode === 'manual'} />
+  // Manual entries always start in edit mode.
+  // VIN entries where NHTSA couldn't decode the make/model start in edit mode so the employee can fix them.
+  const vinMissingData =
+    entry.entryMethod === 'vin-fallback' && (!entry.make || !entry.model)
+
+  return (
+    <ConfirmForm
+      entry={entry}
+      startInEditMode={mode === 'manual' || vinMissingData}
+    />
+  )
 }

@@ -47,5 +47,6 @@ export async function queryWithMock(
     content:      JSON.stringify(response),
     rawResponse:  response,
     providerName: 'mock',
+    modelName:    'mock',
   }
 }

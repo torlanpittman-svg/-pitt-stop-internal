@@ -21,6 +21,7 @@ export interface VisionQueryResult {
   content: string
   rawResponse: unknown
   providerName: string
+  modelName: string
 }
 
 type ProviderFn = (options: VisionQueryOptions) => Promise<VisionQueryResult>

@@ -45,12 +45,38 @@ export default async function AdminVehicleEntryPage() {
           <h1 className="text-2xl font-bold text-white">Vehicle Entries</h1>
           <p className="text-gray-500 mt-0.5 text-sm">{entries.length} total submission{entries.length !== 1 ? 's' : ''}</p>
         </div>
-        <Link
-          href="/vehicle-entry"
-          className="bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
-        >
-          + New Entry
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/admin/vehicle-entry/ocr-learning"
+            className="border border-purple-800 hover:border-purple-600 text-purple-400 text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+          >
+            OCR Learning
+          </Link>
+          <Link
+            href="/admin/vehicle-entry/pilot"
+            className="border border-yellow-700 hover:border-yellow-500 text-yellow-300 text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+          >
+            Pilot Dashboard
+          </Link>
+          <Link
+            href="/admin/vehicle-entry/invoices"
+            className="border border-gray-600 hover:border-gray-400 text-gray-300 text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+          >
+            Invoice Batches
+          </Link>
+          <Link
+            href="/admin/vehicle-entry/dealerships"
+            className="border border-gray-600 hover:border-gray-400 text-gray-300 text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+          >
+            Dealerships
+          </Link>
+          <Link
+            href="/vehicle-entry"
+            className="bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+          >
+            + New Entry
+          </Link>
+        </div>
       </div>
 
       {entries.length === 0 ? (
