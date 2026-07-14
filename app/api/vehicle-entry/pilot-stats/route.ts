@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { listVehicleEntries } from '@/apps/vehicle-entry/db'
+import { listPilotEntries } from '@/apps/vehicle-entry/db'
 import { listInvoiceBatches } from '@/apps/vehicle-entry/invoice-db'
 
 export const dynamic = 'force-dynamic'
@@ -23,7 +23,7 @@ export async function GET() {
 
 async function getStats() {
   const [all, batches] = await Promise.all([
-    listVehicleEntries(500),
+    listPilotEntries(500),
     listInvoiceBatches(),
   ])
 
