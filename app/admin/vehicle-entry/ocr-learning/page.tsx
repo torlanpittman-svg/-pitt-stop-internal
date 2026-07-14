@@ -1,3 +1,4 @@
+import { Fragment } from 'react'
 import Link from 'next/link'
 import { getDb } from '@/platform/db'
 import { vehicleEntries, ocrPromptResults } from '@/apps/vehicle-entry/schema'
@@ -283,12 +284,12 @@ export default async function OcrLearningPage() {
               <div className="bg-gray-900 rounded-2xl p-5">
                 <div className="grid grid-cols-[auto_auto_1fr_auto] gap-x-4 gap-y-2 items-center text-sm">
                   {subs.map(([ai, final, count]) => (
-                    <>
-                      <span key={`ai-${ai}-${final}`} className="text-red-400 font-mono font-bold text-lg">{ai}</span>
+                    <Fragment key={`${ai}-${final}`}>
+                      <span className="text-red-400 font-mono font-bold text-lg">{ai}</span>
                       <span className="text-gray-600">→</span>
                       <span className="text-green-400 font-mono font-bold text-lg">{final}</span>
                       <span className="text-gray-500 text-xs text-right">{count}×</span>
-                    </>
+                    </Fragment>
                   ))}
                 </div>
                 <p className="text-gray-600 text-xs mt-4">
@@ -376,49 +377,41 @@ export default async function OcrLearningPage() {
                             const changed = f.ai !== null && f.final !== null &&
                               f.ai.trim().toLowerCase() !== f.final.trim().toLowerCase()
                             return (
-                              <>
-                                <span key={`lbl-${f.label}`} className="text-gray-500">{f.label}</span>
-                                <span key={`ai-${f.label}`} className={`font-mono ${changed ? 'text-red-400' : 'text-gray-300'}`}>
+                              <Fragment key={f.label}>
+                                <span className="text-gray-500">{f.label}</span>
+                                <span className={`font-mono ${changed ? 'text-red-400' : 'text-gray-300'}`}>
                                   {f.ai ?? <span className="text-gray-700">—</span>}
                                 </span>
-                                <span key={`fn-${f.label}`} className={`font-mono ${changed ? 'text-green-400 font-bold' : 'text-gray-300'}`}>
+                                <span className={`font-mono ${changed ? 'text-green-400 font-bold' : 'text-gray-300'}`}>
                                   {f.final ?? <span className="text-gray-700">—</span>}
                                 </span>
-                                <span key={`cf-${f.label}`} className="text-gray-600 text-right tabular-nums">
+                                <span className="text-gray-600 text-right tabular-nums">
                                   {f.conf !== null ? `${Math.round(f.conf * 100)}%` : '—'}
                                 </span>
-                              </>
+                              </Fragment>
                             )
                           })}
                         </div>
 
                         {/* Stock number character-level diff */}
                         {stockDiff && e.stockNumberAiPrediction !== e.stockNumber && (
-                          <div className="mt-3 flex items-center gap-1 font-mono text-sm">
-                            <span className="text-gray-600 text-xs mr-1">char diff:</span>
-                            {stockDiff.map((d, i) => (
-                              <span
-                                key={i}
-                                className={d.changed
-                                  ? 'bg-red-950/60 text-red-300 rounded px-0.5 border border-red-800'
-                                  : 'text-gray-400'
-                                }
-                              >
-                                {d.ai === ' ' ? <span className="text-green-500">+{d.final}</span> : d.ai}
-                              </span>
-                            ))}
-                            <span className="text-gray-600 text-xs mx-1">→</span>
-                            {stockDiff.map((d, i) => (
-                              <span
-                                key={i}
-                                className={d.changed
-                                  ? 'bg-green-950/60 text-green-300 rounded px-0.5 border border-green-800'
-                                  : 'text-gray-400'
-                                }
-                              >
-                                {d.final === ' ' ? <span className="text-red-500">-{d.ai}</span> : d.final}
-                              </span>
-                            ))}
+                          <div className="mt-3 space-y-1 font-mono text-sm">
+                            <div className="flex items-center gap-1">
+                              <span className="text-gray-600 text-xs mr-1 w-16">AI said:</span>
+                              {stockDiff.map((d, i) => (
+                                <span key={i} className={d.changed ? 'bg-red-950/60 text-red-300 rounded px-0.5 border border-red-800' : 'text-gray-400'}>
+                                  {d.ai === ' ' ? '' : d.ai}
+                                </span>
+                              ))}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <span className="text-gray-600 text-xs mr-1 w-16">Confirmed:</span>
+                              {stockDiff.map((d, i) => (
+                                <span key={i} className={d.changed ? 'bg-green-950/60 text-green-300 rounded px-0.5 border border-green-800' : 'text-gray-400'}>
+                                  {d.final === ' ' ? '' : d.final}
+                                </span>
+                              ))}
+                            </div>
                           </div>
                         )}
                       </div>
