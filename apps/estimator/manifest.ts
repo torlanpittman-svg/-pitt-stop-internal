@@ -2,8 +2,9 @@ import type { AppManifest } from '@/apps/types'
 
 export const estimatorApp = {
   id: 'estimator',
-  name: 'Estimator',
-  description: 'AI-powered repair cost estimates',
+  name: 'Retail Estimator',
+  description: 'Photograph a vehicle and create an estimate.',
+  buttonText: 'Create Retail Estimate',
   version: '0.0.0',
   routes: {
     main:  '/estimator',

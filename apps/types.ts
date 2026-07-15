@@ -28,6 +28,8 @@ export interface AppManifest {
   name: string
   /** One-line description for cards */
   description: string
+  /** CTA button label on the employee home page. Falls back to name. */
+  buttonText?: string
   /** Semantic version for this app */
   version: string
   /** Route paths for this app */

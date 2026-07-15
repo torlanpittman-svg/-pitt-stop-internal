@@ -325,11 +325,6 @@ export default async function OcrLearningPage() {
                   { label: 'Stock #', ai: e.stockNumberAiPrediction, final: e.stockNumber, conf: conf.stockNumber ?? null },
                 ]
 
-                const changedFields = fields.filter(f =>
-                  f.ai !== null && f.final !== null &&
-                  f.ai.trim().toLowerCase() !== f.final.trim().toLowerCase()
-                )
-
                 return (
                   <div key={e.id} className="bg-gray-900 rounded-2xl overflow-hidden">
                     <div className="flex gap-4 p-4">
@@ -340,7 +335,6 @@ export default async function OcrLearningPage() {
                           src={e.stockNumberCropUrl ?? e.photoUrl}
                           alt="Tag"
                           className="w-full h-full object-cover"
-                          onError={() => {}}
                         />
                       </div>
 

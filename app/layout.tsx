@@ -5,13 +5,13 @@ import './globals.css'
 const geist = Geist({ subsets: ['latin'], variable: '--font-geist' })
 
 export const metadata: Metadata = {
-  title: 'Pitt Stop Internal',
-  description: 'Pitt Stop internal employee tools',
+  title: 'Pitt Stop OS',
+  description: 'Pitt Stop employee tools',
   manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
-    title: 'Pitt Stop',
+    title: 'Pitt Stop OS',
   },
 }
 

@@ -1,8 +1,8 @@
 {
-  "name": "Pitt Stop Internal",
+  "name": "Pitt Stop OS",
   "short_name": "Pitt Stop",
-  "description": "Pitt Stop internal employee tools",
-  "start_url": "/vehicle-entry",
+  "description": "Pitt Stop employee tools",
+  "start_url": "/",
   "display": "standalone",
   "background_color": "#030712",
   "theme_color": "#030712",

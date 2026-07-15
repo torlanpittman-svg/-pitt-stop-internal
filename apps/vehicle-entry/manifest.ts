@@ -2,8 +2,9 @@ import type { AppManifest } from '@/apps/types'
 
 export const vehicleEntryApp = {
   id: 'vehicle-entry',
-  name: 'Vehicle Entry',
-  description: 'Photo scan handwritten key tags',
+  name: 'Dealer Vehicle Entry',
+  description: 'Scan a dealership key tag and add the vehicle.',
+  buttonText: 'Scan Dealer Key Tag',
   version: '1.0.0',
   routes: {
     main:  '/vehicle-entry',

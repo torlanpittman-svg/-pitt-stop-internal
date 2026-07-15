@@ -376,13 +376,19 @@ export default function ConfirmForm({
 
         </div>
 
-        {/* Scan next button — always visible at bottom */}
-        <div className="px-6 pb-10 pt-4 shrink-0">
+        {/* Actions — always visible at bottom */}
+        <div className="px-6 pb-10 pt-4 shrink-0 space-y-3">
           <button
             onClick={() => router.push('/vehicle-entry/capture')}
             className="w-full py-5 rounded-2xl bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-bold text-xl transition-colors shadow-lg"
           >
             Scan Next Vehicle
+          </button>
+          <button
+            onClick={() => router.push('/')}
+            className="w-full py-3 rounded-2xl text-gray-500 hover:text-gray-300 text-sm transition-colors"
+          >
+            Return to Pitt Stop OS
           </button>
         </div>
 
