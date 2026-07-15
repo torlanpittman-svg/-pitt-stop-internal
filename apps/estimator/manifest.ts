@@ -11,5 +11,5 @@ export const estimatorApp = {
     admin: '/admin/estimator',
     api:   '/api/estimator',
   },
-  enabled: false,
+  enabled: true,
 } satisfies AppManifest
