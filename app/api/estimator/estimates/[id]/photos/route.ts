@@ -21,12 +21,16 @@ export async function POST(
     }
 
     const arrayBuffer = await file.arrayBuffer()
-    const photoUrl = await uploadPhoto(
-      'estimator',
-      file.name,
-      Buffer.from(arrayBuffer),
-      file.type || 'image/jpeg'
-    )
+    const buffer      = Buffer.from(arrayBuffer)
+    const mimeType    = file.type || 'image/jpeg'
+
+    let photoUrl: string
+    if (!process.env.BLOB_READ_WRITE_TOKEN) {
+      // No blob store configured — fall back to inline data URL (dev / demo only)
+      photoUrl = `data:${mimeType};base64,${buffer.toString('base64')}`
+    } else {
+      photoUrl = await uploadPhoto('estimator', file.name, buffer, mimeType)
+    }
 
     const photo = await createEstimatePhoto({
       estimateId:   id,
@@ -41,7 +45,9 @@ export async function POST(
 
     return NextResponse.json({ photoId: photo.id, photoUrl: photo.photoUrl })
   } catch (err) {
-    console.error('[estimator] POST /estimates/[id]/photos', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    const message = err instanceof Error ? err.message : String(err)
+    const stack   = err instanceof Error ? err.stack : undefined
+    console.error('[estimator] POST /estimates/[id]/photos', message, stack)
+    return NextResponse.json({ error: 'Internal server error', detail: message }, { status: 500 })
   }
 }

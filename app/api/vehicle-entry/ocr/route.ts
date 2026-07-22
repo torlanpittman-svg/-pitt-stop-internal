@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server'
 import { extractVehicleData } from '@/apps/vehicle-entry/ai'
-import { createVehicleEntry } from '@/apps/vehicle-entry/db'
+import { createVehicleEntry, getDealership } from '@/apps/vehicle-entry/db'
 import { uploadPhoto } from '@/platform/blob'
 import { logger } from '@/platform/logger'
 import { isAcceptedMimeType } from '@/platform/image'
+import { applyStockNormalizations, detectStockPrefix } from '@/apps/ai-learning/normalizations'
 
 const LOG = 'api:vehicle-entry:ocr'
 const MAX_BYTES = 5 * 1024 * 1024
@@ -119,17 +120,34 @@ export async function POST(request: Request) {
   const ocrCompletedAt = new Date()
   const isPilotEntry   = process.env.PILOT_MODE === 'true'
 
+  // Apply normalization rules to raw stock number
+  const rawStockOcr = ocrResult.stockNumber
+  const normResult  = rawStockOcr
+    ? applyStockNormalizations(rawStockOcr)
+    : { raw: null, normalized: rawStockOcr, changes: [] }
+  const normalizedStock    = rawStockOcr ? normResult.normalized : rawStockOcr
+  const detectedPrefix     = normalizedStock ? detectStockPrefix(normalizedStock) : null
+
+  // Resolve dealership expected prefix (if dealer ID was passed in formData)
+  const dealershipId   = formData.get('dealershipId') as string | null
+  const dealershipName = formData.get('dealershipName') as string | null
+  let expectedDealerPrefix: string | null = null
+  if (dealershipId) {
+    const dealer = await getDealership(dealershipId).catch(() => null)
+    expectedDealerPrefix = dealer?.stockPrefix ?? null
+  }
+
   const entryId = await createVehicleEntry({
     photoUrl,
     originalPhotoUrl,
-    // Current confirmed values — start equal to AI, overwritten when employee corrects
+    // Current confirmed values — start equal to normalized AI, overwritten when employee corrects
     year:                    ocrResult.year,
     make:                    ocrResult.make,
     model:                   ocrResult.model,
     color:                   ocrResult.color,
-    stockNumber:             ocrResult.stockNumber,
+    stockNumber:             normalizedStock,
     stockNumberCropUrl,
-    stockNumberAiPrediction: ocrResult.stockNumber,
+    stockNumberAiPrediction: normalizedStock,  // normalized prediction shown to employee
     stockDebugOverlayUrl,
     stockDebugData:          ocrResult.stockDebugData,
     ocrConfidence:           ocrResult.confidence as unknown as Record<string, number>,
@@ -137,6 +155,8 @@ export async function POST(request: Request) {
     photoTakenAt,
     ocrCompletedAt,
     isPilotEntry,
+    dealershipId:            dealershipId   ?? undefined,
+    dealershipName:          dealershipName ?? undefined,
     // Original AI predictions — locked at creation, never updated by PATCH
     aiYear:        ocrResult.year,
     aiMake:        ocrResult.make,
@@ -144,6 +164,11 @@ export async function POST(request: Request) {
     aiColor:       ocrResult.color,
     promptVersion: ocrResult.promptVersion,
     modelName:     ocrResult.modelName,
+    // Stock normalization data
+    stockRawOcr:          rawStockOcr,
+    normalizationsApplied: normResult.changes as never,
+    detectedStockPrefix:   detectedPrefix,
+    expectedDealerPrefix,
   })
 
   logger.info(LOG, 'extraction.complete', {

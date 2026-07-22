@@ -2,7 +2,7 @@ import { Fragment } from 'react'
 import Link from 'next/link'
 import { getDb } from '@/platform/db'
 import { vehicleEntries, ocrPromptResults } from '@/apps/vehicle-entry/schema'
-import { desc, isNotNull, and } from 'drizzle-orm'
+import { desc, isNotNull, and, eq } from 'drizzle-orm'
 import OcrLearningClient from './OcrLearningClient'
 
 export const dynamic = 'force-dynamic'
@@ -129,8 +129,26 @@ function charSubs(entries: EntryRow[]): [string, string, number][] {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-export default async function OcrLearningPage() {
+const FILTER_OPTIONS = [
+  { label: 'All',        value: 'all' },
+  { label: 'Production', value: 'production' },
+  { label: 'Pilot',      value: 'pilot' },
+  { label: 'Test',       value: 'test' },
+]
+
+export default async function OcrLearningPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ dt?: string }>
+}) {
+  const { dt } = await searchParams
+  const activeFilter = FILTER_OPTIONS.some(o => o.value === dt) ? dt! : 'all'
+
   const db = getDb()
+
+  const whereClause = activeFilter === 'all'
+    ? isNotNull(vehicleEntries.aiYear)
+    : and(isNotNull(vehicleEntries.aiYear), eq(vehicleEntries.dataType, activeFilter))
 
   const rows = await db
     .select({
@@ -156,9 +174,7 @@ export default async function OcrLearningPage() {
       modelName:               vehicleEntries.modelName,
     })
     .from(vehicleEntries)
-    .where(and(
-      isNotNull(vehicleEntries.aiYear),
-    ))
+    .where(whereClause)
     .orderBy(desc(vehicleEntries.createdAt))
 
   const allRows = rows as EntryRow[]
@@ -209,7 +225,7 @@ export default async function OcrLearningPage() {
         <span className="text-gray-300">OCR Learning</span>
       </div>
 
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-2xl font-bold text-white">OCR Learning</h1>
           <p className="text-gray-500 text-sm mt-0.5">
@@ -218,6 +234,27 @@ export default async function OcrLearningPage() {
             {promptVersions.length > 0 ? `prompt ${promptVersions.join(', ')}` : 'no prompt version data'}
           </p>
         </div>
+      </div>
+
+      {/* ── Data type filter tabs ── */}
+      <div className="flex items-center gap-1 mb-8">
+        {FILTER_OPTIONS.map(opt => (
+          <Link
+            key={opt.value}
+            href={opt.value === 'all' ? '/admin/vehicle-entry/ocr-learning' : `/admin/vehicle-entry/ocr-learning?dt=${opt.value}`}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
+              ${activeFilter === opt.value
+                ? 'bg-gray-700 text-white'
+                : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+          >
+            {opt.label}
+          </Link>
+        ))}
+        {activeFilter !== 'all' && (
+          <span className="ml-2 text-gray-600 text-xs">
+            Showing {activeFilter} records only · Accuracy metrics calculated on this subset
+          </span>
+        )}
       </div>
 
       {total === 0 ? (

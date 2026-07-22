@@ -30,14 +30,21 @@ export async function PATCH(
   }
 
   const updated = await updateVehicleEntry(id, {
-    year:                typeof body.year === 'string'           ? body.year              : undefined,
-    make:                typeof body.make === 'string'           ? body.make              : undefined,
-    model:               typeof body.model === 'string'          ? body.model             : undefined,
-    color:               typeof body.color === 'string'          ? body.color             : undefined,
-    customColor:         typeof body.customColor === 'string'    ? body.customColor       : undefined,
-    stockNumber:         typeof body.stockNumber === 'string'    ? body.stockNumber       : undefined,
-    wasCorrected:        typeof body.wasCorrected === 'boolean'  ? body.wasCorrected      : undefined,
-    status:              typeof body.status === 'string'         ? (body.status as never) : undefined,
+    dataType:           typeof body.dataType === 'string' && ['production','pilot','test'].includes(body.dataType)
+                          ? body.dataType : undefined,
+    year:               typeof body.year        === 'string'  ? body.year              : undefined,
+    make:               typeof body.make        === 'string'  ? body.make              : undefined,
+    model:              typeof body.model       === 'string'  ? body.model             : undefined,
+    color:              typeof body.color       === 'string'  ? body.color             : undefined,
+    customColor:        typeof body.customColor === 'string'  ? body.customColor       : undefined,
+    stockNumber:        typeof body.stockNumber === 'string'  ? body.stockNumber       : undefined,
+    wasCorrected:       typeof body.wasCorrected  === 'boolean' ? body.wasCorrected      : undefined,
+    yearWasCorrected:   typeof body.yearWasCorrected  === 'boolean' ? body.yearWasCorrected  : undefined,
+    makeWasCorrected:   typeof body.makeWasCorrected  === 'boolean' ? body.makeWasCorrected  : undefined,
+    modelWasCorrected:  typeof body.modelWasCorrected === 'boolean' ? body.modelWasCorrected : undefined,
+    colorWasCorrected:  typeof body.colorWasCorrected === 'boolean' ? body.colorWasCorrected : undefined,
+    stockWasCorrected:  typeof body.stockWasCorrected === 'boolean' ? body.stockWasCorrected : undefined,
+    status:             typeof body.status === 'string'  ? (body.status as never) : undefined,
     employeeConfirmedAt: new Date(),
   })
 

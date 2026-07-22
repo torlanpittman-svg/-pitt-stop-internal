@@ -130,7 +130,7 @@ function AccuracyRow({
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export default function PilotDashboard() {
+export default function PilotDashboard({ dataTypeFilter = 'pilot' }: { dataTypeFilter?: string }) {
   const [stats,          setStats]          = useState<Stats | null>(null)
   const [interventions,  setInterventions]  = useState<Intervention[]>([])
   const [loading,        setLoading]        = useState(true)
@@ -143,7 +143,7 @@ export default function PilotDashboard() {
   const refresh = useCallback(async () => {
     try {
       const [statsRes, intRes] = await Promise.all([
-        fetch('/api/vehicle-entry/pilot-stats'),
+        fetch(`/api/vehicle-entry/pilot-stats?dt=${encodeURIComponent(dataTypeFilter)}`),
         fetch('/api/vehicle-entry/pilot-interventions'),
       ])
       if (!statsRes.ok) {
@@ -160,7 +160,7 @@ export default function PilotDashboard() {
       setLoading(false)
       setLastRefresh(new Date())
     }
-  }, [])
+  }, [dataTypeFilter])
 
   useEffect(() => { refresh() }, [refresh])
   useEffect(() => {

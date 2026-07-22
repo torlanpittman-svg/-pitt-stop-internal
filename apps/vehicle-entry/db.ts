@@ -111,7 +111,19 @@ export type VehicleEntryRow = {
   invoiceSyncStatus: string | null
   invoiceSyncedAt:   Date | null
   invoiceSyncError:  string | null
+  dataType: string
   wasCorrected: boolean
+  // Per-field correction flags
+  yearWasCorrected:  boolean
+  makeWasCorrected:  boolean
+  modelWasCorrected: boolean
+  colorWasCorrected: boolean
+  stockWasCorrected: boolean
+  // Stock normalization tracking
+  stockRawOcr:           string | null
+  normalizationsApplied: unknown
+  detectedStockPrefix:   string | null
+  expectedDealerPrefix:  string | null
   status: string
   quickbooksInvoiceId: string | null
   // Pilot timing
@@ -130,6 +142,7 @@ export type VehicleEntryRow = {
 
 type NewEntry = {
   photoUrl: string
+  dataType?: string
   originalPhotoUrl?: string | null
   year?: string | null
   make?: string | null
@@ -156,6 +169,11 @@ type NewEntry = {
   aiColor?: string | null
   promptVersion?: string | null
   modelName?: string | null
+  // Stock normalization
+  stockRawOcr?: string | null
+  normalizationsApplied?: unknown
+  detectedStockPrefix?: string | null
+  expectedDealerPrefix?: string | null
 }
 
 type EntryUpdate = {
@@ -165,7 +183,14 @@ type EntryUpdate = {
   color?: string | null
   customColor?: string | null
   stockNumber?: string | null
+  dataType?: string
   wasCorrected?: boolean
+  // Per-field correction flags
+  yearWasCorrected?:  boolean
+  makeWasCorrected?:  boolean
+  modelWasCorrected?: boolean
+  colorWasCorrected?: boolean
+  stockWasCorrected?: boolean
   status?: VehicleEntryStatus
   quickbooksInvoiceId?: string | null
   // Invoice sync fields
@@ -185,6 +210,7 @@ export async function createVehicleEntry(data: NewEntry): Promise<string> {
       id,
       createdAt:               new Date(),
       updatedAt:               new Date(),
+      dataType:                data.dataType                ?? 'production',
       photoUrl:                data.photoUrl,
       originalPhotoUrl:        data.originalPhotoUrl        ?? null,
       year:                    data.year                    ?? null,
@@ -221,6 +247,15 @@ export async function createVehicleEntry(data: NewEntry): Promise<string> {
       aiColor:                 data.aiColor                 ?? null,
       promptVersion:           data.promptVersion           ?? null,
       modelName:               data.modelName               ?? null,
+      stockRawOcr:             data.stockRawOcr             ?? null,
+      normalizationsApplied:   data.normalizationsApplied   ?? null,
+      detectedStockPrefix:     data.detectedStockPrefix     ?? null,
+      expectedDealerPrefix:    data.expectedDealerPrefix    ?? null,
+      yearWasCorrected:        false,
+      makeWasCorrected:        false,
+      modelWasCorrected:       false,
+      colorWasCorrected:       false,
+      stockWasCorrected:       false,
     })
     return id
   }
@@ -229,6 +264,7 @@ export async function createVehicleEntry(data: NewEntry): Promise<string> {
   const [row] = await db
     .insert(vehicleEntries)
     .values({
+      dataType:                data.dataType                ?? 'production',
       photoUrl:                data.photoUrl,
       originalPhotoUrl:        data.originalPhotoUrl        ?? null,
       year:                    data.year                    ?? null,
@@ -256,6 +292,10 @@ export async function createVehicleEntry(data: NewEntry): Promise<string> {
       aiColor:                 data.aiColor                 ?? null,
       promptVersion:           data.promptVersion           ?? null,
       modelName:               data.modelName               ?? null,
+      stockRawOcr:             data.stockRawOcr             ?? null,
+      normalizationsApplied:   data.normalizationsApplied   as never ?? null,
+      detectedStockPrefix:     data.detectedStockPrefix     ?? null,
+      expectedDealerPrefix:    data.expectedDealerPrefix    ?? null,
     })
     .returning({ id: vehicleEntries.id })
   return row.id
@@ -298,10 +338,11 @@ export type PilotEntryRow = {
   isPilotEntry:            boolean
 }
 
-export async function listPilotEntries(limit = 500): Promise<PilotEntryRow[]> {
+export async function listPilotEntries(limit = 500, dataTypeFilter = 'pilot'): Promise<PilotEntryRow[]> {
   if (isDemoMode()) {
     return demoStore
       .list<VehicleEntryRow>(COLLECTION)
+      .filter(e => dataTypeFilter === 'all' ? true : (e.dataType ?? 'production') === dataTypeFilter)
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       .slice(0, limit)
       .map(e => ({
@@ -317,7 +358,7 @@ export async function listPilotEntries(limit = 500): Promise<PilotEntryRow[]> {
   }
 
   const db = getDb()
-  return (await db
+  const q = db
     .select({
       id:                      vehicleEntries.id,
       createdAt:               vehicleEntries.createdAt,
@@ -340,22 +381,35 @@ export async function listPilotEntries(limit = 500): Promise<PilotEntryRow[]> {
       isPilotEntry:            vehicleEntries.isPilotEntry,
     })
     .from(vehicleEntries)
-    .orderBy(desc(vehicleEntries.createdAt))
-    .limit(limit)) as PilotEntryRow[]
+
+  return (await (dataTypeFilter === 'all'
+    ? q.orderBy(desc(vehicleEntries.createdAt)).limit(limit)
+    : q.where(eq(vehicleEntries.dataType, dataTypeFilter)).orderBy(desc(vehicleEntries.createdAt)).limit(limit)
+  )) as PilotEntryRow[]
 }
 
-export async function listVehicleEntries(limit = 100): Promise<VehicleEntryRow[]> {
+export async function listVehicleEntries(
+  limit = 100,
+  dataTypeFilter?: string,
+): Promise<VehicleEntryRow[]> {
   if (isDemoMode()) {
-    return demoStore
+    let rows = demoStore
       .list<VehicleEntryRow>(COLLECTION)
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .slice(0, limit)
+    if (dataTypeFilter) rows = rows.filter(r => r.dataType === dataTypeFilter)
+    return rows.slice(0, limit)
   }
 
   const db = getDb()
-  return (await db
-    .select()
-    .from(vehicleEntries)
+  const q = db.select().from(vehicleEntries)
+  if (dataTypeFilter) {
+    const { eq } = await import('drizzle-orm')
+    return (await q
+      .where(eq(vehicleEntries.dataType, dataTypeFilter))
+      .orderBy(desc(vehicleEntries.createdAt))
+      .limit(limit)) as VehicleEntryRow[]
+  }
+  return (await q
     .orderBy(desc(vehicleEntries.createdAt))
     .limit(limit)) as VehicleEntryRow[]
 }

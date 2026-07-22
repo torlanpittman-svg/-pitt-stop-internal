@@ -9,9 +9,14 @@ function fmtTime(d: Date | string | null): string | null {
   return new Date(d).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
 }
 
-export async function GET() {
+const VALID_FILTERS = ['all', 'production', 'pilot', 'test']
+
+export async function GET(request: Request) {
   try {
-    return await getStats()
+    const { searchParams } = new URL(request.url)
+    const dt = searchParams.get('dt') ?? 'pilot'
+    const dataTypeFilter = VALID_FILTERS.includes(dt) ? dt : 'pilot'
+    return await getStats(dataTypeFilter)
   } catch (err) {
     console.error('[pilot-stats] error:', err)
     return NextResponse.json(
@@ -21,14 +26,13 @@ export async function GET() {
   }
 }
 
-async function getStats() {
+async function getStats(dataTypeFilter: string) {
   const [all, batches] = await Promise.all([
-    listPilotEntries(500),
+    listPilotEntries(500, dataTypeFilter),
     listInvoiceBatches(),
   ])
 
   const pilot = all
-    .filter(e => e.isPilotEntry)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
 
   // ── Today's Vehicles ────────────────────────────────────────────────────

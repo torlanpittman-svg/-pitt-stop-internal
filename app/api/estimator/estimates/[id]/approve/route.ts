@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getEstimate, updateEstimate, generateEstimateNumber } from '@/apps/estimator/db'
+import { recordEstimatorLearningEvent } from '@/apps/ai-learning/db'
 
 export const dynamic = 'force-dynamic'
 
@@ -25,6 +26,11 @@ export async function POST(
       approvedPriceCents: approvedPrice,
       employeeApprovedAt: new Date(),
     })
+
+    // Write learning event — awaited so it completes before the serverless function exits
+    await recordEstimatorLearningEvent(id).catch(err =>
+      console.error('[estimator:learning] failed to record event', err)
+    )
 
     return NextResponse.json({ estimateId: id, estimateNumber, status: updated.status })
   } catch (err) {

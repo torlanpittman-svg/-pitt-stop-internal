@@ -13,6 +13,7 @@ export * from '@/apps/vehicle-entry/schema'
 
 // Future app schemas — uncomment as apps are built:
 export * from '@/apps/estimator/schema'
+export * from '@/apps/ai-learning/schema'
 // export * from '@/apps/sop-handbook/schema'
 // export * from '@/apps/quality-control/schema'
 // export * from '@/apps/inventory/schema'

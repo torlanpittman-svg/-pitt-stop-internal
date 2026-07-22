@@ -31,6 +31,7 @@ export async function PATCH(
     // Only allow mutable fields — never AI fields
     const allowed = [
       'vehicleYear', 'vehicleMake', 'vehicleModel', 'vehicleColor', 'vehicleSize',
+      'vin', 'vehicleBodyClass', 'vinDecodeProvider', 'vinRawResponse', 'vehicleWasCorrected',
       'serviceFocus', 'status', 'approvedPriceCents', 'recommendedPriceCents',
       'estimateNumber', 'employeeId',
     ]

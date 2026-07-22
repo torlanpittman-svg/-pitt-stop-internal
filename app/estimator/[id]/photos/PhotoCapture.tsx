@@ -1,19 +1,11 @@
 'use client'
 
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import EstimatorCamera from '@/app/estimator/EstimatorCamera'
-
-const PHOTO_STEPS = [
-  { role: 'driver_side',    label: 'Driver Side',      hint: 'Step back — capture the full left side of the vehicle' },
-  { role: 'passenger_side', label: 'Passenger Side',   hint: 'Step back — capture the full right side of the vehicle' },
-  { role: 'front',          label: 'Front',             hint: 'Straight-on view of the front bumper and grille' },
-  { role: 'rear',           label: 'Rear',              hint: 'Straight-on view of the rear bumper and taillights' },
-  { role: 'interior_front', label: 'Front Interior',   hint: 'Open the driver door — photograph seats, dash, and console' },
-  { role: 'interior_rear',  label: 'Rear Seats',       hint: 'Photograph the rear seat area and floor' },
-  { role: 'interior_floor', label: 'Floor & Carpet',   hint: 'Capture the carpet, floor mats, and foot wells' },
-  { role: 'trunk',          label: 'Trunk / Cargo',    hint: 'Open the trunk or tailgate and photograph inside' },
-]
+import { buildPhotoSteps } from '@/apps/estimator/photo-steps'
+import { applyLayoutAnswers } from '@/apps/estimator/vehicle-layout'
+import type { LayoutInference, LayoutQuestion } from '@/apps/estimator/vehicle-layout'
 
 type UploadedPhoto = {
   role:     string
@@ -21,22 +13,61 @@ type UploadedPhoto = {
   step:     number
 }
 
-export default function PhotoCapture({ estimateId }: { estimateId: string }) {
+export default function PhotoCapture({
+  estimateId,
+  serviceFocus,
+  layoutInference,
+}: {
+  estimateId:      string
+  serviceFocus:    string | null
+  layoutInference: LayoutInference
+}) {
   const router = useRouter()
 
+  // Answers collected from the clarification question screen
+  const [answers, setAnswers] = useState<Partial<Record<LayoutQuestion['key'], boolean>>>({})
+
+  // Questions still pending (preserves original order)
+  const pendingQuestions = layoutInference.questions.filter(q => !(q.key in answers))
+  const needsQuestions   = pendingQuestions.length > 0
+
+  // Resolved layout and photo steps — recomputed whenever answers change
+  const layout = useMemo(
+    () => applyLayoutAnswers(layoutInference.layout, answers),
+    [layoutInference.layout, answers]
+  )
+  const steps = useMemo(
+    () => needsQuestions ? [] : buildPhotoSteps(layout, serviceFocus),
+    [needsQuestions, layout, serviceFocus]
+  )
+
+  // Camera / upload state
   const [step,      setStep]      = useState(0)
   const [photos,    setPhotos]    = useState<UploadedPhoto[]>([])
   const [uploading, setUploading] = useState(false)
   const [error,     setError]     = useState<string | null>(null)
-  const keyRef = useRef(0)  // forces camera remount on step advance
+  const keyRef = useRef(0)
 
-  const currentStep = PHOTO_STEPS[step]
-  const isLastStep  = step === PHOTO_STEPS.length - 1
+  const currentStep = steps[step]
+  const isLastStep  = step === steps.length - 1
+
+  const handleAnswer = useCallback((key: LayoutQuestion['key'], value: boolean) => {
+    setAnswers(prev => ({ ...prev, [key]: value }))
+  }, [])
+
+  const advance = useCallback(() => {
+    if (isLastStep) {
+      if (photos.length === 0) return
+      router.push(`/estimator/${estimateId}/photo-review`)
+    } else {
+      keyRef.current += 1
+      setStep(s => s + 1)
+    }
+  }, [isLastStep, photos.length, estimateId, router])
 
   const handleCapture = useCallback(async (file: File) => {
     setUploading(true)
     setError(null)
-
     try {
       const fd = new FormData()
       fd.append('image', file, file.name)
@@ -50,37 +81,81 @@ export default function PhotoCapture({ estimateId }: { estimateId: string }) {
       const data = await res.json() as { photoUrl?: string; error?: string }
       if (!res.ok) throw new Error(data.error ?? 'Upload failed')
 
-      const uploaded: UploadedPhoto = {
-        role:     currentStep.role,
-        photoUrl: data.photoUrl!,
-        step,
-      }
-
-      setPhotos(prev => [...prev, uploaded])
-
-      if (isLastStep) {
-        router.push(`/estimator/${estimateId}/photo-review`)
-      } else {
-        keyRef.current += 1
-        setStep(s => s + 1)
-      }
+      setPhotos(prev => [...prev, { role: currentStep.role, photoUrl: data.photoUrl!, step }])
+      advance()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setUploading(false)
     }
-  }, [currentStep, step, estimateId, isLastStep, router])
+  }, [currentStep, step, estimateId, advance])
 
-  const handleSkip = useCallback(() => {
-    if (isLastStep) {
-      if (photos.length === 0) return  // must have at least one photo
-      router.push(`/estimator/${estimateId}/photo-review`)
-    } else {
-      keyRef.current += 1
-      setStep(s => s + 1)
-    }
-  }, [isLastStep, photos.length, estimateId, router])
+  const handleSkipOrNA = useCallback(() => advance(), [advance])
 
+  // ── QUESTION SCREEN ────────────────────────────────────────────────────────
+  if (needsQuestions) {
+    const q      = pendingQuestions[0]
+    const qIndex = layoutInference.questions.indexOf(q)
+    const qTotal = layoutInference.questions.length
+
+    return (
+      <main className="h-[100dvh] bg-gray-950 flex flex-col">
+        <div className="flex items-center justify-between px-5 pt-6 pb-4 shrink-0">
+          <button
+            onClick={() => {
+              if (qIndex === 0) {
+                router.push(`/estimator/${estimateId}/vehicle`)
+              } else {
+                const prevQ = layoutInference.questions[qIndex - 1]
+                setAnswers(prev => {
+                  const next = { ...prev }
+                  delete next[prevQ.key]
+                  return next
+                })
+              }
+            }}
+            className="text-gray-500 text-sm"
+          >
+            ← Back
+          </button>
+          <span className="text-gray-400 text-sm">Before We Start</span>
+          <div className="w-16" />
+        </div>
+
+        <div className="flex-1 flex flex-col items-center justify-center px-8 gap-8">
+          {qTotal > 1 && (
+            <p className="text-gray-600 text-xs uppercase tracking-widest">
+              Question {qIndex + 1} of {qTotal}
+            </p>
+          )}
+          <p className="text-white text-xl font-bold text-center leading-snug">
+            {q.text}
+          </p>
+          <div className="flex gap-4 w-full max-w-xs">
+            <button
+              onClick={() => handleAnswer(q.key, true)}
+              className="flex-1 py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-bold text-lg transition-colors"
+            >
+              Yes
+            </button>
+            <button
+              onClick={() => handleAnswer(q.key, false)}
+              className="flex-1 py-4 rounded-2xl bg-gray-800 hover:bg-gray-700 active:bg-gray-900 text-white font-bold text-lg transition-colors"
+            >
+              No
+            </button>
+          </div>
+          <p className="text-gray-600 text-xs text-center">
+            This determines which photos to collect
+          </p>
+        </div>
+      </main>
+    )
+  }
+
+  if (!currentStep) return null
+
+  // ── CAMERA FLOW ────────────────────────────────────────────────────────────
   return (
     <main className="h-[100dvh] bg-black flex flex-col">
       {/* Header */}
@@ -88,7 +163,17 @@ export default function PhotoCapture({ estimateId }: { estimateId: string }) {
         <button
           onClick={() => {
             if (step === 0) {
-              router.push(`/estimator/${estimateId}/vehicle`)
+              if (layoutInference.questions.length > 0) {
+                // Un-answer the last question to return to the question screen
+                const lastQ = layoutInference.questions[layoutInference.questions.length - 1]
+                setAnswers(prev => {
+                  const next = { ...prev }
+                  delete next[lastQ.key]
+                  return next
+                })
+              } else {
+                router.push(`/estimator/${estimateId}/vehicle`)
+              }
             } else {
               keyRef.current += 1
               setStep(s => s - 1)
@@ -100,13 +185,20 @@ export default function PhotoCapture({ estimateId }: { estimateId: string }) {
         </button>
 
         <div className="text-center">
-          <p className="text-white font-semibold text-sm">{currentStep.label}</p>
-          <p className="text-gray-500 text-xs">{step + 1} of {PHOTO_STEPS.length}</p>
+          <div className="flex items-center justify-center gap-1.5">
+            <p className="text-white font-semibold text-sm">{currentStep.label}</p>
+            {currentStep.bonus && (
+              <span className="text-xs bg-amber-900/60 text-amber-400 rounded-full px-1.5 py-0.5 leading-none">
+                Optional
+              </span>
+            )}
+          </div>
+          <p className="text-gray-500 text-xs">{step + 1} of {steps.length}</p>
         </div>
 
         <button
-          onClick={handleSkip}
-          className="text-gray-600 text-sm"
+          onClick={handleSkipOrNA}
+          className={`text-sm font-medium ${currentStep.bonus ? 'text-gray-300' : 'text-gray-600'}`}
         >
           Skip
         </button>
@@ -114,13 +206,13 @@ export default function PhotoCapture({ estimateId }: { estimateId: string }) {
 
       {/* Progress bar */}
       <div className="flex gap-1 px-5 pb-2 shrink-0 bg-black">
-        {PHOTO_STEPS.map((_, i) => (
+        {steps.map((_, i) => (
           <div
             key={i}
             className={`h-1 flex-1 rounded-full transition-colors ${
-              i < step ? 'bg-blue-500' :
+              i < step   ? 'bg-blue-500' :
               i === step ? 'bg-white' :
-              'bg-gray-800'
+                           'bg-gray-800'
             }`}
           />
         ))}
@@ -144,11 +236,12 @@ export default function PhotoCapture({ estimateId }: { estimateId: string }) {
         </div>
       )}
 
-      {/* Camera — re-mounts on step change via key */}
+      {/* Camera — re-mounts on each step change via key */}
       <EstimatorCamera
         key={keyRef.current}
         stepLabel={currentStep.label}
         stepHint={currentStep.hint}
+        orientation={currentStep.orientation}
         onCapture={handleCapture}
       />
 

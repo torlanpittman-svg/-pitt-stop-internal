@@ -144,10 +144,26 @@ export const vehicleEntries = pgTable(
 
     wasCorrected: boolean('was_corrected').notNull().default(false),
 
+    // Per-field correction flags — set at employee confirmation time
+    yearWasCorrected:  boolean('year_was_corrected').notNull().default(false),
+    makeWasCorrected:  boolean('make_was_corrected').notNull().default(false),
+    modelWasCorrected: boolean('model_was_corrected').notNull().default(false),
+    colorWasCorrected: boolean('color_was_corrected').notNull().default(false),
+    stockWasCorrected: boolean('stock_was_corrected').notNull().default(false),
+
+    // Stock number normalization tracking
+    stockRawOcr:           varchar('stock_raw_ocr',           { length: 100 }),  // raw OCR before rules
+    normalizationsApplied: jsonb('normalizations_applied'),                       // NormalizationChange[]
+    detectedStockPrefix:   varchar('detected_stock_prefix',   { length: 20  }),  // prefix chars found
+    expectedDealerPrefix:  varchar('expected_dealer_prefix',  { length: 20  }),  // from dealership config
+
     // pending_quickbooks | ready_for_quickbooks | quickbooks_updated | quickbooks_error | needs_review
     status: varchar('status', { length: 50 }).notNull().default('ready_for_quickbooks'),
 
     quickbooksInvoiceId: varchar('quickbooks_invoice_id', { length: 100 }),
+
+    // Data classification: production | pilot | test
+    dataType: varchar('data_type', { length: 20 }).notNull().default('production'),
 
     // Pilot timing — set at each stage for speed analysis
     photoTakenAt:        timestamp('photo_taken_at',        { withTimezone: true }),

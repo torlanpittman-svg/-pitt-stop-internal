@@ -22,10 +22,11 @@ import type { SyncOutcome } from '@/apps/vehicle-entry/types'
 
 const LOG = 'vehicle-entry:invoice-sync'
 
-// Extract the alphabetic prefix from a stock number ("S123456" → "S", "TZ482193" → "TZ")
+// Extract the dealer prefix from a stock number — always the first letter only.
+// "S123456" → "S", "SP100744" → "S", "TJ285137" → "T", "KLO6824" → "K"
 function extractStockPrefix(stockNumber: string | null): string | null {
   if (!stockNumber) return null
-  return stockNumber.match(/^([A-Za-z]+)/)?.[1]?.toUpperCase() ?? null
+  return stockNumber.match(/^([A-Za-z])/)?.[1]?.toUpperCase() ?? null
 }
 
 // Build the QB invoice line description per the agreed format
@@ -53,6 +54,17 @@ async function resolveDealer(entry: VehicleEntryRow) {
 export async function syncEntryToInvoice(entryId: string): Promise<SyncOutcome> {
   const entry = await getVehicleEntry(entryId)
   if (!entry) throw new Error('Entry not found')
+
+  // Only production records may sync to QuickBooks
+  if (entry.dataType !== 'production') {
+    const reason = `"${entry.dataType}" entries cannot sync to QuickBooks`
+    await updateVehicleEntry(entryId, {
+      status:            'pending_invoice_assignment',
+      invoiceSyncStatus: 'pending_invoice_assignment',
+      invoiceSyncError:  reason,
+    })
+    return { outcome: 'pending_invoice_assignment', invoiceNumber: null, dealershipName: null, lineText: null, reason }
+  }
 
   // Idempotency: do not re-sync an already-synced entry
   if (entry.invoiceSyncStatus === 'synced') {

@@ -46,6 +46,13 @@ export const estimates = pgTable(
     vehicleColor: varchar('vehicle_color', { length: 100 }),
     vehicleSize:  varchar('vehicle_size',  { length: 50  }),
 
+    // VIN — scanned or entered by employee
+    vin:                 varchar('vin', { length: 17 }),
+    vehicleBodyClass:    varchar('vehicle_body_class',   { length: 100 }),
+    vinDecodeProvider:   varchar('vin_decode_provider',  { length: 50  }),
+    vinRawResponse:      jsonb('vin_raw_response'),
+    vehicleWasCorrected: boolean('vehicle_was_corrected').notNull().default(false),
+
     // AI-original vehicle fields (written once at analysis time, never updated)
     aiVehicleYear:  varchar('ai_vehicle_year',  { length: 4   }),
     aiVehicleMake:  varchar('ai_vehicle_make',  { length: 100 }),
@@ -64,6 +71,9 @@ export const estimates = pgTable(
     promptVersion: varchar('prompt_version', { length: 50  }),
     modelName:     varchar('model_name',     { length: 100 }),
     rawAiResponse: jsonb('raw_ai_response'),
+
+    // Data classification: production | pilot | test
+    dataType: varchar('data_type', { length: 20 }).notNull().default('production'),
 
     // Workflow
     // draft | photos_complete | ai_pending | needs_review | approved

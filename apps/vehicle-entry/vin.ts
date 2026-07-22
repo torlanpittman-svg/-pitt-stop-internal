@@ -50,10 +50,11 @@ export function buildStockNumber(prefix: string, vin: string): string {
 }
 
 export interface VINDecodeResult {
-  vin:   string
-  year:  string | null
-  make:  string | null
-  model: string | null
+  vin:       string
+  year:      string | null
+  make:      string | null
+  model:     string | null
+  bodyClass: string | null
 }
 
 // ── Server-side only ────────────────────────────────────────────────────────
@@ -97,9 +98,10 @@ export async function decodeVINFromNHTSA(vin: string): Promise<VINDecodeResult> 
   const model   = cleanField(result['Model'])
 
   return {
-    vin:   v,
-    year:  cleanField(result['ModelYear']),
-    make:  rawMake ? normalizeMake(rawMake) : null,
+    vin:       v,
+    year:      cleanField(result['ModelYear']),
+    make:      rawMake ? normalizeMake(rawMake) : null,
     model,
+    bodyClass: cleanField(result['BodyClass']),
   }
 }

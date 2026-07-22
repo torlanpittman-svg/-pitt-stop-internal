@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import type { PhotoOrientation } from '@/apps/estimator/photo-steps'
 
 function canvasToBlob(c: HTMLCanvasElement, type: string, quality: number): Promise<Blob> {
   return new Promise((resolve, reject) =>
@@ -12,22 +13,70 @@ function canvasToBlob(c: HTMLCanvasElement, type: string, quality: number): Prom
   )
 }
 
+function FrameGuide({ orientation }: { orientation: PhotoOrientation }) {
+  const corner = 'absolute w-8 h-8'
+
+  if (orientation === 'landscape') {
+    return (
+      <div className="absolute inset-x-4 top-[18%] bottom-[18%] pointer-events-none">
+        <div className={`${corner} top-0 left-0 border-t-2 border-l-2 border-white/70`} />
+        <div className={`${corner} top-0 right-0 border-t-2 border-r-2 border-white/70`} />
+        <div className={`${corner} bottom-0 left-0 border-b-2 border-l-2 border-white/70`} />
+        <div className={`${corner} bottom-0 right-0 border-b-2 border-r-2 border-white/70`} />
+      </div>
+    )
+  }
+
+  if (orientation === 'close-up') {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div className="relative w-52 h-52">
+          <div className={`${corner} top-0 left-0 border-t-2 border-l-2 border-white/70`} />
+          <div className={`${corner} top-0 right-0 border-t-2 border-r-2 border-white/70`} />
+          <div className={`${corner} bottom-0 left-0 border-b-2 border-l-2 border-white/70`} />
+          <div className={`${corner} bottom-0 right-0 border-b-2 border-r-2 border-white/70`} />
+        </div>
+      </div>
+    )
+  }
+
+  // portrait — subtle tall guide
+  return (
+    <div className="absolute inset-x-8 top-10 bottom-32 pointer-events-none">
+      <div className={`${corner} top-0 left-0 border-t-2 border-l-2 border-white/40`} />
+      <div className={`${corner} top-0 right-0 border-t-2 border-r-2 border-white/40`} />
+      <div className={`${corner} bottom-0 left-0 border-b-2 border-l-2 border-white/40`} />
+      <div className={`${corner} bottom-0 right-0 border-b-2 border-r-2 border-white/40`} />
+    </div>
+  )
+}
+
 export default function EstimatorCamera({
   stepLabel,
   stepHint,
+  orientation = 'portrait',
   onCapture,
 }: {
-  stepLabel: string
-  stepHint:  string
-  onCapture: (file: File) => void
+  stepLabel:    string
+  stepHint:     string
+  orientation?: PhotoOrientation
+  onCapture:    (file: File) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const videoRef     = useRef<HTMLVideoElement>(null)
 
-  const [ready,     setReady]     = useState(false)
-  const [camFailed, setCamFailed] = useState(false)
-  const [capturing, setCapturing] = useState(false)
-  const [fileKey,   setFileKey]   = useState(0)
+  const [ready,       setReady]       = useState(false)
+  const [camFailed,   setCamFailed]   = useState(false)
+  const [capturing,   setCapturing]   = useState(false)
+  const [fileKey,     setFileKey]     = useState(0)
+  const [isLandscape, setIsLandscape] = useState(false)
+
+  useEffect(() => {
+    const check = () => setIsLandscape(window.innerWidth > window.innerHeight)
+    check()
+    window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
+  }, [])
 
   useEffect(() => {
     let stream: MediaStream | null = null
@@ -85,6 +134,8 @@ export default function EstimatorCamera({
     onCapture(f)
   }, [onCapture])
 
+  const needsRotation = orientation === 'landscape' && !isLandscape
+
   if (camFailed) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-6 px-6">
@@ -127,9 +178,54 @@ export default function EstimatorCamera({
           </div>
         )}
 
-        {ready && (
+        {/* Rotate-phone prompt for landscape shots */}
+        {ready && needsRotation && (
+          <div className="absolute inset-0 bg-black/85 flex flex-col items-center justify-center z-20 pointer-events-none gap-5">
+            {/* Phone-rotate icon */}
+            <svg
+              width="72"
+              height="72"
+              viewBox="0 0 72 72"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              className="text-white"
+            >
+              {/* Phone body in portrait */}
+              <rect x="24" y="8" width="24" height="40" rx="4" stroke="currentColor" strokeWidth="2.5" />
+              <circle cx="36" cy="43" r="2" fill="currentColor" />
+              {/* Rotation arrow */}
+              <path
+                d="M12 36 C12 20 24 10 36 10"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                fill="none"
+              />
+              <path
+                d="M32 6 L36 10 L32 14"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                fill="none"
+              />
+            </svg>
+            <div className="text-center px-8">
+              <p className="text-white text-xl font-bold">Turn phone sideways</p>
+              <p className="text-gray-400 text-sm mt-2">
+                Fit the full length of the vehicle inside the frame
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Frame guide overlay */}
+        {ready && !needsRotation && <FrameGuide orientation={orientation} />}
+
+        {/* Hint pill */}
+        {ready && !needsRotation && (
           <div className="absolute bottom-4 inset-x-0 flex justify-center pointer-events-none">
-            <div className="bg-black/60 text-white text-sm px-4 py-2 rounded-full">
+            <div className="bg-black/60 text-white text-sm px-4 py-2 rounded-full text-center max-w-xs">
               {stepHint}
             </div>
           </div>
@@ -140,7 +236,7 @@ export default function EstimatorCamera({
       <div className="bg-black shrink-0 flex flex-col items-center gap-3 pt-5 pb-7">
         <button
           onClick={captureFromCamera}
-          disabled={!ready || capturing}
+          disabled={!ready || capturing || needsRotation}
           aria-label="Take photo"
           className="w-20 h-20 rounded-full border-[4px] border-white/80 flex items-center justify-center active:scale-95 transition-transform disabled:opacity-40"
         >

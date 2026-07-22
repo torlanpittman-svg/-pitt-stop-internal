@@ -238,18 +238,35 @@ export default function ConfirmForm({
     async (corrected: boolean, overrideFields?: typeof fields) => {
       setMode('saving')
       const data = overrideFields ?? fields
+
+      // Per-field correction: compare final value against original AI prediction
+      const norm = (s: string | null | undefined) => (s ?? '').trim().toLowerCase()
+      const yearWasCorrected  = norm(data.year)        !== norm(entry.aiYear)
+      const makeWasCorrected  = norm(data.make)        !== norm(entry.aiMake)
+      const modelWasCorrected = norm(data.model)       !== norm(entry.aiModel)
+      const colorWasCorrected = norm(data.color)       !== norm(entry.aiColor)
+      const stockWasCorrected = norm(data.stockNumber) !== norm(entry.stockNumberAiPrediction)
+      // Any field changed → wasCorrected
+      const anyChanged = yearWasCorrected || makeWasCorrected || modelWasCorrected ||
+                         colorWasCorrected || stockWasCorrected
+
       await fetch(`/api/vehicle-entry/entries/${entry.id}`, {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          year:         data.year        || null,
-          make:         data.make        || null,
-          model:        data.model       || null,
-          color:        data.color       || null,
-          customColor:  data.customColor || null,
-          stockNumber:  data.stockNumber || null,
-          wasCorrected: corrected,
-          status:       'ready_for_quickbooks',
+          year:               data.year        || null,
+          make:               data.make        || null,
+          model:              data.model       || null,
+          color:              data.color       || null,
+          customColor:        data.customColor || null,
+          stockNumber:        data.stockNumber || null,
+          wasCorrected:       corrected || anyChanged,
+          yearWasCorrected,
+          makeWasCorrected,
+          modelWasCorrected,
+          colorWasCorrected,
+          stockWasCorrected,
+          status:             'ready_for_quickbooks',
         }),
       })
       // Trigger invoice sync

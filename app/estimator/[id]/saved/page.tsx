@@ -86,7 +86,7 @@ export default async function SavedPage({
           href="/estimator"
           className="block w-full py-5 rounded-2xl bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-bold text-xl text-center transition-colors shadow-lg"
         >
-          New Estimate
+          Create Another Estimate
         </Link>
         <Link
           href="/"
