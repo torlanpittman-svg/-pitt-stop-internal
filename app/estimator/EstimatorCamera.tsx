@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { PhotoOrientation } from '@/apps/estimator/photo-steps'
 
+const MAX_SIDE = 1280  // GPT-4o high-detail tile is 1024px; anything beyond adds cost, not accuracy
+
 function canvasToBlob(c: HTMLCanvasElement, type: string, quality: number): Promise<Blob> {
   return new Promise((resolve, reject) =>
     c.toBlob(
@@ -11,6 +13,34 @@ function canvasToBlob(c: HTMLCanvasElement, type: string, quality: number): Prom
       quality
     )
   )
+}
+
+function resizedCanvas(srcWidth: number, srcHeight: number): HTMLCanvasElement {
+  const scale  = Math.min(1, MAX_SIDE / Math.max(srcWidth, srcHeight))
+  const canvas = document.createElement('canvas')
+  canvas.width  = Math.round(srcWidth  * scale)
+  canvas.height = Math.round(srcHeight * scale)
+  return canvas
+}
+
+async function fileToResizedFile(file: File): Promise<File> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+    img.onload = async () => {
+      URL.revokeObjectURL(url)
+      const canvas = resizedCanvas(img.naturalWidth, img.naturalHeight)
+      canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height)
+      try {
+        const blob = await canvasToBlob(canvas, 'image/jpeg', 0.82)
+        resolve(new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' }))
+      } catch (e) {
+        reject(e)
+      }
+    }
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image load failed')) }
+    img.src = url
+  })
 }
 
 function FrameGuide({ orientation }: { orientation: PhotoOrientation }) {
@@ -88,8 +118,8 @@ export default function EstimatorCamera({
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: 'environment' },
-            width:  { ideal: 3840 },
-            height: { ideal: 2160 },
+            width:  { ideal: 1920 },
+            height: { ideal: 1080 },
           },
           audio: false,
         })
@@ -113,13 +143,9 @@ export default function EstimatorCamera({
     setCapturing(true)
 
     try {
-      const vw = video.videoWidth
-      const vh = video.videoHeight
-      const canvas = document.createElement('canvas')
-      canvas.width  = vw
-      canvas.height = vh
-      canvas.getContext('2d')!.drawImage(video, 0, 0)
-      const blob = await canvasToBlob(canvas, 'image/jpeg', 0.90)
+      const canvas = resizedCanvas(video.videoWidth, video.videoHeight)
+      canvas.getContext('2d')!.drawImage(video, 0, 0, canvas.width, canvas.height)
+      const blob = await canvasToBlob(canvas, 'image/jpeg', 0.82)
       const ts = Date.now()
       onCapture(new File([blob], `estimator-${ts}.jpg`, { type: 'image/jpeg' }))
     } catch {
@@ -127,11 +153,16 @@ export default function EstimatorCamera({
     }
   }, [capturing, onCapture])
 
-  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
     if (!f) return
     setFileKey(k => k + 1)
-    onCapture(f)
+    try {
+      const resized = await fileToResizedFile(f)
+      onCapture(resized)
+    } catch {
+      onCapture(f)
+    }
   }, [onCapture])
 
   const needsRotation = orientation === 'landscape' && !isLandscape

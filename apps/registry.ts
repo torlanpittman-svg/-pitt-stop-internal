@@ -13,6 +13,7 @@
 import type { AppManifest } from './types'
 import { vehicleEntryApp } from './vehicle-entry/manifest'
 import { estimatorApp }    from './estimator/manifest'
+import { workflowApp }     from './workflow/manifest'
 
 // Future apps — uncomment as they are built:
 // import { sopHandbookApp }    from './sop-handbook/manifest'
@@ -25,6 +26,7 @@ import { estimatorApp }    from './estimator/manifest'
 // import { financeApp }        from './finance/manifest'
 
 export const APP_REGISTRY: AppManifest[] = [
+  workflowApp,
   vehicleEntryApp,
   estimatorApp,
 ]

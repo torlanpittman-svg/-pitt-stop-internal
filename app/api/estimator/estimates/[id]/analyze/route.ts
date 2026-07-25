@@ -1,90 +1,108 @@
 import { NextResponse } from 'next/server'
-import { getEstimate, updateEstimate, createEstimateLineItem } from '@/apps/estimator/db'
+import { getEstimateWithDetails, updateEstimate, createEstimateLineItem } from '@/apps/estimator/db'
+import { runEstimatorAnalysis, findingPriceCents } from '@/apps/estimator/ai'
 
 export const dynamic = 'force-dynamic'
 
-// Placeholder line items by service focus.
-// Milestone 2 replaces this with real AI vision analysis.
-function placeholderLineItems(serviceFocus: string | null) {
-  const focus = serviceFocus ?? 'full_detail'
-
-  const byFocus: Record<string, Array<{
-    description: string
-    serviceCode: string
-    laborMinutes: number
-    unitPriceCents: number
-  }>> = {
-    full_detail: [
-      { description: 'Full Interior Detail — vacuum, shampoo seats and carpet, wipe all surfaces', serviceCode: 'interior_full', laborMinutes: 90, unitPriceCents: 14000 },
-      { description: 'Exterior Wash, Clay Bar, and Polish', serviceCode: 'exterior_polish', laborMinutes: 75, unitPriceCents: 12000 },
-      { description: 'Wheel and Tire Cleaning', serviceCode: 'wheels_clean', laborMinutes: 30, unitPriceCents: 4000 },
-      { description: 'Glass Cleaning — interior and exterior', serviceCode: 'glass_clean', laborMinutes: 20, unitPriceCents: 2500 },
-    ],
-    exterior_only: [
-      { description: 'Exterior Hand Wash and Dry', serviceCode: 'exterior_wash', laborMinutes: 45, unitPriceCents: 6000 },
-      { description: 'Exterior Polish and Wax', serviceCode: 'exterior_polish', laborMinutes: 60, unitPriceCents: 9500 },
-      { description: 'Wheel and Tire Cleaning', serviceCode: 'wheels_clean', laborMinutes: 30, unitPriceCents: 4000 },
-    ],
-    interior_only: [
-      { description: 'Full Interior Vacuum — seats, carpet, cargo area', serviceCode: 'interior_vacuum', laborMinutes: 40, unitPriceCents: 5500 },
-      { description: 'Seat and Carpet Shampoo', serviceCode: 'interior_shampoo', laborMinutes: 60, unitPriceCents: 10000 },
-      { description: 'Dashboard, Console, and Door Panel Wipe-Down', serviceCode: 'interior_surfaces', laborMinutes: 25, unitPriceCents: 3500 },
-      { description: 'Interior Glass Cleaning', serviceCode: 'glass_interior', laborMinutes: 15, unitPriceCents: 2000 },
-    ],
-    specific_service: [
-      { description: 'Custom Service — details to be specified', serviceCode: 'custom', laborMinutes: 60, unitPriceCents: 9500 },
-    ],
-  }
-
-  return byFocus[focus] ?? byFocus.full_detail
-}
-
 export async function POST(
   _req: Request,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
+  const { id } = await params
+
+  const estimate = await getEstimateWithDetails(id)
+  if (!estimate) {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  }
+  if (estimate.photos.length === 0) {
+    return NextResponse.json({ error: 'No photos to analyze' }, { status: 400 })
+  }
+
+  await updateEstimate(id, { status: 'ai_pending' })
+
   try {
-    const { id } = await params
-    const estimate = await getEstimate(id)
-    if (!estimate) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    }
+    const result = await runEstimatorAnalysis(estimate.photos, estimate.serviceFocus)
 
-    await updateEstimate(id, { status: 'ai_pending' })
+    // Write one line item per AI finding.
+    // ai_* fields are immutable originals; confirmed fields are seeded from
+    // AI values so the review screen shows data before the employee edits anything.
+    for (let i = 0; i < result.findings.length; i++) {
+      const f          = result.findings[i]
+      const priceCents = findingPriceCents(f.laborMinutes)
 
-    // Simulate analysis delay (real AI will take ~12s; placeholder takes <1ms)
-    const items = placeholderLineItems(estimate.serviceFocus)
-
-    let totalLaborMinutes = 0
-    let totalPriceCents = 0
-
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i]
       await createEstimateLineItem({
-        estimateId:     id,
-        displayOrder:   i,
-        description:    item.description,
-        serviceCode:    item.serviceCode,
-        laborMinutes:   item.laborMinutes,
-        unitPriceCents: item.unitPriceCents,
-        lineTotalCents: item.unitPriceCents,
+        estimateId:   id,
+        displayOrder: i,
+
+        // AI originals — never overwritten after this point
+        aiCategory:    f.category,
+        aiLocation:    f.location,
+        aiDamageType:  f.damageType,
+        aiSeverity:    f.severity,
+        aiDescription: f.description,
+        aiServiceCode: f.serviceCode,
+        aiLaborMinutes: f.laborMinutes,
+        aiConfidence:   String(f.confidence),
+        aiIsTimeTrap:   f.isTimeTrap,
+
+        // Employee-confirmed — seeded from AI, editable on review screen
+        description:    f.description,
+        serviceCode:    f.serviceCode,
+        severity:       f.severity,
+        laborMinutes:   f.laborMinutes,
+        unitPriceCents: priceCents,
+        lineTotalCents: priceCents,
         included:       true,
+        wasAddedByEmployee: false,
       })
-      totalLaborMinutes += item.laborMinutes
-      totalPriceCents   += item.unitPriceCents
     }
 
     await updateEstimate(id, {
-      status:                'needs_review',
-      promptVersion:         'placeholder-v1',
-      modelName:             'placeholder',
-      aiTotalLaborMinutes:   totalLaborMinutes,
-      recommendedPriceCents: totalPriceCents,
+      // AI vehicle identification — immutable originals
+      aiVehicleYear:       result.vehicle.year,
+      aiVehicleMake:       result.vehicle.make,
+      aiVehicleModel:      result.vehicle.model,
+      aiVehicleColor:      result.vehicle.color,
+      aiVehicleSize:       result.vehicle.size,
+      aiDifficultyRating:  result.vehicle.difficultyRating,
+      aiTotalLaborMinutes: result.totalLaborMinutes,
+      aiNotes:             result.notes,
+
+      // Pricing
+      recommendedPriceCents: result.recommendedPriceCents,
+
+      // AI metadata
+      promptVersion: result.promptVersion,
+      modelName:     result.modelName,
+      rawAiResponse: result.rawResponse as never,
+
+      status: 'needs_review',
     })
 
-    return NextResponse.json({ estimateId: id, status: 'needs_review' })
+    return NextResponse.json({
+      estimateId:   id,
+      status:       'needs_review',
+      findingCount: result.findings.length,
+      timeTrapCount: result.findings.filter(f => f.isTimeTrap).length,
+      totalLaborMinutes: result.totalLaborMinutes,
+    })
   } catch (err) {
-    console.error('[estimator] POST /estimates/[id]/analyze', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    const message = err instanceof Error ? err.message : String(err)
+    console.error('[estimator] POST /estimates/[id]/analyze failed:', message)
+
+    // Graceful degradation: set status to needs_review so employee can proceed
+    // manually rather than seeing a hard error.
+    await updateEstimate(id, {
+      status:        'needs_review',
+      promptVersion: 'v1-error',
+      aiNotes:       `Analysis error: ${message}`,
+    }).catch(() => {}) // best-effort; don't double-fault
+
+    return NextResponse.json({
+      estimateId: id,
+      status:     'needs_review',
+      error:      'analysis_failed',
+      message,
+    })
   }
 }
