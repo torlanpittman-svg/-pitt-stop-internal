@@ -6,20 +6,78 @@ import { useRouter } from 'next/navigation'
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type VinData = {
-  vin:       string
-  year?:     string
-  make?:     string
-  model?:    string
+  vin:        string
+  year?:      string
+  make?:      string
+  model?:     string
   bodyClass?: string
 }
 
 type ServiceFocus = 'interior_only' | 'exterior_only' | 'full_detail' | 'custom'
 
-type Step = 'scan' | 'confirm' | 'service'
+type FlowStep = 'scan' | 'manual' | 'confirm' | 'service'
+
+// scanning     = live camera, barcode loop active
+// found        = live barcode hit, calling NHTSA (auto-advance)
+// uploading    = processing a picked image (barcode → OCR)
+// vin_detected = VIN found from image, user reviews before advancing
+// decoding     = calling NHTSA after user confirms uploaded VIN
+// error        = something failed
+type ScanState = 'scanning' | 'found' | 'uploading' | 'vin_detected' | 'decoding' | 'error'
+
+// ── Barcode helpers ───────────────────────────────────────────────────────────
+
+function isVin(raw: string): boolean {
+  return /^[A-HJ-NPR-Z0-9]{17}$/.test(raw)
+}
+
+function cleanVin(raw: string): string {
+  return raw.replace(/[^A-HJ-NPR-Z0-9]/gi, '').toUpperCase()
+}
+
+const BARCODE_FORMATS = ['code_39', 'code_128', 'qr_code', 'data_matrix', 'pdf417']
+
+function makeDetector() {
+  if (!('BarcodeDetector' in window)) return null
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return new (window as any).BarcodeDetector({ formats: BARCODE_FORMATS })
+}
+
+async function barcodeFromBitmap(source: ImageBitmapSource): Promise<string | null> {
+  const detector = makeDetector()
+  if (!detector) return null
+  try {
+    const bitmap   = await createImageBitmap(source as Blob)
+    const barcodes = await detector.detect(bitmap)
+    for (const bc of barcodes) {
+      const raw = cleanVin(bc.rawValue)
+      if (isVin(raw)) return raw
+    }
+  } catch { /* unsupported or no barcode */ }
+  return null
+}
+
+async function ocrVinFromFile(file: File): Promise<{ vin: string } | { error: string }> {
+  const form = new FormData()
+  form.append('vinImage', file)
+  const res  = await fetch('/api/workflow/vin', { method: 'POST', body: form })
+  const data = await res.json()
+  if (res.ok) return { vin: data.vin }
+  return { error: data.error ?? 'Could not read VIN from photo' }
+}
+
+async function decodeVin(vin: string): Promise<VinData | { error: string }> {
+  const res  = await fetch('/api/workflow/vin', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ vin }),
+  })
+  const data = await res.json()
+  if (res.ok) return data as VinData
+  return { error: data.error ?? 'VIN lookup failed' }
+}
 
 // ── VIN Scanner ───────────────────────────────────────────────────────────────
-
-type ScanState = 'scanning' | 'found' | 'capturing' | 'error'
 
 function VinScanner({ onDecoded, onManual }: {
   onDecoded: (data: VinData) => void
@@ -29,14 +87,17 @@ function VinScanner({ onDecoded, onManual }: {
   const streamRef   = useRef<MediaStream | null>(null)
   const scanningRef = useRef(true)
   const rafRef      = useRef<number>(0)
+  const fileRef     = useRef<HTMLInputElement>(null)
 
-  const [camReady,   setCamReady]   = useState(false)
-  const [camFailed,  setCamFailed]  = useState(false)
-  const [scanState,  setScanState]  = useState<ScanState>('scanning')
-  const [foundVin,   setFoundVin]   = useState<string | null>(null)
-  const [statusMsg,  setStatusMsg]  = useState<string | null>(null)
+  const [camReady,      setCamReady]      = useState(false)
+  const [camFailed,     setCamFailed]     = useState(false)
+  const [scanState,     setScanState]     = useState<ScanState>('scanning')
+  const [statusMsg,     setStatusMsg]     = useState<string | null>(null)
+  const [detectedVin,   setDetectedVin]   = useState('')   // raw VIN from image
+  const [editedVin,     setEditedVin]     = useState('')   // user-editable copy
 
   // ── Camera init ─────────────────────────────────────────────────────────────
+
   useEffect(() => {
     let live = true
 
@@ -67,166 +128,173 @@ function VinScanner({ onDecoded, onManual }: {
     }
   }, [])
 
-  // ── Barcode scan loop ───────────────────────────────────────────────────────
-  const handleVinFound = useCallback(async (raw: string) => {
+  // ── Live barcode scan loop (only while in 'scanning' state) ─────────────────
+
+  const handleLiveVin = useCallback(async (raw: string) => {
     scanningRef.current = false
     cancelAnimationFrame(rafRef.current)
-    setFoundVin(raw)
     setScanState('found')
     setStatusMsg('VIN detected — looking up vehicle…')
 
-    try {
-      const res  = await fetch('/api/workflow/vin', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ vin: raw }),
-      })
-      const data = await res.json()
-      if (res.ok) {
-        onDecoded(data)
-      } else {
-        setScanState('error')
-        setStatusMsg(data.error ?? 'VIN lookup failed')
-      }
-    } catch {
+    const result = await decodeVin(raw)
+    if ('error' in result) {
       setScanState('error')
-      setStatusMsg('Network error — check connection')
+      setStatusMsg(result.error)
+    } else {
+      onDecoded(result)
     }
   }, [onDecoded])
 
   useEffect(() => {
-    if (!camReady) return
+    if (!camReady || scanState !== 'scanning') return
 
-    const detector = 'BarcodeDetector' in window
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ? new (window as any).BarcodeDetector({ formats: ['code_39', 'code_128', 'qr_code', 'data_matrix', 'pdf417'] })
-      : null
-
-    if (!detector) return // no native barcode support — user taps capture or types
+    scanningRef.current = true
+    const detector = makeDetector()
+    if (!detector) return
 
     async function scan() {
       if (!scanningRef.current || !videoRef.current) return
       try {
         const barcodes = await detector.detect(videoRef.current)
         for (const bc of barcodes) {
-          const raw = bc.rawValue.replace(/[^A-HJ-NPR-Z0-9]/gi, '').toUpperCase()
-          if (raw.length === 17) {
-            handleVinFound(raw)
-            return
-          }
+          const raw = cleanVin(bc.rawValue)
+          if (isVin(raw)) { handleLiveVin(raw); return }
         }
-      } catch { /* ignore per-frame errors */ }
+      } catch { /* per-frame errors are normal */ }
       rafRef.current = requestAnimationFrame(scan)
     }
 
     rafRef.current = requestAnimationFrame(scan)
-    return () => cancelAnimationFrame(rafRef.current)
-  }, [camReady, handleVinFound])
+    return () => {
+      scanningRef.current = false
+      cancelAnimationFrame(rafRef.current)
+    }
+  }, [camReady, scanState, handleLiveVin])
 
-  // ── Photo OCR capture ───────────────────────────────────────────────────────
-  const captureAndOcr = useCallback(async () => {
-    const video = videoRef.current
-    if (!video || scanState !== 'scanning') return
+  // ── Image upload handler ─────────────────────────────────────────────────────
 
+  const handleUpload = useCallback(async (file: File) => {
     scanningRef.current = false
     cancelAnimationFrame(rafRef.current)
-    setScanState('capturing')
+    setScanState('uploading')
     setStatusMsg('Reading VIN from photo…')
 
-    try {
-      const canvas = document.createElement('canvas')
-      const scale  = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight))
-      canvas.width  = Math.round(video.videoWidth  * scale)
-      canvas.height = Math.round(video.videoHeight * scale)
-      canvas.getContext('2d')!.drawImage(video, 0, 0, canvas.width, canvas.height)
+    // Try barcode detection first (fast, no API call)
+    const barcode = await barcodeFromBitmap(file)
+    if (barcode) {
+      setDetectedVin(barcode)
+      setEditedVin(barcode)
+      setScanState('vin_detected')
+      setStatusMsg(null)
+      return
+    }
 
-      const blob = await new Promise<Blob>((res, rej) =>
-        canvas.toBlob(b => b ? res(b) : rej(new Error('export failed')), 'image/jpeg', 0.88)
-      )
-
-      const form = new FormData()
-      form.append('vinImage', new File([blob], 'vin.jpg', { type: 'image/jpeg' }))
-
-      const apiRes = await fetch('/api/workflow/vin', { method: 'POST', body: form })
-      const data   = await apiRes.json()
-
-      if (apiRes.ok) {
-        onDecoded(data)
-      } else {
-        setScanState('error')
-        setStatusMsg(data.error ?? 'Could not read VIN from photo')
-      }
-    } catch {
+    // Fall back to GPT-4o OCR
+    const ocr = await ocrVinFromFile(file)
+    if ('error' in ocr) {
       setScanState('error')
-      setStatusMsg('Photo capture failed — try again')
+      setStatusMsg(ocr.error)
+      return
     }
-  }, [scanState, onDecoded])
 
-  const retry = useCallback(() => {
+    setDetectedVin(ocr.vin)
+    setEditedVin(ocr.vin)
+    setScanState('vin_detected')
     setStatusMsg(null)
-    setFoundVin(null)
-    setScanState('scanning')
-    scanningRef.current = true
-    // restart scan loop — effect will re-fire on next camReady state change
-    // instead trigger manually:
-    const detector = 'BarcodeDetector' in window
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ? new (window as any).BarcodeDetector({ formats: ['code_39', 'code_128', 'qr_code', 'data_matrix', 'pdf417'] })
-      : null
+  }, [])
 
-    if (!detector || !videoRef.current) return
+  // ── Confirm the uploaded/detected VIN ────────────────────────────────────────
 
-    async function scan() {
-      if (!scanningRef.current || !videoRef.current) return
-      try {
-        const barcodes = await detector.detect(videoRef.current)
-        for (const bc of barcodes) {
-          const raw = bc.rawValue.replace(/[^A-HJ-NPR-Z0-9]/gi, '').toUpperCase()
-          if (raw.length === 17) { handleVinFound(raw); return }
-        }
-      } catch {}
-      rafRef.current = requestAnimationFrame(scan)
+  const confirmDetectedVin = useCallback(async () => {
+    const vin = cleanVin(editedVin)
+    if (!isVin(vin)) return
+    setScanState('decoding')
+    setStatusMsg('Looking up vehicle…')
+
+    const result = await decodeVin(vin)
+    if ('error' in result) {
+      setScanState('error')
+      setStatusMsg(result.error)
+    } else {
+      onDecoded(result)
     }
-    rafRef.current = requestAnimationFrame(scan)
-  }, [handleVinFound])
+  }, [editedVin, onDecoded])
 
-  // ── Camera failed — show file input fallback ────────────────────────────────
+  const resetToScanning = useCallback(() => {
+    setScanState('scanning')
+    setStatusMsg(null)
+    setDetectedVin('')
+    setEditedVin('')
+    if (fileRef.current) fileRef.current.value = ''
+  }, [])
+
+  // ── Camera-failed fallback ───────────────────────────────────────────────────
+
   if (camFailed) {
     return (
       <div className="flex flex-col flex-1 px-6 pt-12 pb-8">
-        <button onClick={() => window.history.back()} className="text-gray-500 text-sm mb-8 self-start">← Back</button>
-        <h1 className="text-white font-bold text-2xl mb-2">Scan VIN</h1>
-        <p className="text-gray-500 text-sm mb-8">Camera unavailable — upload a photo of the VIN or barcode.</p>
-
-        <label className="w-full bg-blue-600 text-white font-bold text-xl py-5 rounded-2xl text-center block cursor-pointer active:bg-blue-700 mb-4">
-          Upload VIN Photo
-          <input
-            type="file"
-            accept="image/*"
-            capture="environment"
-            className="hidden"
-            onChange={async e => {
-              const file = e.target.files?.[0]
-              if (!file) return
-              setScanState('capturing')
-              setStatusMsg('Reading VIN from photo…')
-              const form = new FormData()
-              form.append('vinImage', file)
-              const res  = await fetch('/api/workflow/vin', { method: 'POST', body: form })
-              const data = await res.json()
-              if (res.ok) { onDecoded(data) } else { setScanState('error'); setStatusMsg(data.error ?? 'Failed') }
-            }}
-          />
-        </label>
-
-        <button onClick={onManual} className="text-gray-500 text-base py-3 text-center">
-          Type VIN Manually
+        <button onClick={() => window.history.back()} className="text-gray-500 text-sm mb-8 self-start">
+          ← Back
         </button>
+        <h1 className="text-white font-bold text-2xl mb-2">Check In Vehicle</h1>
+        <p className="text-gray-500 text-sm mb-8">
+          Camera unavailable — upload a photo of the VIN barcode or sticker.
+        </p>
 
-        {statusMsg && <p className="text-red-400 text-sm text-center mt-4">{statusMsg}</p>}
+        {(scanState === 'uploading' || scanState === 'decoding') && (
+          <div className="flex flex-col items-center py-10 gap-4">
+            <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            <p className="text-gray-400">{statusMsg}</p>
+          </div>
+        )}
+
+        {scanState === 'vin_detected' && (
+          <VinReviewPanel
+            editedVin={editedVin}
+            detectedVin={detectedVin}
+            onChange={setEditedVin}
+            onConfirm={confirmDetectedVin}
+            onRetry={resetToScanning}
+            onManual={onManual}
+          />
+        )}
+
+        {scanState === 'error' && (
+          <div className="mb-8">
+            <p className="text-red-400 text-sm mb-6 text-center">{statusMsg}</p>
+            <button
+              onClick={resetToScanning}
+              className="w-full bg-gray-800 border border-gray-700 text-white font-semibold py-4 rounded-2xl mb-3"
+            >
+              Try a Different Photo
+            </button>
+          </div>
+        )}
+
+        {(scanState === 'scanning' || scanState === 'error') && (
+          <>
+            <label className="w-full bg-blue-600 text-white font-bold text-xl py-5 rounded-2xl text-center block cursor-pointer active:bg-blue-700 mb-3">
+              Upload VIN Photo
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f) }}
+              />
+            </label>
+            <button onClick={onManual} className="w-full text-gray-500 text-base py-3 text-center">
+              Enter VIN Manually
+            </button>
+          </>
+        )}
       </div>
     )
   }
+
+  // ── Main camera view ─────────────────────────────────────────────────────────
+
+  const isBusy = scanState === 'found' || scanState === 'uploading' || scanState === 'decoding'
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -239,61 +307,70 @@ function VinScanner({ onDecoded, onManual }: {
           playsInline muted autoPlay
         />
 
-        {/* Dim overlay with clear targeting window */}
+        {/* Targeting overlay */}
         {camReady && scanState === 'scanning' && (
           <div className="absolute inset-0 pointer-events-none">
-            <div className="absolute inset-0 bg-black/50" />
-            {/* Clear rectangle cut-out via clip */}
-            <div className="absolute inset-x-8 top-[30%] h-28 rounded-xl border-2 border-white shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]" />
-            <div className="absolute inset-x-8 top-[30%] h-28 rounded-xl overflow-hidden">
-              <div className="absolute inset-0 bg-transparent" />
-            </div>
-            {/* Corner accents */}
-            <div className="absolute left-8 top-[30%] w-5 h-5 border-t-2 border-l-2 border-blue-400 rounded-tl" />
-            <div className="absolute right-8 top-[30%] w-5 h-5 border-t-2 border-r-2 border-blue-400 rounded-tr" />
-            <div className="absolute left-8 bottom-[calc(70%-7rem)] w-5 h-5 border-b-2 border-l-2 border-blue-400 rounded-bl" />
-            <div className="absolute right-8 bottom-[calc(70%-7rem)] w-5 h-5 border-b-2 border-r-2 border-blue-400 rounded-br" />
+            <div className="absolute inset-x-8 top-[30%] h-28 rounded-xl border-2 border-white/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.52)]" />
+            <div className="absolute left-8  top-[30%]              w-5 h-5 border-t-2 border-l-2 border-blue-400" />
+            <div className="absolute right-8 top-[30%]              w-5 h-5 border-t-2 border-r-2 border-blue-400" />
+            <div className="absolute left-8  top-[calc(30%+6.5rem)] w-5 h-5 border-b-2 border-l-2 border-blue-400" />
+            <div className="absolute right-8 top-[calc(30%+6.5rem)] w-5 h-5 border-b-2 border-r-2 border-blue-400" />
           </div>
         )}
 
-        {/* Scanning spinner / status */}
+        {/* Camera initializing */}
         {!camReady && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="w-10 h-10 border-4 border-white/40 border-t-white rounded-full animate-spin" />
           </div>
         )}
 
-        {/* Found / processing state */}
-        {(scanState === 'found' || scanState === 'capturing') && (
+        {/* Processing overlay */}
+        {isBusy && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/70">
             <div className="text-center px-8">
               <div className="w-12 h-12 border-4 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
               <p className="text-white font-semibold text-lg">{statusMsg}</p>
-              {foundVin && <p className="text-blue-300 font-mono text-sm mt-2">{foundVin}</p>}
             </div>
           </div>
         )}
 
-        {/* Error state */}
+        {/* Error overlay */}
         {scanState === 'error' && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/70">
+          <div className="absolute inset-0 flex items-center justify-center bg-black/75">
             <div className="text-center px-8">
               <p className="text-red-400 font-semibold text-lg mb-6">{statusMsg}</p>
               <button
-                onClick={retry}
-                className="bg-white text-gray-900 font-bold px-6 py-3 rounded-xl mb-3 block mx-auto"
+                onClick={resetToScanning}
+                className="bg-white text-gray-900 font-bold px-6 py-3 rounded-xl mb-3 block mx-auto w-full"
               >
                 Try Again
               </button>
-              <button onClick={onManual} className="text-gray-400 text-sm">Type VIN Manually</button>
+              <button onClick={onManual} className="text-gray-400 text-sm">Enter VIN Manually</button>
             </div>
           </div>
         )}
 
-        {/* Instruction pill */}
+        {/* VIN review overlay (from uploaded image) */}
+        {scanState === 'vin_detected' && (
+          <div className="absolute inset-0 flex flex-col justify-end bg-black/75">
+            <div className="bg-gray-950 rounded-t-3xl px-6 pt-6 pb-8">
+              <VinReviewPanel
+                editedVin={editedVin}
+                detectedVin={detectedVin}
+                onChange={setEditedVin}
+                onConfirm={confirmDetectedVin}
+                onRetry={resetToScanning}
+                onManual={onManual}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Hint pill */}
         {camReady && scanState === 'scanning' && (
-          <div className="absolute top-[calc(30%+8rem+12px)] inset-x-0 flex justify-center pointer-events-none">
-            <div className="bg-black/60 text-white text-sm px-4 py-2 rounded-full text-center">
+          <div className="absolute top-[calc(30%+7.5rem)] inset-x-0 flex justify-center pointer-events-none">
+            <div className="bg-black/60 text-white text-sm px-4 py-2 rounded-full">
               Aim at the VIN barcode on the door jamb
             </div>
           </div>
@@ -308,20 +385,24 @@ function VinScanner({ onDecoded, onManual }: {
         </button>
       </div>
 
-      {/* Bottom controls */}
+      {/* Bottom controls — only while actively scanning */}
       {camReady && scanState === 'scanning' && (
         <div className="bg-black shrink-0 px-6 pt-5 pb-8 space-y-3">
-          <button
-            onClick={captureAndOcr}
-            className="w-full bg-gray-800 border border-gray-700 text-white font-semibold text-base py-4 rounded-2xl active:bg-gray-700 transition-colors"
-          >
-            Take Photo of VIN Instead
-          </button>
+          <label className="w-full bg-gray-800 border border-gray-700 text-white font-semibold text-base py-4 rounded-2xl active:bg-gray-700 transition-colors text-center block cursor-pointer">
+            Upload VIN Photo
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f) }}
+            />
+          </label>
           <button
             onClick={onManual}
             className="w-full text-gray-600 text-sm py-2 text-center"
           >
-            Type VIN Manually
+            Enter VIN Manually
           </button>
         </div>
       )}
@@ -330,7 +411,76 @@ function VinScanner({ onDecoded, onManual }: {
   )
 }
 
-// ── Manual VIN entry (fallback) ───────────────────────────────────────────────
+// ── VIN Review Panel (shared between camera and no-camera flows) ──────────────
+
+function VinReviewPanel({
+  editedVin,
+  detectedVin,
+  onChange,
+  onConfirm,
+  onRetry,
+  onManual,
+}: {
+  editedVin:   string
+  detectedVin: string
+  onChange:    (v: string) => void
+  onConfirm:   () => void
+  onRetry:     () => void
+  onManual:    () => void
+}) {
+  const clean      = cleanVin(editedVin)
+  const isValid    = isVin(clean)
+  const wasEdited  = clean !== cleanVin(detectedVin)
+
+  return (
+    <div>
+      <p className="text-white font-bold text-xl mb-1">VIN Detected</p>
+      <p className="text-gray-500 text-sm mb-4">
+        Verify the VIN below before continuing. Correct any misread characters.
+      </p>
+
+      <input
+        type="text"
+        inputMode="text"
+        autoCapitalize="characters"
+        autoCorrect="off"
+        spellCheck={false}
+        maxLength={17}
+        value={editedVin}
+        onChange={e => onChange(e.target.value)}
+        className="w-full bg-gray-900 border border-gray-700 text-white text-xl font-mono tracking-widest rounded-2xl px-5 py-4 outline-none focus:border-blue-500 mb-1"
+      />
+
+      <div className="flex items-center justify-between mb-5">
+        <span className={`text-sm ${isValid ? 'text-green-400' : 'text-gray-600'}`}>
+          {clean.length}/17{wasEdited ? ' · edited' : ''}
+        </span>
+        {!isValid && clean.length > 0 && (
+          <span className="text-yellow-500 text-xs">Must be exactly 17 characters</span>
+        )}
+      </div>
+
+      <button
+        onClick={onConfirm}
+        disabled={!isValid}
+        className="w-full bg-blue-600 text-white font-bold text-lg py-4 rounded-2xl active:bg-blue-700 disabled:opacity-40 transition-colors mb-3"
+      >
+        Confirm & Look Up
+      </button>
+      <button
+        onClick={onRetry}
+        className="w-full bg-gray-800 border border-gray-700 text-white text-base font-medium py-3.5 rounded-2xl active:bg-gray-700 mb-3"
+      >
+        Try a Different Photo
+      </button>
+      <button onClick={onManual} className="w-full text-gray-600 text-sm py-2 text-center">
+        Enter VIN Manually
+      </button>
+    </div>
+  )
+}
+
+// ── Manual VIN entry ──────────────────────────────────────────────────────────
 
 function ManualVinEntry({ onDecoded, onBack }: {
   onDecoded: (data: VinData) => void
@@ -340,21 +490,16 @@ function ManualVinEntry({ onDecoded, onBack }: {
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState<string | null>(null)
 
-  const clean = vin.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '')
+  const clean = cleanVin(vin)
 
   const decode = useCallback(async () => {
-    if (clean.length !== 17 || loading) return
+    if (!isVin(clean) || loading) return
     setLoading(true)
     setError(null)
     try {
-      const res  = await fetch('/api/workflow/vin', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ vin: clean }),
-      })
-      const data = await res.json()
-      if (!res.ok) { setError(data.error ?? 'VIN lookup failed'); return }
-      onDecoded(data)
+      const result = await decodeVin(clean)
+      if ('error' in result) { setError(result.error); return }
+      onDecoded(result)
     } catch {
       setError('Network error — check connection')
     } finally {
@@ -364,9 +509,11 @@ function ManualVinEntry({ onDecoded, onBack }: {
 
   return (
     <div className="flex flex-col flex-1 px-6 pt-12 pb-8">
-      <button onClick={onBack} className="text-gray-500 text-sm mb-8 self-start">← Back to Scanner</button>
-      <h1 className="text-white font-bold text-2xl mb-1">Type VIN</h1>
-      <p className="text-gray-500 text-sm mb-8">Enter the 17-character Vehicle Identification Number</p>
+      <button onClick={onBack} className="text-gray-500 text-sm mb-8 self-start">
+        ← Back to Scanner
+      </button>
+      <h1 className="text-white font-bold text-2xl mb-1">Enter VIN</h1>
+      <p className="text-gray-500 text-sm mb-8">Type the 17-character Vehicle Identification Number</p>
 
       <input
         type="text"
@@ -383,7 +530,7 @@ function ManualVinEntry({ onDecoded, onBack }: {
       />
 
       <div className="flex items-center justify-between mb-6">
-        <span className={`text-sm ${clean.length === 17 ? 'text-green-400' : 'text-gray-600'}`}>
+        <span className={`text-sm ${isVin(clean) ? 'text-green-400' : 'text-gray-600'}`}>
           {clean.length}/17
         </span>
         {error && <span className="text-red-400 text-sm">{error}</span>}
@@ -391,10 +538,10 @@ function ManualVinEntry({ onDecoded, onBack }: {
 
       <button
         onClick={decode}
-        disabled={clean.length !== 17 || loading}
+        disabled={!isVin(clean) || loading}
         className="w-full bg-blue-600 text-white font-bold text-xl py-5 rounded-2xl active:bg-blue-700 disabled:opacity-40 transition-colors mb-4"
       >
-        {loading ? 'Looking up…' : 'Decode VIN'}
+        {loading ? 'Looking up…' : 'Look Up VIN'}
       </button>
 
       <button
@@ -407,7 +554,7 @@ function ManualVinEntry({ onDecoded, onBack }: {
   )
 }
 
-// ── Confirm Step ──────────────────────────────────────────────────────────────
+// ── Confirm vehicle step ──────────────────────────────────────────────────────
 
 const COLORS = [
   'White', 'Black', 'Silver', 'Gray', 'Red', 'Blue', 'Green',
@@ -440,11 +587,11 @@ function ConfirmStep({
       )}
 
       <div className="grid grid-cols-3 gap-2 mb-6">
-        {[
+        {([
           { label: 'Year',  value: year,  setter: setYear,  placeholder: '2022' },
           { label: 'Make',  value: make,  setter: setMake,  placeholder: 'Ford' },
           { label: 'Model', value: model, setter: setModel, placeholder: 'F-150' },
-        ].map(f => (
+        ] as const).map(f => (
           <div key={f.label}>
             <label className="text-gray-500 text-xs mb-1 block">{f.label}</label>
             <input
@@ -486,7 +633,7 @@ function ConfirmStep({
   )
 }
 
-// ── Service Step ──────────────────────────────────────────────────────────────
+// ── Service selection step ────────────────────────────────────────────────────
 
 const SERVICE_OPTIONS: { id: ServiceFocus; label: string; sub: string }[] = [
   { id: 'full_detail',   label: 'Full Detail',  sub: 'Interior + Exterior' },
@@ -501,12 +648,11 @@ function ServiceStep({
   onBack,
 }: {
   vehicle:   Partial<VinData> & { color: string }
-  onCheckIn: (focus: ServiceFocus, checkedInBy: string) => void
+  onCheckIn: (focus: ServiceFocus) => void
   onBack:    () => void
 }) {
-  const [focus,       setFocus]       = useState<ServiceFocus | null>(null)
-  const [checkedInBy, setCheckedInBy] = useState('')
-  const [loading,     setLoading]     = useState(false)
+  const [focus,   setFocus]   = useState<ServiceFocus | null>(null)
+  const [loading, setLoading] = useState(false)
 
   const vehicleName = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'
 
@@ -534,24 +680,13 @@ function ServiceStep({
         ))}
       </div>
 
-      <div className="mb-6">
-        <label className="text-gray-500 text-xs mb-1 block">Your name</label>
-        <input
-          type="text"
-          value={checkedInBy}
-          onChange={e => setCheckedInBy(e.target.value)}
-          placeholder="Who is checking this in?"
-          className="w-full bg-gray-900 border border-gray-700 text-white rounded-xl px-4 py-3 text-base outline-none focus:border-blue-500"
-        />
-      </div>
-
       <button
         onClick={() => {
-          if (!focus || !checkedInBy.trim() || loading) return
+          if (!focus || loading) return
           setLoading(true)
-          onCheckIn(focus, checkedInBy.trim())
+          onCheckIn(focus)
         }}
-        disabled={!focus || !checkedInBy.trim() || loading}
+        disabled={!focus || loading}
         className="w-full bg-green-600 text-white font-bold text-xl py-5 rounded-2xl active:bg-green-700 disabled:opacity-40 transition-colors"
       >
         {loading ? 'Checking in…' : 'Check In Vehicle'}
@@ -560,20 +695,18 @@ function ServiceStep({
   )
 }
 
-// ── Root Flow ─────────────────────────────────────────────────────────────────
+// ── Root flow ─────────────────────────────────────────────────────────────────
 
 export default function CheckInFlow() {
   const router = useRouter()
 
-  const [step,      setStep]      = useState<Step>('scan')
-  const [showManual, setShowManual] = useState(false)
+  const [step,      setStep]      = useState<FlowStep>('scan')
   const [decoded,   setDecoded]   = useState<Partial<VinData>>({})
   const [confirmed, setConfirmed] = useState<(Partial<VinData> & { color: string }) | null>(null)
   const [error,     setError]     = useState<string | null>(null)
 
   const handleDecoded = useCallback((data: VinData) => {
     setDecoded(data)
-    setShowManual(false)
     setStep('confirm')
   }, [])
 
@@ -582,7 +715,7 @@ export default function CheckInFlow() {
     setStep('service')
   }, [])
 
-  const handleCheckIn = useCallback(async (focus: ServiceFocus, checkedInBy: string) => {
+  const handleCheckIn = useCallback(async (focus: ServiceFocus) => {
     if (!confirmed) return
     setError(null)
     try {
@@ -598,7 +731,6 @@ export default function CheckInFlow() {
           bodyClass:    confirmed.bodyClass,
           source:       confirmed.vin ? 'vin_scan' : 'walk_in',
           serviceFocus: focus,
-          checkedInBy,
         }),
       })
       const data = await res.json()
@@ -617,17 +749,17 @@ export default function CheckInFlow() {
         </div>
       )}
 
-      {step === 'scan' && !showManual && (
+      {step === 'scan' && (
         <VinScanner
           onDecoded={handleDecoded}
-          onManual={() => setShowManual(true)}
+          onManual={() => setStep('manual')}
         />
       )}
 
-      {step === 'scan' && showManual && (
+      {step === 'manual' && (
         <ManualVinEntry
           onDecoded={handleDecoded}
-          onBack={() => setShowManual(false)}
+          onBack={() => setStep('scan')}
         />
       )}
 
@@ -635,14 +767,14 @@ export default function CheckInFlow() {
         <ConfirmStep
           decoded={decoded}
           onConfirm={handleConfirm}
-          onBack={() => { setShowManual(false); setStep('scan') }}
+          onBack={() => setStep('scan')}
         />
       )}
 
       {step === 'service' && confirmed && (
         <ServiceStep
           vehicle={confirmed}
-          onCheckIn={handleCheckIn}
+          onCheckIn={(focus) => handleCheckIn(focus)}
           onBack={() => setStep('confirm')}
         />
       )}
