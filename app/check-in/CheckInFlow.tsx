@@ -7,10 +7,20 @@ import { useRouter } from 'next/navigation'
 
 type VinData = {
   vin:        string
-  year?:      string
-  make?:      string
-  model?:     string
-  bodyClass?: string
+  year?:      string | null
+  make?:      string | null
+  model?:     string | null
+  bodyClass?: string | null
+}
+
+type OcrResponse = {
+  vin:       string
+  confirmed: boolean
+  note?:     string | null
+  year?:     string | null
+  make?:     string | null
+  model?:    string | null
+  bodyClass?: string | null
 }
 
 type ServiceFocus = 'interior_only' | 'exterior_only' | 'full_detail' | 'custom'
@@ -57,12 +67,12 @@ async function barcodeFromBitmap(source: ImageBitmapSource): Promise<string | nu
   return null
 }
 
-async function ocrVinFromFile(file: File): Promise<{ vin: string } | { error: string }> {
+async function ocrVinFromFile(file: File): Promise<OcrResponse | { error: string }> {
   const form = new FormData()
   form.append('vinImage', file)
   const res  = await fetch('/api/workflow/vin', { method: 'POST', body: form })
   const data = await res.json()
-  if (res.ok) return { vin: data.vin }
+  if (res.ok) return data as OcrResponse
   return { error: data.error ?? 'Could not read VIN from photo' }
 }
 
@@ -93,8 +103,10 @@ function VinScanner({ onDecoded, onManual }: {
   const [camFailed,     setCamFailed]     = useState(false)
   const [scanState,     setScanState]     = useState<ScanState>('scanning')
   const [statusMsg,     setStatusMsg]     = useState<string | null>(null)
-  const [detectedVin,   setDetectedVin]   = useState('')   // raw VIN from image
-  const [editedVin,     setEditedVin]     = useState('')   // user-editable copy
+  const [detectedVin,   setDetectedVin]   = useState('')              // raw VIN from image
+  const [editedVin,     setEditedVin]     = useState('')              // user-editable copy
+  const [vinNote,       setVinNote]       = useState<string | null>(null)  // correction note
+  const [ocrDecoded,    setOcrDecoded]    = useState<OcrResponse | null>(null) // cached OCR result
 
   // ── Camera init ─────────────────────────────────────────────────────────────
 
@@ -189,7 +201,7 @@ function VinScanner({ onDecoded, onManual }: {
       return
     }
 
-    // Fall back to GPT-4o OCR
+    // Fall back to GPT-4.1 OCR
     const ocr = await ocrVinFromFile(file)
     if ('error' in ocr) {
       setScanState('error')
@@ -199,6 +211,8 @@ function VinScanner({ onDecoded, onManual }: {
 
     setDetectedVin(ocr.vin)
     setEditedVin(ocr.vin)
+    setVinNote(ocr.note ?? null)
+    setOcrDecoded(ocr)
     setScanState('vin_detected')
     setStatusMsg(null)
   }, [])
@@ -211,6 +225,19 @@ function VinScanner({ onDecoded, onManual }: {
     setScanState('decoding')
     setStatusMsg('Looking up vehicle…')
 
+    // If the VIN was not edited and we have cached OCR data with vehicle info,
+    // skip the second NHTSA call and use what we already decoded.
+    if (vin === cleanVin(detectedVin) && ocrDecoded && (ocrDecoded.make || ocrDecoded.year)) {
+      onDecoded({
+        vin,
+        year:      ocrDecoded.year      ?? undefined,
+        make:      ocrDecoded.make      ?? undefined,
+        model:     ocrDecoded.model     ?? undefined,
+        bodyClass: ocrDecoded.bodyClass ?? undefined,
+      })
+      return
+    }
+
     const result = await decodeVin(vin)
     if ('error' in result) {
       setScanState('error')
@@ -218,13 +245,15 @@ function VinScanner({ onDecoded, onManual }: {
     } else {
       onDecoded(result)
     }
-  }, [editedVin, onDecoded])
+  }, [editedVin, detectedVin, ocrDecoded, onDecoded])
 
   const resetToScanning = useCallback(() => {
     setScanState('scanning')
     setStatusMsg(null)
     setDetectedVin('')
     setEditedVin('')
+    setVinNote(null)
+    setOcrDecoded(null)
     if (fileRef.current) fileRef.current.value = ''
   }, [])
 
@@ -252,6 +281,7 @@ function VinScanner({ onDecoded, onManual }: {
           <VinReviewPanel
             editedVin={editedVin}
             detectedVin={detectedVin}
+            note={vinNote}
             onChange={setEditedVin}
             onConfirm={confirmDetectedVin}
             onRetry={resetToScanning}
@@ -358,6 +388,7 @@ function VinScanner({ onDecoded, onManual }: {
               <VinReviewPanel
                 editedVin={editedVin}
                 detectedVin={detectedVin}
+                note={vinNote}
                 onChange={setEditedVin}
                 onConfirm={confirmDetectedVin}
                 onRetry={resetToScanning}
@@ -416,6 +447,7 @@ function VinScanner({ onDecoded, onManual }: {
 function VinReviewPanel({
   editedVin,
   detectedVin,
+  note,
   onChange,
   onConfirm,
   onRetry,
@@ -423,6 +455,7 @@ function VinReviewPanel({
 }: {
   editedVin:   string
   detectedVin: string
+  note?:       string | null
   onChange:    (v: string) => void
   onConfirm:   () => void
   onRetry:     () => void
@@ -436,8 +469,14 @@ function VinReviewPanel({
     <div>
       <p className="text-white font-bold text-xl mb-1">VIN Detected</p>
       <p className="text-gray-500 text-sm mb-4">
-        Verify the VIN below before continuing. Correct any misread characters.
+        Verify each character before continuing.
       </p>
+
+      {note && (
+        <div className="bg-yellow-900/30 border border-yellow-700/50 rounded-xl px-4 py-3 mb-4">
+          <p className="text-yellow-400 text-sm">{note}</p>
+        </div>
+      )}
 
       <input
         type="text"
