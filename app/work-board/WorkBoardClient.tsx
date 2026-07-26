@@ -6,11 +6,12 @@ import type { OrderWithContext } from '@/apps/workflow/db'
 import VehicleCard from './VehicleCard'
 
 const POLL_INTERVAL = 10_000
+const HIGHLIGHT_MS  = 4_000
 
 type FilterTab = 'all' | 'active' | 'waiting' | 'finishing'
 
-const ACTIVE_STATUSES   = new Set(['in_progress', 'paused', 'drying'])
-const WAITING_STATUSES  = new Set(['arrived'])
+const ACTIVE_STATUSES    = new Set(['in_progress', 'paused', 'drying'])
+const WAITING_STATUSES   = new Set(['arrived'])
 const FINISHING_STATUSES = new Set(['qc_ready', 'ready'])
 
 function filterOrders(orders: OrderWithContext[], tab: FilterTab): OrderWithContext[] {
@@ -21,11 +22,18 @@ function filterOrders(orders: OrderWithContext[], tab: FilterTab): OrderWithCont
   return orders
 }
 
-export default function WorkBoardClient({ initialOrders }: { initialOrders: OrderWithContext[] }) {
-  const [orders, setOrders]       = useState<OrderWithContext[]>(initialOrders)
-  const [tab, setTab]             = useState<FilterTab>('all')
-  const [lastRefresh, setLast]    = useState(Date.now())
-  const [refreshing, setRefreshing] = useState(false)
+export default function WorkBoardClient({
+  initialOrders,
+  newOrderId,
+}: {
+  initialOrders: OrderWithContext[]
+  newOrderId?:   string
+}) {
+  const [orders,      setOrders]      = useState<OrderWithContext[]>(initialOrders)
+  const [tab,         setTab]         = useState<FilterTab>('all')
+  const [refreshing,  setRefreshing]  = useState(false)
+  const [highlightId, setHighlightId] = useState<string | null>(newOrderId ?? null)
+  const [showToast,   setShowToast]   = useState(!!newOrderId)
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
@@ -33,7 +41,6 @@ export default function WorkBoardClient({ initialOrders }: { initialOrders: Orde
       const res  = await fetch('/api/workflow/orders', { cache: 'no-store' })
       const data = await res.json() as { orders: OrderWithContext[] }
       setOrders(data.orders ?? [])
-      setLast(Date.now())
     } catch {
       // silent — stale data is better than an error banner
     } finally {
@@ -41,10 +48,21 @@ export default function WorkBoardClient({ initialOrders }: { initialOrders: Orde
     }
   }, [])
 
+  // 10-second polling
   useEffect(() => {
     const id = setInterval(refresh, POLL_INTERVAL)
     return () => clearInterval(id)
   }, [refresh])
+
+  // Clear highlight and toast after HIGHLIGHT_MS
+  useEffect(() => {
+    if (!highlightId) return
+    const t = setTimeout(() => {
+      setHighlightId(null)
+      setShowToast(false)
+    }, HIGHLIGHT_MS)
+    return () => clearTimeout(t)
+  }, [highlightId])
 
   const visible = filterOrders(orders, tab)
 
@@ -57,6 +75,13 @@ export default function WorkBoardClient({ initialOrders }: { initialOrders: Orde
 
   return (
     <div className="min-h-screen bg-gray-950 flex flex-col">
+
+      {/* Success toast */}
+      {showToast && (
+        <div className="bg-green-900/80 border-b border-green-700/50 px-4 py-3 text-center shrink-0">
+          <p className="text-green-300 font-semibold text-sm">Vehicle added to Work Board</p>
+        </div>
+      )}
 
       {/* Header */}
       <div className="px-4 pt-10 pb-4 flex items-center justify-between">
@@ -124,7 +149,11 @@ export default function WorkBoardClient({ initialOrders }: { initialOrders: Orde
           </div>
         ) : (
           visible.map(order => (
-            <VehicleCard key={order.id} order={order} />
+            <VehicleCard
+              key={order.id}
+              order={order}
+              highlighted={order.id === highlightId}
+            />
           ))
         )}
       </div>

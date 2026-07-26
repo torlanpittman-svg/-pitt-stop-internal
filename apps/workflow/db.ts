@@ -171,6 +171,21 @@ export async function createServiceOrder(data: {
   return row
 }
 
+export async function findActiveOrderByVehicleId(vehicleId: string): Promise<ServiceOrderRow | null> {
+  const db = getDb()
+  const TERMINAL = ['delivered', 'cancelled']
+  const rows = await db
+    .select()
+    .from(serviceOrders)
+    .where(and(
+      eq(serviceOrders.vehicleId, vehicleId),
+      not(inArray(serviceOrders.status, TERMINAL)),
+    ))
+    .orderBy(desc(serviceOrders.arrivedAt))
+    .limit(1)
+  return rows[0] ?? null
+}
+
 export async function listActiveOrders(): Promise<OrderWithContext[]> {
   const db = getDb()
 

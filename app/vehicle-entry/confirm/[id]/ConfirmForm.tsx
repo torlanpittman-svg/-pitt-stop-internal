@@ -4,7 +4,6 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { YEARS, MAKES, COLORS, getModelsForMake } from '@/apps/vehicle-entry/vehicle-data'
 import type { VehicleEntryRow } from '@/apps/vehicle-entry/db'
-import type { SyncOutcome } from '@/apps/vehicle-entry/types'
 
 const HIGH = 0.85
 const MID  = 0.60
@@ -185,7 +184,7 @@ function StockDebugPanel({
   )
 }
 
-type Mode = 'review' | 'edit' | 'saving' | 'done'
+type Mode = 'review' | 'edit' | 'saving'
 
 const isVINEntry = (entry: VehicleEntryRow) => entry.entryMethod === 'vin-fallback'
 const isPhotoEntry = (entry: VehicleEntryRow) =>
@@ -209,7 +208,6 @@ export default function ConfirmForm({
   const [mode, setMode] = useState<Mode>(
     startInEditMode || stockLowConf ? 'edit' : 'review'
   )
-  const [syncOutcome, setSyncOutcome] = useState<SyncOutcome | null>(null)
   const [fields, setFields] = useState({
     year:        entry.year        ?? '',
     make:        entry.make        ?? '',
@@ -239,17 +237,16 @@ export default function ConfirmForm({
       setMode('saving')
       const data = overrideFields ?? fields
 
-      // Per-field correction: compare final value against original AI prediction
       const norm = (s: string | null | undefined) => (s ?? '').trim().toLowerCase()
       const yearWasCorrected  = norm(data.year)        !== norm(entry.aiYear)
       const makeWasCorrected  = norm(data.make)        !== norm(entry.aiMake)
       const modelWasCorrected = norm(data.model)       !== norm(entry.aiModel)
       const colorWasCorrected = norm(data.color)       !== norm(entry.aiColor)
       const stockWasCorrected = norm(data.stockNumber) !== norm(entry.stockNumberAiPrediction)
-      // Any field changed → wasCorrected
       const anyChanged = yearWasCorrected || makeWasCorrected || modelWasCorrected ||
                          colorWasCorrected || stockWasCorrected
 
+      // 1. Save corrections to the vehicle entry record
       await fetch(`/api/vehicle-entry/entries/${entry.id}`, {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -269,21 +266,41 @@ export default function ConfirmForm({
           status:             'ready_for_quickbooks',
         }),
       })
-      // Trigger invoice sync
+
+      // 2. Fire QuickBooks sync in the background (don't block navigation on it)
+      fetch(`/api/vehicle-entry/entries/${entry.id}/sync-invoice`, { method: 'POST' }).catch(() => {})
+
+      // 3. Create (or find existing) service order on the Work Board
+      const notes = [
+        entry.dealershipName && `Dealer: ${entry.dealershipName}`,
+        data.stockNumber && `Stock: ${data.stockNumber}`,
+      ].filter(Boolean).join(' · ') || undefined
+
+      let newOrderId: string | undefined
       try {
-        const syncRes = await fetch(`/api/vehicle-entry/entries/${entry.id}/sync-invoice`, {
-          method: 'POST',
+        const orderRes = await fetch('/api/workflow/orders', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            vin:   entry.vin   || undefined,
+            year:  data.year   || undefined,
+            make:  data.make   || undefined,
+            model: data.model  || undefined,
+            color: data.color  || undefined,
+            source: 'dealer_tag',
+            notes,
+          }),
         })
-        if (syncRes.ok) {
-          const outcome = await syncRes.json() as SyncOutcome
-          setSyncOutcome(outcome)
-        }
+        const orderData = await orderRes.json() as { order?: { id?: string } }
+        newOrderId = orderData.order?.id
       } catch {
-        // Sync failed — show generic done screen, admin can review
+        // Redirect to work board anyway — vehicle is saved
       }
-      setMode('done')
+
+      router.push(newOrderId ? `/work-board?new=${newOrderId}` : '/work-board')
     },
-    [entry.id, fields]
+    [entry.id, entry.vin, entry.dealershipName, entry.aiYear, entry.aiMake,
+     entry.aiModel, entry.aiColor, entry.stockNumberAiPrediction, fields, router]
   )
 
   const handleMakeChange = useCallback((make: string) => {
@@ -295,120 +312,6 @@ export default function ConfirmForm({
       <main className="min-h-screen bg-gray-950 flex flex-col items-center justify-center gap-4">
         <div className="w-12 h-12 border-4 border-blue-400 border-t-transparent rounded-full animate-spin" />
         <p className="text-white font-semibold">Saving &amp; syncing…</p>
-      </main>
-    )
-  }
-
-  if (mode === 'done') {
-    const outcome     = syncOutcome?.outcome
-    const isSuccess   = outcome === 'synced'
-    const isPending   = outcome === 'pending_invoice_assignment'
-    const isDuplicate = outcome === 'needs_review'
-
-    // Parse the line text to get vehicle fields for display
-    // Format: "Year Make Model | Color | Stock #"
-    const lineParts    = syncOutcome?.lineText?.split(' | ') ?? []
-    const vehicleLabel = lineParts[0] ?? [fields.year, fields.make, fields.model].filter(Boolean).join(' ')
-    const colorLabel   = lineParts[1] ?? fields.color
-    const stockLabel   = lineParts[2] ?? fields.stockNumber
-
-    return (
-      <main className="min-h-screen bg-gray-950 flex flex-col">
-
-        {/* Result card */}
-        <div className="flex-1 flex flex-col items-center justify-center px-6 gap-6">
-
-          {/* Icon */}
-          <div className={`w-20 h-20 rounded-full flex items-center justify-center text-3xl font-bold
-            ${isSuccess   ? 'bg-green-900/60 border-2 border-green-600 text-green-400' :
-              isPending   ? 'bg-orange-900/60 border-2 border-orange-600 text-orange-400' :
-              isDuplicate ? 'bg-yellow-900/60 border-2 border-yellow-600 text-yellow-400' :
-                            'bg-red-900/60 border-2 border-red-700 text-red-400'}`}
-          >
-            {isSuccess ? '✓' : isPending ? '⏳' : isDuplicate ? '!' : '✕'}
-          </div>
-
-          {/* Headline */}
-          <div className="text-center">
-            <h1 className={`text-2xl font-bold
-              ${isSuccess   ? 'text-green-300' :
-                isPending   ? 'text-orange-300' :
-                isDuplicate ? 'text-yellow-300' :
-                              'text-red-300'}`}
-            >
-              {isSuccess   ? 'Vehicle Added'          :
-               isPending   ? 'Saved — No Active Batch' :
-               isDuplicate ? 'Possible Duplicate'      :
-                             'Saved'}
-            </h1>
-
-            {isSuccess ? (
-              <p className="text-gray-400 text-sm mt-1">Successfully added to the invoice</p>
-            ) : isPending ? (
-              <p className="text-gray-400 text-sm mt-1 max-w-xs text-center">
-                This vehicle has been saved and will be added to an invoice when one is set up.
-              </p>
-            ) : isDuplicate ? (
-              <p className="text-gray-400 text-sm mt-1 max-w-xs text-center">
-                This stock number may already be on the invoice. It has been saved for review.
-              </p>
-            ) : (
-              <p className="text-gray-400 text-sm mt-1">Entry saved. See supervisor if this keeps happening.</p>
-            )}
-          </div>
-
-          {/* Vehicle details card */}
-          <div className="w-full max-w-sm bg-gray-800 border border-gray-700 rounded-2xl p-5 space-y-3">
-            {syncOutcome?.dealershipName && (
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-500">Dealership</span>
-                <span className="text-white font-medium">{syncOutcome.dealershipName}</span>
-              </div>
-            )}
-            {isSuccess && syncOutcome?.invoiceNumber && (
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-500">Invoice</span>
-                <span className="text-white font-mono font-medium">{syncOutcome.invoiceNumber}</span>
-              </div>
-            )}
-            {vehicleLabel && (
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-500">Vehicle</span>
-                <span className="text-white font-medium text-right">{vehicleLabel}</span>
-              </div>
-            )}
-            {colorLabel && (
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-500">Color</span>
-                <span className="text-white">{colorLabel}</span>
-              </div>
-            )}
-            {stockLabel && (
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-500">Stock #</span>
-                <span className="text-white font-mono font-bold">{stockLabel}</span>
-              </div>
-            )}
-          </div>
-
-        </div>
-
-        {/* Actions — always visible at bottom */}
-        <div className="px-6 pb-10 pt-4 shrink-0 space-y-3">
-          <button
-            onClick={() => router.push('/vehicle-entry/capture')}
-            className="w-full py-5 rounded-2xl bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-bold text-xl transition-colors shadow-lg"
-          >
-            Scan Next Vehicle
-          </button>
-          <button
-            onClick={() => router.push('/')}
-            className="w-full py-3 rounded-2xl text-gray-500 hover:text-gray-300 text-sm transition-colors"
-          >
-            Return to Pitt Stop OS
-          </button>
-        </div>
-
       </main>
     )
   }

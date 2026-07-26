@@ -29,7 +29,13 @@ function elapsed(from: Date | string | null): string {
   return rm > 0 ? `${hr}h ${rm}m` : `${hr}h`
 }
 
-export default function VehicleCard({ order }: { order: OrderWithContext }) {
+export default function VehicleCard({
+  order,
+  highlighted = false,
+}: {
+  order: OrderWithContext
+  highlighted?: boolean
+}) {
   const { vehicle } = order
   const style       = STATUS_STYLES[order.status] ?? STATUS_STYLES['arrived']
   const activeTech  = order.activeTechs[0]?.employeeName ?? null
@@ -42,7 +48,11 @@ export default function VehicleCard({ order }: { order: OrderWithContext }) {
   return (
     <Link
       href={`/orders/${order.id}`}
-      className="block bg-gray-900 border border-gray-800 rounded-2xl px-5 py-4 active:bg-gray-800 transition-colors"
+      className={`block bg-gray-900 rounded-2xl px-5 py-4 active:bg-gray-800 transition-all border ${
+        highlighted
+          ? 'border-green-500 shadow-lg shadow-green-900/30'
+          : 'border-gray-800'
+      }`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">

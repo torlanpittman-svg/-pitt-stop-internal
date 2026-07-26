@@ -3,6 +3,7 @@ import {
   listActiveOrders,
   createServiceOrder,
   findOrCreateVehicle,
+  findActiveOrderByVehicleId,
   getOrCreateDefaultLocation,
 } from '@/apps/workflow/db'
 
@@ -46,6 +47,12 @@ export async function POST(request: Request) {
       bodyClass:    body.bodyClass,
       vinRaw:       body.vinRaw,
     })
+
+    // Return existing active order rather than creating a duplicate
+    const existing = await findActiveOrderByVehicleId(vehicle.id)
+    if (existing) {
+      return NextResponse.json({ order: existing, vehicle, existed: true }, { status: 200 })
+    }
 
     const order = await createServiceOrder({
       vehicleId:    vehicle.id,
