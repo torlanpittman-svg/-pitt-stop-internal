@@ -32,7 +32,7 @@ const EVENT_LABELS: Record<string, string> = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function elapsed(from: Date | string | null): string {
+function calcElapsed(from: Date | string | null): string {
   if (!from) return ''
   const ms  = Date.now() - new Date(from).getTime()
   const min = Math.floor(ms / 60_000)
@@ -42,9 +42,26 @@ function elapsed(from: Date | string | null): string {
   return rm > 0 ? `${hr}h ${rm}m` : `${hr}h`
 }
 
-function formatTime(d: Date | string | null): string {
-  if (!d) return ''
-  return new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+// Rendered only after mount so Date.now() and toLocaleTimeString don't
+// differ between the server render and client hydration.
+function ElapsedTime({ from }: { from: Date | string | null }) {
+  const [text, setText] = useState('')
+  useEffect(() => {
+    const update = () => setText(calcElapsed(from))
+    update()
+    const id = setInterval(update, 60_000)
+    return () => clearInterval(id)
+  }, [from])
+  return <>{text}</>
+}
+
+function EventTime({ date }: { date: Date | string | null }) {
+  const [text, setText] = useState('')
+  useEffect(() => {
+    if (!date) return
+    setText(new Date(date).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))
+  }, [date])
+  return <>{text}</>
 }
 
 // ── Employee Picker ───────────────────────────────────────────────────────────
@@ -241,7 +258,7 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
           )}
           {order.arrivedAt && (
             <span className="text-xs text-gray-600">
-              {elapsed(order.arrivedAt)} on lot
+              <ElapsedTime from={order.arrivedAt} /> on lot
             </span>
           )}
         </div>
@@ -296,7 +313,7 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
                     }
                     {event.employeeName && !event.newStatus ? ` · ${event.employeeName}` : ''}
                   </p>
-                  <p className="text-gray-600 text-xs">{formatTime(event.createdAt)}</p>
+                  <p className="text-gray-600 text-xs"><EventTime date={event.createdAt} /></p>
                 </div>
               </div>
             ))}

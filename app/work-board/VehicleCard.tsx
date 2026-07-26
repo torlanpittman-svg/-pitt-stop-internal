@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import type { OrderWithContext } from '@/apps/workflow/db'
 
@@ -37,10 +38,18 @@ export default function VehicleCard({
   highlighted?: boolean
 }) {
   const { vehicle } = order
-  const style       = STATUS_STYLES[order.status] ?? STATUS_STYLES['arrived']
-  const activeTech  = order.activeTechs[0]?.employeeName ?? null
-  const timeOnLot   = elapsed(order.arrivedAt)
-  const focusLabel  = FOCUS_LABELS[order.serviceFocus ?? ''] ?? order.serviceFocus ?? null
+  const style      = STATUS_STYLES[order.status] ?? STATUS_STYLES['arrived']
+  const activeTech = order.activeTechs[0]?.employeeName ?? null
+  const focusLabel = FOCUS_LABELS[order.serviceFocus ?? ''] ?? order.serviceFocus ?? null
+
+  // Deferred so server and client agree on the initial render; updates every minute
+  const [timeOnLot, setTimeOnLot] = useState('')
+  useEffect(() => {
+    const update = () => setTimeOnLot(elapsed(order.arrivedAt))
+    update()
+    const id = setInterval(update, 60_000)
+    return () => clearInterval(id)
+  }, [order.arrivedAt])
 
   const vehicleName = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Unknown Vehicle'
   const colorHint   = vehicle.color ? ` · ${vehicle.color}` : ''
