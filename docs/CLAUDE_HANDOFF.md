@@ -1,8 +1,18 @@
 # Pitt Stop OS — Claude Session Handoff
 
-> Created: 2026-07-27
+> Created: 2026-07-27 · Updated: 2026-07-28
 > Purpose: Complete context transfer for the next Claude session.
 > Written after: QuickBooks forensic investigation + Dealer Check-In planning sessions.
+
+> **PROGRESS UPDATE 2026-07-28 (Opus session):** Dealer Check-In **Phase 0 is COMPLETE** —
+> real QuickBooks OAuth 2.0 is built and verified. `apps/quickbooks/` module (crypto,
+> config, oauth, db, connection, client, errors), `qb_connections` table live in Neon,
+> routes at `/api/auth/quickbooks/{connect,callback,status,test,disconnect}`, admin UI at
+> `/admin/integrations/quickbooks`. Commits `6342cc5` (0a) and `fb65ebc` (0b).
+> **ONE OWNER ACTION PENDING:** click "Connect QuickBooks" at
+> `/admin/integrations/quickbooks` and authorize in the Intuit window (one-time). Until
+> then no realmId/tokens exist and live QB reads/writes can't run.
+> **Next milestone: Phase 1** — write `docs/Dealer Invoice Specification.md`.
 
 ---
 
@@ -449,29 +459,28 @@ The Dealer Check-In System is fully planned. No code has been written yet for it
 The plan lives at `docs/dealer-check-in-plan.md`. Start there.
 
 ### Immediate Next Action
-**Phase 0a: QB OAuth schema**
+**Phase 0 is DONE.** Start **Phase 1: `docs/Dealer Invoice Specification.md`**.
 
-Create a Drizzle migration adding the `qb_connections` table:
-```sql
-id                  UUID PRIMARY KEY DEFAULT gen_random_uuid()
-created_at          TIMESTAMP WITH TIME ZONE DEFAULT now()
-updated_at          TIMESTAMP WITH TIME ZONE DEFAULT now()
-realm_id            VARCHAR(100) NOT NULL
-access_token        TEXT NOT NULL        -- AES-256-GCM encrypted
-refresh_token       TEXT NOT NULL        -- AES-256-GCM encrypted
-access_token_expires_at   TIMESTAMP WITH TIME ZONE NOT NULL
-refresh_token_expires_at  TIMESTAMP WITH TIME ZONE NOT NULL
-connected_by        VARCHAR(200)
-status              VARCHAR(30) DEFAULT 'active'   -- 'active'|'expired'|'revoked'
-last_used_at        TIMESTAMP WITH TIME ZONE
-last_error          TEXT
-```
+Prerequisite gate: confirm the owner has connected QuickBooks (visit
+`/admin/integrations/quickbooks` → status should read "Connected"; or `GET
+/api/auth/quickbooks/status` returns `connected:true`). Once connected, you can do a
+read-only live QB pull (customers, a few recent Sterling invoices) to finalize the
+invoice spec — combine that with the forensic data already in `.browser-profiles/`.
 
-Add `qb_connections` to `drizzle/schema.ts`. Run migration.
-Commit: `feat(db): QB OAuth token storage`
+After Phase 1, proceed to Phase 2 (dealer_scans + dealer_scan_events schema) and the
+`formatLineDescription` fix in `apps/vehicle-entry/invoice-sync.ts` (currently
+pipe-separated; real QB format is `YEAR MAKE MODEL COLOR #STOCK`).
 
-Then Phase 0b: `/admin/integrations/quickbooks` page + `/api/auth/quickbooks/*` routes
-(authorization redirect, callback, token exchange, token storage with encryption).
+**What Phase 0 delivered (do not rebuild):**
+- `apps/quickbooks/` — crypto.ts (AES-256-GCM), config.ts, oauth.ts, db.ts,
+  connection.ts (`getValidAccessToken` auto-refreshes), client.ts (`qbApiRequest`,
+  `getCompanyInfo`), errors.ts, schema.ts (`qb_connections`)
+- Routes: `/api/auth/quickbooks/{connect,callback,status,test,disconnect}`
+- Admin: `/admin/integrations/quickbooks`
+- `scripts/apply-qb-migration.mjs` — idempotent table creator (project uses
+  drizzle-kit push, not the migration journal)
+- To make a live QB call from later phases: `import { qbApiRequest, getCompanyInfo }
+  from '@/apps/quickbooks/client'`. It handles tokens/refresh for you.
 
 ### Key Files to Read First
 | File | Why |
