@@ -166,3 +166,11 @@ export async function getInvoiceSummary(invoiceId: string): Promise<WrittenInvoi
   const res = await qbApiRequest<{ Invoice: RawInvoice }>({ path: `/invoice/${invoiceId}` })
   return summarize(res.Invoice)
 }
+
+/** Sales-line descriptions on an invoice — used for QB-side duplicate detection. */
+export async function getInvoiceLineDescriptions(invoiceId: string): Promise<string[]> {
+  const res = await qbApiRequest<{ Invoice: RawInvoice }>({ path: `/invoice/${invoiceId}` })
+  return (res.Invoice.Line ?? [])
+    .filter((l) => l.DetailType === 'SalesItemLineDetail')
+    .map((l) => String(l.Description ?? ''))
+}

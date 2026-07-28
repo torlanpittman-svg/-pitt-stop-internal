@@ -186,6 +186,33 @@ export async function findActiveOrderByVehicleId(vehicleId: string): Promise<Ser
   return rows[0] ?? null
 }
 
+/** Delete an order with its events + assignments, and optionally its vehicle
+ *  (used to clean up test/automated check-ins so the board stays clean). */
+export async function deleteOrderCascade(orderId: string, alsoVehicleId?: string): Promise<void> {
+  const db = getDb()
+  await db.delete(serviceOrderEvents).where(eq(serviceOrderEvents.serviceOrderId, orderId))
+  await db.delete(serviceOrderAssignments).where(eq(serviceOrderAssignments.serviceOrderId, orderId))
+  await db.delete(serviceOrders).where(eq(serviceOrders.id, orderId))
+  if (alsoVehicleId) await db.delete(vehicles).where(eq(vehicles.id, alsoVehicleId))
+}
+
+/** Active (non-terminal) order for a VIN, or null. Used for duplicate check-in guard. */
+export async function findActiveOrderByVin(vin: string): Promise<ServiceOrderRow | null> {
+  const db = getDb()
+  const TERMINAL = ['delivered', 'cancelled']
+  const rows = await db
+    .select({ order: serviceOrders })
+    .from(serviceOrders)
+    .innerJoin(vehicles, eq(serviceOrders.vehicleId, vehicles.id))
+    .where(and(
+      eq(vehicles.vin, vin),
+      not(inArray(serviceOrders.status, TERMINAL)),
+    ))
+    .orderBy(desc(serviceOrders.arrivedAt))
+    .limit(1)
+  return rows[0]?.order ?? null
+}
+
 export async function listActiveOrders(): Promise<OrderWithContext[]> {
   const db = getDb()
 
