@@ -47,6 +47,16 @@ const ADMIN_SECTIONS: AdminSection[] = [
       },
     ],
   },
+  {
+    group: 'Integrations',
+    links: [
+      {
+        label: 'QuickBooks',
+        description: 'Connect Pitt Stop OS to QuickBooks Online — OAuth status and controls',
+        href: '/admin/integrations/quickbooks',
+      },
+    ],
+  },
 ]
 
 export default function AdminPage() {
