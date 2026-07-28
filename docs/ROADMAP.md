@@ -105,12 +105,11 @@ Expected remaining work:
 # Next Priorities
 (ranked by labor removed)
 
-1. **Dealer check-in UI** — replaces manual QB invoice typing per vehicle. Highest daily labor removed.
-2. **Offline/queue recovery** — never lose a scan when QB/Neon blips; removes re-do labor + risk.
-3. **Instrumentation dashboard** — scan time, correction rate, latency; finds the next labor to cut.
-4. **Auto Work Board sync polish** — ensure every completed check-in appears instantly, zero manual refresh.
-5. **Production go-live** (owner-gated) — real books; needs Intuit production keys + https + terms.
-6. **Batch/period invoice management UI** — see/close dealer invoices without touching QuickBooks directly.
+1. **Offline/queue recovery** — never lose a scan when QB/Neon blips; removes re-do labor + risk.
+2. **Instrumentation persistence + dashboard** — scan time, correction rate, latency; finds the next labor to cut.
+3. **Auto Work Board sync polish** — ensure every completed check-in appears instantly, zero manual refresh.
+4. **Production go-live** (owner-gated) — real books; needs Intuit production keys + https + terms.
+5. **Batch/period invoice management UI** — see/close dealer invoices without touching QuickBooks directly.
 
 ---
 
