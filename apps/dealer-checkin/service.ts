@@ -85,6 +85,70 @@ async function resolveDealer(input: CheckInInput) {
   return all.find((d) => d.stockPrefix.toUpperCase() === prefix) ?? null
 }
 
+export interface CheckInPreview {
+  ok:          boolean
+  dealership:  { id: string; name: string; qbCustomerId: string | null } | null
+  vehicle:     { year?: string | null; make?: string | null; model?: string | null; color?: string | null; vin?: string | null; stockNumber?: string | null }
+  linePreview: string
+  pricing:     { promptRequired: boolean; signals: string[]; standardRate: number; newVehicleRate: number; defaultRate: number }
+  invoiceTarget: { action: 'append' | 'create'; invoiceNumber?: string | null; invoiceId?: string }
+  duplicate:   { reason: string; existingInvoiceNumber?: string | null; existingOrderId?: string } | null
+  warnings:    string[]
+}
+
+/**
+ * Read-only preview for the confirmation screen. Resolves dealer, pricing,
+ * duplicate status, and the target invoice WITHOUT writing anything to
+ * QuickBooks or the database. The UI calls this to render the preview, then
+ * calls checkInDealerVehicle on "Looks Good".
+ */
+export async function previewDealerCheckIn(input: CheckInInput): Promise<CheckInPreview> {
+  const warnings: string[] = []
+  const dealer = await resolveDealer(input)
+  const pricing = decidePricing({ stockNumber: input.stockNumber, tagColor: input.tagColor })
+  const linePreview = formatLineDescription(input)
+  const vehicle = { year: input.year, make: input.make, model: input.model, color: input.color, vin: input.vin, stockNumber: input.stockNumber }
+
+  if (!dealer) {
+    const prefix = extractStockPrefix(input.stockNumber)
+    warnings.push(prefix ? `No dealership for stock prefix "${prefix}"` : 'No stock number — pick a dealership')
+    return { ok: false, dealership: null, vehicle, linePreview,
+      pricing: { ...pricing }, invoiceTarget: { action: 'create' }, duplicate: null, warnings }
+  }
+  const dealership = { id: dealer.id, name: dealer.name, qbCustomerId: dealer.qbCustomerId ?? null }
+  if (!dealer.qbCustomerId) {
+    warnings.push(`${dealer.name} has no QuickBooks customer mapping`)
+    return { ok: false, dealership, vehicle, linePreview,
+      pricing: { ...pricing }, invoiceTarget: { action: 'create' }, duplicate: null, warnings }
+  }
+
+  // Duplicate (read-only)
+  let duplicate: CheckInPreview['duplicate'] = null
+  if (input.vin) {
+    const activeOrder = await findActiveOrderByVin(input.vin)
+    if (activeOrder) duplicate = { reason: `VIN ${input.vin} already on the Work Board`, existingOrderId: activeOrder.id }
+  }
+  if (!duplicate && input.stockNumber) {
+    const recent = await recentScansByStock(input.stockNumber)
+    if (recent[0]) duplicate = { reason: `Stock ${input.stockNumber} checked in within 7 days`, existingInvoiceNumber: recent[0].qbInvoiceNumber }
+  }
+
+  // Target invoice (live read)
+  const appendable = await findAppendableInvoice(dealer.qbCustomerId)
+  if (!duplicate && input.stockNumber && appendable) {
+    const descriptions = await getInvoiceLineDescriptions(appendable.id)
+    const token = `#${normalizeStock(input.stockNumber)}`
+    if (descriptions.some((d) => d.toUpperCase().includes(token))) {
+      duplicate = { reason: `Stock ${input.stockNumber} already on invoice ${appendable.docNumber}`, existingInvoiceNumber: appendable.docNumber }
+    }
+  }
+  const invoiceTarget = appendable
+    ? { action: 'append' as const, invoiceNumber: appendable.docNumber, invoiceId: appendable.id }
+    : { action: 'create' as const }
+
+  return { ok: !duplicate, dealership, vehicle, linePreview, pricing: { ...pricing }, invoiceTarget, duplicate, warnings }
+}
+
 export async function checkInDealerVehicle(input: CheckInInput): Promise<CheckInResult> {
   const dataType = input.dataType ?? 'production'
 
