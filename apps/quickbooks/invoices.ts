@@ -6,6 +6,7 @@
  * dealer check-in flow uses to decide append-to-open vs. create-new.
  */
 import { queryQBO, qboEscape } from './client'
+import { selectAppendableInvoice } from '@/apps/dealer-checkin/rules'
 
 export type QBEmailStatus = 'NotSet' | 'NeedToSend' | 'EmailSent'
 
@@ -67,7 +68,6 @@ export async function listOpenInvoicesForCustomer(customerId: string): Promise<Q
  * NOT-yet-sent invoice. Returns null when a fresh invoice should be created.
  */
 export async function findAppendableInvoice(customerId: string): Promise<QBInvoiceSummary | null> {
-  const open = await listOpenInvoicesForCustomer(customerId)
-  const appendable = open.filter((inv) => !inv.sent)
-  return appendable[0] ?? null
+  const all = await listInvoicesForCustomer(customerId)
+  return selectAppendableInvoice(all)
 }
