@@ -2,6 +2,11 @@ import Link from 'next/link'
 
 const MODULES = [
   {
+    href:    '/dealer-check-in',
+    label:   'Dealer Check-In',
+    sub:     'Scan a tag → confirm → done. Invoice + Work Board, automatically.',
+  },
+  {
     href:    '/vehicle-entry',
     label:   'Dealer Tag Scanner',
     sub:     'Scan a dealership key tag and log the vehicle',

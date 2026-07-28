@@ -18,17 +18,14 @@ invoicing, dispatch, follow-up, reconciliation) is done by the system.
 
 Status: 🟢 In Progress
 
-Completion: ~70% (backend engine + API 100% done and validated; UI in build)
+Completion: ~90% (backend + API + camera UI done; hardening/instrumentation remain)
 
 Expected remaining work:
-- `/dealer-check-in` camera-first capture (VIN barcode + tag photo)
-- Automatic OCR + VIN decode with low-confidence recovery (retake)
-- Single confirmation screen (Year/Make/Model/Color/Dealer + line + pricing)
-- Inline $125 pricing prompt and duplicate warning (no extra pages)
-- One-tap "Looks Good" → Work Board with highlight
-- Offline/queue recovery for QB + Neon failures
-- Instrumentation (scan duration, OCR confidence, latency, failures)
-- Regression tests for each recovery path
+- Offline/queue recovery for QB + Neon failures (never lose a scan)
+- Instrumentation persistence (scan duration, OCR confidence, latency, failures)
+  — currently logged; add a `dealer_scans` timing column + admin view
+- On-device validation of camera/barcode on a real phone (headless can't test)
+- Regression tests for recovery paths (queue/retry)
 
 ---
 
@@ -80,17 +77,28 @@ Expected remaining work:
 - `POST /api/dealer-checkin/preview` (read-only) + `POST /api/dealer-checkin` (confirm,
   production-write guard via `X-QB-Write-Approved`). Validated on sandbox. Commit: aab1300
 
+✅ **Dealer Check-In UI** — 2026-07-28
+- Camera-first `/dealer-check-in`: live VIN barcode scan + one-frame tag OCR
+  (stock/color), NHTSA decode, ONE confirmation screen (Dealer/Year/Make/Model/
+  Color/Stock + line + rate), inline $125 toggle, duplicate warning + Check-In-
+  Anyway, low-confidence retake, one-tap "Looks Good" → Work Board redirect.
+  Gloves/sunlight design (big targets, high contrast, black bg, minimal typing).
+- Files: `app/dealer-check-in/{page,DealerCheckInFlow}.tsx`,
+  `app/api/dealer-checkin/ocr/route.ts`, home launcher tile.
+- Tests: 20 unit tests (added S-prefix-no-prompt + case-insensitive tag regression);
+  pages render 200; OCR/preview error paths graceful. Commit: (this milestone)
+
 ---
 
 # In Progress
 
-**Dealer Check-In UI** (`/dealer-check-in`)
-- Goal: gloves-friendly, camera-first, one-tap check-in usable with ~no training.
-- Status: starting build; backend fully ready and proven.
-- Remaining: capture flow, OCR/decode + recovery, single confirm screen, inline
-  prompts, work-board redirect, offline queue, instrumentation, regression tests.
+**Check-in hardening & instrumentation**
+- Goal: never lose a scan; measure everything to find the next labor to cut.
+- Status: next up. Camera UI + engine complete and validated.
+- Remaining: offline QB/Neon queue + retry, timing/latency persistence + admin view,
+  on-device camera validation.
 - Blockers: none (sandbox). Production writes gated on owner approval + prod keys.
-- Complexity: Medium-High (camera, barcode, recovery states).
+- Complexity: Medium.
 
 ---
 
@@ -180,11 +188,11 @@ resolved by a LIVE read; sent invoices are never modified.
 # Metrics
 (2026-07-28)
 
-- Total commits: 32
+- Total commits: 33
 - TS/TSX LOC: ~18,900
-- Test files / tests: 1 / 18 · pass rate 100%
-- API routes: 46
-- Pages: 30
+- Test files / tests: 1 / 20 · pass rate 100%
+- API routes: 48
+- Pages: 31
 - App modules: 6 (vehicle-entry, estimator, ai-learning, workflow, quickbooks, dealer-checkin)
 - DB tables: ~20 · migrations (manual): 3
 - Integrations: QuickBooks Online (OAuth + read/write, sandbox validated), NHTSA, OpenAI

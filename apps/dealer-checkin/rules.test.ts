@@ -63,6 +63,15 @@ describe('decidePricing', () => {
     expect(d.defaultRate).toBe(STANDARD_RATE)
     expect(d.signals).toHaveLength(2)
   })
+  it('S prefix (Sterling Auto Group, used vehicle) does NOT prompt', () => {
+    // regression: only a T prefix or white tag signals a new vehicle
+    const d = decidePricing({ stockNumber: 'S515324', tagColor: 'yellow' })
+    expect(d.promptRequired).toBe(false)
+    expect(d.signals).toHaveLength(0)
+  })
+  it('tag color match is case-insensitive', () => {
+    expect(decidePricing({ stockNumber: 'K1', tagColor: 'WHITE' }).promptRequired).toBe(true)
+  })
 })
 
 describe('selectAppendableInvoice', () => {
