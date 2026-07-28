@@ -20,8 +20,22 @@
 > - Phase 2: `dealer_scans` + `dealer_scan_events` tables live (`apps/dealer-checkin/schema.ts`).
 > - Dev server: run `npx next dev -H 0.0.0.0 -p 3000` (bind IPv4 so the browser reaches it);
 >   use `http://localhost:3000`. Migrations: `node scripts/apply-qb-migration.mjs <file>`.
-> **Next: Phase 3+** — scan API route, preview/edit UI, then the append-vs-new QB write
-> logic (validate on sandbox). Production writes remain gated on owner approval.
+> **Update 2 (same session):** Core check-in ENGINE complete + validated e2e on sandbox.
+> - Tests: vitest (`npm test`), 18 unit tests for `apps/dealer-checkin/rules.ts`
+>   (pricing $200/$125, prefix, line format, appendable selection, dup).
+> - `apps/quickbooks/invoice-write.ts`: ensure item/account (Complete Detail /
+>   Detail Sales), create/append invoice, Due-on-receipt terms. Validated: invoice
+>   has $0 tax, correct lines, terms.
+> - `apps/dealer-checkin/service.ts`: `previewDealerCheckIn` (read-only) +
+>   `checkInDealerVehicle` (resolve dealer → pricing gate → dup check → live
+>   append-vs-create QB write → work board order → audit events).
+> - Routes: `POST /api/dealer-checkin/preview` (dry run) and `POST /api/dealer-checkin`
+>   (confirm; production-write guard needs `X-QB-Write-Approved` header).
+> - Sandbox-guarded self-tests: `/api/quickbooks/selftest-invoice`,
+>   `/api/dealer-checkin/selftest` — 9/9 checks (append/create/prompt/$125/dup),
+>   auto-cleanup so the board stays clean.
+> **Next: the UI** — `/dealer-check-in` camera→preview→"Looks Good"→work board.
+> Backend is done; production writes remain gated on owner approval + production keys.
 
 ---
 
