@@ -1,11 +1,12 @@
 /**
- * Idempotent migration applier for the QuickBooks connection table.
+ * Idempotent manual-migration applier.
  *
  * Reads DATABASE_URL from .env.local (standalone node doesn't auto-load it) and
- * runs drizzle/migrations/manual/0001_qb_connections.sql statement-by-statement.
- * Safe to re-run: every statement uses IF NOT EXISTS.
+ * runs a manual SQL file statement-by-statement. Safe to re-run: every statement
+ * uses IF NOT EXISTS.
  *
- *   node scripts/apply-qb-migration.mjs
+ *   node scripts/apply-qb-migration.mjs [path-to-sql]
+ *   (defaults to drizzle/migrations/manual/0001_qb_connections.sql)
  */
 import { neon } from '@neondatabase/serverless'
 import { readFileSync } from 'node:fs'
@@ -50,11 +51,12 @@ async function main() {
     process.exit(1)
   }
 
-  const sqlText = readFileSync(join(ROOT, 'drizzle/migrations/manual/0001_qb_connections.sql'), 'utf8')
+  const relPath = process.argv[2] ?? 'drizzle/migrations/manual/0001_qb_connections.sql'
+  const sqlText = readFileSync(join(ROOT, relPath), 'utf8')
   const statements = splitStatements(sqlText)
   const sql = neon(url)
 
-  console.log(`Applying ${statements.length} statement(s) to qb_connections...`)
+  console.log(`Applying ${statements.length} statement(s) from ${relPath}...`)
   for (const stmt of statements) {
     const label = stmt.split('\n')[0].slice(0, 70)
     process.stdout.write(`  → ${label} ... `)
@@ -62,12 +64,6 @@ async function main() {
     console.log('ok')
   }
 
-  // Verify the table exists and report its column count.
-  const cols = await sql.query(
-    `SELECT column_name FROM information_schema.columns WHERE table_name = 'qb_connections' ORDER BY ordinal_position`
-  )
-  console.log(`\nqb_connections has ${cols.length} columns:`)
-  console.log('  ' + cols.map((c) => c.column_name).join(', '))
   console.log('\nMigration complete.')
 }
 

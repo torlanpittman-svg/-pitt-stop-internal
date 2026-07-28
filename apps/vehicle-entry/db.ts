@@ -20,6 +20,11 @@ export type DealershipRow = {
   stockPrefix: string
   active:      boolean
   createdAt:   Date
+  qbCustomerId?:   string | null
+  qbCustomerName?: string | null
+  billingEmail?:   string | null
+  taxExempt?:      boolean
+  rateDefault?:    number
 }
 
 const DEMO_DEALERSHIPS: DealershipRow[] = [
@@ -70,6 +75,42 @@ export async function updateDealership(
   const db    = getDb()
   const [row] = await db.update(dealerships).set(data).where(eq(dealerships.id, id)).returning()
   return (row as DealershipRow) ?? null
+}
+
+/**
+ * Insert or update a dealership by stock prefix, setting its verified
+ * QuickBooks customer mapping. Idempotent — safe to re-run during setup.
+ */
+export async function upsertDealershipByPrefix(data: {
+  name:           string
+  stockPrefix:    string
+  qbCustomerId:   string
+  qbCustomerName: string
+  billingEmail?:  string | null
+  taxExempt?:     boolean
+  rateDefault?:   number
+}): Promise<DealershipRow> {
+  const db  = getDb()
+  const set = {
+    name:           data.name,
+    qbCustomerId:   data.qbCustomerId,
+    qbCustomerName: data.qbCustomerName,
+    billingEmail:   data.billingEmail ?? null,
+    taxExempt:      data.taxExempt ?? true,
+    rateDefault:    data.rateDefault ?? 200,
+    active:         true,
+  }
+  const prefixUpper = data.stockPrefix.toUpperCase()
+
+  const existing = await db.select().from(dealerships)
+  const match = (existing as DealershipRow[]).find(d => d.stockPrefix.toUpperCase() === prefixUpper)
+
+  if (match) {
+    const [row] = await db.update(dealerships).set(set).where(eq(dealerships.id, match.id)).returning()
+    return row as DealershipRow
+  }
+  const [row] = await db.insert(dealerships).values({ stockPrefix: data.stockPrefix, ...set }).returning()
+  return row as DealershipRow
 }
 
 export async function deleteDealership(id: string): Promise<void> {

@@ -57,6 +57,20 @@ export async function qbApiRequest<T = unknown>(opts: QBFetchOptions): Promise<T
   return (await res.json()) as T
 }
 
+/** Escape a value for safe use inside a QBO query string literal. */
+export function qboEscape(value: string): string {
+  return value.replace(/'/g, "\\'")
+}
+
+/**
+ * Run a read-only QBO SQL-like query. Returns the `QueryResponse` object,
+ * e.g. `{ Customer: [...] }` or `{ Invoice: [...] }` (empty object if no rows).
+ */
+export async function queryQBO<T = Record<string, unknown>>(query: string): Promise<T> {
+  const data = await qbApiRequest<{ QueryResponse?: T }>({ path: '/query', query: { query } })
+  return (data.QueryResponse ?? {}) as T
+}
+
 export interface CompanyInfo {
   companyName: string
   legalName:   string

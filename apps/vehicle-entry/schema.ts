@@ -66,6 +66,14 @@ export const dealerships = pgTable('dealerships', {
   stockPrefix: varchar('stock_prefix', { length: 10  }).notNull(),
   active:      boolean('active').notNull().default(true),
   createdAt:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+
+  // QuickBooks customer mapping — populated from a verified live lookup, never
+  // hardcoded. qbCustomerName is the exact DisplayName in QB.
+  qbCustomerId:   varchar('qb_customer_id',   { length: 200 }),
+  qbCustomerName: varchar('qb_customer_name', { length: 200 }),
+  billingEmail:   varchar('billing_email',    { length: 200 }),
+  taxExempt:      boolean('tax_exempt').notNull().default(true),
+  rateDefault:    integer('rate_default').notNull().default(200),
 })
 
 // ── Pilot interventions ─────────────────────────────────────────────────────

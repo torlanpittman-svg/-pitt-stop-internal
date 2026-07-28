@@ -29,12 +29,14 @@ function extractStockPrefix(stockNumber: string | null): string | null {
   return stockNumber.match(/^([A-Za-z])/)?.[1]?.toUpperCase() ?? null
 }
 
-// Build the QB invoice line description per the agreed format
+// Build the QB invoice line description matching the real QuickBooks format
+// confirmed from historical Sterling invoices: "YEAR MAKE MODEL COLOR #STOCK"
+// e.g. "2021 Honda Civic Gray #K518991". Stock number is prefixed with '#'.
 export function formatLineDescription(entry: VehicleEntryRow): string {
   const vehicle = [entry.year, entry.make, entry.model].filter(Boolean).join(' ') || 'Unknown Vehicle'
-  const color   = entry.color ?? 'Unknown Color'
-  const stock   = entry.stockNumber ?? 'Unknown Stock #'
-  return `${vehicle} | ${color} | ${stock}`
+  const color   = entry.color ?? ''
+  const stock   = entry.stockNumber ? `#${entry.stockNumber}` : ''
+  return [vehicle, color, stock].filter(Boolean).join(' ')
 }
 
 async function resolveDealer(entry: VehicleEntryRow) {
