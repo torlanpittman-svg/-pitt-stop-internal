@@ -4,15 +4,24 @@
 > Purpose: Complete context transfer for the next Claude session.
 > Written after: QuickBooks forensic investigation + Dealer Check-In planning sessions.
 
-> **PROGRESS UPDATE 2026-07-28 (Opus session):** Dealer Check-In **Phase 0 is COMPLETE** —
-> real QuickBooks OAuth 2.0 is built and verified. `apps/quickbooks/` module (crypto,
-> config, oauth, db, connection, client, errors), `qb_connections` table live in Neon,
-> routes at `/api/auth/quickbooks/{connect,callback,status,test,disconnect}`, admin UI at
-> `/admin/integrations/quickbooks`. Commits `6342cc5` (0a) and `fb65ebc` (0b).
-> **ONE OWNER ACTION PENDING:** click "Connect QuickBooks" at
-> `/admin/integrations/quickbooks` and authorize in the Intuit window (one-time). Until
-> then no realmId/tokens exist and live QB reads/writes can't run.
-> **Next milestone: Phase 1** — write `docs/Dealer Invoice Specification.md`.
+> **PROGRESS UPDATE 2026-07-28 (Opus session):** Phases 0–2 COMPLETE, plus running
+> on **QuickBooks sandbox** for safe pipeline development.
+> - Phase 0: real OAuth (`apps/quickbooks/`), `qb_connections` table, admin UI. Connected.
+> - **Environment = sandbox.** The connected company is Intuit's "Sandbox Company US 4068".
+>   Reason: the keys in `.env.local` are Intuit **Development keys** (sandbox-only). Building
+>   the whole pipeline on sandbox first (zero risk to real books); production go-live needs
+>   Production keys + https redirect + app profile URLs (see §7 of Dealer Invoice Spec).
+> - QB helpers: `apps/quickbooks/{client(queryQBO),customers,invoices}.ts`.
+> - Dealers seeded in sandbox + mapping persisted on `dealerships` (qb_customer_id etc.):
+>   K→Sterling Kia(58), U→Sterling Subaru(59), S&T→Sterling Auto Group(60). Idempotent via
+>   `POST /api/quickbooks/setup-dealers`.
+> - Phase 1: `docs/Dealer Invoice Specification.md` written.
+> - `formatLineDescription` fixed to `YEAR MAKE MODEL COLOR #STOCK`.
+> - Phase 2: `dealer_scans` + `dealer_scan_events` tables live (`apps/dealer-checkin/schema.ts`).
+> - Dev server: run `npx next dev -H 0.0.0.0 -p 3000` (bind IPv4 so the browser reaches it);
+>   use `http://localhost:3000`. Migrations: `node scripts/apply-qb-migration.mjs <file>`.
+> **Next: Phase 3+** — scan API route, preview/edit UI, then the append-vs-new QB write
+> logic (validate on sandbox). Production writes remain gated on owner approval.
 
 ---
 
