@@ -96,28 +96,33 @@ Expected remaining work:
   full self-test still 9/9 after refactor. Files: `apps/dealer-checkin/{service,db,
   schema}.ts`, `app/api/dealer-checkin/retry-queue`. Commit: (this milestone)
 
+✅ **Check-in metrics dashboard** — 2026-07-29
+- `getCheckInMetrics` aggregates production scans (throughput, today, avg scan
+  time, avg QB latency, duplicate rate, prompt count, synced/queued/errors);
+  `GET /api/dealer-checkin/metrics`; admin page `/admin/dealer-checkin` with a
+  "Drain queue" control. Aggregation math validated (avg/filter/rate). Commit: (this milestone)
+
 ---
 
 # In Progress
 
-**Check-in polish & metrics surface**
-- Goal: measure everything; auto-drain the queue; verify on a real device.
-- Status: next up. Engine + UI + queue complete and validated.
-- Remaining: admin metrics view, scheduled queue drain, on-device camera test.
+**Check-in polish**
+- Goal: auto-drain the queue on a schedule; verify camera on a real device.
+- Status: next up. Engine + UI + queue + metrics complete and validated.
+- Remaining: scheduled queue drain, on-device camera test, Work Board sync polish.
 - Blockers: none (sandbox). Production writes gated on owner approval + prod keys.
-- Complexity: Low-Medium.
+- Complexity: Low.
 
 ---
 
 # Next Priorities
 (ranked by labor removed)
 
-1. **Check-in metrics dashboard** — surface scan time, correction rate, QB latency,
-   queue depth; make the next labor-cut visible. Highest leverage now.
-2. **Scheduled queue drain** — auto-retry queued invoices on a heartbeat (no manual POST).
-3. **Auto Work Board sync polish** — ensure every completed check-in appears instantly, zero manual refresh.
-4. **Production go-live** (owner-gated) — real books; needs Intuit production keys + https + terms.
-5. **Batch/period invoice management UI** — see/close dealer invoices without touching QuickBooks directly.
+1. **Scheduled queue drain** — auto-retry queued invoices on a heartbeat (no manual POST).
+2. **Auto Work Board sync polish** — ensure every completed check-in appears instantly, zero manual refresh.
+3. **Production go-live** (owner-gated) — real books; needs Intuit production keys + https + terms.
+4. **Batch/period invoice management UI** — see/close dealer invoices without touching QuickBooks directly.
+5. **Retail check-in parity** — bring the retail flow to the same one-tap bar.
 
 ---
 
@@ -195,10 +200,10 @@ resolved by a LIVE read; sent invoices are never modified.
 # Metrics
 (2026-07-28)
 
-- Total commits: 35
+- Total commits: 36
 - TS/TSX LOC: ~18,900
 - Test files / tests: 1 / 20 · pass rate 100%
-- API routes: 50
+- API routes: 52
 - Pages: 31
 - App modules: 6 (vehicle-entry, estimator, ai-learning, workflow, quickbooks, dealer-checkin)
 - DB tables: ~20 · migrations (manual): 4

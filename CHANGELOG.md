@@ -6,6 +6,10 @@ See `docs/ROADMAP.md` for the living project plan.
 ## [Unreleased]
 
 ### Added — Dealer Check-In (Module 4)
+- **Check-in metrics dashboard** (2026-07-29): `getCheckInMetrics` +
+  `GET /api/dealer-checkin/metrics` + admin page `/admin/dealer-checkin`
+  (throughput, avg scan time, avg QB latency, duplicate rate, queue depth) with a
+  Drain-queue control. Aggregation math validated.
 - **Offline QB queue + retry** (2026-07-29): if QuickBooks is unavailable at
   check-in, the Work Board order is still created and the invoice is queued
   (`qb_sync_status = 'queued'`); `POST /api/dealer-checkin/retry-queue` drains the

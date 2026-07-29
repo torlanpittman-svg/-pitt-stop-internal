@@ -2,6 +2,19 @@
  * Dealer check-in persistence: scan records + audit events.
  */
 import { eq, and, gte, desc, sql } from 'drizzle-orm'
+export interface CheckInMetrics {
+  total:            number
+  approved:         number
+  duplicateSkipped: number
+  errors:           number
+  queued:           number
+  synced:           number
+  pricingPrompted:  number
+  today:            number
+  avgScanDurationMs: number | null
+  avgQbLatencyMs:    number | null
+  duplicateRatePct:  number | null
+}
 import { getDb } from '@/platform/db'
 import { dealerScans, dealerScanEvents } from './schema'
 
@@ -71,6 +84,42 @@ export async function listScanEvents(scanId: string) {
     .from(dealerScanEvents)
     .where(eq(dealerScanEvents.scanId, scanId))
     .orderBy(dealerScanEvents.createdAt)
+}
+
+/** Aggregate operational metrics over production check-ins. */
+export async function getCheckInMetrics(): Promise<CheckInMetrics> {
+  const db = getDb()
+  const [r] = await db
+    .select({
+      total:            sql<number>`count(*)`,
+      approved:         sql<number>`count(*) filter (where ${dealerScans.status} = 'approved')`,
+      duplicateSkipped: sql<number>`count(*) filter (where ${dealerScans.status} = 'duplicate_skipped')`,
+      errors:           sql<number>`count(*) filter (where ${dealerScans.status} = 'error')`,
+      queued:           sql<number>`count(*) filter (where ${dealerScans.qbSyncStatus} = 'queued')`,
+      synced:           sql<number>`count(*) filter (where ${dealerScans.qbSyncStatus} = 'synced')`,
+      pricingPrompted:  sql<number>`count(*) filter (where ${dealerScans.pricingPromptShown} = true)`,
+      today:            sql<number>`count(*) filter (where ${dealerScans.createdAt} >= date_trunc('day', now()))`,
+      avgScan:          sql<number | null>`avg(${dealerScans.scanDurationMs})`,
+      avgQb:            sql<number | null>`avg(${dealerScans.qbLatencyMs})`,
+    })
+    .from(dealerScans)
+    .where(eq(dealerScans.dataType, 'production'))
+
+  const num = (v: unknown) => (v == null ? null : Math.round(Number(v)))
+  const total = Number(r.total)
+  return {
+    total,
+    approved:         Number(r.approved),
+    duplicateSkipped: Number(r.duplicateSkipped),
+    errors:           Number(r.errors),
+    queued:           Number(r.queued),
+    synced:           Number(r.synced),
+    pricingPrompted:  Number(r.pricingPrompted),
+    today:            Number(r.today),
+    avgScanDurationMs: num(r.avgScan),
+    avgQbLatencyMs:    num(r.avgQb),
+    duplicateRatePct:  total > 0 ? Math.round((Number(r.duplicateSkipped) / total) * 100) : null,
+  }
 }
 
 /** Scans whose QuickBooks invoice write is queued (QB was unavailable). */

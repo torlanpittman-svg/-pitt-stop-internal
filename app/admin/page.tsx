@@ -48,6 +48,16 @@ const ADMIN_SECTIONS: AdminSection[] = [
     ],
   },
   {
+    group: 'Dealer Check-In',
+    links: [
+      {
+        label: 'Check-In Metrics',
+        description: 'Throughput, scan time, QB latency, duplicate rate, invoice queue',
+        href: '/admin/dealer-checkin',
+      },
+    ],
+  },
+  {
     group: 'Integrations',
     links: [
       {
