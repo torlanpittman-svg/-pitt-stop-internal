@@ -16,15 +16,14 @@ invoicing, dispatch, follow-up, reconciliation) is done by the system.
 
 **Phase 3 — Dealer Check-In (hardening)**
 
-Status: 🟢 In Progress
+Status: 🟢 Near complete
 
-Completion: ~95% (backend + API + camera UI + offline queue done; polish remains)
+Completion: ~98% (engine, API, camera UI, offline queue, metrics, scheduled drain done)
 
 Expected remaining work:
-- Admin metrics view for scan duration / OCR confidence / QB latency / queue depth
-- Auto-drain the queue on a schedule (cron/heartbeat) instead of manual POST
 - On-device validation of camera/barcode on a real phone (headless can't test)
-- Neon-outage safety review (scan preserved before any write)
+- Auto Work Board sync polish (every completed check-in appears instantly)
+- Then: production go-live prep (owner-gated)
 
 ---
 
@@ -105,7 +104,18 @@ Expected remaining work:
 ✅ **Scheduled queue drain** — 2026-07-29
 - `GET /api/cron/drain-dealer-queue` (secret-guarded via `CRON_SECRET`) drains the
   queue automatically; `vercel.json` daily cron (Hobby-compatible). Sub-daily
-  auto-drain needs a Vercel Pro plan (owner/billing decision). Commit: (this milestone)
+  auto-drain needs a Vercel Pro plan (owner/billing decision). Commit: 5ce8493
+
+✅ **Work Board sync validated** — 2026-07-29
+- Confirmed a dealer check-in appears on the board instantly (order `arrived`,
+  source `dealer`, vehicle + stock + invoice in notes) via the same `?new=`
+  highlight + polling the retail flow uses. No leftover test orders after runs.
+
+✅ **Dealer invoice overview (live, read-only)** — 2026-07-29
+- `getDealerInvoiceOverview` + `GET /api/dealer-checkin/invoices` + admin section:
+  per-dealer open QB invoices (number, vehicle count, total, open/sent), deduped by
+  QB customer (S&T→Auto Group). Live from QuickBooks; safe on production. Owner sees
+  dealer billing without logging into QB. Validated on sandbox. Commit: (this milestone)
 
 ---
 
@@ -123,11 +133,10 @@ Expected remaining work:
 # Next Priorities
 (ranked by labor removed)
 
-1. **Auto Work Board sync polish** — ensure every completed check-in appears instantly, zero manual refresh.
-2. **Production go-live** (owner-gated) — real books; needs Intuit production keys + https + terms.
-3. **Batch/period invoice management UI** — see/close dealer invoices without touching QuickBooks directly.
-4. **Retail check-in parity** — bring the retail flow to the same one-tap bar.
-5. **Sub-daily auto-drain** (owner-gated) — needs Vercel Pro for frequent crons.
+1. **Production go-live** (owner-gated) — real books; needs Intuit production keys + https + terms.
+2. **Dealer invoice actions** — mark-sent / close a period from Pitt Stop (owner-approved QB writes).
+3. **Retail check-in parity** — bring the retail flow to the same one-tap bar.
+4. **Sub-daily auto-drain** (owner-gated) — needs Vercel Pro for frequent crons.
 
 ---
 
@@ -205,10 +214,10 @@ resolved by a LIVE read; sent invoices are never modified.
 # Metrics
 (2026-07-28)
 
-- Total commits: 37
+- Total commits: 38
 - TS/TSX LOC: ~18,900
 - Test files / tests: 1 / 20 · pass rate 100%
-- API routes: 53
+- API routes: 54
 - Pages: 31
 - App modules: 6 (vehicle-entry, estimator, ai-learning, workflow, quickbooks, dealer-checkin)
 - DB tables: ~20 · migrations (manual): 4

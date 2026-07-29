@@ -6,6 +6,9 @@ See `docs/ROADMAP.md` for the living project plan.
 ## [Unreleased]
 
 ### Added — Dealer Check-In (Module 4)
+- **Dealer invoice overview** (2026-07-29): `GET /api/dealer-checkin/invoices`
+  + admin section shows each dealer's open QuickBooks invoices (number, vehicle
+  count, total, open/sent) read live — QB billing visibility without logging in.
 - **Scheduled queue drain** (2026-07-29): `GET /api/cron/drain-dealer-queue`
   (guarded by `CRON_SECRET`) + `vercel.json` daily cron auto-retries queued
   invoices. Sub-daily frequency needs Vercel Pro (owner decision).
