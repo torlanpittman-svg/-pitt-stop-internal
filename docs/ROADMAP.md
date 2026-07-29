@@ -14,16 +14,26 @@ invoicing, dispatch, follow-up, reconciliation) is done by the system.
 
 # Current Phase
 
-**Phase 3 — Dealer Check-In (hardening)**
+**Phase 3 — Dealer Check-In** ✅ COMPLETE (sandbox-validated)
 
-Status: 🟢 Near complete
+**Phase 4 — Production go-live** 🔴 Blocked on owner action
 
-Completion: ~98% (engine, API, camera UI, offline queue, metrics, scheduled drain done)
+Status: awaiting owner — this is the one remaining step to deliver real value.
 
-Expected remaining work:
-- On-device validation of camera/barcode on a real phone (headless can't test)
-- Auto Work Board sync polish (every completed check-in appears instantly)
-- Then: production go-live prep (owner-gated)
+To go live on the real Pitt Stop QuickBooks company, the owner must (I can drive
+the browser portions, but these require the owner's credentials/decisions):
+1. In the Intuit Developer app "Pitt Stop OS" → get **Production keys** (requires
+   accepting Intuit's production terms — a legal agreement) and provide the app
+   profile URLs (host, launch, disconnect, privacy, EULA) on the Vercel domain.
+2. Add the **https production redirect URI** (Vercel domain) to the Intuit app.
+3. Put the production Client ID/Secret in the deployment env; set
+   `QUICKBOOKS_ENVIRONMENT=production`; connect at `/admin/integrations/quickbooks`.
+4. Re-run `POST /api/quickbooks/setup-dealers` against the live company to map the
+   real Sterling customer IDs; confirm "Complete Detail" item + "Detail Sales"
+   account exist (or let setup create them).
+5. First real check-in is owner-approved (confirm route needs `X-QB-Write-Approved`).
+
+Everything else (engine, UI, queue, metrics, invoice overview) is done and proven.
 
 ---
 
