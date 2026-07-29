@@ -75,6 +75,10 @@ export const dealerScans = pgTable(
     // Work board linkage
     serviceOrderId: uuid('service_order_id'),
 
+    // Instrumentation
+    scanDurationMs: integer('scan_duration_ms'),
+    qbLatencyMs:    integer('qb_latency_ms'),
+
     // Data classification: production | pilot | test
     dataType: varchar('data_type', { length: 20 }).notNull().default('production'),
   },

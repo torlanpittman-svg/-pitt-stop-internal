@@ -28,7 +28,7 @@ import {
   normalizeStock,
   STANDARD_RATE,
 } from './rules'
-import { createScan, updateScan, recentScansByStock, logScanEvent } from './db'
+import { createScan, updateScan, recentScansByStock, logScanEvent, listQueuedScans } from './db'
 import type { DealerScanRow } from './db'
 
 const APP = 'dealer-checkin:service'
@@ -54,11 +54,14 @@ export interface CheckInInput {
   dataType?:        'production' | 'pilot' | 'test'
   /** Proceed despite a detected duplicate. */
   force?:           boolean
+  /** Client-measured time from camera-ready to confirm, for instrumentation. */
+  scanDurationMs?:  number | null
 }
 
 export type CheckInOutcome =
   | 'created_invoice'
   | 'appended'
+  | 'queued'
   | 'pricing_prompt_required'
   | 'duplicate'
   | 'no_dealer'
@@ -74,6 +77,7 @@ export interface CheckInResult {
   serviceOrderId?: string
   vehicleId?: string
   duplicate?: { reason: string; existingInvoiceNumber?: string | null; existingOrderId?: string }
+  warnings?: string[]
   error?:    string
 }
 
@@ -243,30 +247,39 @@ export async function checkInDealerVehicle(input: CheckInInput): Promise<CheckIn
       serviceDate: new Date().toISOString().slice(0, 10),
     }
 
-    // ── 6. Write to QuickBooks ────────────────────────────────────────────
-    let invoiceResult
-    let action: 'created' | 'appended'
-    if (appendable) {
-      const written = await appendDealerLine({ invoiceId: appendable.id, itemId, line })
-      action = 'appended'
-      invoiceResult = written
-      await logScanEvent({ scanId: scan.id, eventType: 'qb_synced', newValue: { invoiceId: written.invoiceId, action, lineCount: written.lineCount } })
-    } else {
-      const written = await createDealerInvoice({ customerId: dealership.qbCustomerId, itemId, salesTermId: termId, line })
-      action = 'created'
-      invoiceResult = written
-      await logScanEvent({ scanId: scan.id, eventType: 'invoice_created', newValue: { invoiceId: written.invoiceId, number: written.invoiceNumber } })
-      await logScanEvent({ scanId: scan.id, eventType: 'qb_synced', newValue: { invoiceId: written.invoiceId, action, lineCount: written.lineCount } })
+    // ── 6. Write to QuickBooks (queue on failure — never lose the scan) ───
+    const action: 'created' | 'appended' = appendable ? 'appended' : 'created'
+    let invoiceResult: { invoiceId: string; invoiceNumber: string | null; lineCount: number } | null = null
+    let queued = false
+    let qbError: string | null = null
+    const qbStart = Date.now()
+    try {
+      if (appendable) {
+        invoiceResult = await appendDealerLine({ invoiceId: appendable.id, itemId, line })
+        await logScanEvent({ scanId: scan.id, eventType: 'qb_synced', newValue: { invoiceId: invoiceResult.invoiceId, action, lineCount: invoiceResult.lineCount } })
+      } else {
+        invoiceResult = await createDealerInvoice({ customerId: dealership.qbCustomerId, itemId, salesTermId: termId, line })
+        await logScanEvent({ scanId: scan.id, eventType: 'invoice_created', newValue: { invoiceId: invoiceResult.invoiceId, number: invoiceResult.invoiceNumber } })
+        await logScanEvent({ scanId: scan.id, eventType: 'qb_synced', newValue: { invoiceId: invoiceResult.invoiceId, action, lineCount: invoiceResult.lineCount } })
+      }
+    } catch (err) {
+      // QuickBooks unavailable → queue the invoice; the vehicle still goes on the board.
+      queued = true
+      qbError = String(err)
+      await logScanEvent({ scanId: scan.id, eventType: 'qb_queued', note: qbError })
+      logger.warn(APP, 'checkin.qb_queued', { scanId: scan.id, error: qbError })
     }
+    const qbLatencyMs = Date.now() - qbStart
 
-    // ── 7. Work Board entry ───────────────────────────────────────────────
+    // ── 7. Work Board entry (always — so the vehicle appears immediately) ──
     const vehicle = await findOrCreateVehicle({ vin: input.vin, year: input.year, make: input.make, model: input.model, color: input.color })
+    const invoiceLabel = queued ? 'PENDING SYNC' : (invoiceResult?.invoiceNumber ?? invoiceResult?.invoiceId ?? 'n/a')
     const order = await createServiceOrder({
       vehicleId:   vehicle.id,
       source:      'dealer',
       serviceType: 'dealer_detail',
       checkedInBy: input.approvedBy ?? undefined,
-      notes:       `Stock: ${input.stockNumber ?? 'n/a'} | Invoice: ${invoiceResult.invoiceNumber ?? invoiceResult.invoiceId} | ${dealership.name}`,
+      notes:       `Stock: ${input.stockNumber ?? 'n/a'} | Invoice: ${invoiceLabel} | ${dealership.name}`,
     })
     await logScanEvent({ scanId: scan.id, eventType: 'work_board_created', newValue: { serviceOrderId: order.id, orderNumber: order.orderNumber } })
 
@@ -276,28 +289,94 @@ export async function checkInDealerVehicle(input: CheckInInput): Promise<CheckIn
       approvedAt:      new Date(),
       approvedBy:      input.approvedBy ?? null,
       rate,
-      qbLineId:        null,
-      qbInvoiceNumber: invoiceResult.invoiceNumber,
-      qbSyncStatus:    'synced',
-      qbSyncedAt:      new Date(),
+      qbInvoiceNumber: invoiceResult?.invoiceNumber ?? null,
+      qbSyncStatus:    queued ? 'queued' : 'synced',
+      qbSyncError:     qbError,
+      qbSyncedAt:      queued ? null : new Date(),
       serviceOrderId:  order.id,
+      scanDurationMs:  input.scanDurationMs ?? null,
+      qbLatencyMs,
     })
-    await logScanEvent({ scanId: scan.id, eventType: 'approved', actor: input.approvedBy ?? null, newValue: { rate, invoice: invoiceResult.invoiceNumber } })
+    await logScanEvent({ scanId: scan.id, eventType: 'approved', actor: input.approvedBy ?? null, newValue: { rate, invoice: invoiceLabel, queued } })
 
-    logger.info(APP, 'checkin.success', { scanId: scan.id, dealer: dealership.name, action, invoice: invoiceResult.invoiceNumber, rate })
+    logger.info(APP, 'checkin.success', { scanId: scan.id, dealer: dealership.name, action, invoice: invoiceLabel, rate, queued, qbLatencyMs })
 
     return {
       ok: true,
-      outcome: action === 'created' ? 'created_invoice' : 'appended',
+      outcome: queued ? 'queued' : (action === 'created' ? 'created_invoice' : 'appended'),
       scanId: scan.id,
       dealership,
       pricing: pricingOut,
-      invoice: { id: invoiceResult.invoiceId, number: invoiceResult.invoiceNumber, action, lineCount: invoiceResult.lineCount, rate },
+      invoice: invoiceResult
+        ? { id: invoiceResult.invoiceId, number: invoiceResult.invoiceNumber, action, lineCount: invoiceResult.lineCount, rate }
+        : undefined,
       serviceOrderId: order.id,
       vehicleId: vehicle.id,
+      warnings: queued ? ['QuickBooks was unavailable — invoice queued and will sync automatically.'] : undefined,
     }
   } catch (err) {
     logger.error(APP, 'checkin.error', { scanId: scan.id, error: String(err) })
     return await fail('error', {}, String(err))
   }
+}
+
+export interface RetryResult {
+  processed: number
+  synced:    number
+  stillQueued: number
+  details:   Array<{ scanId: string; result: 'synced' | 'failed' | 'skipped'; invoice?: string | null; error?: string }>
+}
+
+/**
+ * Drain the queue of check-ins whose QuickBooks write failed. For each queued
+ * scan, re-resolve the dealer + target invoice and write the line; on success
+ * mark it synced. Safe to run repeatedly (e.g., on a cron). Idempotency guard:
+ * if the stock is already on the open invoice, mark synced without re-writing.
+ */
+export async function retryQueuedCheckIns(limit = 50): Promise<RetryResult> {
+  const queued = await listQueuedScans(limit)
+  const details: RetryResult['details'] = []
+  let synced = 0
+
+  for (const scan of queued) {
+    try {
+      const dealer = await resolveDealer({ dealershipId: scan.dealershipId, stockNumber: scan.stockNumber })
+      if (!dealer?.qbCustomerId) {
+        details.push({ scanId: scan.id, result: 'skipped', error: 'no dealer/QB mapping' })
+        continue
+      }
+      const itemId = await resolveDealerDetailItem()
+      const termId = await resolveDueOnReceiptTermId()
+      const appendable = await findAppendableInvoice(dealer.qbCustomerId)
+      const line = {
+        description: formatLineDescription(scan),
+        amount:      scan.rate ?? STANDARD_RATE,
+        serviceDate: (scan.createdAt instanceof Date ? scan.createdAt : new Date()).toISOString().slice(0, 10),
+      }
+
+      // Idempotency: skip the write if the stock is already on the open invoice.
+      let written
+      if (scan.stockNumber && appendable) {
+        const descriptions = await getInvoiceLineDescriptions(appendable.id)
+        if (descriptions.some((d) => d.toUpperCase().includes(`#${normalizeStock(scan.stockNumber)}`))) {
+          written = { invoiceNumber: appendable.docNumber }
+        }
+      }
+      if (!written) {
+        written = appendable
+          ? await appendDealerLine({ invoiceId: appendable.id, itemId, line })
+          : await createDealerInvoice({ customerId: dealer.qbCustomerId, itemId, salesTermId: termId, line })
+      }
+
+      await updateScan(scan.id, { qbSyncStatus: 'synced', qbInvoiceNumber: written.invoiceNumber, qbSyncError: null, qbSyncedAt: new Date() })
+      await logScanEvent({ scanId: scan.id, eventType: 'qb_synced', note: 'retry', newValue: { invoice: written.invoiceNumber } })
+      synced++
+      details.push({ scanId: scan.id, result: 'synced', invoice: written.invoiceNumber })
+    } catch (err) {
+      await logScanEvent({ scanId: scan.id, eventType: 'error', note: 'retry failed: ' + String(err) })
+      details.push({ scanId: scan.id, result: 'failed', error: String(err) })
+    }
+  }
+
+  return { processed: queued.length, synced, stillQueued: queued.length - synced, details }
 }

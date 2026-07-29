@@ -73,6 +73,17 @@ export async function listScanEvents(scanId: string) {
     .orderBy(dealerScanEvents.createdAt)
 }
 
+/** Scans whose QuickBooks invoice write is queued (QB was unavailable). */
+export async function listQueuedScans(limit = 50): Promise<DealerScanRow[]> {
+  const db = getDb()
+  return db
+    .select()
+    .from(dealerScans)
+    .where(eq(dealerScans.qbSyncStatus, 'queued'))
+    .orderBy(dealerScans.createdAt)
+    .limit(limit)
+}
+
 /** Delete a scan and its events (used to clean up test check-ins). */
 export async function deleteScanCascade(scanId: string): Promise<void> {
   const db = getDb()
