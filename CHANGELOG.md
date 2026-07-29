@@ -6,6 +6,9 @@ See `docs/ROADMAP.md` for the living project plan.
 ## [Unreleased]
 
 ### Added — Dealer Check-In (Module 4)
+- **Scheduled queue drain** (2026-07-29): `GET /api/cron/drain-dealer-queue`
+  (guarded by `CRON_SECRET`) + `vercel.json` daily cron auto-retries queued
+  invoices. Sub-daily frequency needs Vercel Pro (owner decision).
 - **Check-in metrics dashboard** (2026-07-29): `getCheckInMetrics` +
   `GET /api/dealer-checkin/metrics` + admin page `/admin/dealer-checkin`
   (throughput, avg scan time, avg QB latency, duplicate rate, queue depth) with a
