@@ -66,6 +66,7 @@ export default function DealerCheckInFlow() {
   const [error, setError] = useState<string | null>(null)
   const startedAt = useRef<number>(0)
   const handleCaptureRef = useRef<(vin?: string) => void>(() => {})
+  const submittingRef = useRef(false) // guards against duplicate production writes
 
   const captureFrame = useCallback((): Promise<Blob | null> => {
     return new Promise((resolve) => {
@@ -205,17 +206,27 @@ export default function DealerCheckInFlow() {
     setPhase('scanning'); scanningRef.current = true
   }, [])
 
-  // ── Confirm ("Looks Good") ──────────────────────────────────────────────────
+  // ── Confirm the production write ("Confirm Production Write") ────────────────
+  // Sends the explicit X-QB-Write-Approved header — the only path that authorizes
+  // a real QuickBooks invoice write. Guarded against duplicate submissions.
   const confirm = useCallback(async (force = false) => {
     if (!captured || !preview?.dealership) return
+    if (submittingRef.current) return // prevent duplicate submissions (double-tap)
+    submittingRef.current = true
     setPhase('submitting'); setError(null)
     const rate = newVehicle ? preview.pricing.newVehicleRate : undefined
     try {
       const res = await fetch('/api/dealer-checkin', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-QB-Write-Approved': 'true', // explicit, operator-approved production write
+        },
         body: JSON.stringify({
           ...captured, tagColor: newVehicle ? 'white' : 'yellow',
-          rate, force, approvedBy: null, scanDurationMs: Date.now() - startedAt.current,
+          rate, force,
+          approvedBy: 'operator', // recorded on the scan audit trail as the approver
+          scanDurationMs: Date.now() - startedAt.current,
         }),
       })
       const result = await res.json()
@@ -234,6 +245,8 @@ export default function DealerCheckInFlow() {
       // QB/network failure — keep the operator's work, offer retry
       setError('QuickBooks unreachable. Your scan is saved — tap Retry.')
       setPhase('confirm')
+    } finally {
+      submittingRef.current = false
     }
   }, [captured, preview, newVehicle, router])
 
@@ -250,9 +263,10 @@ export default function DealerCheckInFlow() {
         <div className="relative flex-1 flex flex-col">
           <div className="relative flex-1 bg-gray-950 overflow-hidden">
             <video ref={videoRef} playsInline muted className="absolute inset-0 w-full h-full object-cover" />
-            {/* scan frame */}
+            {/* scan frame — portrait guide sized for a vertical dealer tag.
+                Camera feed is untouched; only this overlay changes. */}
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="w-4/5 h-40 border-4 border-white/80 rounded-2xl shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]" />
+              <div className="w-3/5 max-w-[15rem] aspect-[3/5] max-h-[80%] border-4 border-white/80 rounded-2xl shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]" />
             </div>
             {!camReady && !camFailed && (
               <div className="absolute inset-0 flex items-center justify-center text-gray-400">Opening camera…</div>
@@ -271,7 +285,7 @@ export default function DealerCheckInFlow() {
           </div>
           <div className="p-4 space-y-3 shrink-0">
             {error && <p className="text-amber-400 text-center text-sm">{error}</p>}
-            <p className="text-center text-gray-400 text-sm">Point at the dealer tag — VIN scans automatically</p>
+            <p className="text-center text-gray-400 text-sm">Frame the tag vertically in the box — VIN scans automatically</p>
             <button
               onClick={() => handleCapture()}
               disabled={!camReady || phase === 'processing'}
@@ -345,15 +359,32 @@ function ConfirmScreen({
         {captured.vin && <Field label="VIN" value={captured.vin} mono />}
       </div>
 
-      {/* Invoice line preview */}
-      <div className="mt-4 rounded-2xl bg-gray-900 border border-gray-800 p-4">
-        <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">Invoice line</p>
-        <p className="text-lg font-medium">{preview.linePreview} — ${rate}</p>
-        <p className="text-gray-500 text-sm mt-1">
-          {preview.invoiceTarget.action === 'append'
-            ? `Adds to open invoice #${preview.invoiceTarget.invoiceNumber}`
-            : 'Starts a new invoice'}
-        </p>
+      {/* Pending QuickBooks write — the exact write awaiting approval */}
+      <div className="mt-4 rounded-2xl bg-gray-900 border border-gray-800 p-4 space-y-2">
+        <p className="text-gray-500 text-xs uppercase tracking-widest">Pending QuickBooks write</p>
+        <div className="flex justify-between gap-3 text-sm">
+          <span className="text-gray-500 shrink-0">Customer</span>
+          <span className="text-white text-right">
+            {preview.dealership?.name ?? '—'}
+            {preview.dealership?.qbCustomerId ? ` (#${preview.dealership.qbCustomerId})` : ''}
+          </span>
+        </div>
+        <div className="flex justify-between gap-3 text-sm">
+          <span className="text-gray-500 shrink-0">Service</span>
+          <span className="text-white text-right">Complete Detail</span>
+        </div>
+        <div className="flex justify-between gap-3 text-sm">
+          <span className="text-gray-500 shrink-0">Invoice</span>
+          <span className="text-white text-right">
+            {preview.invoiceTarget.action === 'append'
+              ? `Append to open #${preview.invoiceTarget.invoiceNumber}`
+              : 'Create new invoice'}
+          </span>
+        </div>
+        <div className="border-t border-gray-800 pt-2">
+          <p className="text-base font-medium">{preview.linePreview}</p>
+          <p className="text-2xl font-bold mt-0.5">${rate}</p>
+        </div>
       </div>
 
       {/* $125 new-vehicle toggle */}
@@ -373,6 +404,22 @@ function ConfirmScreen({
         <p className="mt-3 text-amber-400 text-center text-sm">Stock number looks unclear — consider a retake.</p>
       )}
 
+      {/* Assumptions & confidence */}
+      {(preview.warnings.length > 0 || captured.stockConfidence != null) && (
+        <div className="mt-3 rounded-2xl border border-gray-700 bg-gray-900/60 p-4">
+          <p className="text-gray-400 text-xs uppercase tracking-widest mb-1.5">Assumptions</p>
+          <ul className="text-gray-300 text-sm list-disc list-inside space-y-0.5">
+            {captured.stockConfidence != null && (
+              <li className={lowStock ? 'text-amber-400' : ''}>Stock # read confidence: {captured.stockConfidence}%</li>
+            )}
+            <li>Rate applied: ${rate} ({newVehicle ? 'new Sterling Auto' : 'standard detail'})</li>
+            {preview.warnings.map((w, i) => (
+              <li key={i} className="text-amber-300">{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Duplicate warning */}
       {preview.duplicate && (
         <div className="mt-3 rounded-2xl border border-amber-700 bg-amber-950/40 p-4">
@@ -386,8 +433,8 @@ function ConfirmScreen({
       {/* Actions */}
       <div className="mt-auto pt-5 space-y-3">
         {canSubmit && (
-          <button onClick={onLooksGood} className="w-full h-16 rounded-2xl bg-green-600 text-white text-xl font-bold">
-            Looks Good
+          <button onClick={onLooksGood} className="w-full h-16 rounded-2xl bg-green-600 active:bg-green-700 text-white text-xl font-bold">
+            Confirm Production Write
           </button>
         )}
         {preview.duplicate && (
