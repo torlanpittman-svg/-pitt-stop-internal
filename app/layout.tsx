@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next'
 import { Geist } from 'next/font/google'
 import './globals.css'
+import { ServiceWorkerRegister } from './sw-register'
 
 const geist = Geist({ subsets: ['latin'], variable: '--font-geist' })
 
@@ -31,6 +32,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="apple-touch-icon" href="/icons/icon-512.svg" />
       </head>
       <body className="h-full bg-gray-950 font-[family-name:var(--font-geist)] antialiased">
+        <ServiceWorkerRegister />
         {children}
       </body>
     </html>
