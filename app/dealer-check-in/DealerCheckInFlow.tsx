@@ -64,6 +64,9 @@ export default function DealerCheckInFlow() {
   const [preview, setPreview] = useState<Preview | null>(null)
   const [newVehicle, setNewVehicle] = useState(false) // $125 toggle
   const [error, setError] = useState<string | null>(null)
+  const [writeResult, setWriteResult] = useState<
+    { outcome: string; invoiceNumber: string | null; action?: string; serviceOrderId: string } | null
+  >(null)
   const startedAt = useRef<number>(0)
   const handleCaptureRef = useRef<(vin?: string) => void>(() => {})
   const submittingRef = useRef(false) // guards against duplicate production writes
@@ -202,7 +205,7 @@ export default function DealerCheckInFlow() {
   useEffect(() => { handleCaptureRef.current = handleCapture }, [handleCapture])
 
   const retake = useCallback(() => {
-    setPreview(null); setCaptured(null); setError(null); setNewVehicle(false)
+    setPreview(null); setCaptured(null); setError(null); setNewVehicle(false); setWriteResult(null)
     setPhase('scanning'); scanningRef.current = true
   }, [])
 
@@ -231,8 +234,14 @@ export default function DealerCheckInFlow() {
       })
       const result = await res.json()
       if (result.ok && result.serviceOrderId) {
+        // Report exactly what happened — a real QB write vs. a queued one.
+        setWriteResult({
+          outcome:       result.outcome,
+          invoiceNumber: result.invoice?.number ?? null,
+          action:        result.invoice?.action,
+          serviceOrderId: result.serviceOrderId,
+        })
         setPhase('done')
-        router.push(`/work-board?new=${result.serviceOrderId}`)
         return
       }
       if (result.outcome === 'duplicate' && !force) {
@@ -313,10 +322,46 @@ export default function DealerCheckInFlow() {
         />
       )}
 
-      {(phase === 'submitting' || phase === 'done') && (
+      {phase === 'submitting' && (
         <div className="flex-1 flex flex-col items-center justify-center gap-4">
           <div className="w-12 h-12 border-4 border-white/30 border-t-white rounded-full animate-spin" />
-          <p className="text-xl">{phase === 'done' ? 'Added to Work Board' : 'Creating invoice…'}</p>
+          <p className="text-xl">Writing to QuickBooks…</p>
+        </div>
+      )}
+
+      {phase === 'done' && writeResult && (
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 px-6 text-center">
+          {writeResult.outcome === 'queued' ? (
+            <>
+              <div className="text-5xl">⚠️</div>
+              <p className="text-2xl font-bold text-amber-300">Queued — not in QuickBooks yet</p>
+              <p className="text-gray-400 max-w-sm">
+                The vehicle is on the Work Board, but QuickBooks was unavailable so the invoice is
+                <span className="text-amber-300 font-semibold"> queued</span> and will sync automatically.
+                No invoice exists in QuickBooks yet.
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="text-5xl text-green-400">✓</div>
+              <p className="text-2xl font-bold">
+                Invoice {writeResult.action === 'appended' ? 'updated' : 'created'}
+              </p>
+              <p className="text-gray-300 max-w-sm">
+                {writeResult.invoiceNumber ? (
+                  <>QuickBooks invoice <span className="font-bold text-white">#{writeResult.invoiceNumber}</span> — added to Work Board.</>
+                ) : (
+                  <span className="text-amber-300">Written to QuickBooks, but no invoice number was returned — please verify in QuickBooks.</span>
+                )}
+              </p>
+            </>
+          )}
+          <button
+            onClick={() => router.push(`/work-board?new=${writeResult.serviceOrderId}`)}
+            className="mt-4 w-full max-w-xs h-14 rounded-2xl bg-white text-black text-lg font-bold"
+          >
+            View Work Board
+          </button>
         </div>
       )}
     </main>

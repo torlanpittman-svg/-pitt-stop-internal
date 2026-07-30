@@ -118,6 +118,33 @@ function summarize(inv: RawInvoice): WrittenInvoice {
 // ── Create / append ──────────────────────────────────────────────────────────
 
 /** Create a new dealer invoice with a single line and "Due on receipt" terms. */
+/**
+ * Next invoice number in the company's own sequence.
+ *
+ * The Pitt Stop company has "Custom transaction numbers" enabled, so QuickBooks
+ * does NOT auto-assign a DocNumber on create — an invoice created without one is
+ * numberless and effectively invisible in the invoice list. We continue their
+ * sequence by taking the highest recent numeric DocNumber and adding 1. Returns
+ * null if no numbered invoice can be found (then QB's own numbering applies).
+ */
+async function nextInvoiceDocNumber(): Promise<string | null> {
+  try {
+    const res = await queryQBO<{ Invoice?: Array<{ DocNumber?: string }> }>(
+      `SELECT DocNumber, MetaData FROM Invoice ORDERBY MetaData.CreateTime DESC MAXRESULTS 50`,
+    )
+    let max = 0
+    for (const inv of res.Invoice ?? []) {
+      const digits = (inv.DocNumber ?? '').replace(/\D/g, '')
+      const n = digits ? parseInt(digits, 10) : NaN
+      if (Number.isFinite(n) && n > max) max = n
+    }
+    return max > 0 ? String(max + 1) : null
+  } catch (err) {
+    logger.warn(APP, 'docnumber.lookup_failed', { error: String(err) })
+    return null
+  }
+}
+
 export async function createDealerInvoice(params: {
   customerId:  string
   itemId:      string
@@ -130,8 +157,16 @@ export async function createDealerInvoice(params: {
   }
   if (params.salesTermId) body.SalesTermRef = { value: params.salesTermId }
 
+  // Company uses custom transaction numbers → assign the next number ourselves,
+  // otherwise the invoice is created with a blank DocNumber (looks "missing").
+  const docNumber = await nextInvoiceDocNumber()
+  if (docNumber) body.DocNumber = docNumber
+
   const res = await qbApiRequest<{ Invoice: RawInvoice }>({ method: 'POST', path: '/invoice', body })
-  logger.info(APP, 'invoice.created', { id: res.Invoice.Id, docNumber: res.Invoice.DocNumber })
+  logger.info(APP, 'invoice.created', { id: res.Invoice.Id, docNumber: res.Invoice.DocNumber, requestedDocNumber: docNumber })
+  if (!res.Invoice.DocNumber) {
+    logger.error(APP, 'invoice.created_without_number', { id: res.Invoice.Id, requestedDocNumber: docNumber })
+  }
   return summarize(res.Invoice)
 }
 
