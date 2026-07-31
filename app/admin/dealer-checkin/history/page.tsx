@@ -9,10 +9,13 @@ export const dynamic = 'force-dynamic'
 export default async function ScanHistoryPage() {
   const [scans, dealerships] = await Promise.all([listRecentScans(100), listDealerships()])
 
-  // stock prefix → dealer name (Auto Group owns S and T)
+  // Dealer name lookups: the confirmed dealer id (source of truth) wins; the stock
+  // prefix (Auto Group owns S and T) is only a fallback for older scans.
   const prefixToDealer = new Map<string, string>()
+  const idToDealer = new Map<string, string>()
   for (const d of dealerships) {
     if (d.stockPrefix) prefixToDealer.set(d.stockPrefix.toUpperCase(), d.name)
+    idToDealer.set(d.id, d.name)
   }
 
   const dtos: ScanDTO[] = scans.map((s) => {
@@ -20,7 +23,10 @@ export default async function ScanHistoryPage() {
     return {
       id: s.id,
       createdAt: (s.createdAt as Date).toISOString(),
-      dealer: (prefix && prefixToDealer.get(prefix.toUpperCase())) || (prefix ? `prefix ${prefix}` : '—'),
+      dealer:
+        (s.dealershipId && idToDealer.get(s.dealershipId)) ||
+        (prefix && prefixToDealer.get(prefix.toUpperCase())) ||
+        (prefix ? `prefix ${prefix}` : '—'),
       stockNumber: s.stockNumber,
       vehicle: [s.year, s.make, s.model, s.color].filter(Boolean).join(' '),
       invoiceNumber: s.qbInvoiceNumber,

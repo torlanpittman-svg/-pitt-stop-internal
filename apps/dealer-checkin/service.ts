@@ -90,6 +90,9 @@ export interface CheckInInput {
   /** OCR values before the employee's edits — recorded to the audit trail. */
   ocrValues?:       Record<string, unknown> | null
   dealershipId?:    string | null
+  /** OCR/stock-derived dealer at scan time — recorded when the operator overrides it. */
+  ocrDealershipId?:   string | null
+  ocrDealershipName?: string | null
   /** Explicit rate — required when a pricing prompt is triggered. */
   rate?:            number | null
   approvedBy?:      string | null
@@ -255,6 +258,18 @@ export async function checkInDealerVehicle(input: CheckInInput): Promise<CheckIn
       return await fail('error', { dealership: { id: dealer.id, name: dealer.name, qbCustomerId: null } }, `${dealer.name} has no QuickBooks customer mapping`)
     }
     const dealership = { id: dealer.id, name: dealer.name, qbCustomerId: dealer.qbCustomerId }
+
+    // The confirmed (possibly operator-overridden) dealer is the source of truth:
+    // persist it on the scan for reporting/history, and record the override in the
+    // audit trail when it differs from the dealer the OCR/stock originally implied.
+    await updateScan(scan.id, { dealershipId: dealer.id })
+    if (input.ocrDealershipId !== undefined && (input.ocrDealershipName ?? '') !== dealer.name) {
+      await logScanEvent({
+        scanId: scan.id, eventType: 'dealer_changed', actor: input.approvedBy ?? null,
+        oldValue: { id: input.ocrDealershipId ?? null, name: input.ocrDealershipName ?? null },
+        newValue: { id: dealer.id, name: dealer.name, qbCustomerId: dealer.qbCustomerId },
+      })
+    }
 
     // ── 3. Pricing decision (prompt gate) ─────────────────────────────────
     const pricing = decidePricing({ stockNumber: input.stockNumber, tagColor: input.tagColor })

@@ -36,6 +36,8 @@ interface Fields {
   color: string
 }
 
+interface DealerOption { dealershipId: string; name: string; qbCustomerId: string }
+
 // A stock number is a letter prefix followed by digits (e.g. K1234, S72951).
 const STOCK_RE = /^[A-Za-z]{1,3}[- ]?\d{2,}$/
 
@@ -66,6 +68,12 @@ export default function DealerCheckInFlow() {
   const [fields, setFields] = useState<Fields>({ stockNumber: '', year: '', make: '', model: '', color: '' })
   const [preview, setPreview] = useState<Preview | null>(null)
   const [resolving, setResolving] = useState(false)
+
+  // Dealer override: full configured list + the operator's explicit choice (source
+  // of truth once set) + the dealer the OCR/stock originally implied (for audit).
+  const [dealers, setDealers] = useState<DealerOption[]>([])
+  const [selectedDealerId, setSelectedDealerId] = useState<string | null>(null)
+  const [ocrDealer, setOcrDealer] = useState<{ id: string; name: string; qbCustomerId: string | null } | null>(null)
   const [newVehicle, setNewVehicle] = useState(false)
   const [priceOverride, setPriceOverride] = useState<string>('')
   const [overrideFormat, setOverrideFormat] = useState(false)
@@ -102,6 +110,25 @@ export default function DealerCheckInFlow() {
     })()
     return () => { cancelled = true; stopCamera() }
   }, [phase, stopCamera])
+
+  // ── Dealer list for the override dropdown (configured customer list) ─────────
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const res = await fetch('/api/vehicle-entry/dealerships')
+        const rows = (await res.json()) as Array<{ id: string; name: string; qbCustomerId?: string | null }>
+        const seen = new Set<string>()
+        const opts: DealerOption[] = []
+        for (const r of rows) {
+          if (!r.qbCustomerId || seen.has(r.name)) continue // one entry per dealer/customer
+          seen.add(r.name)
+          opts.push({ dealershipId: r.id, name: r.name, qbCustomerId: r.qbCustomerId })
+        }
+        opts.sort((a, b) => a.name.localeCompare(b.name))
+        setDealers(opts)
+      } catch { /* dropdown stays empty; dealer still resolves from the stock prefix */ }
+    })()
+  }, [])
 
   const captureFrame = useCallback((): Promise<Blob | null> => {
     return new Promise((resolve) => {
@@ -146,7 +173,11 @@ export default function DealerCheckInFlow() {
       // background VIN enrichment (non-blocking) — only fills empty vehicle fields
       void enrichVin(file)
 
-      await runPreview(ocr.stockNumber, false)
+      // Default the Dealer field to whatever the stock/OCR implies; remember it so
+      // an operator override can be recorded against it.
+      setSelectedDealerId(null)
+      const p = await runPreview(ocr.stockNumber, false)
+      setOcrDealer(p?.dealership ?? null)
       setPhase('review')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -172,25 +203,41 @@ export default function DealerCheckInFlow() {
     } catch { /* enrichment is best-effort */ }
   }, [])
 
-  // Resolve dealer + pricing + invoice target for a stock number (read-only).
-  const runPreview = useCallback(async (stockNumber: string, isNewVehicle: boolean) => {
+  // Resolve dealer + pricing + invoice target (read-only). When dealershipId is
+  // given, the chosen dealer overrides the stock-prefix match. Returns the preview.
+  const runPreview = useCallback(async (
+    stockNumber: string, isNewVehicle: boolean, dealershipId?: string | null,
+  ): Promise<Preview | null> => {
     setResolving(true)
     try {
       const res = await fetch('/api/dealer-checkin/preview', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stockNumber, tagColor: isNewVehicle ? 'white' : 'yellow' }),
+        body: JSON.stringify({ stockNumber, tagColor: isNewVehicle ? 'white' : 'yellow', dealershipId: dealershipId ?? undefined }),
       })
-      setPreview((await res.json()) as Preview)
-    } catch { /* keep last preview */ } finally { setResolving(false) }
+      const p = (await res.json()) as Preview
+      setPreview(p)
+      return p
+    } catch { return null /* keep last preview */ } finally { setResolving(false) }
   }, [])
 
-  // Debounced re-resolve when the stock number changes (dealer prefix may change).
+  // Debounced re-resolve when the stock number changes. If the operator has
+  // explicitly chosen a dealer, that choice persists (source of truth); otherwise
+  // the dealer follows the new stock prefix.
   const onStockChange = useCallback((value: string) => {
     setFields((f) => ({ ...f, stockNumber: value }))
     setOverrideFormat(false)
     if (previewTimer.current) clearTimeout(previewTimer.current)
-    previewTimer.current = setTimeout(() => { void runPreview(value, newVehicle) }, 450)
-  }, [runPreview, newVehicle])
+    previewTimer.current = setTimeout(() => { void runPreview(value, newVehicle, selectedDealerId ?? undefined) }, 450)
+  }, [runPreview, newVehicle, selectedDealerId])
+
+  // Operator picks a different dealer → it becomes the source of truth; re-resolve
+  // pricing / invoice target / duplicate against the chosen customer.
+  const onDealerChange = useCallback((dealershipId: string) => {
+    if (!dealershipId) return
+    setSelectedDealerId(dealershipId)
+    if (previewTimer.current) clearTimeout(previewTimer.current)
+    void runPreview(fields.stockNumber, newVehicle, dealershipId)
+  }, [runPreview, fields.stockNumber, newVehicle])
 
   // ── Entry actions ───────────────────────────────────────────────────────────
   const onUploadPick = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -210,6 +257,7 @@ export default function DealerCheckInFlow() {
     setPreview(null); setError(null); setNewVehicle(false); setPriceOverride('')
     setOverrideFormat(false); setWriteResult(null); setVin(null)
     setImageUrl(null); setStoredUrl(null); setImageHash(null); setRawOcr(null); setOcrValues(null)
+    setSelectedDealerId(null); setOcrDealer(null)
     setFields({ stockNumber: '', year: '', make: '', model: '', color: '' })
     setPhase('entry')
   }, [])
@@ -237,6 +285,10 @@ export default function DealerCheckInFlow() {
           rate: Number.isFinite(rate) ? rate : undefined,
           force,
           photoUrl: storedUrl, imageHash, rawOcr, ocrValues,
+          // Confirmed dealer = source of truth; OCR dealer sent for the audit trail.
+          dealershipId: selectedDealerId ?? undefined,
+          ocrDealershipId: ocrDealer?.id ?? null,
+          ocrDealershipName: ocrDealer?.name ?? null,
           approvedBy: 'operator',
           scanDurationMs: Date.now() - startedAt.current,
         }),
@@ -261,11 +313,14 @@ export default function DealerCheckInFlow() {
     } finally {
       submittingRef.current = false
     }
-  }, [preview, fields, vin, newVehicle, rate, storedUrl, imageHash, rawOcr, ocrValues])
+  }, [preview, fields, vin, newVehicle, rate, storedUrl, imageHash, rawOcr, ocrValues, selectedDealerId, ocrDealer])
 
   const stockValid = STOCK_RE.test(fields.stockNumber.trim())
   const dealerOk = Boolean(preview?.dealership?.qbCustomerId)
   const canSend = dealerOk && !preview?.duplicate && (stockValid || overrideFormat)
+  // The dropdown value: the operator's explicit choice, else the resolved dealer.
+  const optionIdForName = (name?: string | null) => (name ? dealers.find((d) => d.name === name)?.dealershipId ?? '' : '')
+  const currentDealerId = selectedDealerId ?? optionIdForName(preview?.dealership?.name)
   const showPricingToggle = Boolean(preview?.pricing.promptRequired) || preview?.dealership?.name === 'Sterling Auto Group'
 
   // ── UI ──────────────────────────────────────────────────────────────────────
@@ -326,11 +381,24 @@ export default function DealerCheckInFlow() {
           {imageUrl && <img src={imageUrl} alt="Dealer tag" className="w-full max-h-56 object-contain rounded-2xl bg-gray-900 border border-gray-800 mb-4" />}
 
           <div className="rounded-2xl bg-gray-900 border border-gray-800 divide-y divide-gray-800">
-            <Row label="Dealer" hint={resolving ? 'checking…' : undefined}>
-              <span className={`text-lg font-semibold ${dealerOk ? 'text-white' : 'text-amber-400'}`}>
-                {preview?.dealership?.name ?? 'Unknown dealer'}
-              </span>
-            </Row>
+            <div className="px-4 py-3">
+              <div className="flex items-center justify-between">
+                <p className="text-gray-500 text-xs uppercase tracking-widest">Dealer</p>
+                <span className="text-gray-600 text-xs">{resolving ? 'checking…' : selectedDealerId ? 'changed' : ''}</span>
+              </div>
+              <select
+                value={currentDealerId}
+                onChange={(e) => onDealerChange(e.target.value)}
+                className={`mt-0.5 -ml-0.5 w-full bg-transparent outline-none text-lg font-semibold appearance-none ${dealerOk ? 'text-white' : 'text-amber-400'}`}
+              >
+                <option value="" disabled className="bg-gray-900 text-gray-400">
+                  {preview?.dealership?.name ?? 'Select dealer'}
+                </option>
+                {dealers.map((d) => (
+                  <option key={d.dealershipId} value={d.dealershipId} className="bg-gray-900 text-white">{d.name}</option>
+                ))}
+              </select>
+            </div>
             <EditRow label="Stock Number" value={fields.stockNumber} onChange={onStockChange} autoCapitalize="characters" mono
                      warn={!stockValid && fields.stockNumber.length > 0 && !overrideFormat} />
             <div className="grid grid-cols-2 divide-x divide-gray-800">
@@ -353,7 +421,7 @@ export default function DealerCheckInFlow() {
 
           {showPricingToggle && (
             <button
-              onClick={() => { const v = !newVehicle; setNewVehicle(v); setPriceOverride(''); void runPreview(fields.stockNumber, v) }}
+              onClick={() => { const v = !newVehicle; setNewVehicle(v); setPriceOverride(''); void runPreview(fields.stockNumber, v, selectedDealerId ?? undefined) }}
               className={`mt-3 w-full h-14 rounded-2xl border-2 text-lg font-semibold ${newVehicle ? 'border-green-500 bg-green-500/15 text-green-300' : 'border-gray-700 text-gray-300'}`}
             >
               {newVehicle ? '✓ New Sterling Auto vehicle — $125' : 'New Sterling Auto vehicle? Tap for $125'}
@@ -367,7 +435,7 @@ export default function DealerCheckInFlow() {
           )}
 
           {!dealerOk && fields.stockNumber.length > 0 && !resolving && (
-            <p className="mt-3 text-amber-400 text-center text-sm">No dealer matches this stock number — check the prefix (K / U / S / T).</p>
+            <p className="mt-3 text-amber-400 text-center text-sm">No dealer matched the stock prefix — pick the correct dealer above, or check the prefix (K / U / S / T).</p>
           )}
 
           {preview?.duplicate && (
