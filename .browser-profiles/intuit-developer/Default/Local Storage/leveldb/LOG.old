@@ -1,0 +1,27 @@
+2026/07/29-21:33:16.113 448b9 Reusing MANIFEST /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/intuit-developer/Default/Local Storage/leveldb/MANIFEST-000001
+2026/07/29-21:33:16.114 448b9 Recovering log #77
+2026/07/29-21:33:16.115 448b9 Reusing old log /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/intuit-developer/Default/Local Storage/leveldb/000077.log 
+2026/07/29-21:34:16.118 448bc Level-0 table #82: started
+2026/07/29-21:34:16.122 448bc Level-0 table #82: 42777 bytes OK
+2026/07/29-21:34:16.125 448bc Delete type=0 #77
+2026/07/29-21:35:17.529 448bc Level-0 table #84: started
+2026/07/29-21:35:17.532 448bc Level-0 table #84: 57426 bytes OK
+2026/07/29-21:35:17.534 448bc Delete type=0 #81
+2026/07/29-21:42:16.840 448bc Level-0 table #86: started
+2026/07/29-21:42:16.844 448bc Level-0 table #86: 35882 bytes OK
+2026/07/29-21:42:16.846 448bc Delete type=0 #83
+2026/07/29-21:44:32.865 448bc Level-0 table #88: started
+2026/07/29-21:44:32.867 448bc Level-0 table #88: 74247 bytes OK
+2026/07/29-21:44:32.869 448bc Delete type=0 #85
+2026/07/29-21:44:32.870 448bc Compacting 4@0 + 1@1 files
+2026/07/29-21:44:32.876 448bc Generated table #89@0: 6378 keys, 379481 bytes
+2026/07/29-21:44:32.876 448bc Compacted 4@0 + 1@1 files => 379481 bytes
+2026/07/29-21:44:32.877 448bc compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/07/29-21:44:32.877 448bc Delete type=2 #88
+2026/07/29-21:44:32.877 448bc Delete type=2 #82
+2026/07/29-21:44:32.877 448bc Delete type=2 #86
+2026/07/29-21:44:32.877 448bc Delete type=2 #79
+2026/07/29-21:44:32.877 448bc Delete type=2 #84
+2026/07/29-21:52:48.650 448bc Level-0 table #91: started
+2026/07/29-21:52:48.655 448bc Level-0 table #91: 41308 bytes OK
+2026/07/29-21:52:48.656 448bc Delete type=0 #87

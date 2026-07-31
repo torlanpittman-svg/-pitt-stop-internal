@@ -1,0 +1,114 @@
+{
+  "overwrites": [],
+  "al_touched": [],
+  "clean": [],
+  "audit_events": [
+    {
+      "ts": "Jul 27, 5:41 pm Central Daylight Time",
+      "user": "AutoLeap System",
+      "event": "Edited Invoice No. 100806 for cal MCNEIL for $300.00",
+      "inv": "100806",
+      "cust": "cal MCNEIL",
+      "amt": "300.00"
+    },
+    {
+      "ts": "Jul 27, 5:41 pm Central Daylight Time",
+      "user": "AutoLeap System",
+      "event": "Edited Invoice No. 100806 for Sterling Subaru for $400.00",
+      "inv": "100806",
+      "cust": "Sterling Subaru",
+      "amt": "400.00"
+    },
+    {
+      "ts": "Jul 27, 4:57 pm Central Daylight Time",
+      "user": "Pittstop Detail",
+      "event": "Created Invoice No. 100806 for Sterling Subaru for $400.00",
+      "inv": "100806",
+      "cust": "Sterling Subaru",
+      "amt": "400.00"
+    },
+    {
+      "ts": "Jul 27, 3:21 pm Central Daylight Time",
+      "user": "AutoLeap System",
+      "event": "Created Invoice No. 100805 for Ty Naquin for $159.37",
+      "inv": "100805",
+      "cust": "Ty Naquin",
+      "amt": "159.37"
+    },
+    {
+      "ts": "Jul 27, 1:17 pm Central Daylight Time",
+      "user": "AutoLeap System",
+      "event": "Edited Invoice No. 100804 for Hollie Gilleland for $371.87",
+      "inv": "100804",
+      "cust": "Hollie Gilleland",
+      "amt": "371.87"
+    },
+    {
+      "ts": "Jul 27, 1:17 pm Central Daylight Time",
+      "user": "AutoLeap System",
+      "event": "Edited Invoice No. 100804 for Hollie Gilleland for $371.87",
+      "inv": "100804",
+      "cust": "Hollie Gilleland",
+      "amt": "371.87"
+    },
+    {
+      "ts": "Jul 27, 10:20 am Central Daylight Time",
+      "user": "AutoLeap System",
+      "event": "Created Invoice No. 100804 for Hollie Gilleland for $371.87",
+      "inv": "100804",
+      "cust": "Hollie Gilleland",
+      "amt": "371.87"
+    },
+    {
+      "ts": "Jul 25, 3:57 pm Central Daylight Time",
+      "user": "System Administration",
+      "event": "Emailed Invoice No. 100802 for phill dorsett for $683.48",
+      "inv": "100802",
+      "cust": "phill dorsett",
+      "amt": "683.48"
+    },
+    {
+      "ts": "Jul 25, 7:17 am Central Daylight Time",
+      "user": "System Administration",
+      "event": "Emailed Invoice No. 100796 for Sterling Auto Group for $1600.00",
+      "inv": "100796",
+      "cust": "Sterling Auto Group",
+      "amt": "1600.00"
+    },
+    {
+      "ts": "Jul 24, 6:00 pm Central Daylight Time",
+      "user": "AutoLeap System",
+      "event": "Edited Invoice No. 100803 for Maria Houchins for $2148.40",
+      "inv": "100803",
+      "cust": "Maria Houchins",
+      "amt": "2148.40"
+    },
+    {
+      "ts": "Jul 24, 6:00 pm Central Daylight Time",
+      "user": "AutoLeap System",
+      "event": "Edited Invoice No. 100803 for Sterling Subaru for $400.00",
+      "inv": "100803",
+      "cust": "Sterling Subaru",
+      "amt": "400.00"
+    },
+    {
+      "ts": "Jul 24, 5:56 pm Central Daylight Time",
+      "user": "AutoLeap System",
+      "event": "Edited Invoice No. 100802 for phill dorsett for $683.48",
+      "inv": "100802",
+      "cust": "phill dorsett",
+      "amt": "683.48"
+    },
+    {
+      "ts": "Jul 24, 5:12 pm Central Daylight Time",
+      "user": "AutoLeap System",
+      "event": "Edited Invoice No. 100802 for Sterling Subaru for $400.00",
+      "inv": "100802",
+      "cust": "Sterling Subaru",
+      "amt": "400.00"
+    }
+  ],
+  "al_on_pittstop_invoices": [
+    "100806"
+  ]
+}

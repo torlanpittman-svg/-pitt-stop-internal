@@ -1,0 +1,41 @@
+2026/07/27-22:13:09.513 2737df Reusing MANIFEST /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/accounting-investigation/Default/Local Storage/leveldb/MANIFEST-000001
+2026/07/27-22:13:09.514 2737df Recovering log #164
+2026/07/27-22:13:09.519 2737df Level-0 table #167: started
+2026/07/27-22:13:09.526 2737df Level-0 table #167: 1321171 bytes OK
+2026/07/27-22:13:09.527 2737df Recovering log #166
+2026/07/27-22:13:09.527 2737df Reusing old log /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/accounting-investigation/Default/Local Storage/leveldb/000166.log 
+2026/07/27-22:13:09.528 2737df Delete type=0 #164
+2026/07/27-22:13:25.070 2737e3 Level-0 table #169: started
+2026/07/27-22:13:25.073 2737e3 Level-0 table #169: 40765 bytes OK
+2026/07/27-22:13:25.075 2737e3 Delete type=0 #166
+2026/07/27-22:14:09.530 2737e3 Level-0 table #171: started
+2026/07/27-22:14:09.537 2737e3 Level-0 table #171: 1351116 bytes OK
+2026/07/27-22:14:09.538 2737e3 Delete type=0 #168
+2026/07/27-22:14:09.538 2737e3 Compacting 4@0 + 4@1 files
+2026/07/27-22:14:09.552 2737e3 Generated table #172@0: 49464 keys, 2121722 bytes
+2026/07/27-22:14:09.566 2737e3 Generated table #173@0: 45489 keys, 2120109 bytes
+2026/07/27-22:14:09.580 2737e3 Generated table #174@0: 44401 keys, 2117629 bytes
+2026/07/27-22:14:09.593 2737e3 Generated table #175@0: 41576 keys, 2118214 bytes
+2026/07/27-22:14:09.605 2737e3 Generated table #176@0: 36191 keys, 2046846 bytes
+2026/07/27-22:14:09.605 2737e3 Compacted 4@0 + 4@1 files => 10524520 bytes
+2026/07/27-22:14:09.606 2737e3 compacted to: files[ 0 5 1 0 0 0 0 ]
+2026/07/27-22:14:09.606 2737e3 Delete type=2 #161
+2026/07/27-22:14:09.606 2737e3 Delete type=2 #160
+2026/07/27-22:14:09.606 2737e3 Delete type=2 #162
+2026/07/27-22:14:09.606 2737e3 Delete type=2 #163
+2026/07/27-22:14:09.606 2737e3 Delete type=2 #167
+2026/07/27-22:14:09.606 2737e3 Delete type=2 #171
+2026/07/27-22:14:09.606 2737e3 Delete type=2 #165
+2026/07/27-22:14:09.606 2737e3 Delete type=2 #169
+2026/07/27-22:14:09.607 2737e3 Expanding@1 1+1 (2121722+31670 bytes) to 5+1 (10524520+31670 bytes)
+2026/07/27-22:14:09.607 2737e3 Compacting 5@1 + 1@2 files
+2026/07/27-22:14:09.624 2737e3 Generated table #177@1: 991 keys, 1292151 bytes
+2026/07/27-22:14:09.624 2737e3 Compacted 5@1 + 1@2 files => 1292151 bytes
+2026/07/27-22:14:09.624 2737e3 compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/07/27-22:14:09.625 2737e3 Delete type=2 #175
+2026/07/27-22:14:09.625 2737e3 Delete type=2 #174
+2026/07/27-22:14:09.625 2737e3 Delete type=2 #176
+2026/07/27-22:14:09.625 2737e3 Delete type=2 #173
+2026/07/27-22:14:09.625 2737e3 Delete type=2 #172
+2026/07/27-22:14:09.625 2737e3 Delete type=2 #5
+2026/07/27-22:19:30.041 2737df Level-0 table #179: started

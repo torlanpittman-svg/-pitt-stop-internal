@@ -1,0 +1,48 @@
+2026/07/29-22:47:26.703 4ddd5 Reusing MANIFEST /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/intuit-developer/Default/Local Storage/leveldb/MANIFEST-000001
+2026/07/29-22:47:26.704 4ddd5 Recovering log #90
+2026/07/29-22:47:26.705 4ddd5 Reusing old log /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/intuit-developer/Default/Local Storage/leveldb/000090.log 
+2026/07/29-22:48:26.709 4ddd8 Level-0 table #94: started
+2026/07/29-22:48:26.713 4ddd8 Level-0 table #94: 50395 bytes OK
+2026/07/29-22:48:26.715 4ddd8 Delete type=0 #90
+2026/07/29-22:49:28.207 4ddd8 Level-0 table #96: started
+2026/07/29-22:49:28.211 4ddd8 Level-0 table #96: 60729 bytes OK
+2026/07/29-22:49:28.213 4ddd8 Delete type=0 #93
+2026/07/29-23:03:22.638 4ddd8 Level-0 table #98: started
+2026/07/29-23:03:22.643 4ddd8 Level-0 table #98: 36753 bytes OK
+2026/07/29-23:03:22.645 4ddd8 Delete type=0 #95
+2026/07/29-23:03:22.646 4ddd8 Compacting 4@0 + 1@1 files
+2026/07/29-23:03:22.653 4ddd8 Generated table #99@0: 7105 keys, 332319 bytes
+2026/07/29-23:03:22.653 4ddd8 Compacted 4@0 + 1@1 files => 332319 bytes
+2026/07/29-23:03:22.653 4ddd8 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/07/29-23:03:22.654 4ddd8 Delete type=2 #89
+2026/07/29-23:03:22.654 4ddd8 Delete type=2 #98
+2026/07/29-23:03:22.654 4ddd8 Delete type=2 #94
+2026/07/29-23:03:22.654 4ddd8 Delete type=2 #96
+2026/07/29-23:03:22.654 4ddd8 Delete type=2 #91
+2026/07/29-23:03:29.666 4ddd8 Level-0 table #101: started
+2026/07/29-23:03:29.671 4ddd8 Level-0 table #101: 42745 bytes OK
+2026/07/29-23:03:29.674 4ddd8 Delete type=0 #97
+2026/07/29-23:06:24.679 4ddd8 Level-0 table #103: started
+2026/07/29-23:06:24.682 4ddd8 Level-0 table #103: 93193 bytes OK
+2026/07/29-23:06:24.685 4ddd8 Delete type=0 #100
+2026/07/29-23:14:15.169 4ddd8 Level-0 table #105: started
+2026/07/29-23:14:15.171 4ddd8 Level-0 table #105: 40842 bytes OK
+2026/07/29-23:14:15.173 4ddd8 Delete type=0 #102
+2026/07/29-23:29:59.536 4ddd8 Level-0 table #107: started
+2026/07/29-23:29:59.539 4ddd8 Level-0 table #107: 39386 bytes OK
+2026/07/29-23:29:59.542 4ddd8 Delete type=0 #104
+2026/07/29-23:29:59.543 4ddd8 Compacting 4@0 + 1@1 files
+2026/07/29-23:29:59.549 4ddd8 Generated table #108@0: 7505 keys, 350378 bytes
+2026/07/29-23:29:59.549 4ddd8 Compacted 4@0 + 1@1 files => 350378 bytes
+2026/07/29-23:29:59.550 4ddd8 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/07/29-23:29:59.550 4ddd8 Delete type=2 #103
+2026/07/29-23:29:59.550 4ddd8 Delete type=2 #101
+2026/07/29-23:29:59.550 4ddd8 Delete type=2 #105
+2026/07/29-23:29:59.550 4ddd8 Delete type=2 #107
+2026/07/29-23:29:59.551 4ddd8 Delete type=2 #99
+2026/07/29-23:31:11.095 4ddd8 Level-0 table #110: started
+2026/07/29-23:31:11.098 4ddd8 Level-0 table #110: 46487 bytes OK
+2026/07/29-23:31:11.099 4ddd8 Delete type=0 #106
+2026/07/29-23:39:53.885 4ddd8 Level-0 table #112: started
+2026/07/29-23:39:53.887 4ddd8 Level-0 table #112: 36850 bytes OK
+2026/07/29-23:39:53.889 4ddd8 Delete type=0 #109

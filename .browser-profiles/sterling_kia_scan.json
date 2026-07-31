@@ -1,0 +1,778 @@
+{
+  "scan_range": "23062-23112 (+23040-23061 if no hits)",
+  "purpose": "Find Sterling Kia invoice before Jul 17 $800 payment",
+  "hits": [
+    {
+      "txn_id": 23067,
+      "header": "Invoice No",
+      "is_sterling_kia": true,
+      "has_atlas": false,
+      "autoleap": true,
+      "deleted": false,
+      "text_length": 22459,
+      "versions": [
+        {
+          "timestamp": "Jul 13, 8:14 am Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "",
+          "amount": "1,200.00",
+          "has_atlas": false,
+          "is_sterling_kia": false,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/02/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,200.00\n\nOpen Balance:\t\n1,200.00\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\n"
+        },
+        {
+          "timestamp": "Jul 7, 2:55 pm Central Daylight Time\n\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Sterling Kia",
+          "amount": "",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100778\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/02/2026\n\nPmt Meth Ref No.:\t\n100778\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n1,200.00\n\t\n1,200.00\n0.00\n\n\n1\n\t\nSterling Kia\n\t\n\t\n\t\n07/02/2026\n\t\nComplete Detail\n\t\n2021 Honda Civic Gray #K518991\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6."
+        },
+        {
+          "timestamp": "Jul 7, 2:55 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "",
+          "amount": "1,200.00",
+          "has_atlas": false,
+          "is_sterling_kia": false,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/02/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,200.00\n\nOpen Balance:\t\n1,200.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\n"
+        },
+        {
+          "timestamp": "Jul 7, 2:55 pm Central Daylight Time\n\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Sterling Kia",
+          "amount": "",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100778\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/02/2026\n\nPmt Meth Ref No.:\t\n100778\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n1,200.00\n\t\n1,200.00\n\n\n1\n\t\nSterling Kia\n\t\n\t\n\t\n07/02/2026\n\t\nComplete Detail\n\t\n2021 Honda Civic Gray #K518991\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t"
+        },
+        {
+          "timestamp": "Jul 7, 2:55 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "",
+          "amount": "1,200.00",
+          "has_atlas": false,
+          "is_sterling_kia": false,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/02/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,200.00\n\nOpen Balance:\t\n1,200.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\nSent\n\nLast Sent:\t"
+        },
+        {
+          "timestamp": "Jul 7, 2:55 pm Central Daylight Time\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Sterling Kia",
+          "amount": "",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100778\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/02/2026\n\nPmt Meth Ref No.:\t\n100778\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n1,200.00\n\t\n1,200.00\n\n\n1\n\t\nSterling Kia\n\t\n\t\n\t\n07/02/2026\n\t\nComplete Detail\n\t\n2021 Honda Civic Gray #K518991\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t"
+        },
+        {
+          "timestamp": "Jul 7, 2:54 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "1,200.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/02/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,200.00\n\nOpen Balance:\t\n1,200.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100778\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/02/2026\n\nPmt Meth Ref No.:\t100778\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivabl"
+        },
+        {
+          "timestamp": "Jul 6, 4:05 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "1,000.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [
+            [
+              "Sterling Kia",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "200.00"
+            ]
+          ],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/02/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,000.00\n1,200.00\n\nOpen Balance:\t\n1,000.00\n1,200.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100778\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/02/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccou"
+        },
+        {
+          "timestamp": "Jul 6, 12:51 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [
+            [
+              "Sterling Kia",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "200.00"
+            ]
+          ],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/02/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n1,000.00\n\nOpen Balance:\t\n800.00\n1,000.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100778\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/02/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts "
+        },
+        {
+          "timestamp": "Jul 3, 3:21 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/02/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n800.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100778\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/02/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t"
+        },
+        {
+          "timestamp": "Jul 3, 2:36 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "600.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [
+            [
+              "Sterling Kia",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "200.00"
+            ]
+          ],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/02/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n600.00\n800.00\n\nOpen Balance:\t\n600.00\n800.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100778\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/02/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Rece"
+        },
+        {
+          "timestamp": "Jul 2, 4:21 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "400.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [
+            [
+              "Sterling Kia",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "200.00"
+            ]
+          ],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/02/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n400.00\n600.00\n\nOpen Balance:\t\n400.00\n600.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100778\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/02/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Rece"
+        },
+        {
+          "timestamp": "Jul 2, 10:25 am Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "200.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [
+            [
+              "Sterling Kia",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "200.00"
+            ]
+          ],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/02/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n200.00\n400.00\n\nOpen Balance:\t\n200.00\n400.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100778\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/02/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Rece"
+        },
+        {
+          "timestamp": "Jul 2, 8:13 am Central Daylight Time",
+          "action": "Added",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "200.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/02/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n200.00\n\nOpen Balance:\t\n200.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100778\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/02/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t"
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Invoice No. 100778 ID: 23067\nYou can see up to seven years of history in your audit log.\nJul 13, 8:14 am Central Daylight Time: Indirect edit by System\nType:\t\nInvoice\n\nDate:\t\n07/02/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,200.00\n\nOpen Balance:\t\n1,200.00\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\nJul 7, 2:55 pm Central Daylight Time\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100778\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/02/2026\n\nPmt Meth Ref No.:\t\n100778\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n1,200.00\n\t\n1,200.00\n0.00\n\n\n1\n\t\nSterling Kia\n\t\n\t\n\t\n07/02/2026\n\t\nComplete Detail\n\t\n2021 Honda Civic Gray #K518991\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n3\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n4\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n5\n\t\nSterling Kia\n\t\n\t\n\t\n07/02/2026\n\t\nComplete Detail\n\t\n20223 Hyundai Santa Fe Black #K532198\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n6\n\t\nSterling Kia\n\t\n\t\n\t\n07/02/2026\n\t\nComplete Detail\n\t\n2024 Nissan Altima #K359166\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n7\n\t\nSterling Kia\n\t\n\t\n\t\n07/03/2026\n\t\nComplete Detail\n\t\n2026 Kia Carnival Ceramic #K563327\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n8\n\t\nSterling Kia\n\t\n\t\n\t\n07/06/2026\n\t\nComplete Detail\n\t\n2024 Kia Telluride Gray #K473262\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n9\n\t\nSterling Kia\n\t\n\t\n\t\n07/06/2026\n\t\nComplete Detail\n\t\n2011 Nissan Frontier Black #KF98515\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\nJul 7, 2:55 pm Central Daylight Time: Edited by Pittstop Detail\nType:\t\nInvoice\n\nDate:\t\n07/02/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,200.00\n\nOpen Balance:\t\n1,200.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\nJul 7, 2:55 pm Central Daylight Time\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100778\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/02/2026\n\nPmt Meth Ref No.:\t\n100778\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n1,200.00\n\t\n1,200.00\n\n\n1\n\t\nSterling Kia\n\t\n\t\n\t\n07/02/2026\n\t\nComplete Detail\n\t\n2021 Honda Civic Gray #K518991\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n3\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n4\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n5\n\t\nSterling Kia\n\t\n\t\n\t\n07"
+    },
+    {
+      "txn_id": 23074,
+      "header": "Payment ID",
+      "is_sterling_kia": true,
+      "has_atlas": false,
+      "autoleap": false,
+      "deleted": false,
+      "text_length": 814,
+      "versions": [
+        {
+          "timestamp": "Jul 3, 1:51 pm Central Daylight Time",
+          "action": "Added",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "600.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nPayment\n\nDate:\t\n07/03/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n600.00\n\nOpen Balance:\t\n0.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n600.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-600.00\n\t\n0.00\nTransaction History\nView Mode\n07/03/2026, 1:51 pm CDT\nAdded by Pittstop Detail\n\u00a0"
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Payment ID: 23074\nYou can see up to seven years of history in your audit log.\nJul 3, 1:51 pm Central Daylight Time: Added by Pittstop Detail\nType:\t\nPayment\n\nDate:\t\n07/03/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n600.00\n\nOpen Balance:\t\n0.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n600.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-600.00\n\t\n0.00\nTransaction History\nView Mode\n07/03/2026, 1:51 pm CDT\nAdded by Pittstop Detail\n\u00a0"
+    },
+    {
+      "txn_id": 23083,
+      "header": "Invoice No",
+      "is_sterling_kia": true,
+      "has_atlas": false,
+      "autoleap": true,
+      "deleted": false,
+      "text_length": 12757,
+      "versions": [
+        {
+          "timestamp": "Jul 14, 7:23 am Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "thomas mcfarling 2",
+          "amount": "1,360.65",
+          "has_atlas": false,
+          "is_sterling_kia": false,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/13/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,360.65\n\nOpen Balance:\t\n1,360.65\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100783 : thomas mcfarling 2\nYear: 1992\nMake: Chevrolet\nModel: K1500\nVIN: 1GCEK14ZXNZ223437\nLicense plate: RBN7398\n\nMemo:\t\nAutoLeap Order # 100783 : thomas mcfarling 2\nYear: 1992\nMake: Chevrolet\nModel: K1500\nVIN: 1GCEK14ZXNZ223437\nLicense plate: RBN7398\n\nCustom Fields:\t\nNum:\t\n100783\n\nName:\t\nthomas mcfarling 2\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/13/2026\n\nPmt Meth Ref No.:\t\n100783\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\ntmcfarling7@gmail.com\n\nDelivery Error:\t\n\nCus"
+        },
+        {
+          "timestamp": "Jul 14, 7:22 am Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [
+            [
+              "thomas mcfarling 2",
+              "8"
+            ],
+            [
+              "Not Deposited",
+              "800.00"
+            ],
+            [
+              "thomas mcfarling 2",
+              "800.00"
+            ],
+            [
+              "thomas mcfarling 2",
+              "3"
+            ],
+            [
+              "Not Deposited",
+              "300.00"
+            ],
+            [
+              "thomas mcfarling 2",
+              "300.00"
+            ]
+          ],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/13/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n1,360.65\n\nOpen Balance:\t\n800.00\n1,360.65\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\tAutoLeap Order # 100783 : thomas mcfarling 2\nYear: 1992\nMake: Chevrolet\nModel: K1500\nVIN: 1GCEK14ZXNZ223437\nLicense plate: RBN7398\nMemo:\tAutoLeap Order # 100783 : thomas mcfarling 2\nYear: 1992\nMake: Chevrolet\nModel: K1500\nVIN: 1GCEK14ZXNZ223437\nLicense plate: RBN7398\nCustom Fields:\t\nNum:\t\n100783\n\nName:\t\nSterling Kia\nthomas mcfarling 2\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/13/2026\n\nPmt Meth Ref No.:\t\n100783\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup."
+        },
+        {
+          "timestamp": "Jul 13, 4:35 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/13/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n800.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100783\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/13/2026\n\nPmt Meth Ref No.:\t\n100783\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable "
+        },
+        {
+          "timestamp": "Jul 13, 9:05 am Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "600.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [
+            [
+              "Sterling Kia",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "200.00"
+            ]
+          ],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/13/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n600.00\n800.00\n\nOpen Balance:\t\n600.00\n800.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100783\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/13/2026\n\nPmt Meth Ref No.:\t100783\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts"
+        },
+        {
+          "timestamp": "Jul 13, 7:46 am Central Daylight Time",
+          "action": "Added",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "600.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/13/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n600.00\n\nOpen Balance:\t\n600.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100783\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/13/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t"
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Invoice No. 100783 ID: 23083\nYou can see up to seven years of history in your audit log.\nJul 14, 7:23 am Central Daylight Time: Indirect edit by System\nType:\t\nInvoice\n\nDate:\t\n07/13/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,360.65\n\nOpen Balance:\t\n1,360.65\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100783 : thomas mcfarling 2\nYear: 1992\nMake: Chevrolet\nModel: K1500\nVIN: 1GCEK14ZXNZ223437\nLicense plate: RBN7398\n\nMemo:\t\nAutoLeap Order # 100783 : thomas mcfarling 2\nYear: 1992\nMake: Chevrolet\nModel: K1500\nVIN: 1GCEK14ZXNZ223437\nLicense plate: RBN7398\n\nCustom Fields:\t\nNum:\t\n100783\n\nName:\t\nthomas mcfarling 2\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/13/2026\n\nPmt Meth Ref No.:\t\n100783\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\ntmcfarling7@gmail.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\n\t\nAutoLeap Order # 100783 : thomas mcfarling 2 Year: 1992 Make: Chevrolet Model: K1500 VIN: 1GCEK14ZXNZ223437 License plate: RBN7398\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n1,360.65\n\t\n1,360.65\n0.00\n\n\n4\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n1.25\n\t\n0.00\n\n\n5\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.10\n\t\n0.00\n\n\n6\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.30\n\t\n0.00\n\n\n8\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\nLabor\n\t\nApplication of high-quality ceramic coating to vehicle exterior surfaces for enhanced protection and shine. Provides long-lasting resistance against water, dirt, UV rays, and environmental contaminants. Includes surface preparation, application, and curing time for optimal results\n\t\n8\n\t\n\t\n100\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n800.00\n\t\n0.00\n\n\n9\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n800.00\n\t\n0.00\n\n\n10\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\nLabor\n\t\nPolish vehicle to smooth out imperfections, remove scratches, and enhance the material's shine and overall appearance\n\t\n3\n\t\n\t\n100\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n300.00\n\t\n0.00\n\n\n11\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n300.00\n\t\n0.00\n\n\n12\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\nLabor\n\t\nClay bar to remove contaminants from a vehicle's surface\n\t\n1\n\t\n\t\n100\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n100.00\n\t\n0.00\n\n\n13\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n100.00\n\t\n0.00\n\n\n14\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\nLabor\n\t\nExterior hand wash and rinse to remove dirt, debris, and contaminants. Includes cleaning of wheels, tires, and wheel wells, followed by a thorough drying to ensure a spotless finish\n\t\n1\n\t\n\t\n100\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n100.00\n\t\n0.00\n\n\n15\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n100.00\n\t\n0.00\n\n\n16\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\nFees\n\t\nShop supplies\n\t\n1\n\t\n\t\n20\n\t\n\t\n\t\nYes\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n20.00\n\t\n0.00\n\n\n17\n\t\nthomas mcfarling 2\n\t\n\t\n\t\n\t\nFees\n\t\nCC Processing Fee\n\t\n1\n\t\n\t\n39\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n39.00\n\t\n0.00\nJul 14, 7:22 am Central Daylight Time: Edited by AutoLeap System\nType:\t\nInvoice\n\nDate:\t\n07/13/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n1,360.65\n\nOpen Balance:\t\n800.00\n1,360.65\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\tAutoLeap Orde"
+    },
+    {
+      "txn_id": 23085,
+      "header": "Payment ID",
+      "is_sterling_kia": true,
+      "has_atlas": false,
+      "autoleap": false,
+      "deleted": false,
+      "text_length": 821,
+      "versions": [
+        {
+          "timestamp": "Jul 13, 8:14 am Central Daylight Time",
+          "action": "Added",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "1,200.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nPayment\n\nDate:\t\n07/13/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,200.00\n\nOpen Balance:\t\n0.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n1,200.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-1,200.00\n\t\n0.00\nTransaction History\nView Mode\n07/13/2026, 8:14 am CDT\nAdded by Pittstop Detail\n\u00a0"
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Payment ID: 23085\nYou can see up to seven years of history in your audit log.\nJul 13, 8:14 am Central Daylight Time: Added by Pittstop Detail\nType:\t\nPayment\n\nDate:\t\n07/13/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,200.00\n\nOpen Balance:\t\n0.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n1,200.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-1,200.00\n\t\n0.00\nTransaction History\nView Mode\n07/13/2026, 8:14 am CDT\nAdded by Pittstop Detail\n\u00a0"
+    },
+    {
+      "txn_id": 23100,
+      "header": "Invoice No",
+      "is_sterling_kia": true,
+      "has_atlas": false,
+      "autoleap": true,
+      "deleted": false,
+      "text_length": 16730,
+      "versions": [
+        {
+          "timestamp": "Jul 16, 2:35 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "Lydon Gray",
+          "amount": "348.27",
+          "has_atlas": false,
+          "is_sterling_kia": false,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/16/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n348.27\n\nOpen Balance:\t\n215.47\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100792 : Lydon Gray\nYear: 2019\nMake: Ford\nModel: F-150\nVIN: 1FTEW1CP0KFB58146\nLicense plate: VWF3432\n\nMemo:\t\nAutoLeap Order # 100792 : Lydon Gray\nYear: 2019\nMake: Ford\nModel: F-150\nVIN: 1FTEW1CP0KFB58146\nLicense plate: VWF3432\n\nCustom Fields:\t\nNum:\t\n100792\n\nName:\t\nLydon Gray\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/14/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nlydongray109@gmail.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOY"
+        },
+        {
+          "timestamp": "Jul 16, 2:35 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "Lydon Gray",
+          "amount": "348.27",
+          "has_atlas": false,
+          "is_sterling_kia": false,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/16/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n348.27\n\nOpen Balance:\t\n348.27\n215.47\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100792 : Lydon Gray\nYear: 2019\nMake: Ford\nModel: F-150\nVIN: 1FTEW1CP0KFB58146\nLicense plate: VWF3432\n\nMemo:\t\nAutoLeap Order # 100792 : Lydon Gray\nYear: 2019\nMake: Ford\nModel: F-150\nVIN: 1FTEW1CP0KFB58146\nLicense plate: VWF3432\n\nCustom Fields:\t\nNum:\t\n100792\n\nName:\t\nLydon Gray\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/14/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nlydongray109@gmail.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPL"
+        },
+        {
+          "timestamp": "Jul 16, 2:35 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": false,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/14/2026\n07/16/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n348.27\n\nOpen Balance:\t\n800.00\n348.27\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t"
+        },
+        {
+          "timestamp": "Jul 14, 2:36 pm Central Daylight Time\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Sterling Kia",
+          "amount": "",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [
+            [
+              "Lydon Gray",
+              "1.3"
+            ],
+            [
+              "Not Deposited",
+              "195.00"
+            ],
+            [
+              "Lydon Gray",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "132.80"
+            ],
+            [
+              "Lydon Gray",
+              "327.80"
+            ],
+            [
+              "Lydon Gray",
+              "1"
+            ]
+          ],
+          "raw_block": "\n\nCustomer/Vendor Message:\tAutoLeap Order # 100792 : Lydon Gray\nYear: 2019\nMake: Ford\nModel: F-150\nVIN: 1FTEW1CP0KFB58146\nLicense plate: VWF3432\nMemo:\tAutoLeap Order # 100792 : Lydon Gray\nYear: 2019\nMake: Ford\nModel: F-150\nVIN: 1FTEW1CP0KFB58146\nLicense plate: VWF3432\nCustom Fields:\t\nNum:\t\n100792\n\nName:\t\nSterling Kia\nLydon Gray\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/14/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\nlydongray109@gmail.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\nLydon Gray\n\t\n\t\n\t\n\t\n\tAutoLeap Order # "
+        },
+        {
+          "timestamp": "Jul 16, 2:35 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": false,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/14/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n800.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\n"
+        },
+        {
+          "timestamp": "Jul 14, 2:36 pm Central Daylight Time\n\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Sterling Kia",
+          "amount": "",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100792\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/14/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n800.00\n\t\n800.00\n\n\n1\n\t\nSterling Kia\n\t\n\t\n\t\n07/09/2026\n\t\nComplete Detail\n\t\n2019 Ford F150 Silver #KD44939\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nSterling Kia\n\t\n\t\n\t\n07/10/2026\n\t\nComplete Detail"
+        },
+        {
+          "timestamp": "Jul 14, 2:36 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": false,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/14/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n800.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\n"
+        },
+        {
+          "timestamp": "Jul 14, 2:36 pm Central Daylight Time\n\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Sterling Kia",
+          "amount": "",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100792\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/14/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n800.00\n\t\n800.00\n\n\n1\n\t\nSterling Kia\n\t\n\t\n\t\n07/09/2026\n\t\nComplete Detail\n\t\n2019 Ford F150 Silver #KD44939\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nSterling Kia\n\t\n\t\n\t\n07/10/2026\n\t\nComplete Detail"
+        },
+        {
+          "timestamp": "Jul 14, 2:36 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": false,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/14/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n800.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\nSent\n\nLast Sent:\t"
+        },
+        {
+          "timestamp": "Jul 14, 2:36 pm Central Daylight Time\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Sterling Kia",
+          "amount": "",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100792\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/14/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n800.00\n\t\n800.00\n\n\n1\n\t\nSterling Kia\n\t\n\t\n\t\n07/09/2026\n\t\nComplete Detail\n\t\n2019 Ford F150 Silver #KD44939\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nSterling Kia\n\t\n\t\n\t\n07/10/2026\n\t\nComplete Detail"
+        },
+        {
+          "timestamp": "Jul 14, 2:36 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/14/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n800.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100792\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/14/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t"
+        },
+        {
+          "timestamp": "Jul 14, 2:36 pm Central Daylight Time",
+          "action": "Added",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/14/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n800.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100792\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/14/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t"
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Invoice No. 100792 ID: 23100\nYou can see up to seven years of history in your audit log.\nJul 16, 2:35 pm Central Daylight Time: Indirect edit by System\nType:\t\nInvoice\n\nDate:\t\n07/16/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n348.27\n\nOpen Balance:\t\n215.47\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100792 : Lydon Gray\nYear: 2019\nMake: Ford\nModel: F-150\nVIN: 1FTEW1CP0KFB58146\nLicense plate: VWF3432\n\nMemo:\t\nAutoLeap Order # 100792 : Lydon Gray\nYear: 2019\nMake: Ford\nModel: F-150\nVIN: 1FTEW1CP0KFB58146\nLicense plate: VWF3432\n\nCustom Fields:\t\nNum:\t\n100792\n\nName:\t\nLydon Gray\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/14/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nlydongray109@gmail.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nLydon Gray\n\t\n\t\n\t\n\t\n\t\nAutoLeap Order # 100792 : Lydon Gray Year: 2019 Make: Ford Model: F-150 VIN: 1FTEW1CP0KFB58146 License plate: VWF3432\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n348.27\n\t\n215.47\n0.00\n\n\n5\n\t\nLydon Gray\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.61\n\t\n0.00\n\n\n6\n\t\nLydon Gray\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.05\n\t\n0.00\n\n\n7\n\t\nLydon Gray\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.15\n\t\n0.00\n\n\n8\n\t\nLydon Gray\n\t\n\t\n\t\n\t\nLabor\n\t\nDOES NOT include adjust Headlamps.\n\t\n1.3\n\t\n\t\n150\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n195.00\n\t\n0.00\n\n\n9\n\t\nLydon Gray\n\t\n\t\n\t\n\t\nParts\n\t\n\t\n1\n\t\n\t\n132.80\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n132.80\n\t\n0.00\n\n\n10\n\t\nLydon Gray\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n327.80\n\t\n0.00\n\n\n11\n\t\nLydon Gray\n\t\n\t\n\t\n\t\nFees\n\t\nShop supplies\n\t\n1\n\t\n\t\n9.83\n\t\n\t\n\t\nYes\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n9.83\n\t\n0.00\n\n\n12\n\t\nLydon Gray\n\t\n\t\n\t\n\t\nFees\n\t\nCC Processing Fee\n\t\n1\n\t\n\t\n9.83\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n9.83\n\t\n0.00\nJul 16, 2:35 pm Central Daylight Time: Indirect edit by System\nType:\t\nInvoice\n\nDate:\t\n07/16/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n348.27\n\nOpen Balance:\t\n348.27\n215.47\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100792 : Lydon Gray\nYear: 2019\nMake: Ford\nModel: F-150\nVIN: 1FTEW1CP0KFB58146\nLicense plate: VWF3432\n\nMemo:\t\nAutoLeap Order # 100792 : Lydon Gray\nYear: 2019\nMake: Ford\nModel: F-150\nVIN: 1FTEW1CP0KFB58146\nLicense plate: VWF3432\n\nCustom Fields:\t\nNum:\t\n100792\n\nName:\t\nLydon Gray\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/14/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nlydongray109@gmail.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nLydon Gray\n\t\n\t\n\t\n\t\n\t\nAutoLeap Order # 100792 : Lydon Gray Year: 2019 Make: Ford Model: F-150 VIN: 1FTEW1CP0KFB58146 License plate: VWF3432\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n348.27\n\t\n348.27\n215.47\n\n\n5\n\t\nLydon Gray\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.61\n\t\n0.00\n\n\n6\n\t\nLydon Gray\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.05\n\t\n0.00\n\n\n7\n\t\nLydon Gray\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.15\n\t\n0.00\n\n\n8\n\t\nLydon Gray\n\t\n"
+    },
+    {
+      "txn_id": 23102,
+      "header": "Invoice No",
+      "is_sterling_kia": true,
+      "has_atlas": false,
+      "autoleap": true,
+      "deleted": false,
+      "text_length": 18340,
+      "versions": [
+        {
+          "timestamp": "Jul 20, 7:34 am Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "Kali Dunson",
+          "amount": "200.00",
+          "has_atlas": false,
+          "is_sterling_kia": false,
+          "line_items_sample": [
+            [
+              "Kali Dunson",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "550.00"
+            ],
+            [
+              "Kali Dunson",
+              "550.00"
+            ],
+            [
+              "Kali Dunson",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "16.50"
+            ],
+            [
+              "Kali Dunson",
+              "1"
+            ]
+          ],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n200.00\n\nOpen Balance:\t\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100793 : Kali Dunson\nYear: 2015\nMake: Ford\nModel: Expedition\nVIN: 1FMJU1KT0FEF10930\nLicense plate: SGS2105\n\nMemo:\t\nAutoLeap Order # 100793 : Kali Dunson\nYear: 2015\nMake: Ford\nModel: Expedition\nVIN: 1FMJU1KT0FEF10930\nLicense plate: SGS2105\n\nCustom Fields:\t\nNum:\t\n100793\n\nName:\t\nKali Dunson\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/15/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nkdenton93@yahoo.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR"
+        },
+        {
+          "timestamp": "Jul 20, 7:34 am Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "Kali Dunson",
+          "amount": "200.00",
+          "has_atlas": false,
+          "is_sterling_kia": false,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n200.00\n\nOpen Balance:\t\n200.00\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100793 : Kali Dunson\nYear: 2015\nMake: Ford\nModel: Expedition\nVIN: 1FMJU1KT0FEF10930\nLicense plate: SGS2105\n\nMemo:\t\nAutoLeap Order # 100793 : Kali Dunson\nYear: 2015\nMake: Ford\nModel: Expedition\nVIN: 1FMJU1KT0FEF10930\nLicense plate: SGS2105\n\nCustom Fields:\t\nNum:\t\n100793\n\nName:\t\nKali Dunson\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/15/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nkdenton93@yahoo.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER"
+        },
+        {
+          "timestamp": "Jul 20, 7:34 am Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [
+            [
+              "Kali Dunson",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "550.00"
+            ],
+            [
+              "Kali Dunson",
+              "550.00"
+            ],
+            [
+              "Kali Dunson",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "16.50"
+            ],
+            [
+              "Kali Dunson",
+              "1"
+            ]
+          ],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/15/2026\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n200.00\n\nOpen Balance:\t\n0.00\n200.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\tAutoLeap Order # 100793 : Kali Dunson\nYear: 2015\nMake: Ford\nModel: Expedition\nVIN: 1FMJU1KT0FEF10930\nLicense plate: SGS2105\nMemo:\tAutoLeap Order # 100793 : Kali Dunson\nYear: 2015\nMake: Ford\nModel: Expedition\nVIN: 1FMJU1KT0FEF10930\nLicense plate: SGS2105\nCustom Fields:\t\nNum:\t\n100793\n\nName:\t\nSterling Kia\nKali Dunson\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/15/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\nkdenton93@yahoo.com"
+        },
+        {
+          "timestamp": "Jul 17, 4:16 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/15/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100793\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/15/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n8"
+        },
+        {
+          "timestamp": "Jul 17, 2:05 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/15/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n800.00\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100793\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/15/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A"
+        },
+        {
+          "timestamp": "Jul 16, 8:22 am Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "600.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [
+            [
+              "Sterling Kia",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "200.00"
+            ]
+          ],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/15/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n600.00\n800.00\n\nOpen Balance:\t\n600.00\n800.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100793\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/15/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Rece"
+        },
+        {
+          "timestamp": "Jul 15, 12:55 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "400.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [
+            [
+              "Sterling Kia",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "200.00"
+            ]
+          ],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/15/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n400.00\n600.00\n\nOpen Balance:\t\n400.00\n600.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100793\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/15/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Rece"
+        },
+        {
+          "timestamp": "Jul 15, 10:41 am Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "200.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [
+            [
+              "Sterling Kia",
+              "1"
+            ],
+            [
+              "Not Deposited",
+              "200.00"
+            ]
+          ],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/15/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n200.00\n400.00\n\nOpen Balance:\t\n200.00\n400.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100793\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/15/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Rece"
+        },
+        {
+          "timestamp": "Jul 15, 10:08 am Central Daylight Time",
+          "action": "Added",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "200.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n07/15/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n200.00\n\nOpen Balance:\t\n200.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100793\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/15/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t"
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Invoice No. 100793 ID: 23102\nYou can see up to seven years of history in your audit log.\nJul 20, 7:34 am Central Daylight Time: Edited by AutoLeap System\nType:\t\nInvoice\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n200.00\n\nOpen Balance:\t\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100793 : Kali Dunson\nYear: 2015\nMake: Ford\nModel: Expedition\nVIN: 1FMJU1KT0FEF10930\nLicense plate: SGS2105\n\nMemo:\t\nAutoLeap Order # 100793 : Kali Dunson\nYear: 2015\nMake: Ford\nModel: Expedition\nVIN: 1FMJU1KT0FEF10930\nLicense plate: SGS2105\n\nCustom Fields:\t\nNum:\t\n100793\n\nName:\t\nKali Dunson\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/15/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nkdenton93@yahoo.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nKali Dunson\n\t\n\t\n\t\n\t\n\t\nAutoLeap Order # 100793 : Kali Dunson Year: 2015 Make: Ford Model: Expedition VIN: 1FMJU1KT0FEF10930 License plate: SGS2105\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nKali Dunson\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.36\n\t\n0.00\n\n\n3\n\t\nKali Dunson\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.03\n\t\n0.00\n\n\n4\n\t\nKali Dunson\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.08\n\t\n0.00\n\n\t\n*Previous row 8 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 9 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 10 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 11 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\n12\n\t\nKali Dunson\n\t\n\t\n\t\n\t\n\t\nDiscount\n\t\n\t\n\t\n\t\n\t\n\t\nYes\n\t\nNot Deposited\n\t\n\t\n\t\nDiscounts given\n\t\n383.47\n\t\n0.00\n\n13\tKali Dunson\t\t\t\tLabor\tThorough vacuuming, Steam-cleaning of carpets and upholstery, leather cleaning and conditioning, streak free window cleaning, conditioning of plastics and vinyl, detailed cleaning of vents, buttons, and consoles, and odor removal\t1\t\t550\t\t\tNo\tNot Deposited\t\t\tSales\t550.00\t0.00\n14\tKali Dunson\t\t\t\t\tSubtotal\t\t\t\t\t\tNo\tNot Deposited\t\t\t\t550.00\t0.00\n15\tKali Dunson\t\t\t\tFees\tShop supplies\t1\t\t16.50\t\t\tYes\tNot Deposited\t\t\tSales\t16.50\t0.00\n16\tKali Dunson\t\t\t\tFees\tCC Processing Fee\t1\t\t16.50\t\t\tNo\tNot Deposited\t\t\tSales\t16.50\t0.00\nJul 20, 7:34 am Central Daylight Time: Indirect edit by System\nType:\t\nInvoice\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n200.00\n\nOpen Balance:\t\n200.00\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100793 : Kali Dunson\nYear: 2015\nMake: Ford\nModel: Expedition\nVIN: 1FMJU1KT0FEF10930\nLicense plate: SGS2105\n\nMemo:\t\nAutoLeap Order # 100793 : Kali Dunson\nYear: 2015\nMake: Ford\nModel: Expedition\nVIN: 1FMJU1KT0FEF10930\nLicense plate: SGS2105\n\nCustom Fields:\t\nNum:\t\n100793\n\nName:\t\nKali Dunson\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/15/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nkdenton93@yahoo.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nKali Dunson\n\t\n\t\n\t\n\t\n\t\nAutoLeap Order # 100793 : Kali Dunson Year: 2015 Make: Ford Model: Expedition VIN: 1FMJU1KT0FEF10930 License plate: SGS2105\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n200.00\n\t\n200.00\n0.00\n\n\n2\n\t\nKali Dunson\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Depos"
+    },
+    {
+      "txn_id": 23112,
+      "header": "Payment ID",
+      "is_sterling_kia": true,
+      "has_atlas": false,
+      "autoleap": false,
+      "deleted": true,
+      "text_length": 1988,
+      "versions": [
+        {
+          "timestamp": "Jul 21, 1:41 pm Central Daylight Time",
+          "action": "Deleted",
+          "actor": "Pittstop Detail",
+          "customer": "",
+          "amount": "",
+          "has_atlas": false,
+          "is_sterling_kia": false,
+          "line_items_sample": [],
+          "raw_block": "\nDeleted\n"
+        },
+        {
+          "timestamp": "Jul 21, 1:39 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nPayment\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n800.00\n0.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n800.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-800.00\n\t\n-800.00\n0.00\n"
+        },
+        {
+          "timestamp": "Jul 20, 7:34 am Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nPayment\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n0.00\n800.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n800.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-800.00\n\t\n0.00\n-800.00\n"
+        },
+        {
+          "timestamp": "Jul 17, 2:05 pm Central Daylight Time",
+          "action": "Added",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "has_atlas": false,
+          "is_sterling_kia": true,
+          "line_items_sample": [],
+          "raw_block": "\nType:\t\nPayment\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n0.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n800.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-800.00\n\t\n0.00\nTransaction History\nView Mode\n07/21/2026, 1:41 pm CDT\nDeleted by Pittstop Detail\n07/21/2026, 1:39 pm CDT\nIndirect edit by System\n07/20/2026, 7:34 am CDT\nIndirect edit by System\n07/17/2026, 2:05 pm CDT\nAdded by Pittstop Detail\n\u00a0"
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Payment ID: 23112\nYou can see up to seven years of history in your audit log.\nJul 21, 1:41 pm Central Daylight Time: Deleted by Pittstop Detail\nDeleted\nJul 21, 1:39 pm Central Daylight Time: Indirect edit by System\nType:\t\nPayment\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n800.00\n0.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n800.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-800.00\n\t\n-800.00\n0.00\nJul 20, 7:34 am Central Daylight Time: Indirect edit by System\nType:\t\nPayment\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n0.00\n800.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n800.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-800.00\n\t\n0.00\n-800.00\nJul 17, 2:05 pm Central Daylight Time: Added by Pittstop Detail\nType:\t\nPayment\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n0.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n800.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-800.00\n\t\n0.00\nTransaction History\nView Mode\n07/21/2026, 1:41 pm CDT\nDeleted by Pittstop Detail\n07/21/2026, 1:39 pm CDT\nIndirect edit by System\n07/20/2026, 7:34 am CDT\nIndirect edit by System\n07/17/2026, 2:05 pm CDT\nAdded by Pittstop Detail\n\u00a0"
+    }
+  ],
+  "conclusion": "CONFIRMED OVERWRITE: Sterling Kia invoice at txnId=23067 overwritten by AutoLeap. Pittstop versions: 8, AutoLeap versions: 1"
+}

@@ -1,0 +1,9 @@
+2026/07/29-19:15:33.133 32d97 Reusing MANIFEST /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/intuit-developer/Default/IndexedDB/https_help.developer.intuit.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/29-19:15:33.133 32d97 Recovering log #6
+2026/07/29-19:15:33.133 32d97 Reusing old log /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/intuit-developer/Default/IndexedDB/https_help.developer.intuit.com_0.indexeddb.leveldb/000006.log 
+2026/07/29-19:15:36.870 32d97 Compacting 1@1 + 1@2 files
+2026/07/29-19:15:36.872 32d97 Generated table #9@1: 352 keys, 127662 bytes
+2026/07/29-19:15:36.872 32d97 Compacted 1@1 + 1@2 files => 127662 bytes
+2026/07/29-19:15:36.875 32d97 compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/07/29-19:15:36.875 32d97 Delete type=2 #7
+2026/07/29-19:15:36.875 32d97 Delete type=2 #5

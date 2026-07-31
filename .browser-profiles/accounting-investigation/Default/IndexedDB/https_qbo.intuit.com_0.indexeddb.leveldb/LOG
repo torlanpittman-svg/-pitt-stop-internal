@@ -1,0 +1,12 @@
+2026/07/27-22:13:20.097 273793 Reusing MANIFEST /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/accounting-investigation/Default/IndexedDB/https_qbo.intuit.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/27-22:13:20.097 273793 Recovering log #4
+2026/07/27-22:13:20.104 273793 Reusing old log /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/accounting-investigation/Default/IndexedDB/https_qbo.intuit.com_0.indexeddb.leveldb/000004.log 
+2026/07/27-22:16:14.922 273795 Level-0 table #8: started
+2026/07/27-22:16:14.932 273795 Level-0 table #8: 1107403 bytes OK
+2026/07/27-22:16:14.934 273795 Delete type=0 #4
+2026/07/27-22:16:20.512 273793 Compacting 1@1 + 1@2 files
+2026/07/27-22:16:20.524 273793 Generated table #9@1: 9814 keys, 1405515 bytes
+2026/07/27-22:16:20.524 273793 Compacted 1@1 + 1@2 files => 1405515 bytes
+2026/07/27-22:16:20.525 273793 compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/07/27-22:16:20.525 273793 Delete type=2 #5
+2026/07/27-22:16:20.525 273793 Delete type=2 #8

@@ -1,0 +1,9 @@
+2026/07/29-18:01:37.154 28ca9 Reusing MANIFEST /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/intuit-developer/Default/IndexedDB/https_help.developer.intuit.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/29-18:01:37.155 28ca9 Recovering log #3
+2026/07/29-18:01:37.157 28ca9 Reusing old log /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/intuit-developer/Default/IndexedDB/https_help.developer.intuit.com_0.indexeddb.leveldb/000003.log 
+2026/07/29-18:21:03.649 28caa Level-0 table #5: started
+2026/07/29-18:21:03.655 28caa Level-0 table #5: 4124127 bytes OK
+2026/07/29-18:21:03.658 28caa Delete type=0 #3
+2026/07/29-19:08:21.182 28caa Level-0 table #7: started
+2026/07/29-19:08:21.190 28caa Level-0 table #7: 4200595 bytes OK
+2026/07/29-19:08:21.190 28caa Delete type=0 #4

@@ -1,0 +1,536 @@
+{
+  "overwrites": [],
+  "al_touched": [
+    {
+      "invoice_num": "100775",
+      "txn_id": 23116,
+      "verdict": "autoleap_only",
+      "is_dealer": true,
+      "known_customer": "Sterling Subaru",
+      "original_customer": "Sterling Subaru",
+      "original_amount": "",
+      "original_date": "",
+      "original_created": "",
+      "autoleap_customer": "Frankie Summerilin",
+      "autoleap_amount": "506.28",
+      "autoleap_ts": "Jul 20, 7:29 am Central Daylight Time",
+      "versions": [
+        {
+          "timestamp": "Jul 20, 7:29 am Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "Frankie Summerilin",
+          "amount": "506.28",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 20, 7:29 am Central Daylight Time",
+          "action": "Added",
+          "actor": "AutoLeap System",
+          "customer": "Frankie Summerilin",
+          "amount": "506.28",
+          "date": ""
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Payment ID: 23116\nYou can see up to seven years of history in your audit log.\nJul 20, 7:29 am Central Daylight Time: Edited by AutoLeap System\nType:\t\nPayment\n\nDate:\t\n07/20/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n506.28\n\nOpen Balance:\t\n0.00\n\nPayment Method:\t\nDebit Card\n\nMemo:\t\nNum:\t\n\nName:\t\nFrankie Summerilin\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n506.28\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-506.28\n\t\n0.00\nJul 20, 7:29 am Central Daylight Time: Added by AutoLeap System\nType:\t\nPayment\n\nDate:\t\n07/20/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n506.28\n\nOpen Balance:\t\n0.00\n\nPayment Method:\t\nDebit Card\n\nMemo:\t\nNum:\t\n\nName:\t\nFrankie Summerilin\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n506.28\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-506.28\n\t\n0.00\nTransaction History\nView Mode\n07/20/2026, 7:29 am CDT\nEdited by AutoLeap System\n07/20/2026, 7:29 am CDT\nAdded by AutoLeap System\n\u00a0"
+    },
+    {
+      "invoice_num": "100777",
+      "txn_id": 23118,
+      "verdict": "autoleap_only",
+      "is_dealer": false,
+      "known_customer": null,
+      "original_customer": "",
+      "original_amount": "",
+      "original_date": "",
+      "original_created": "",
+      "autoleap_customer": "Frankie Summerilin",
+      "autoleap_amount": "535.79",
+      "autoleap_ts": "Jul 20, 7:31 am Central Daylight Time",
+      "versions": [
+        {
+          "timestamp": "Jul 20, 7:31 am Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "Frankie Summerilin",
+          "amount": "535.79",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 20, 7:30 am Central Daylight Time",
+          "action": "Added",
+          "actor": "AutoLeap System",
+          "customer": "Frankie Summerilin",
+          "amount": "535.79",
+          "date": ""
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Payment ID: 23118\nYou can see up to seven years of history in your audit log.\nJul 20, 7:31 am Central Daylight Time: Edited by AutoLeap System\nType:\t\nPayment\n\nDate:\t\n07/20/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n535.79\n\nOpen Balance:\t\n0.00\n\nPayment Method:\t\nDebit Card\n\nMemo:\t\nNum:\t\n\nName:\t\nFrankie Summerilin\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n535.79\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-535.79\n\t\n0.00\nJul 20, 7:30 am Central Daylight Time: Added by AutoLeap System\nType:\t\nPayment\n\nDate:\t\n07/20/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n535.79\n\nOpen Balance:\t\n0.00\n\nPayment Method:\t\nDebit Card\n\nMemo:\t\nNum:\t\n\nName:\t\nFrankie Summerilin\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n535.79\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-535.79\n\t\n0.00\nTransaction History\nView Mode\n07/20/2026, 7:31 am CDT\nEdited by AutoLeap System\n07/20/2026, 7:30 am CDT\nAdded by AutoLeap System\n\u00a0"
+    },
+    {
+      "invoice_num": "100802",
+      "txn_id": 23143,
+      "verdict": "autoleap_touched",
+      "is_dealer": true,
+      "known_customer": "Sterling Subaru",
+      "original_customer": "Sterling Subaru",
+      "original_amount": "400.00",
+      "original_date": "",
+      "original_created": "Jul 22, 2:05 pm Central Daylight Time",
+      "autoleap_customer": "",
+      "autoleap_amount": "400.00",
+      "autoleap_ts": "Jul 24, 5:56 pm Central Daylight Time",
+      "versions": [
+        {
+          "timestamp": "Jul 25, 3:57 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "System Administration",
+          "customer": "",
+          "amount": "683.48",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 25, 3:57 pm Central Daylight Time\n\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "phill dorsett",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 25, 3:57 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "",
+          "amount": "683.48",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 25, 3:57 pm Central Daylight Time\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "phill dorsett",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 24, 5:56 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "phill dorsett",
+          "amount": "683.48",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 24, 5:56 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 22, 2:05 pm Central Daylight Time\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Sterling Subaru",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 24, 5:12 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 22, 2:05 pm Central Daylight Time\n\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Sterling Subaru",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 22, 2:06 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 22, 2:05 pm Central Daylight Time\n\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Sterling Subaru",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 22, 2:05 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 22, 2:05 pm Central Daylight Time\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Sterling Subaru",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 22, 2:05 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Subaru",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 22, 2:05 pm Central Daylight Time",
+          "action": "Added",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Subaru",
+          "amount": "400.00",
+          "date": ""
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Invoice No. 100802 ID: 23143\nYou can see up to seven years of history in your audit log.\nJul 25, 3:57 pm Central Daylight Time: Edited by System Administration\nType:\t\nInvoice\n\nDate:\t\n07/24/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n683.48\n\nOpen Balance:\t\n13.98\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\nJul 25, 3:57 pm Central Daylight Time\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100802 : phill dorsett\nYear: 2018\nMake: Honda\nModel: Accord\nVIN: 1HGCV2F54JA010492\nLicense plate: NRF7401\n\nMemo:\t\nAutoLeap Order # 100802 : phill dorsett\nYear: 2018\nMake: Honda\nModel: Accord\nVIN: 1HGCV2F54JA010492\nLicense plate: NRF7401\n\nCustom Fields:\t\nNum:\t\n100802\n\nName:\t\nphill dorsett\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/22/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nphil@phildorsett.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nphill dorsett\n\t\n\t\n\t\n\t\n\t\nAutoLeap Order # 100802 : phill dorsett Year: 2018 Make: Honda Model: Accord VIN: 1HGCV2F54JA010492 License plate: NRF7401\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n683.48\n\t\n13.98\n\n\n3\n\t\nphill dorsett\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n10.59\n\t\n0.00\n\n\n4\n\t\nphill dorsett\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.85\n\t\n0.00\n\n\n5\n\t\nphill dorsett\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n2.54\n\t\n0.00\n\n\n6\n\t\nphill dorsett\n\t\n\t\n\t\n\t\nLabor\n\t\nComprehensive hand waxing service to protect and enhance the vehicle's paint, providing a smooth finish and a protective layer against contaminants\n\t\n1.5\n\t\n\t\n100\n\t\n\t\n\t\nYes\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n150.00\n\t\n0.00\n\n\n7\n\t\nphill dorsett\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n150.00\n\t\n0.00\n\n\n8\n\t\nphill dorsett\n\t\n\t\n\t\n\t\nLabor\n\t\nApply leather conditioner to seats and misc. trim\n\t\n0.5\n\t\n\t\n100\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n50.00\n\t\n0.00\n\n\n9\n\t\nphill dorsett\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n50.00\n\t\n0.00\n\n\n10\n\t\nphill dorsett\n\t\n\t\n\t\n\t\nLabor\n\t\nThorough vacuuming, Steam-cleaning of carpets and upholstery, leather cleaning and conditioning, streak free window cleaning, conditioning of plastics and vinyl, detailed cleaning of vents, buttons, and consoles, and odor removal\n\t\n2.5\n\t\n\t\n100\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n250.00\n\t\n0.00\n\n\n11\n\t\nphill dorsett\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n250.00\n\t\n0.00\n\n\n12\n\t\nphill dorsett\n\t\n\t\n\t\n\t\nLabor\n\t\nClay bar to remove contaminants from a vehicle's surface\n\t\n1\n\t\n\t\n100\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n100.00\n\t\n0.00\n\n\n13\n\t\nphill dorsett\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n100.00\n\t\n0.00\n\n\n14\n\t\nphill dorsett\n\t\n\t\n\t\n\t\nLabor\n\t\nExterior hand wash and rinse to remove dirt, debris, and contaminants. Includes cleaning of wheels, tires, and wheel wells, followed by a thorough drying to ensure a spotless finish\n\t\n1\n\t\n\t\n100\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n100.00\n\t\n0.00\n\n\n15\n\t\nphill dorsett\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n100.00\n\t\n0.00\n\n\n16\n\t\nphill dorsett\n\t\n\t\n\t\n\t\nFees\n\t\nShop supplies\n\t\n1\n\t\n\t\n19.50\n\t\n\t\n\t\nYes\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n19.50\n\t\n0.00\nJul 25, 3:57 pm Central Daylight Time: Indirect edit by System\nType:\t\nInvoice\n\nDate:\t\n07/24/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n683.48\n\nOpen Balance:\t\n13.98\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\tJul 25, 3:57 pm Central Daylight Time\nPrinted:\t\nNot Printed\n"
+    },
+    {
+      "invoice_num": "100803",
+      "txn_id": 23144,
+      "verdict": "autoleap_touched",
+      "is_dealer": true,
+      "known_customer": "Sterling Subaru",
+      "original_customer": "Sterling Subaru",
+      "original_amount": "200.00",
+      "original_date": "",
+      "original_created": "Jul 22, 3:52 pm Central Daylight Time",
+      "autoleap_customer": "Sterling Subaru",
+      "autoleap_amount": "400.00",
+      "autoleap_ts": "Jul 24, 6:00 pm Central Daylight Time",
+      "versions": [
+        {
+          "timestamp": "Jul 24, 6:00 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "Maria Houchins",
+          "amount": "2,148.40",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 24, 6:00 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "Sterling Subaru",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 24, 6:00 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "Sterling Subaru",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 22, 5:57 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Subaru",
+          "amount": "200.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 22, 3:52 pm Central Daylight Time",
+          "action": "Added",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Subaru",
+          "amount": "200.00",
+          "date": ""
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Invoice No. 100803 ID: 23144\nYou can see up to seven years of history in your audit log.\nJul 24, 6:00 pm Central Daylight Time: Indirect edit by System\nType:\t\nInvoice\n\nDate:\t\n07/24/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n2,148.40\n\nOpen Balance:\t\n2,148.40\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100803 : Maria Houchins\nYear: 2019\nMake: Kia\nModel: Sorento\nVIN: 5XYPG4A32KG520627\nLicense plate: SSG8953\n\nMemo:\t\nAutoLeap Order # 100803 : Maria Houchins\nYear: 2019\nMake: Kia\nModel: Sorento\nVIN: 5XYPG4A32KG520627\nLicense plate: SSG8953\n\nCustom Fields:\t\nNum:\t\n100803\n\nName:\t\nMaria Houchins\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/22/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nmariahouchins2@gmail.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\n\t\nAutoLeap Order # 100803 : Maria Houchins Year: 2019 Make: Kia Model: Sorento VIN: 5XYPG4A32KG520627 License plate: SSG8953\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n2,148.40\n\t\n2,148.40\n0.00\n\n\n2\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n5.00\n\t\n0.00\n\n\n3\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.40\n\t\n0.00\n\n\n4\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n1.20\n\t\n0.00\n\n\n6\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\nParts\n\t\n#19257782\n\t\n1.5\n\t\n\t\n40\n\t\n\t\n\t\nYes\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n60.00\n\t\n0.00\n\n\n7\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n60.00\n\t\n0.00\n\n\n8\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\nLabor\n\t\nPrepare, repair as needed, prime, color match, paint, and apply clear coat to the specified vehicle component. Finish includes sanding, polishing, and final quality inspection to achieve a factory-quality appearance.\n\t\n1\n\t\n\t\n1,200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n1,200.00\n\t\n0.00\n\n\n9\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n1,200.00\n\t\n0.00\n\n\n10\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\nLabor\n\t\nThorough vacuuming, Steam-cleaning of carpets and upholstery, leather cleaning and conditioning, streak free window cleaning, conditioning of plastics and vinyl, detailed cleaning of vents, buttons, and consoles, and odor removal\n\t\n1\n\t\n\t\n350\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n350.00\n\t\n0.00\n\n\n11\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n350.00\n\t\n0.00\n\n\n12\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\nLabor\n\t\nPolish vehicle to smooth out imperfections, remove scratches, and enhance the material's shine and overall appearance\n\t\n1\n\t\n\t\n400\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n400.00\n\t\n0.00\n\n\n13\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n400.00\n\t\n0.00\n\n\n14\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\nLabor\n\t\nExterior hand wash and rinse to remove dirt, debris, and contaminants. Includes cleaning of wheels, tires, and wheel wells, followed by a thorough drying to ensure a spotless finish\n\t\n1\n\t\n\t\n50\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n50.00\n\t\n0.00\n\n\n15\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n50.00\n\t\n0.00\n\n\n16\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\nFees\n\t\nShop supplies\n\t\n1\n\t\n\t\n20\n\t\n\t\n\t\nYes\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n20.00\n\t\n0.00\n\n\n17\n\t\nMaria Houchins\n\t\n\t\n\t\n\t\nFees\n\t\nCC Processing Fee\n\t\n1\n\t\n\t\n61.80\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n61.80\n\t\n0.00\nJul 24, 6:00 pm Central Daylight Time: Edited by AutoLeap System\nType:\t\nInvoice\n\nDate:\t\n07/22/2026\n07/24/2026\n\nCurrency:"
+    },
+    {
+      "invoice_num": "100804",
+      "txn_id": 23150,
+      "verdict": "autoleap_only",
+      "is_dealer": false,
+      "known_customer": null,
+      "original_customer": "",
+      "original_amount": "",
+      "original_date": "",
+      "original_created": "",
+      "autoleap_customer": "Hollie Gilleland",
+      "autoleap_amount": "371.87",
+      "autoleap_ts": "Jul 27, 1:17 pm Central Daylight Time",
+      "versions": [
+        {
+          "timestamp": "Jul 27, 1:17 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "Hollie Gilleland",
+          "amount": "371.87",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 27, 1:17 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "Hollie Gilleland",
+          "amount": "371.87",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 27, 1:17 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "AutoLeap System",
+          "customer": "Hollie Gilleland",
+          "amount": "371.87",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 27, 10:20 am Central Daylight Time",
+          "action": "Added",
+          "actor": "AutoLeap System",
+          "customer": "Hollie Gilleland",
+          "amount": "371.87",
+          "date": ""
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Invoice No. 100804 ID: 23150\nYou can see up to seven years of history in your audit log.\nJul 27, 1:17 pm Central Daylight Time: Edited by AutoLeap System\nType:\t\nInvoice\n\nDate:\t\n07/27/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n371.87\n\nOpen Balance:\t\n0.00\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100804 : Hollie Gilleland\nYear: 2026\nMake: BMW\nModel: X7\nVIN: 0000\n\nMemo:\t\nAutoLeap Order # 100804 : Hollie Gilleland\nYear: 2026\nMake: BMW\nModel: X7\nVIN: 0000\n\nCustom Fields:\t\nNum:\t\n100804\n\nName:\t\nHollie Gilleland\n\nAddress:\t\n(same as in Customer Information)\n\nLocation:\t\n\nDue Date:\t\n07/27/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nhollie@americanlumber.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nHollie Gilleland\n\t\n\t\n\t\n\t\n\t\nAutoLeap Order # 100804 : Hollie Gilleland Year: 2026 Make: BMW Model: X7 VIN: 0000\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n371.87\n\t\n0.00\n\n\n9\n\t\nHollie Gilleland\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.66\n\t\n0.00\n\n\n10\n\t\nHollie Gilleland\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.05\n\t\n0.00\n\n\n11\n\t\nHollie Gilleland\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.16\n\t\n0.00\n\n\t\n*Previous row 12 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 13 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 14 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 15 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 16 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 17 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 18 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 19 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n20\tHollie Gilleland\t\t\t\tLabor\tApply leather conditioner to seats and misc. trim\t0.5\t\t100\t\t\tNo\tNot Deposited\t\t\tSales\t50.00\t0.00\n21\tHollie Gilleland\t\t\t\t\tSubtotal\t\t\t\t\t\tNo\tNot Deposited\t\t\t\t50.00\t0.00\n22\tHollie Gilleland\t\t\t\tLabor\tThorough vacuuming, Steam-cleaning of carpets and upholstery, leather cleaning and conditioning, streak free window cleaning, conditioning of plastics and vinyl, detailed cleaning of vents, buttons, and consoles, and odor removal\t2.5\t\t100\t\t\tNo\tNot Deposited\t\t\tSales\t250.00\t0.00\n23\tHollie Gilleland\t\t\t\t\tSubtotal\t\t\t\t\t\tNo\tNot Deposited\t\t\t\t250.00\t0.00\n24\tHollie Gilleland\t\t\t\tLabor\tExterior hand wash and rinse to remove dirt, debris, and contaminants. Includes cleaning of wheels, tires, and wheel wells, followed by a thorough drying to ensure a spotless finish\t0.5\t\t100\t\t\tNo\tNot Deposited\t\t\tSales\t50.00\t0.00\n25\tHollie Gilleland\t\t\t\t\tSubtotal\t\t\t\t\t\tNo\tNot Deposited\t\t\t\t50.00\t0.00\n26\tHollie Gilleland\t\t\t\tFees\tShop supplies\t1\t\t10.50\t\t\tYes\tNot Deposited\t\t\tSales\t10.50\t0.00\n27\tHollie Gilleland\t\t\t\tFees\tCC Processing Fee\t1\t\t10.50\t\t\tNo\tNot Deposited\t\t\tSales\t10.50\t0.00\nJul 27, 1:17 pm Central Daylight Time: Indirect edit by System\nType:\t\nInvoice\n\nDate:\t\n07/27/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n371.87\n\nOpen Balance:\t\n371.87\n0.00\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100804 : Hollie Gilleland\nYear: 2026\nMake: BMW\nModel: X7\nVIN: 0000\n\nMemo:\t\nAutoLeap Order # 100804 : Hollie Gilleland\nYear: 2026\nMake: BMW\nModel: X7\nVIN: 0000\n\nCustom Fields:\t\nNum:\t\n100804\n\nName:\t\nHollie Gilleland\n\nAddress:\t\n(same as in Customer Information)\n\nLocation:\t\n\nDue Date:\t\n07/27/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nhollie@americanlumber.net"
+    }
+  ],
+  "clean": [
+    {
+      "invoice_num": "100771",
+      "txn_id": 23112,
+      "verdict": "clean",
+      "is_dealer": true,
+      "known_customer": null,
+      "original_customer": "Sterling Kia",
+      "original_amount": "800.00",
+      "original_date": "",
+      "original_created": "Jul 17, 2:05 pm Central Daylight Time",
+      "autoleap_customer": "",
+      "autoleap_amount": "",
+      "autoleap_ts": "",
+      "versions": [
+        {
+          "timestamp": "Jul 21, 1:41 pm Central Daylight Time",
+          "action": "Deleted",
+          "actor": "Pittstop Detail",
+          "customer": "",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 21, 1:39 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 20, 7:34 am Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 17, 2:05 pm Central Daylight Time",
+          "action": "Added",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "800.00",
+          "date": ""
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Payment ID: 23112\nYou can see up to seven years of history in your audit log.\nJul 21, 1:41 pm Central Daylight Time: Deleted by Pittstop Detail\nDeleted\nJul 21, 1:39 pm Central Daylight Time: Indirect edit by System\nType:\t\nPayment\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n800.00\n0.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n800.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-800.00\n\t\n-800.00\n0.00\nJul 20, 7:34 am Central Daylight Time: Indirect edit by System\nType:\t\nPayment\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n0.00\n800.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n800.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-800.00\n\t\n0.00\n-800.00\nJul 17, 2:05 pm Central Daylight Time: Added by Pittstop Detail\nType:\t\nPayment\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n0.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n800.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-800.00\n\t\n0.00\nTransaction History\nView Mode\n07/21/2026, 1:41 pm CDT\nDeleted by Pittstop Detail\n07/21/2026, 1:39 pm CDT\nIndirect edit by System\n07/20/2026, 7:34 am CDT\nIndirect edit by System\n07/17/2026, 2:05 pm CDT\nAdded by Pittstop Detail\n\u00a0"
+    },
+    {
+      "invoice_num": "100773",
+      "txn_id": 23114,
+      "verdict": "clean",
+      "is_dealer": false,
+      "known_customer": null,
+      "original_customer": "Address:",
+      "original_amount": "400.00",
+      "original_date": "",
+      "original_created": "Jul 17, 5:37 pm Central Daylight Time",
+      "autoleap_customer": "",
+      "autoleap_amount": "",
+      "autoleap_ts": "",
+      "versions": [
+        {
+          "timestamp": "Jul 21, 7:28 am Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 21, 7:28 am Central Daylight Time\n\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "USDA",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 21, 7:28 am Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 21, 7:28 am Central Daylight Time\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "USDA",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 21, 7:28 am Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 17, 5:37 pm Central Daylight Time\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 17, 5:39 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 17, 5:37 pm Central Daylight Time\n\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Address:",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 17, 5:39 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 17, 5:37 pm Central Daylight Time\n\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Address:",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 17, 5:37 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 17, 5:37 pm Central Daylight Time\n\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Address:",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 17, 5:37 pm Central Daylight Time",
+          "action": "Indirect edit",
+          "actor": "System",
+          "customer": "",
+          "amount": "400.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 17, 5:37 pm Central Daylight Time\nPrinted",
+          "action": "Not Printed",
+          "actor": "Not Printed",
+          "customer": "Address:",
+          "amount": "",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 17, 5:37 pm Central Daylight Time",
+          "action": "Added",
+          "actor": "Pittstop Detail",
+          "customer": "Address:",
+          "amount": "400.00",
+          "date": ""
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Sales Receipt No. 100797 ID: 23114\nYou can see up to seven years of history in your audit log.\nJul 21, 7:28 am Central Daylight Time: Edited by Pittstop Detail\nType:\t\nSales Receipt\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n400.00\n\nPayment Method:\t\nCredit Card\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\nJul 21, 7:28 am Central Daylight Time\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100797\n\nName:\t\nUSDA\n\nAddress:\t\n(same as in Customer Information)\n\nLocation:\t\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nreiley.street@usda.gov\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tCLASS\tTAXABLE\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\n\n0\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\nNot Cleared\n\t\n\t\nPitt Stop Detail *2649\n\t\n400.00\n\n\n1\n\t\n07/17/2026\n\t\nComplete Detail\n\t\n2016 Ford Expedition Black #A373003\n\t\n1\n\t\n\t\n400\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nDetail Sales\n\t\n400.00\n\n\n2\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\n\n3\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\n\n4\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\nJul 21, 7:28 am Central Daylight Time: Indirect edit by System\nType:\t\nSales Receipt\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n400.00\n\nPayment Method:\t\nCredit Card\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\tJul 21, 7:28 am Central Daylight Time\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100797\n\nName:\t\nUSDA\n\nAddress:\t\n(same as in Customer Information)\n\nLocation:\t\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nreiley.street@usda.gov\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tCLASS\tTAXABLE\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\n\n0\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\nNot Cleared\n\t\n\t\nPitt Stop Detail *2649\n\t\n400.00\n\n\n1\n\t\n07/17/2026\n\t\nComplete Detail\n\t\n2016 Ford Expedition Black #A373003\n\t\n1\n\t\n\t\n400\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nDetail Sales\n\t\n400.00\n\n\n2\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\n\n3\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\n\n4\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\nJul 21, 7:28 am Central Daylight Time: Edited by Pittstop Detail\nType:\t\nSales Receipt\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n400.00\n\nPayment Method:\t\nCredit Card\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\tJul 17, 5:37 pm Central Daylight Time\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100797\n\nName:\tUSDA\nAddress:\t\n(same as in Customer Information)\n\nLocation:\t\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nreilely.street@usda.gov\nreiley.street@usda.gov\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tCLASS\tTAXABLE\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\n\n0\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\nNot Cleared\n\t\n\t\nPitt Stop Detail *2649\n\t\n400.00\n\n\n1\n\t\n07/17/2026\n\t\nComplete Detail\n\t\n2016 Ford Expedition Black #A373003\n\t\n1\n\t\n\t\n400\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nDetail Sales\n\t\n400.00\n\n\n2\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\n\n3\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\n\n4\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\nNot Cleared\n\t\n\t\nSales Tax Paya"
+    },
+    {
+      "invoice_num": "100799",
+      "txn_id": 23136,
+      "verdict": "clean",
+      "is_dealer": true,
+      "known_customer": "Sterling Kia",
+      "original_customer": "Sterling Kia",
+      "original_amount": "1,125.00",
+      "original_date": "",
+      "original_created": "Jul 21, 4:41 pm Central Daylight Time",
+      "autoleap_customer": "",
+      "autoleap_amount": "",
+      "autoleap_ts": "",
+      "versions": [
+        {
+          "timestamp": "Jul 22, 12:53 pm Central Daylight Time",
+          "action": "Edited",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "1,125.00",
+          "date": ""
+        },
+        {
+          "timestamp": "Jul 21, 4:41 pm Central Daylight Time",
+          "action": "Added",
+          "actor": "Pittstop Detail",
+          "customer": "Sterling Kia",
+          "amount": "1,125.00",
+          "date": ""
+        }
+      ],
+      "raw_excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Invoice No. 100799 ID: 23136\nYou can see up to seven years of history in your audit log.\nJul 22, 12:53 pm Central Daylight Time: Edited by Pittstop Detail\nType:\t\nInvoice\n\nDate:\t\n07/21/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,125.00\n1,325.00\n\nOpen Balance:\t\n1,125.00\n1,325.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100799\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/21/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n1,125.00\n1,325.00\n\t\n1,125.00\n1,325.00\n\n\n1\n\t\nSterling Kia\n\t\n\t\n\t\n07/21/2026\n\t\nComplete Detail\n\t\nVW Atlas Blue\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nSterling Kia\n\t\n\t\n\t\n07/21/2026\n\t\nComplete Detail\n\t\n2011 Honda Accord Silver\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n3\n\t\nSterling Kia\n\t\n\t\n\t\n07/21/2026\n\t\nHeadliner\n\t\n2011 Honda Accord Silver\n\t\n1\n\t\n\t\n600\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n600.00\n\t\n0.00\n\n\n4\n\t\nSterling Kia\n\t\n\t\n\t\n07/21/2026\n\t\nRepair Center Console\n\t\n2011 Honda Accord Silver\n\t\n1\n\t\n\t\n125\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n125.00\n\t\n0.00\n\n\n5\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n6\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n7\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n8\tSterling Kia\t\t\t07/22/2026\tComplete Detail\t2024 Kia Telluride White #K547441\t1\t\t200\t\t\tNo\tNot Deposited\t\t\tDetail Sales\t200.00\t0.00\nJul 21, 4:41 pm Central Daylight Time: Added by Pittstop Detail\nType:\t\nInvoice\n\nDate:\t\n07/21/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,125.00\n\nOpen Balance:\t\n1,125.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100799\n\nName:\t\nSterling Kia\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/21/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n1,125.00\n\t\n1,125.00\n\n\n1\n\t\nSterling Kia\n\t\n\t\n\t\n07/21/2026\n\t\nComplete Detail\n\t\nVW Atlas Blue\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nSterling Kia\n\t\n\t\n\t\n07/21/2026\n\t\nComplete Detail\n\t\n2011 Honda Accord Silver\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n3\n\t\nSterling Kia\n\t\n\t\n\t\n07/21/2026\n\t\nHeadliner\n\t\n2011 Honda Accord Silver\n\t\n1\n\t\n\t\n600\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n600.00\n\t\n0.00\n\n\n4\n\t\nSterling Kia\n\t\n\t\n\t\n07/21/2026\n\t\nRepair Center Console\n\t\n2011 Honda Accord Silver\n\t\n1\n\t\n\t\n125\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n125.00\n\t\n0.00\n\n\n5\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n6\n\t\nSterling Kia\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n"
+    }
+  ],
+  "skipped": []
+}

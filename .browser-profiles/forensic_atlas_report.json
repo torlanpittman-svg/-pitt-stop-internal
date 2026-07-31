@@ -1,0 +1,118 @@
+{
+  "invoice_100771": {
+    "txn_id": 23054,
+    "has_atlas": false,
+    "is_dealer": true,
+    "pittstop_versions": [],
+    "autoleap_versions": [
+      {
+        "timestamp": "Jul 20, 7:44 am Central Daylight Time",
+        "action": "Edited",
+        "actor": "AutoLeap System",
+        "customer": "Lorraine Proudfoot",
+        "amount": "1,456.11",
+        "has_atlas": false,
+        "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n06/30/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,456.11\n\nOpen Balance:\t\n0.00\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nMemo:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nCustom Fields:\t\nNum:\t\n100771\n\nName:\t\nLorraine Proudfoot\n\nAddress:\t\n(same as in Customer Information)\n\nLocation:\t\n\nDue Date:\t\n06/30/"
+      },
+      {
+        "timestamp": "Jul 20, 7:43 am Central Daylight Time",
+        "action": "Edited",
+        "actor": "AutoLeap System",
+        "customer": "Lorraine Proudfoot",
+        "amount": "1,456.11",
+        "has_atlas": false,
+        "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n06/30/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,456.11\n\nOpen Balance:\t\n0.00\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nMemo:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nCustom Fields:\t\nNum:\t\n100771\n\nName:\t\nLorraine Proudfoot\n\nAddress:\t\n(same as in Customer Information)\n\nLocation:\t\n\nDue Date:\t\n06/30/"
+      },
+      {
+        "timestamp": "Jul 2, 4:50 pm Central Daylight Time",
+        "action": "Edited",
+        "actor": "AutoLeap System",
+        "customer": "Lorraine Proudfoot",
+        "amount": "2,963.38",
+        "has_atlas": false,
+        "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n06/30/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n2,963.38\n1,456.11\n\nOpen Balance:\t\n2,963.38\n1,456.11\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nMemo:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nCustom Fields:\t\nNum:\t\n100771\n\nName:\t\nLorraine Proudfoot\n\nAddress:\t\n(same as in Customer Information)\n\nLocatio"
+      },
+      {
+        "timestamp": "Jun 30, 12:21 pm Central Daylight Time",
+        "action": "Added",
+        "actor": "AutoLeap System",
+        "customer": "Lorraine Proudfoot",
+        "amount": "2,963.38",
+        "has_atlas": false,
+        "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n06/30/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n2,963.38\n\nOpen Balance:\t\n2,963.38\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nMemo:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nCustom Fields:\t\nNum:\t\n100771\n\nName:\t\nLorraine Proudfoot\n\nAddress:\t\n(same as in Customer Information)\n\nLocation:\t\n\nDue Date:\t\n06"
+      }
+    ],
+    "all_versions": [
+      {
+        "timestamp": "Jul 20, 7:44 am Central Daylight Time",
+        "action": "Edited",
+        "actor": "AutoLeap System",
+        "customer": "Lorraine Proudfoot",
+        "amount": "1,456.11",
+        "has_atlas": false,
+        "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n06/30/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,456.11\n\nOpen Balance:\t\n0.00\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nMemo:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nCustom Fields:\t\nNum:\t\n100771\n\nName:\t\nLorraine Proudfoot\n\nAddress:\t\n(same as in Customer Information)\n\nLocation:\t\n\nDue Date:\t\n06/30/"
+      },
+      {
+        "timestamp": "Jul 20, 7:43 am Central Daylight Time",
+        "action": "Edited",
+        "actor": "AutoLeap System",
+        "customer": "Lorraine Proudfoot",
+        "amount": "1,456.11",
+        "has_atlas": false,
+        "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n06/30/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,456.11\n\nOpen Balance:\t\n0.00\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nMemo:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nCustom Fields:\t\nNum:\t\n100771\n\nName:\t\nLorraine Proudfoot\n\nAddress:\t\n(same as in Customer Information)\n\nLocation:\t\n\nDue Date:\t\n06/30/"
+      },
+      {
+        "timestamp": "Jul 2, 4:52 pm Central Daylight Time",
+        "action": "Indirect edit",
+        "actor": "System",
+        "customer": "Lorraine Proudfoot",
+        "amount": "1,456.11",
+        "has_atlas": false,
+        "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n06/30/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,456.11\n\nOpen Balance:\t\n1,456.11\n0.00\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nMemo:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nCustom Fields:\t\nNum:\t\n100771\n\nName:\t\nLorraine Proudfoot\n\nAddress:\t\n(same as in Customer Information)\n\nLocation:\t\n\nDue Date"
+      },
+      {
+        "timestamp": "Jul 2, 4:50 pm Central Daylight Time",
+        "action": "Edited",
+        "actor": "AutoLeap System",
+        "customer": "Lorraine Proudfoot",
+        "amount": "2,963.38",
+        "has_atlas": false,
+        "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n06/30/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n2,963.38\n1,456.11\n\nOpen Balance:\t\n2,963.38\n1,456.11\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nMemo:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nCustom Fields:\t\nNum:\t\n100771\n\nName:\t\nLorraine Proudfoot\n\nAddress:\t\n(same as in Customer Information)\n\nLocatio"
+      },
+      {
+        "timestamp": "Jun 30, 12:21 pm Central Daylight Time",
+        "action": "Added",
+        "actor": "AutoLeap System",
+        "customer": "Lorraine Proudfoot",
+        "amount": "2,963.38",
+        "has_atlas": false,
+        "raw_block": "\nType:\t\nInvoice\n\nDate:\t\n06/30/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n2,963.38\n\nOpen Balance:\t\n2,963.38\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nMemo:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nCustom Fields:\t\nNum:\t\n100771\n\nName:\t\nLorraine Proudfoot\n\nAddress:\t\n(same as in Customer Information)\n\nLocation:\t\n\nDue Date:\t\n06"
+      }
+    ],
+    "raw": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Invoice No. 100771 ID: 23054\nYou can see up to seven years of history in your audit log.\nJul 20, 7:44 am Central Daylight Time: Edited by AutoLeap System\nType:\t\nInvoice\n\nDate:\t\n06/30/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,456.11\n\nOpen Balance:\t\n0.00\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nMemo:\t\nAutoLeap Order # 100771 : Lorraine Proudfoot\nYear: 2019\nMake: Subaru\nModel: Forester\nVIN: JF2SKAGC2KH457763\n\nCustom Fields:\t\nNum:\t\n100771\n\nName:\t\nLorraine Proudfoot\n\nAddress:\t\n(same as in Customer Information)\n\nLocation:\t\n\nDue Date:\t\n06/30/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\ntx.aggie.pm@outlook.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nLorraine Proudfoot\n\t\n\t\n\t\n\t\n\t\nAutoLeap Order # 100771 : Lorraine Proudfoot Year: 2019 Make: Subaru Model: Forester VIN: JF2SKAGC2KH457763\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n1,456.11\n\t\n0.00\n\n\n21\n\t\nLorraine Proudfoot\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n22\n\t\nLorraine Proudfoot\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n23\n\t\nLorraine Proudfoot\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n42\n\t\nLorraine Proudfoot\n\t\n\t\n\t\n\t\n\t\nDiscount\n\t\n\t\n\t\n\t\n\t\n\t\nYes\n\t\nNot Deposited\n\t\n\t\n\t\nDiscounts given\n\t\n1,018.92\n\t\n0.00\n\n\t\n*Previous row 43 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 44 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 45 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 46 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 47 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 48 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 49 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 50 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 51 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 52 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 53 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 54 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 55 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 56 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 57 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 58 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 59 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 60 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n61\tLorraine Proudfoot\t\t\t\tLabor\tClay bar to remove contaminants from a vehicle's surface\t1\t\t100\t\t\tNo\tNot Deposited\t\t\tSales\t100.00\t0.00\n62\tLorraine Proudfoot\t\t\t\t\tSubtotal\t\t\t\t\t\tNo\tNot Deposited\t\t\t\t100.00\t0.00\n63\tLorraine Proudfoot\t\t\t\tLabor\tExterior hand wash and rinse to remove dirt, debris, and contaminants. Includes cleaning of wheels, tires, and wheel wells, followed by a thorough drying to ensure a spotless finish\t1\t\t100\t\t\tNo\tNot Deposited\t\t\tSales\t100.00\t0.00\n64\tLorraine Proudfoot\t\t\t\t\tSubtotal\t\t\t\t\t\tNo\tNot Deposited\t\t\t\t100.00\t0.00\n65\tLorraine Proudfoot\t\t\t\tLabor\tComprehensive hand waxing service to protect and enhance the vehicle's paint, providing a smooth finish and a protective layer against contaminants\t1\t\t200\t\t\tNo\tNot Deposited\t\t\tSales\t200.00\t0.00\n66\tLorraine Proudfoot\t\t\t\t\tSubtotal\t\t\t\t\t\tNo\tNot Deposited\t\t\t\t200.00\t0.00\n67\tLorraine Proudfoot\t\t\t\tLabor\tRemoval of interior carpeting and associated trim components as required to access underlying surfaces. Cleaning and drying of both the carpet and exposed floor area. Reinstallation of all removed components upon completion of service.\t8\t\t65\t\t\tNo\tNot Deposited\t\t\tSales\t520.00\t0.00\n68\tLorraine Proudfoot\t\t\t\tParts\tOEM Replacement carpet\t1\t\t739.37\t\t\tNo\tNot Deposited\t\t\tSales\t739.37\t0.00\n69\tLorraine Proudfoot\t\t\t\t\tSubtotal\t\t\t\t\t\tNo\tNot Deposited\t\t\t\t1,259.37\t0.00\n70\tLorraine Proudfoot\t\t\t\tLabor\tIncludes: The removal of component and all necessary components for access. Does not include: System diagnosis, testing, or a vehicle road test.\t0.4\t\t150\t\t\tNo\tNot Deposited\t\t\tSales\t60.00\t0.00\n71\tLorraine Proudfoot\t\t\t\tParts\t4130\t1\t\t40.66\t\t\tNo\tNot Deposited\t\t\tSales\t40.66\t0.00\n72\tLorraine Proudfoot\t\t\t\t\tSubtotal\t\t\t\t\t\tNo\tNot Deposited\t\t\t\t100.66\t0.00\n73\tLorraine Proudfoot\t\t\t\tLabor\tClean and Sanitize Floor Plan\t1\t\t300\t\t\tNo\tNot Deposited\t\t\tSales\t300.00\t0.00\n74\tLorraine Proudfoot\t\t\t\t\tSubtotal\t\t\t\t\t\tNo\tNot Deposited\t\t\t\t300.00\t0.00\n75\tLorraine Proudfoot\t\t\t\tLabor\tPerformed ozone treatment to neutralize and reduce interior odors within the vehicle.\t1\t\t350\t\t\tNo\tNot Deposited\t\t\tSales\t350.00\t0.00\n76\tLorraine Proudfoot\t\t\t\t\tSubtotal\t\t\t\t\t\tNo\tNot Deposited\t\t\t\t350.00\t0.00\n77\tLorraine Proudfoot\t\t\t\tLabor\tClean and protect interior electrical con"
+  },
+  "atlas_scan_hits": [],
+  "search_results": {
+    "VW Atlas": {
+      "invoice_links": [],
+      "has_atlas_in_results": true,
+      "excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nSearch |VW Atlas\nAsk Intuit Intelligence |VW Atlas\nTransactions\nInvoice |100799|Sterling Kia|07/21/2026|$1,325.00|VW Atlas Blue\nOverdue\nInvoice |100214|EAG Automotive|04/14/2025|$1,125.00|2024 VW Atlas White #NGP127A\nPaid\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nWelcome, TORLAN!\nCustomize\nPrivacy\nAccounting\nExpenses & Pay Bills\nSales & Get Paid\nCustomer Hub\nPayroll\nTeam\nSales Tax\nBusiness Tax\nLending\nInventory\nProjects\nMarketing\nAlert\nSome QuickBooks Payments deposits weren't automatically recorded. After you receive the funds in your account, record them manually as a Bank Deposit.Take Action\nRun your payroll better with QuickBooks Time\nSave up to 2 hours on every payroll run and reduce costs. Connect your payroll to get started.\n\nExplore QuickBooks Time\nBusiness feed\n1 of 2\nView all\nOverdue invoices\n\n$5,205 worth of invoice reminders are ready for you to review and send\n\nReview all\nInvoices drafted\n\nI've started these invoices for you, based on previous invoices you've sent\n\nReview all\nCustomer payments\n\nYour customers paid $2,272 in open invoices this week\n\nGo to payments\nCash flow trending low\n\nYou have $28,864.04 available to draw from your no-fee Line of Credit.\n\nView Line of Credit\nBusiness Tax AI\n\nBusinesses in your industry often overlook deductions across many categories\n\nMaximize your deductions\nCreate actions\nRun payroll\nCreate invoice\nCreate estimate\nGet paid online"
+    },
+    "Volkswagen Atlas": {
+      "invoice_links": [],
+      "has_atlas_in_results": true,
+      "excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nSearch |Volkswagen Atlas\nAsk Intuit Intelligence |Volkswagen Atlas\nTransactions\nInvoice |1555|Sterling Auto Group|09/23/2024|$1,520.00|2023 Volkswagen Atlas Gray #S515324\nPaid\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nWelcome, TORLAN!\nCustomize\nPrivacy\nAccounting\nExpenses & Pay Bills\nSales & Get Paid\nCustomer Hub\nPayroll\nTeam\nSales Tax\nBusiness Tax\nLending\nInventory\nProjects\nMarketing\nAlert\nSome QuickBooks Payments deposits weren't automatically recorded. After you receive the funds in your account, record them manually as a Bank Deposit.Take Action\nRun your payroll better with QuickBooks Time\nSave up to 2 hours on every payroll run and reduce costs. Connect your payroll to get started.\n\nExplore QuickBooks Time\nBusiness feed\n1 of 2\nView all\nOverdue invoices\n\n$5,205 worth of invoice reminders are ready for you to review and send\n\nReview all\nInvoices drafted\n\nI've started these invoices for you, based on previous invoices you've sent\n\nReview all\nCustomer payments\n\nYour customers paid $2,272 in open invoices this week\n\nGo to payments\nCash flow trending low\n\nYou have $28,864.04 available to draw from your no-fee Line of Credit.\n\nView Line of Credit\nBusiness Tax AI\n\nBusinesses in your industry often overlook deductions across many categories\n\nMaximize your deductions\nCreate actions\nRun payroll\nCreate invoice\nCreate estimate\nGet paid online\nRecord expense\nShow all\nBusiness at a glance\n"
+    },
+    "Atlas": {
+      "invoice_links": [],
+      "has_atlas_in_results": true,
+      "excerpt": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nSearch |Atlas\nAsk Intuit Intelligence |Atlas\nTransactions\nInvoice |100799|Sterling Kia|07/21/2026|$1,325.00|VW Atlas Blue\nOverdue\nInvoice |100214|EAG Automotive|04/14/2025|$1,125.00|2024 VW Atlas White #NGP127A\nPaid\nInvoice |1555|Sterling Auto Group|09/23/2024|$1,520.00|2023 Volkswagen Atlas Gray #S515324\nPaid\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nWelcome, TORLAN!\nCustomize\nPrivacy\nAccounting\nExpenses & Pay Bills\nSales & Get Paid\nCustomer Hub\nPayroll\nTeam\nSales Tax\nBusiness Tax\nLending\nInventory\nProjects\nMarketing\nAlert\nSome QuickBooks Payments deposits weren't automatically recorded. After you receive the funds in your account, record them manually as a Bank Deposit.Take Action\nRun your payroll better with QuickBooks Time\nSave up to 2 hours on every payroll run and reduce costs. Connect your payroll to get started.\n\nExplore QuickBooks Time\nBusiness feed\n1 of 2\nView all\nOverdue invoices\n\n$5,205 worth of invoice reminders are ready for you to review and send\n\nReview all\nInvoices drafted\n\nI've started these invoices for you, based on previous invoices you've sent\n\nReview all\nCustomer payments\n\nYour customers paid $2,272 in open invoices this week\n\nGo to payments\nCash flow trending low\n\nYou have $28,864.04 available to draw from your no-fee Line of Credit.\n\nView Line of Credit\nBusiness Tax AI\n\nBusinesses in your industry often overlook deductions across many categories\n\nMaximize"
+    }
+  },
+  "deleted_payment_23112": {
+    "invoice_refs_in_payment": [],
+    "txnid_refs": [],
+    "raw": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Payment ID: 23112\nYou can see up to seven years of history in your audit log.\nJul 21, 1:41 pm Central Daylight Time: Deleted by Pittstop Detail\nDeleted\nJul 21, 1:39 pm Central Daylight Time: Indirect edit by System\nType:\t\nPayment\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n800.00\n0.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n800.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-800.00\n\t\n-800.00\n0.00\nJul 20, 7:34 am Central Daylight Time: Indirect edit by System\nType:\t\nPayment\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n0.00\n800.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n800.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-800.00\n\t\n0.00\n-800.00\nJul 17, 2:05 pm Central Daylight Time: Added by Pittstop Detail\nType:\t\nPayment\n\nDate:\t\n07/17/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n800.00\n\nOpen Balance:\t\n0.00\n\nPayment Method:\t\nCheck\n\nMemo:\t\nNum:\t\n\nName:\t\nSterling Kia\nNO.\tDESCRIPTION\tDEPOSITED\tDEPOSIT ID\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\n\t\nTo be deposited\n\t\n\t\nNot Cleared\n\t\n\t\nUndeposited Funds\n\t\n800.00\n\t\n0.00\n\n\n1\n\t\n\t\nNot Deposited\n\t\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n-800.00\n\t\n0.00\nTransaction History\nView Mode\n07/21/2026, 1:41 pm CDT\nDeleted by Pittstop Detail\n07/21/2026, 1:39 pm CDT\nIndirect edit by System\n07/20/2026, 7:34 am CDT\nIndirect edit by System\n07/17/2026, 2:05 pm CDT\nAdded by Pittstop Detail\n\u00a0"
+  },
+  "conclusion": "No additional Atlas invoice found"
+}

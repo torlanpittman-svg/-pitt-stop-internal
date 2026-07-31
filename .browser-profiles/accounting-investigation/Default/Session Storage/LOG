@@ -1,0 +1,23 @@
+2026/07/27-22:13:09.569 2737df Reusing MANIFEST /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/accounting-investigation/Default/Session Storage/MANIFEST-000001
+2026/07/27-22:13:09.570 2737df Recovering log #171
+2026/07/27-22:13:09.570 2737df Level-0 table #174: started
+2026/07/27-22:13:09.571 2737df Level-0 table #174: 13134 bytes OK
+2026/07/27-22:13:09.572 2737df Delete type=0 #171
+2026/07/27-22:13:09.572 2737e3 Compacting 4@0 + 1@1 files
+2026/07/27-22:13:09.574 2737e3 Generated table #176@0: 718 keys, 30161 bytes
+2026/07/27-22:13:09.574 2737e3 Compacted 4@0 + 1@1 files => 30161 bytes
+2026/07/27-22:13:09.574 2737e3 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/07/27-22:13:09.574 2737e3 Delete type=2 #174
+2026/07/27-22:13:09.574 2737e3 Delete type=2 #166
+2026/07/27-22:13:09.574 2737e3 Delete type=2 #172
+2026/07/27-22:13:09.574 2737e3 Delete type=2 #170
+2026/07/27-22:13:09.574 2737e3 Delete type=2 #168
+2026/07/27-22:14:19.904 2737e3 Level-0 table #178: started
+2026/07/27-22:14:19.907 2737e3 Level-0 table #178: 25769 bytes OK
+2026/07/27-22:14:19.911 2737e3 Delete type=0 #175
+2026/07/27-22:16:19.901 2737e3 Level-0 table #180: started
+2026/07/27-22:16:19.903 2737e3 Level-0 table #180: 21315 bytes OK
+2026/07/27-22:16:19.906 2737e3 Delete type=0 #177
+2026/07/27-22:19:19.900 2737e3 Level-0 table #182: started
+2026/07/27-22:19:19.905 2737e3 Level-0 table #182: 13833 bytes OK
+2026/07/27-22:19:19.907 2737e3 Delete type=0 #179

@@ -1,0 +1,171 @@
+{
+  "100773": {
+    "invoice_num": "100773",
+    "txn_id": 23056,
+    "found": true,
+    "strategies_tried": [
+      "global_search",
+      "invoice_list",
+      "audit_log"
+    ],
+    "transaction_type": "Invoice",
+    "is_dealer": false,
+    "customers": [
+      "April Lovelady"
+    ],
+    "amounts": [
+      "451.55"
+    ],
+    "versions": [
+      {
+        "timestamp": "Jul 2, 8:12 am Central Daylight Time",
+        "action": "Indirect edit",
+        "actor": "System",
+        "customer": "April Lovelady",
+        "amount": "451.55",
+        "date": "06/30/2026",
+        "memo": "AutoLeap Order # 100773 : April Lovelady"
+      },
+      {
+        "timestamp": "Jul 2, 8:12 am Central Daylight Time",
+        "action": "Edited",
+        "actor": "AutoLeap System",
+        "customer": "April Lovelady",
+        "amount": "451.55",
+        "date": "06/30/2026",
+        "memo": "AutoLeap Order # 100773 : April Lovelady"
+      },
+      {
+        "timestamp": "Jun 30, 4:49 pm Central Daylight Time",
+        "action": "Added",
+        "actor": "AutoLeap System",
+        "customer": "April Lovelady",
+        "amount": "451.55",
+        "date": "06/30/2026",
+        "memo": "AutoLeap Order # 100773 : April Lovelady"
+      }
+    ],
+    "autoleap_involved": true,
+    "autoleap_memo": "AutoLeap Order # 100773 : April Lovelady",
+    "deleted": false,
+    "voided": false,
+    "payment_attached": true,
+    "verdict": "AUTOLEAP_CREATED",
+    "confidence": "HIGH",
+    "notes": [
+      "AutoLeap created this invoice; no Pittstop Detail version exists"
+    ],
+    "raw_history": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Invoice No. 100773 ID: 23056\nYou can see up to seven years of history in your audit log.\nJul 2, 8:12 am Central Daylight Time: Indirect edit by System\nType:\t\nInvoice\n\nDate:\t\n06/30/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n451.55\n\nOpen Balance:\t\n451.55\n0.00\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100773 : April Lovelady\nYear: 2016\nMake: Hyundai\nModel: Elantra\nVIN: 5NPDH4AE7GH654745\nLicense plate: 961DV93\n\nMemo:\t\nAutoLeap Order # 100773 : April Lovelady\nYear: 2016\nMake: Hyundai\nModel: Elantra\nVIN: 5NPDH4AE7GH654745\nLicense plate: 961DV93\n\nCustom Fields:\t\nNum:\t\n100773\n\nName:\t\nApril Lovelady\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n06/30/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n\nTracking Number:\t\n\nEmail Address:\t\napril.lovelady@gmail.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\n\t\nAutoLeap Order # 100773 : April Lovelady Year: 2016 Make: Hyundai Model: Elantra VIN: 5NPDH4AE7GH654745 License plate: 961DV93\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n451.55\n\t\n451.55\n0.00\n\n\n9\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.80\n\t\n0.00\n\n\n10\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.06\n\t\n0.00\n\n\n11\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.19\n\t\n0.00\n\n\n12\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\nLabor\n\t\nThorough vacuuming, Steam-cleaning of carpets and upholstery, leather cleaning and conditioning, streak free window cleaning, conditioning of plastics and vinyl, detailed cleaning of vents, buttons, and consoles, and odor removal\n\t\n1\n\t\n\t\n250\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n250.00\n\t\n0.00\n\n\n13\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n250.00\n\t\n0.00\n\n\n14\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\nLabor\n\t\nExterior hand wash and rinse to remove dirt, debris, and contaminants. Includes cleaning of wheels, tires, and wheel wells, followed by a thorough drying to ensure a spotless finish\n\t\n1\n\t\n\t\n75\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n75.00\n\t\n0.00\n\n\n15\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n75.00\n\t\n0.00\n\n\n16\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\nLabor\n\t\nComprehensive hand waxing service to protect and enhance the vehicle's paint, providing a smooth finish and a protective layer against contaminants\n\t\n1\n\t\n\t\n100\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n100.00\n\t\n0.00\n\n\n17\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\n\t\nSubtotal\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\n\t\n100.00\n\t\n0.00\n\n\n18\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\nFees\n\t\nShop supplies\n\t\n1\n\t\n\t\n12.75\n\t\n\t\n\t\nYes\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n12.75\n\t\n0.00\n\n\n19\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\nFees\n\t\nCC Processing Fee\n\t\n1\n\t\n\t\n12.75\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nSales\n\t\n12.75\n\t\n0.00\nJul 2, 8:12 am Central Daylight Time: Edited by AutoLeap System\nType:\t\nInvoice\n\nDate:\t\n06/30/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n451.55\n\nOpen Balance:\t\n451.55\n\nTerms:\t\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\n\nLast Sent:\t\n\nPrinted:\t\nTo Be Printed\n\nCustomer/Vendor Message:\t\nAutoLeap Order # 100773 : April Lovelady\nYear: 2016\nMake: Hyundai\nModel: Elantra\nVIN: 5NPDH4AE7GH654745\nLicense plate: 961DV93\n\nMemo:\t\nAutoLeap Order # 100773 : April Lovelady\nYear: 2016\nMake: Hyundai\nModel: Elantra\nVIN: 5NPDH4AE7GH654745\nLicense plate: 961DV93\n\nCustom Fields:\t\nNum:\t\n100773\n\nName:\t\nApril Lovelady\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n06/30/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n\nTracking Number:\t\n\nEmail Address:\t\napril.lovelady@gmail.com\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\n\t\nAutoLeap Order # 100773 : April Lovelady Year: 2016 Make: Hyundai Model: Elantra VIN: 5NPDH4AE7GH654745 License plate: 961DV93\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n451.55\n\t\n451.55\n\n\t\n*Previous row 1 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 2 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 3 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 4 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 5 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 6 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 7 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\n*Previous row 8 deleted\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\n9\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.80\n\t\n0.00\n\n\n10\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.06\n\t\n0.00\n\n\n11\n\t\nApril Lovelady\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.19\n\t\n0.00\n\n12\tApril Lovelady\t\t\t\tLabor\tThorough vacuuming, Steam-cleaning of carpets and upholstery, leather cleaning and conditioning, streak free window cleaning, conditioning of plastics and vinyl, detailed cleaning of vents, buttons, and consoles, and odor removal\t1\t\t250\t\t\tNo\tNot Deposited\t\t\tSales\t250.00\t0.00\n13\tApril Lovelady\t\t\t\t\tSubtotal\t\t\t\t\t\tNo\tNot Deposited\t\t\t\t250.00\t0.00\n14\tApril Lovelady\t\t\t\tLabor\tExterior hand wash and rinse to remove dirt, debris, and contaminants. Includes cleaning of wheels, tires, and wheel wells, followed by a thorough drying to ensure a spotless finish\t1\t\t75\t\t\tNo\tNot Deposited\t\t\tSales\t75.00\t0.00\n15\tApril Lovelady\t\t\t\t\tSubtotal\t\t\t\t\t\tNo\tNot Deposited\t\t\t\t75.00\t0.00\n16\tApril Lovelady\t\t\t\tLabor\tComprehensive hand waxing service to protect and enhance the vehicle's paint, providing a smooth finish and a pr"
+  },
+  "100775": {
+    "invoice_num": "100775",
+    "txn_id": 23061,
+    "found": true,
+    "strategies_tried": [
+      "global_search",
+      "invoice_list",
+      "audit_log"
+    ],
+    "transaction_type": "Invoice",
+    "is_dealer": true,
+    "customers": [
+      "Sterling Subaru"
+    ],
+    "amounts": [
+      "200.00",
+      "1,000.00"
+    ],
+    "versions": [
+      {
+        "timestamp": "Jul 3, 1:51 pm Central Daylight Time",
+        "action": "Indirect edit",
+        "actor": "System",
+        "customer": "",
+        "amount": "1,000.00",
+        "date": "07/01/2026",
+        "memo": ""
+      },
+      {
+        "timestamp": "Jul 1, 5:13 pm Central Daylight Time\n\nPrinted",
+        "action": "Not Printed",
+        "actor": "Not Printed",
+        "customer": "Sterling Subaru",
+        "amount": "",
+        "date": "",
+        "memo": ""
+      },
+      {
+        "timestamp": "Jul 1, 5:13 pm Central Daylight Time",
+        "action": "Edited",
+        "actor": "Pittstop Detail",
+        "customer": "",
+        "amount": "1,000.00",
+        "date": "07/01/2026",
+        "memo": ""
+      },
+      {
+        "timestamp": "Jul 1, 5:13 pm Central Daylight Time\n\nPrinted",
+        "action": "Not Printed",
+        "actor": "Not Printed",
+        "customer": "Sterling Subaru",
+        "amount": "",
+        "date": "",
+        "memo": ""
+      },
+      {
+        "timestamp": "Jul 1, 5:13 pm Central Daylight Time",
+        "action": "Indirect edit",
+        "actor": "System",
+        "customer": "",
+        "amount": "1,000.00",
+        "date": "07/01/2026",
+        "memo": ""
+      },
+      {
+        "timestamp": "Jul 1, 5:13 pm Central Daylight Time\nPrinted",
+        "action": "Not Printed",
+        "actor": "Not Printed",
+        "customer": "Sterling Subaru",
+        "amount": "",
+        "date": "",
+        "memo": ""
+      },
+      {
+        "timestamp": "Jul 1, 5:11 pm Central Daylight Time",
+        "action": "Edited",
+        "actor": "Pittstop Detail",
+        "customer": "Sterling Subaru",
+        "amount": "200.00",
+        "date": "07/01/2026",
+        "memo": ""
+      },
+      {
+        "timestamp": "Jul 1, 12:02 pm Central Daylight Time",
+        "action": "Edited",
+        "actor": "AutoLeap System",
+        "customer": "Sterling Subaru",
+        "amount": "200.00",
+        "date": "07/01/2026",
+        "memo": ""
+      },
+      {
+        "timestamp": "Jul 1, 11:10 am Central Daylight Time",
+        "action": "Added",
+        "actor": "Pittstop Detail",
+        "customer": "Sterling Subaru",
+        "amount": "200.00",
+        "date": "07/01/2026",
+        "memo": ""
+      }
+    ],
+    "autoleap_involved": true,
+    "autoleap_memo": "",
+    "deleted": false,
+    "voided": false,
+    "payment_attached": true,
+    "verdict": "AUTOLEAP_TOUCHED_SAME_CUSTOMER",
+    "confidence": "MEDIUM",
+    "notes": [],
+    "raw_history": "Skip to Main Content\nPitt Stop Detail & Auto Sales\nT\nCreate\nBookmarks\nHome\nFeed\nReports\nAll apps\nPINNED\nAccounting\nExpenses\nSales\nCustomize\nAudit History\n\u2190 Audit Log\nHistory of this transaction: Invoice No. 100775 ID: 23061\nYou can see up to seven years of history in your audit log.\nJul 3, 1:51 pm Central Daylight Time: Indirect edit by System\nType:\t\nInvoice\n\nDate:\t\n07/01/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,000.00\n\nOpen Balance:\t\n1,000.00\n0.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\nJul 1, 5:13 pm Central Daylight Time\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100775\n\nName:\t\nSterling Subaru\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/01/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Subaru\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n1,000.00\n\t\n1,000.00\n0.00\n\n\n1\n\t\nSterling Subaru\n\t\n\t\n\t\n07/01/2026\n\t\nComplete Detail\n\t\n2024 Subaru Ascent Blue #U442702\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nSterling Subaru\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n3\n\t\nSterling Subaru\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n4\n\t\nSterling Subaru\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n5\n\t\nSterling Subaru\n\t\n\t\n\t\n07/01/2026\n\t\nComplete Detail\n\t\n2025 Subaru Outback Gray #U191798\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n6\n\t\nSterling Subaru\n\t\n\t\n\t\n07/01/2026\n\t\nComplete Detail\n\t\nSubaru Ascent White #UP434019\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n7\n\t\nSterling Subaru\n\t\n\t\n\t\n07/01/2026\n\t\nComplete Detail\n\t\nSubaru Ascent Blue #UP433870\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n8\n\t\nSterling Subaru\n\t\n\t\n\t\n07/01/2026\n\t\nComplete Detail\n\t\nSubaru Ascent Silver #UP438731\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\nJul 1, 5:13 pm Central Daylight Time: Edited by Pittstop Detail\nType:\t\nInvoice\n\nDate:\t\n07/01/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,000.00\n\nOpen Balance:\t\n1,000.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nSent\n\nLast Sent:\t\nJul 1, 5:13 pm Central Daylight Time\n\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100775\n\nName:\t\nSterling Subaru\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/01/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Subaru\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n1,000.00\n\t\n1,000.00\n\n\n1\n\t\nSterling Subaru\n\t\n\t\n\t\n07/01/2026\n\t\nComplete Detail\n\t\n2024 Subaru Ascent Blue #U442702\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nSterling Subaru\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n3\n\t\nSterling Subaru\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n4\n\t\nSterling Subaru\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n5\n\t\nSterling Subaru\n\t\n\t\n\t\n07/01/2026\n\t\nComplete Detail\n\t\n2025 Subaru Outback Gray #U191798\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n6\n\t\nSterling Subaru\n\t\n\t\n\t\n07/01/2026\n\t\nComplete Detail\n\t\nSubaru Ascent White #UP434019\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n7\n\t\nSterling Subaru\n\t\n\t\n\t\n07/01/2026\n\t\nComplete Detail\n\t\nSubaru Ascent Blue #UP433870\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n8\n\t\nSterling Subaru\n\t\n\t\n\t\n07/01/2026\n\t\nComplete Detail\n\t\nSubaru Ascent Silver #UP438731\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\nJul 1, 5:13 pm Central Daylight Time: Indirect edit by System\nType:\t\nInvoice\n\nDate:\t\n07/01/2026\n\nCurrency:\t\nUSD\n\nExchange Rate:\t\n1\n\nAmount:\t\n1,000.00\n\nOpen Balance:\t\n1,000.00\n\nTerms:\t\nDue on receipt\n\nPayment Method:\t\n\nShip Date:\t\n\nShip Via:\t\n\nSent:\t\nNot Sent\nSent\n\nLast Sent:\tJul 1, 5:13 pm Central Daylight Time\nPrinted:\t\nNot Printed\n\nCustomer/Vendor Message:\t\n\nMemo:\t\n\nCustom Fields:\t\nNum:\t\n100775\n\nName:\t\nSterling Subaru\n\nAddress:\t\n\nLocation:\t\n\nDue Date:\t\n07/01/2026\n\nPmt Meth Ref No.:\t\n\nShipping Address:\t\n(same as in Customer Information)\n\nTracking Number:\t\n\nEmail Address:\t\nbilling@sterlingautogroup.net\n\nDelivery Error:\t\n\nCustomer is Taxable:\t\nNo\nNO.\tCUSTOMER\tVENDOR\tEMPLOYEE\tSERVICE DATE\tPRODUCT/SERVICE\tDESCRIPTION\tQTY\tUNIT\tRATE\tLOCATION\tCLASS\tTAXABLE\tDEPOSITED\tCLR\tMATCH STATUS\tACCOUNT\tAMOUNT\tOPEN BALANCE\n\n0\n\t\nSterling Subaru\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nAccounts Receivable (A/R)\n\t\n1,000.00\n\t\n1,000.00\n\n\n1\n\t\nSterling Subaru\n\t\n\t\n\t\n07/01/2026\n\t\nComplete Detail\n\t\n2024 Subaru Ascent Blue #U442702\n\t\n1\n\t\n\t\n200\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\n\t\n\t\nDetail Sales\n\t\n200.00\n\t\n0.00\n\n\n2\n\t\nSterling Subaru\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n6.25%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n3\n\t\nSterling Subaru\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n0.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n4\n\t\nSterling Subaru\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n\t\n1.50%\n\t\n\t\n\t\nNo\n\t\nNot Deposited\n\t\nNot Cleared\n\t\n\t\nSales Tax Payable\n\t\n0.00\n\t\n0.00\n\n\n5\n\t\nSterling Subaru\n\t\n\t\n\t\n07/01/2026\n\t\nComplete Detail\n\t\n2025"
+  }
+}

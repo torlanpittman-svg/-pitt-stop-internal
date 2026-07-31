@@ -1,0 +1,32 @@
+2026/07/27-21:59:57.299 270beb Reusing MANIFEST /Users/torlanpittman/Projects/pitt-stop-internal/.browser-profiles/accounting-investigation/Default/Session Storage/MANIFEST-000001
+2026/07/27-21:59:57.299 270beb Recovering log #154
+2026/07/27-21:59:57.299 270beb Level-0 table #158: started
+2026/07/27-21:59:57.301 270beb Level-0 table #158: 13901 bytes OK
+2026/07/27-21:59:57.302 270beb Delete type=0 #154
+2026/07/27-22:01:09.360 270bee Level-0 table #161: started
+2026/07/27-22:01:09.365 270bee Level-0 table #161: 25881 bytes OK
+2026/07/27-22:01:09.367 270bee Delete type=0 #159
+2026/07/27-22:07:22.550 270bee Level-0 table #163: started
+2026/07/27-22:07:22.554 270bee Level-0 table #163: 17474 bytes OK
+2026/07/27-22:07:22.558 270bee Delete type=0 #160
+2026/07/27-22:07:28.803 270bee Level-0 table #165: started
+2026/07/27-22:07:28.805 270bee Level-0 table #165: 14225 bytes OK
+2026/07/27-22:07:28.806 270bee Delete type=0 #162
+2026/07/27-22:07:28.806 270bee Compacting 4@0 + 1@1 files
+2026/07/27-22:07:28.808 270bee Generated table #166@0: 718 keys, 31307 bytes
+2026/07/27-22:07:28.808 270bee Compacted 4@0 + 1@1 files => 31307 bytes
+2026/07/27-22:07:28.809 270bee compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/07/27-22:07:28.809 270bee Delete type=2 #161
+2026/07/27-22:07:28.809 270bee Delete type=2 #163
+2026/07/27-22:07:28.809 270bee Delete type=2 #158
+2026/07/27-22:07:28.809 270bee Delete type=2 #165
+2026/07/27-22:07:28.809 270bee Delete type=2 #156
+2026/07/27-22:07:36.628 270bee Level-0 table #168: started
+2026/07/27-22:07:36.639 270bee Level-0 table #168: 12942 bytes OK
+2026/07/27-22:07:36.641 270bee Delete type=0 #164
+2026/07/27-22:08:09.357 270bee Level-0 table #170: started
+2026/07/27-22:08:09.364 270bee Level-0 table #170: 14728 bytes OK
+2026/07/27-22:08:09.367 270bee Delete type=0 #167
+2026/07/27-22:10:09.341 270bee Level-0 table #172: started
+2026/07/27-22:10:09.347 270bee Level-0 table #172: 14574 bytes OK
+2026/07/27-22:10:09.349 270bee Delete type=0 #169

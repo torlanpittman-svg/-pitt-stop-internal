@@ -1,0 +1,13 @@
+{
+  "app_id": "5889e8a3-d8ad-48f0-ac9c-e9a7de38a95a",
+  "redirect_uri_target": "http://localhost:3000/api/auth/quickbooks/callback",
+  "redirect_uri_was_present": false,
+  "redirect_uri_added": false,
+  "development_client_id": "",
+  "actions_taken": [],
+  "needs_manual_approval": [
+    "Could not add redirect URI automatically.\nIn the browser: find 'Redirect URIs' section \u2192 click '+ Add URI' \u2192 paste:\n  http://localhost:3000/api/auth/quickbooks/callback\nThen click Save."
+  ],
+  "next_step": "Manual step needed: add the redirect URI in the Intuit portal browser window.\nCould not add redirect URI automatically.\nIn the browser: find 'Redirect URIs' section \u2192 click '+ Add URI' \u2192 paste:\n  http://localhost:3000/api/auth/quickbooks/callback\nThen click Save.",
+  "error": null
+}

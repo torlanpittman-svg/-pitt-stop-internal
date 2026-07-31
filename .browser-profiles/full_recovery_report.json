@@ -1,0 +1,183 @@
+{
+  "replacement_invoice": {
+    "original_was": "100803",
+    "new_number": null,
+    "customer": "Sterling Subaru",
+    "date": "07/22/2026",
+    "total": 400.0,
+    "lines": [
+      {
+        "product": "Complete Detail",
+        "description": "2024 Subaru Crosstrek Silver #U761088",
+        "qty": "1",
+        "rate": "200",
+        "account": "Detail Sales"
+      },
+      {
+        "product": "Complete Detail",
+        "description": "2023 Hyundai Tucson Red #U253409",
+        "qty": "1",
+        "rate": "200",
+        "account": "Detail Sales"
+      }
+    ]
+  },
+  "investigation": {
+    "all_entries_count": 50,
+    "invoice_timeline": {
+      "100806": [
+        {
+          "timestamp": "Jul 27, 4:57 pm",
+          "user": "Pittstop Detail",
+          "event": "Created Invoice No. 100806 for Sterling Subaru for $400.00",
+          "invoice_num": "100806",
+          "customer": "Sterling Subaru",
+          "amount": "400.00"
+        }
+      ],
+      "100805": [
+        {
+          "timestamp": "Jul 27, 3:21 pm",
+          "user": "AutoLeap System",
+          "event": "Created Invoice No. 100805 for Ty Naquin for $159.37",
+          "invoice_num": "100805",
+          "customer": "Ty Naquin",
+          "amount": "159.37"
+        }
+      ],
+      "100804": [
+        {
+          "timestamp": "Jul 27, 1:17 pm",
+          "user": "AutoLeap System",
+          "event": "Edited Invoice No. 100804 for Hollie Gilleland for $371.87",
+          "invoice_num": "100804",
+          "customer": "Hollie Gilleland",
+          "amount": "371.87"
+        },
+        {
+          "timestamp": "Jul 27, 1:17 pm",
+          "user": "AutoLeap System",
+          "event": "Edited Invoice No. 100804 for Hollie Gilleland for $371.87",
+          "invoice_num": "100804",
+          "customer": "Hollie Gilleland",
+          "amount": "371.87"
+        },
+        {
+          "timestamp": "Jul 27, 10:20 am",
+          "user": "AutoLeap System",
+          "event": "Created Invoice No. 100804 for Hollie Gilleland for $371.87",
+          "invoice_num": "100804",
+          "customer": "Hollie Gilleland",
+          "amount": "371.87"
+        }
+      ],
+      "100802": [
+        {
+          "timestamp": "Jul 25, 3:57 pm",
+          "user": "System Administration",
+          "event": "Emailed Invoice No. 100802 for phill dorsett for $683.48",
+          "invoice_num": "100802",
+          "customer": "phill dorsett",
+          "amount": "683.48"
+        },
+        {
+          "timestamp": "Jul 24, 5:56 pm",
+          "user": "AutoLeap System",
+          "event": "Edited Invoice No. 100802 for phill dorsett for $683.48",
+          "invoice_num": "100802",
+          "customer": "phill dorsett",
+          "amount": "683.48"
+        },
+        {
+          "timestamp": "Jul 24, 5:12 pm",
+          "user": "AutoLeap System",
+          "event": "Edited Invoice No. 100802 for Sterling Subaru for $400.00",
+          "invoice_num": "100802",
+          "customer": "Sterling Subaru",
+          "amount": "400.00"
+        }
+      ],
+      "100796": [
+        {
+          "timestamp": "Jul 25, 7:17 am",
+          "user": "System Administration",
+          "event": "Emailed Invoice No. 100796 for Sterling Auto Group for $1600.00",
+          "invoice_num": "100796",
+          "customer": "Sterling Auto Group",
+          "amount": "1600.00"
+        }
+      ],
+      "100803": [
+        {
+          "timestamp": "Jul 24, 6:00 pm",
+          "user": "AutoLeap System",
+          "event": "Edited Invoice No. 100803 for Maria Houchins for $2148.40",
+          "invoice_num": "100803",
+          "customer": "Maria Houchins",
+          "amount": "2148.40"
+        },
+        {
+          "timestamp": "Jul 24, 6:00 pm",
+          "user": "AutoLeap System",
+          "event": "Edited Invoice No. 100803 for Sterling Subaru for $400.00",
+          "invoice_num": "100803",
+          "customer": "Sterling Subaru",
+          "amount": "400.00"
+        }
+      ]
+    },
+    "overwrite_candidates": {},
+    "detailed_findings": {},
+    "sterling_kia_entries": [],
+    "autoleap_edits": [
+      {
+        "timestamp": "Jul 27, 1:17 pm",
+        "user": "AutoLeap System",
+        "event": "Edited Invoice No. 100804 for Hollie Gilleland for $371.87",
+        "invoice_num": "100804",
+        "customer": "Hollie Gilleland",
+        "amount": "371.87"
+      },
+      {
+        "timestamp": "Jul 27, 1:17 pm",
+        "user": "AutoLeap System",
+        "event": "Edited Invoice No. 100804 for Hollie Gilleland for $371.87",
+        "invoice_num": "100804",
+        "customer": "Hollie Gilleland",
+        "amount": "371.87"
+      },
+      {
+        "timestamp": "Jul 24, 6:00 pm",
+        "user": "AutoLeap System",
+        "event": "Edited Invoice No. 100803 for Maria Houchins for $2148.40",
+        "invoice_num": "100803",
+        "customer": "Maria Houchins",
+        "amount": "2148.40"
+      },
+      {
+        "timestamp": "Jul 24, 6:00 pm",
+        "user": "AutoLeap System",
+        "event": "Edited Invoice No. 100803 for Sterling Subaru for $400.00",
+        "invoice_num": "100803",
+        "customer": "Sterling Subaru",
+        "amount": "400.00"
+      },
+      {
+        "timestamp": "Jul 24, 5:56 pm",
+        "user": "AutoLeap System",
+        "event": "Edited Invoice No. 100802 for phill dorsett for $683.48",
+        "invoice_num": "100802",
+        "customer": "phill dorsett",
+        "amount": "683.48"
+      },
+      {
+        "timestamp": "Jul 24, 5:12 pm",
+        "user": "AutoLeap System",
+        "event": "Edited Invoice No. 100802 for Sterling Subaru for $400.00",
+        "invoice_num": "100802",
+        "customer": "Sterling Subaru",
+        "amount": "400.00"
+      }
+    ]
+  }
+}
