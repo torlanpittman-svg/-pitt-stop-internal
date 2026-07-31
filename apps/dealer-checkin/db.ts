@@ -43,6 +43,43 @@ export async function getScan(id: string): Promise<DealerScanRow | null> {
   return row ?? null
 }
 
+/** Reuse an already-stored image URL for identical bytes (dedup by sha-256). */
+export async function findImageUrlByHash(hash: string): Promise<string | null> {
+  const db = getDb()
+  const [row] = await db
+    .select({ photoUrl: dealerScans.photoUrl })
+    .from(dealerScans)
+    .where(and(
+      eq(dealerScans.imageHash, hash),
+      sql`${dealerScans.photoUrl} is not null`,
+      sql`${dealerScans.imageDeletedAt} is null`,
+    ))
+    .orderBy(desc(dealerScans.createdAt))
+    .limit(1)
+  return row?.photoUrl ?? null
+}
+
+/** Most recent scans for the admin Scan History view. */
+export async function listRecentScans(limit = 50): Promise<DealerScanRow[]> {
+  const db = getDb()
+  return db.select().from(dealerScans).orderBy(desc(dealerScans.createdAt)).limit(limit)
+}
+
+/** Scans whose stored image is past retention (or marked reviewed) and not yet deleted. */
+export async function listImagesToCleanup(retentionDays: number, limit = 200): Promise<DealerScanRow[]> {
+  const db = getDb()
+  const cutoff = new Date(Date.now() - retentionDays * 86400_000)
+  return db
+    .select()
+    .from(dealerScans)
+    .where(and(
+      sql`${dealerScans.photoUrl} is not null`,
+      sql`${dealerScans.imageDeletedAt} is null`,
+      sql`(${dealerScans.imageReviewedAt} is not null or ${dealerScans.createdAt} < ${cutoff})`,
+    ))
+    .limit(limit)
+}
+
 /** Recent approved scans for a stock number (duplicate detection window). */
 export async function recentScansByStock(stockNumber: string, sinceDays = 7): Promise<DealerScanRow[]> {
   const db = getDb()

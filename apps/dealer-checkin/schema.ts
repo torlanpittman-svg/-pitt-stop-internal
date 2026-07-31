@@ -56,8 +56,13 @@ export const dealerScans = pgTable(
     nhtsaMake:  varchar('nhtsa_make',  { length: 100 }),
     nhtsaModel: varchar('nhtsa_model', { length: 100 }),
 
-    photoUrl: text('photo_url'),
-    cropUrl:  text('crop_url'),
+    // Original dealer-tag image (Vercel Blob URL) + audit
+    photoUrl:        text('photo_url'),
+    cropUrl:         text('crop_url'),
+    imageHash:       varchar('image_hash', { length: 64 }), // sha-256 of bytes, for dedup
+    rawOcr:          jsonb('raw_ocr'),                       // raw OCR output (troubleshooting only)
+    imageReviewedAt: timestamp('image_reviewed_at', { withTimezone: true }),
+    imageDeletedAt:  timestamp('image_deleted_at', { withTimezone: true }),
 
     // Outcome: pending | approved | duplicate_skipped | error
     status:     varchar('status', { length: 30 }).notNull().default('pending'),

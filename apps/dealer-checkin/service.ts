@@ -28,8 +28,45 @@ import {
   normalizeStock,
   STANDARD_RATE,
 } from './rules'
-import { createScan, updateScan, recentScansByStock, logScanEvent, listQueuedScans } from './db'
+import { createScan, updateScan, recentScansByStock, logScanEvent, listQueuedScans, listImagesToCleanup, getScan } from './db'
 import type { DealerScanRow } from './db'
+import { deletePhoto } from '@/platform/blob'
+
+/** Original tag images are kept this many days, then auto-deleted by the cron. */
+export const IMAGE_RETENTION_DAYS = Number(process.env.IMAGE_RETENTION_DAYS ?? 90)
+
+/** Delete the stored Blob image for a scan and mark it deleted (idempotent). */
+async function purgeScanImage(scan: DealerScanRow, reason: string): Promise<boolean> {
+  if (!scan.photoUrl) return false
+  await deletePhoto(scan.photoUrl)
+  await updateScan(scan.id, { photoUrl: null, imageDeletedAt: new Date() })
+  await logScanEvent({ scanId: scan.id, eventType: 'image_deleted', note: reason })
+  return true
+}
+
+/** Retention cleanup: delete images past the retention window or marked reviewed. */
+export async function cleanupDealerImages(): Promise<{ deleted: number; errors: number }> {
+  const scans = await listImagesToCleanup(IMAGE_RETENTION_DAYS)
+  let deleted = 0, errors = 0
+  for (const s of scans) {
+    try {
+      if (await purgeScanImage(s, s.imageReviewedAt ? 'reviewed' : `retention/${IMAGE_RETENTION_DAYS}d`)) deleted++
+    } catch (err) {
+      errors++
+      logger.warn(APP, 'image_cleanup_failed', { scanId: s.id, error: String(err) })
+    }
+  }
+  return { deleted, errors }
+}
+
+/** Admin "mark reviewed": flag the scan reviewed and delete its image now. */
+export async function reviewScanImage(scanId: string): Promise<{ ok: boolean; deleted: boolean }> {
+  const scan = await getScan(scanId)
+  if (!scan) return { ok: false, deleted: false }
+  await updateScan(scanId, { imageReviewedAt: new Date() })
+  const deleted = await purgeScanImage(scan, 'reviewed').catch(() => false)
+  return { ok: true, deleted }
+}
 
 const APP = 'dealer-checkin:service'
 
@@ -47,6 +84,11 @@ export interface CheckInInput {
   tagColor?:        string | null
   photoUrl?:        string | null
   cropUrl?:         string | null
+  /** sha-256 of the original image bytes (dedup) + raw OCR output (audit only). */
+  imageHash?:       string | null
+  rawOcr?:          unknown
+  /** OCR values before the employee's edits — recorded to the audit trail. */
+  ocrValues?:       Record<string, unknown> | null
   dealershipId?:    string | null
   /** Explicit rate — required when a pricing prompt is triggered. */
   rate?:            number | null
@@ -172,10 +214,29 @@ export async function checkInDealerVehicle(input: CheckInInput): Promise<CheckIn
     tagColor:        input.tagColor ?? null,
     photoUrl:        input.photoUrl ?? null,
     cropUrl:         input.cropUrl ?? null,
+    imageHash:       input.imageHash ?? null,
+    rawOcr:          (input.rawOcr ?? null) as never,
     dataType,
     status:          'pending',
   })
   await logScanEvent({ scanId: scan.id, eventType: 'scanned', actor: input.approvedBy ?? null, newValue: { stockNumber: input.stockNumber, vin: input.vin } })
+
+  // Record what the employee changed from the OCR output (audit only).
+  if (input.ocrValues) {
+    const confirmed: Record<string, unknown> = {
+      stockNumber: input.stockNumber, year: input.year, make: input.make,
+      model: input.model, color: input.color, rate: input.rate,
+    }
+    const diff: Record<string, { from: unknown; to: unknown }> = {}
+    for (const k of Object.keys(confirmed)) {
+      const before = (input.ocrValues as Record<string, unknown>)[k] ?? null
+      const after = confirmed[k] ?? null
+      if (String(before ?? '') !== String(after ?? '')) diff[k] = { from: before, to: after }
+    }
+    if (Object.keys(diff).length > 0) {
+      await logScanEvent({ scanId: scan.id, eventType: 'edited', actor: input.approvedBy ?? null, oldValue: input.ocrValues, newValue: diff })
+    }
+  }
 
   const fail = async (outcome: CheckInOutcome, patch: Partial<CheckInResult>, note: string): Promise<CheckInResult> => {
     await updateScan(scan.id, { status: outcome === 'duplicate' ? 'duplicate_skipped' : 'error', qbSyncError: note })

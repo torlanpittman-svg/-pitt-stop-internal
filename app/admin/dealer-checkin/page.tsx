@@ -36,7 +36,10 @@ export default async function DealerCheckInAdminPage() {
     <main className="min-h-screen bg-gray-950 px-6 pt-10 pb-16">
       <div className="max-w-3xl mx-auto">
         <Link href="/admin" className="text-gray-500 text-sm block mb-6 hover:text-gray-300">← Admin</Link>
-        <h1 className="text-2xl font-bold text-white mb-1">Dealer Check-In</h1>
+        <div className="flex items-baseline justify-between mb-1">
+          <h1 className="text-2xl font-bold text-white">Dealer Check-In</h1>
+          <Link href="/admin/dealer-checkin/history" className="text-blue-400 text-sm hover:text-blue-300">Scan History →</Link>
+        </div>
         <p className="text-gray-500 text-sm mb-8">Live operational metrics for production check-ins.</p>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-8">

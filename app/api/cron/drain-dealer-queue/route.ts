@@ -12,7 +12,7 @@
  * button and the opportunistic drain remain available for immediate processing.
  */
 import { NextResponse } from 'next/server'
-import { retryQueuedCheckIns } from '@/apps/dealer-checkin/service'
+import { retryQueuedCheckIns, cleanupDealerImages } from '@/apps/dealer-checkin/service'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
@@ -28,8 +28,9 @@ export async function GET(req: Request) {
   }
   try {
     const result = await retryQueuedCheckIns()
-    logger.info('cron:drain-dealer-queue', 'drained', result)
-    return NextResponse.json({ ok: true, ...result })
+    const cleanup = await cleanupDealerImages()
+    logger.info('cron:drain-dealer-queue', 'drained', { ...result, cleanup })
+    return NextResponse.json({ ok: true, ...result, cleanup })
   } catch (err) {
     logger.error('cron:drain-dealer-queue', 'failed', { error: String(err) })
     return NextResponse.json({ ok: false, error: String(err) }, { status: 500 })
