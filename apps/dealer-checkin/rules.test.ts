@@ -6,9 +6,39 @@ import {
   selectAppendableInvoice,
   isDuplicateStock,
   normalizeStock,
+  clampText,
+  normalizeYear,
   STANDARD_RATE,
   NEW_STERLING_AUTO_RATE,
 } from './rules'
+
+describe('normalizeYear (prevents year varchar(4) overflow)', () => {
+  it('passes a clean 4-digit year through', () => {
+    expect(normalizeYear('2026')).toBe('2026')
+    expect(normalizeYear(' 2026 ')).toBe('2026')
+  })
+  it('extracts a plausible year from a merged OCR value', () => {
+    expect(normalizeYear('20268')).toBe('2026')   // the failing production case
+    expect(normalizeYear('2026 Subaru')).toBe('2026')
+  })
+  it('falls back to the first 4 digits, else null', () => {
+    expect(normalizeYear('88991')).toBe('8899')
+    expect(normalizeYear('')).toBeNull()
+    expect(normalizeYear(null)).toBeNull()
+    expect(normalizeYear('abcd')).toBeNull()
+  })
+})
+
+describe('clampText (prevents varchar length overflow)', () => {
+  it('truncates over-length values to the column limit', () => {
+    expect(clampText('X'.repeat(120), 100)).toHaveLength(100)
+  })
+  it('leaves within-limit and null values untouched', () => {
+    expect(clampText('Subaru', 100)).toBe('Subaru')
+    expect(clampText(null, 100)).toBeNull()
+    expect(clampText(undefined, 100)).toBeNull()
+  })
+})
 
 describe('extractStockPrefix', () => {
   it('takes the first letter, uppercased', () => {

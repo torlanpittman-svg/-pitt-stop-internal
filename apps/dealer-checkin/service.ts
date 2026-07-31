@@ -26,6 +26,9 @@ import {
   formatLineDescription,
   decidePricing,
   normalizeStock,
+  clampText,
+  normalizeYear,
+  SCAN_TEXT_LIMITS as L,
   STANDARD_RATE,
 } from './rules'
 import { createScan, updateScan, recentScansByStock, logScanEvent, listQueuedScans, listImagesToCleanup, getScan } from './db'
@@ -126,6 +129,28 @@ export interface CheckInResult {
   error?:    string
 }
 
+/**
+ * Clamp/normalize free-text fields to their dealer_scans column limits BEFORE any
+ * write, so the same clean values land in both the scan record and the QB invoice
+ * line. Prevents "value too long" INSERT failures from OCR/VIN/typed overflow
+ * (notably a merged year like "20268" vs year varchar(4)).
+ */
+function sanitizeCheckInInput(input: CheckInInput): CheckInInput {
+  return {
+    ...input,
+    vin:         clampText(input.vin, L.vin),
+    vinSource:   clampText(input.vinSource, L.vinSource),
+    stockNumber: clampText(input.stockNumber, L.stockNumber),
+    stockSource: clampText(input.stockSource, L.stockSource),
+    year:        normalizeYear(input.year),
+    make:        clampText(input.make, L.make),
+    model:       clampText(input.model, L.model),
+    color:       clampText(input.color, L.color),
+    tagColor:    clampText(input.tagColor, L.tagColor),
+    approvedBy:  clampText(input.approvedBy, L.approvedBy),
+  }
+}
+
 async function resolveDealer(input: CheckInInput) {
   const all = await listDealerships(false)
   if (input.dealershipId) return all.find((d) => d.id === input.dealershipId) ?? null
@@ -152,6 +177,7 @@ export interface CheckInPreview {
  * calls checkInDealerVehicle on "Looks Good".
  */
 export async function previewDealerCheckIn(input: CheckInInput): Promise<CheckInPreview> {
+  input = sanitizeCheckInInput(input)
   const warnings: string[] = []
   const dealer = await resolveDealer(input)
   const pricing = decidePricing({ stockNumber: input.stockNumber, tagColor: input.tagColor })
@@ -199,29 +225,48 @@ export async function previewDealerCheckIn(input: CheckInInput): Promise<CheckIn
 }
 
 export async function checkInDealerVehicle(input: CheckInInput): Promise<CheckInResult> {
+  input = sanitizeCheckInInput(input)
   const dataType = input.dataType ?? 'production'
 
   // ── 1. Record the scan (pending) ──────────────────────────────────────────
-  const scan: DealerScanRow = await createScan({
-    dealershipId:    input.dealershipId ?? null,
-    vin:             input.vin ?? null,
-    vinSource:       input.vinSource ?? null,
-    vinConfidence:   input.vinConfidence ?? null,
-    stockNumber:     input.stockNumber ?? null,
-    stockSource:     input.stockSource ?? null,
-    stockConfidence: input.stockConfidence ?? null,
-    year:            input.year ?? null,
-    make:            input.make ?? null,
-    model:           input.model ?? null,
-    color:           input.color ?? null,
-    tagColor:        input.tagColor ?? null,
-    photoUrl:        input.photoUrl ?? null,
-    cropUrl:         input.cropUrl ?? null,
-    imageHash:       input.imageHash ?? null,
-    rawOcr:          (input.rawOcr ?? null) as never,
-    dataType,
-    status:          'pending',
-  })
+  // The INSERT is wrapped so a DB failure surfaces the REAL Postgres error
+  // (e.g. "value too long for type character varying(4)") instead of an opaque
+  // "Failed query: insert into dealer_scans", and never crashes the request.
+  let scan: DealerScanRow
+  try {
+    scan = await createScan({
+      dealershipId:    input.dealershipId ?? null,
+      vin:             input.vin ?? null,
+      vinSource:       input.vinSource ?? null,
+      vinConfidence:   input.vinConfidence ?? null,
+      stockNumber:     input.stockNumber ?? null,
+      stockSource:     input.stockSource ?? null,
+      stockConfidence: input.stockConfidence ?? null,
+      year:            input.year ?? null,
+      make:            input.make ?? null,
+      model:           input.model ?? null,
+      color:           input.color ?? null,
+      tagColor:        input.tagColor ?? null,
+      photoUrl:        input.photoUrl ?? null,
+      cropUrl:         input.cropUrl ?? null,
+      imageHash:       input.imageHash ?? null,
+      rawOcr:          (input.rawOcr ?? null) as never,
+      dataType,
+      status:          'pending',
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logger.error(APP, 'checkin.scan_insert_failed', {
+      message,
+      code: (err as { code?: string }).code ?? null,
+      lengths: {
+        year: input.year?.length ?? null, make: input.make?.length ?? null,
+        model: input.model?.length ?? null, color: input.color?.length ?? null,
+        stock: input.stockNumber?.length ?? null, vin: input.vin?.length ?? null,
+      },
+    })
+    return { ok: false, outcome: 'error', scanId: '', error: `Could not record the scan: ${message}` }
+  }
   await logScanEvent({ scanId: scan.id, eventType: 'scanned', actor: input.approvedBy ?? null, newValue: { stockNumber: input.stockNumber, vin: input.vin } })
 
   // Record what the employee changed from the OCR output (audit only).

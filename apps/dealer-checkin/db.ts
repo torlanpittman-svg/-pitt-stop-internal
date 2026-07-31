@@ -17,13 +17,38 @@ export interface CheckInMetrics {
 }
 import { getDb } from '@/platform/db'
 import { dealerScans, dealerScanEvents } from './schema'
+import { clampText, normalizeYear, SCAN_TEXT_LIMITS as L } from './rules'
 
 export type DealerScanRow = typeof dealerScans.$inferSelect
 export type NewDealerScan = typeof dealerScans.$inferInsert
 
+/**
+ * Defense-in-depth: clamp every free-text field to its column limit before the
+ * INSERT. An over-length OCR value (notably a merged year like "20268" vs
+ * year varchar(4)) would otherwise throw "value too long" and lose the check-in.
+ */
+function clampScanFields(data: NewDealerScan): NewDealerScan {
+  return {
+    ...data,
+    ...(data.vin !== undefined && { vin: clampText(data.vin, L.vin) }),
+    ...(data.vinSource !== undefined && { vinSource: clampText(data.vinSource, L.vinSource) }),
+    ...(data.stockNumber !== undefined && { stockNumber: clampText(data.stockNumber, L.stockNumber) }),
+    ...(data.stockSource !== undefined && { stockSource: clampText(data.stockSource, L.stockSource) }),
+    ...(data.year !== undefined && { year: normalizeYear(data.year) }),
+    ...(data.make !== undefined && { make: clampText(data.make, L.make) }),
+    ...(data.model !== undefined && { model: clampText(data.model, L.model) }),
+    ...(data.color !== undefined && { color: clampText(data.color, L.color) }),
+    ...(data.tagColor !== undefined && { tagColor: clampText(data.tagColor, L.tagColor) }),
+    ...(data.approvedBy !== undefined && { approvedBy: clampText(data.approvedBy, L.approvedBy) }),
+    ...(data.rawBarcode !== undefined && { rawBarcode: clampText(data.rawBarcode, L.rawBarcode) }),
+    ...(data.qbLineId !== undefined && { qbLineId: clampText(data.qbLineId, L.qbLineId) }),
+    ...(data.qbInvoiceNumber !== undefined && { qbInvoiceNumber: clampText(data.qbInvoiceNumber, L.qbInvoiceNumber) }),
+  }
+}
+
 export async function createScan(data: NewDealerScan): Promise<DealerScanRow> {
   const db = getDb()
-  const [row] = await db.insert(dealerScans).values(data).returning()
+  const [row] = await db.insert(dealerScans).values(clampScanFields(data)).returning()
   return row
 }
 

@@ -95,6 +95,38 @@ export function normalizeStock(stock: string | null | undefined): string {
   return (stock ?? '').trim().toUpperCase()
 }
 
+/** dealer_scans free-text column limits — keep in sync with schema.ts. */
+export const SCAN_TEXT_LIMITS = {
+  vin: 17, vinSource: 20, stockNumber: 100, stockSource: 20,
+  year: 4, make: 100, model: 100, color: 100, tagColor: 20, approvedBy: 200,
+  rawBarcode: 100, qbLineId: 100, qbInvoiceNumber: 100,
+} as const
+
+/**
+ * Clamp free text to a column's length limit (null-safe). OCR/VIN/typed values
+ * can exceed a varchar limit and crash the INSERT with "value too long"; storing
+ * a truncated value is always safer than losing the whole check-in.
+ */
+export function clampText(v: string | null | undefined, max: number): string | null {
+  if (v == null) return null
+  const s = String(v)
+  return s.length > max ? s.slice(0, max) : s
+}
+
+/**
+ * Normalize a model year to a valid 4-char value. OCR occasionally merges digits
+ * (e.g. "20268"), which overflows year varchar(4) and crashes the whole INSERT.
+ * Prefers a plausible 19xx/20xx match, else the first 4 digits, else null.
+ */
+export function normalizeYear(v: string | null | undefined): string | null {
+  if (v == null) return null
+  const s = String(v).trim()
+  if (!s) return null
+  const m = s.match(/(?:19|20)\d{2}/)
+  const out = (m ? m[0] : s.replace(/\D/g, '')).slice(0, 4)
+  return out || null
+}
+
 /** True when `stock` matches any already-present stock number. */
 export function isDuplicateStock(existing: Array<string | null | undefined>, stock: string | null | undefined): boolean {
   const target = normalizeStock(stock)
