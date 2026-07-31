@@ -87,6 +87,13 @@ export async function findImageUrlByHash(hash: string): Promise<string | null> {
   return row?.photoUrl ?? null
 }
 
+/** True when a scan row still references this Blob URL (so it must not be deleted). */
+export async function photoUrlInUse(url: string): Promise<boolean> {
+  const db = getDb()
+  const [row] = await db.select({ id: dealerScans.id }).from(dealerScans).where(eq(dealerScans.photoUrl, url)).limit(1)
+  return Boolean(row)
+}
+
 /** Most recent scans for the admin Scan History view. */
 export async function listRecentScans(limit = 50): Promise<DealerScanRow[]> {
   const db = getDb()

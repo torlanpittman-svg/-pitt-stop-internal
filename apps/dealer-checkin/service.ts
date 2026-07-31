@@ -96,6 +96,8 @@ export interface CheckInInput {
   /** OCR/stock-derived dealer at scan time — recorded when the operator overrides it. */
   ocrDealershipId?:   string | null
   ocrDealershipName?: string | null
+  /** Client idempotency key for this scan attempt (correlation / dedupe tracing). */
+  clientRequestId?:   string | null
   /** Explicit rate — required when a pricing prompt is triggered. */
   rate?:            number | null
   approvedBy?:      string | null
@@ -295,7 +297,7 @@ export async function checkInDealerVehicle(input: CheckInInput): Promise<CheckIn
       error: `Could not record the scan. Please retry or contact support. Reference: ${ref}`,
     }
   }
-  await logScanEvent({ scanId: scan.id, eventType: 'scanned', actor: input.approvedBy ?? null, newValue: { stockNumber: input.stockNumber, vin: input.vin } })
+  await logScanEvent({ scanId: scan.id, eventType: 'scanned', actor: input.approvedBy ?? null, newValue: { stockNumber: input.stockNumber, vin: input.vin, clientRequestId: input.clientRequestId ?? null } })
 
   // Record what the employee changed from the OCR output (audit only).
   if (input.ocrValues) {
@@ -335,13 +337,19 @@ export async function checkInDealerVehicle(input: CheckInInput): Promise<CheckIn
     // The confirmed (possibly operator-overridden) dealer is the source of truth:
     // persist it on the scan for reporting/history, and record the override in the
     // audit trail when it differs from the dealer the OCR/stock originally implied.
-    await updateScan(scan.id, { dealershipId: dealer.id })
-    if (input.ocrDealershipId !== undefined && (input.ocrDealershipName ?? '') !== dealer.name) {
-      await logScanEvent({
-        scanId: scan.id, eventType: 'dealer_changed', actor: input.approvedBy ?? null,
-        oldValue: { id: input.ocrDealershipId ?? null, name: input.ocrDealershipName ?? null },
-        newValue: { id: dealer.id, name: dealer.name, qbCustomerId: dealer.qbCustomerId },
-      })
+    // Non-fatal — a metadata-write failure must never abort the check-in or strand
+    // the scan as 'pending'.
+    try {
+      await updateScan(scan.id, { dealershipId: dealer.id })
+      if (input.ocrDealershipId !== undefined && (input.ocrDealershipName ?? '') !== dealer.name) {
+        await logScanEvent({
+          scanId: scan.id, eventType: 'dealer_changed', actor: input.approvedBy ?? null,
+          oldValue: { id: input.ocrDealershipId ?? null, name: input.ocrDealershipName ?? null },
+          newValue: { id: dealer.id, name: dealer.name, qbCustomerId: dealer.qbCustomerId },
+        })
+      }
+    } catch (err) {
+      logger.warn(APP, 'dealer_meta_write_failed', { scanId: scan.id, error: err instanceof Error ? err.message : String(err) })
     }
 
     // ── 3. Pricing decision (prompt gate) ─────────────────────────────────

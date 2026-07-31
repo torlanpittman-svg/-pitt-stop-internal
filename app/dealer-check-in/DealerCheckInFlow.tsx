@@ -14,6 +14,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { newClientRequestId, blankFields } from '@/apps/dealer-checkin/scan-session'
 
 type Phase = 'entry' | 'camera' | 'processing' | 'review' | 'submitting' | 'done'
 
@@ -49,6 +50,8 @@ export default function DealerCheckInFlow() {
   const submittingRef = useRef(false)
   const startedAt = useRef(0)
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const objectUrlRef = useRef<string | null>(null)          // local preview URL to revoke
+  const clientRequestIdRef = useRef<string>(newClientRequestId()) // idempotency key per scan
 
   const [phase, setPhase] = useState<Phase>('entry')
   const [camReady, setCamReady] = useState(false)
@@ -146,10 +149,21 @@ export default function DealerCheckInFlow() {
 
   // ── Shared pipeline: image → OCR + store → review ───────────────────────────
   const processImage = useCallback(async (file: Blob) => {
+    // Fresh scan: drop every trace of any prior/abandoned scan and mint a new
+    // idempotency key so stale state can never leak into this one.
+    if (previewTimer.current) { clearTimeout(previewTimer.current); previewTimer.current = null }
+    if (objectUrlRef.current) { URL.revokeObjectURL(objectUrlRef.current); objectUrlRef.current = null }
+    submittingRef.current = false
+    clientRequestIdRef.current = newClientRequestId()
+    setPreview(null); setSelectedDealerId(null); setOcrDealer(null); setVin(null)
+    setNewVehicle(false); setPriceOverride(''); setOverrideFormat(false); setWriteResult(null)
+    setImageHash(null); setRawOcr(null); setOcrValues(null); setStoredUrl(null); setFields(blankFields())
     setPhase('processing'); setError(null); setStatus('Reading tag…')
     startedAt.current = Date.now()
-    // instant local preview so the review screen always has an image
+    // Instant LOCAL preview — this is what stays visible through editing. It is
+    // offline-safe and can never 404, unlike the remote Blob URL.
     const localUrl = URL.createObjectURL(file)
+    objectUrlRef.current = localUrl
     setImageUrl(localUrl)
     try {
       const form = new FormData()
@@ -158,7 +172,9 @@ export default function DealerCheckInFlow() {
       const d = await res.json()
       if (!res.ok || d.ok === false) throw new Error(d.error || 'Could not read the tag')
 
-      if (d.photoUrl) { setStoredUrl(d.photoUrl); setImageUrl(d.photoUrl) }
+      // Keep the Blob URL only for the audit payload — do NOT swap it into the
+      // on-screen preview (a slow/failed Blob load must not blank the image).
+      if (d.photoUrl) setStoredUrl(d.photoUrl)
       setImageHash(d.imageHash ?? null)
       setRawOcr(d.rawOcr ?? null)
       const ocr = {
@@ -253,14 +269,32 @@ export default function DealerCheckInFlow() {
     else { setError('Capture failed — try again.'); setPhase('entry') }
   }, [captureFrame, processImage, stopCamera])
 
-  const reset = useCallback(() => {
+  // Clear ALL scan-specific state so nothing leaks into the next scan. Optionally
+  // abandon the orphaned Blob image from an unconfirmed scan (best-effort).
+  const clearScanState = useCallback((abandonBlob = false) => {
+    if (previewTimer.current) { clearTimeout(previewTimer.current); previewTimer.current = null }
+    if (objectUrlRef.current) { URL.revokeObjectURL(objectUrlRef.current); objectUrlRef.current = null }
+    submittingRef.current = false
+    // An abandoned (never-confirmed) upload leaves an orphaned Blob → clean it up.
+    if (abandonBlob && storedUrl && !writeResult) {
+      void fetch('/api/dealer-checkin/abandon', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photoUrl: storedUrl }),
+      }).catch(() => {})
+    }
+    clientRequestIdRef.current = newClientRequestId()
     setPreview(null); setError(null); setNewVehicle(false); setPriceOverride('')
-    setOverrideFormat(false); setWriteResult(null); setVin(null)
+    setOverrideFormat(false); setWriteResult(null); setVin(null); setStatus(null)
     setImageUrl(null); setStoredUrl(null); setImageHash(null); setRawOcr(null); setOcrValues(null)
     setSelectedDealerId(null); setOcrDealer(null)
-    setFields({ stockNumber: '', year: '', make: '', model: '', color: '' })
+    setFields(blankFields())
+  }, [storedUrl, writeResult])
+
+  // "Start Over" / back out — discard the draft and return to a clean entry screen.
+  const reset = useCallback(() => {
+    clearScanState(true)
     setPhase('entry')
-  }, [])
+  }, [clearScanState])
 
   // ── Confirm and Send (the only production write) ────────────────────────────
   const rate = priceOverride.trim() !== ''
@@ -268,7 +302,7 @@ export default function DealerCheckInFlow() {
     : newVehicle ? (preview?.pricing.newVehicleRate ?? 125) : (preview?.pricing.defaultRate ?? 200)
 
   const confirm = useCallback(async (force = false) => {
-    if (submittingRef.current) return
+    if (submittingRef.current || writeResult) return // no concurrent / repeat submits
     if (!preview?.dealership?.qbCustomerId) { setError('No dealer matches this stock number.'); return }
     submittingRef.current = true
     setPhase('submitting'); setError(null)
@@ -289,6 +323,7 @@ export default function DealerCheckInFlow() {
           dealershipId: selectedDealerId ?? undefined,
           ocrDealershipId: ocrDealer?.id ?? null,
           ocrDealershipName: ocrDealer?.name ?? null,
+          clientRequestId: clientRequestIdRef.current, // idempotency key for this scan
           approvedBy: 'operator',
           scanDurationMs: Date.now() - startedAt.current,
         }),
@@ -313,7 +348,7 @@ export default function DealerCheckInFlow() {
     } finally {
       submittingRef.current = false
     }
-  }, [preview, fields, vin, newVehicle, rate, storedUrl, imageHash, rawOcr, ocrValues, selectedDealerId, ocrDealer])
+  }, [preview, fields, vin, newVehicle, rate, storedUrl, imageHash, rawOcr, ocrValues, selectedDealerId, ocrDealer, writeResult])
 
   const stockValid = STOCK_RE.test(fields.stockNumber.trim())
   const dealerOk = Boolean(preview?.dealership?.qbCustomerId)
@@ -330,6 +365,11 @@ export default function DealerCheckInFlow() {
         <Link href="/" className="text-gray-500">← Pitt Stop</Link>
         <span className="text-gray-700">›</span>
         <span className="text-gray-300 font-medium">Dealer Check-In</span>
+        {phase !== 'entry' && phase !== 'submitting' && (
+          <button onClick={reset} className="ml-auto text-gray-400 border border-gray-700 rounded-full px-3 py-1 active:bg-gray-800">
+            Start Over
+          </button>
+        )}
       </header>
 
       <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={onUploadPick} />
@@ -377,8 +417,17 @@ export default function DealerCheckInFlow() {
       {/* Review — clean, fully editable */}
       {phase === 'review' && (
         <div className="flex-1 flex flex-col px-5 pt-1 pb-5 overflow-y-auto">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          {imageUrl && <img src={imageUrl} alt="Dealer tag" className="w-full max-h-56 object-contain rounded-2xl bg-gray-900 border border-gray-800 mb-4" />}
+          {/* Local object URL stays visible through all editing. If it ever fails,
+              fall back to the stored Blob URL. eslint-disable-next-line @next/next/no-img-element */}
+          {(imageUrl || storedUrl) && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={imageUrl ?? storedUrl ?? ''}
+              alt="Dealer tag"
+              onError={(e) => { if (storedUrl && e.currentTarget.src !== storedUrl) e.currentTarget.src = storedUrl }}
+              className="w-full max-h-56 object-contain rounded-2xl bg-gray-900 border border-gray-800 mb-4"
+            />
+          )}
 
           <div className="rounded-2xl bg-gray-900 border border-gray-800 divide-y divide-gray-800">
             <div className="px-4 py-3">
@@ -458,7 +507,7 @@ export default function DealerCheckInFlow() {
                 Check In Anyway
               </button>
             )}
-            <button onClick={reset} className="w-full h-14 rounded-2xl border border-gray-700 text-gray-300 text-lg font-semibold">Retake</button>
+            <button onClick={reset} className="w-full h-14 rounded-2xl border border-gray-700 text-gray-300 text-lg font-semibold">Start Over</button>
           </div>
         </div>
       )}
