@@ -151,6 +151,27 @@ function sanitizeCheckInInput(input: CheckInInput): CheckInInput {
   }
 }
 
+/** Short support/correlation reference — safe to show a user, logged alongside the cause. */
+function genRef(): string {
+  return Math.random().toString(36).slice(2, 8).toUpperCase()
+}
+
+/**
+ * Unwrap the REAL Postgres error from a drizzle DrizzleQueryError. Its `.message`
+ * is a generic "Failed query: … params: …" wrapper that contains the SQL and the
+ * bound params (raw OCR / base64 / ids) and must NEVER reach a user or a log; the
+ * actual driver error (clean message + SQLSTATE) is on `.cause`.
+ */
+function pgCause(err: unknown): { message: string | null; code: string | null; column: string | null; constraint: string | null; table: string | null } {
+  const e = err as { cause?: unknown }
+  const c = (e && typeof e === 'object' && e.cause ? e.cause : err) as
+    { message?: string; code?: string; column?: string; constraint?: string; table?: string }
+  return {
+    message: c?.message ?? null, code: c?.code ?? null,
+    column: c?.column ?? null, constraint: c?.constraint ?? null, table: c?.table ?? null,
+  }
+}
+
 async function resolveDealer(input: CheckInInput) {
   const all = await listDealerships(false)
   if (input.dealershipId) return all.find((d) => d.id === input.dealershipId) ?? null
@@ -255,17 +276,24 @@ export async function checkInDealerVehicle(input: CheckInInput): Promise<CheckIn
       status:          'pending',
     })
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const ref = genRef()
+    const pg = pgCause(err)  // real Postgres message + SQLSTATE (never the wrapper/params)
     logger.error(APP, 'checkin.scan_insert_failed', {
-      message,
-      code: (err as { code?: string }).code ?? null,
-      lengths: {
+      ref,
+      pgCode: pg.code, pgMessage: pg.message,
+      column: pg.column, constraint: pg.constraint, table: pg.table,
+      fieldLengths: {
         year: input.year?.length ?? null, make: input.make?.length ?? null,
         model: input.model?.length ?? null, color: input.color?.length ?? null,
         stock: input.stockNumber?.length ?? null, vin: input.vin?.length ?? null,
+        rawOcrBytes: input.rawOcr != null ? JSON.stringify(input.rawOcr).length : 0,
       },
     })
-    return { ok: false, outcome: 'error', scanId: '', error: `Could not record the scan: ${message}` }
+    // Clean, non-sensitive message for the phone — no SQL, params, OCR, or ids.
+    return {
+      ok: false, outcome: 'error', scanId: '',
+      error: `Could not record the scan. Please retry or contact support. Reference: ${ref}`,
+    }
   }
   await logScanEvent({ scanId: scan.id, eventType: 'scanned', actor: input.approvedBy ?? null, newValue: { stockNumber: input.stockNumber, vin: input.vin } })
 

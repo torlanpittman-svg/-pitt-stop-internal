@@ -10,6 +10,7 @@
 import { NextResponse } from 'next/server'
 import { checkInDealerVehicle, type CheckInInput } from '@/apps/dealer-checkin/service'
 import { getEnvironment } from '@/apps/quickbooks/config'
+import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -27,6 +28,12 @@ export async function POST(req: Request) {
     const httpStatus = result.ok ? 200 : result.outcome === 'duplicate' ? 409 : result.outcome === 'pricing_prompt_required' ? 200 : 422
     return NextResponse.json(result, { status: httpStatus })
   } catch (err) {
-    return NextResponse.json({ ok: false, outcome: 'error', error: String(err) }, { status: 500 })
+    // Last-resort guard: log internally, never leak the raw error to the phone.
+    const ref = Math.random().toString(36).slice(2, 8).toUpperCase()
+    logger.error('dealer-checkin:route', 'checkin.unhandled', { ref, error: err instanceof Error ? err.message : String(err) })
+    return NextResponse.json(
+      { ok: false, outcome: 'error', error: `Could not complete the check-in. Please retry or contact support. Reference: ${ref}` },
+      { status: 500 }
+    )
   }
 }

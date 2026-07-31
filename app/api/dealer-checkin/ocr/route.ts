@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto'
 import { extractVehicleData } from '@/apps/vehicle-entry/ai'
 import { uploadPhoto } from '@/platform/blob'
 import { findImageUrlByHash } from '@/apps/dealer-checkin/db'
+import { sanitizeRawOcr } from '@/apps/dealer-checkin/rules'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
@@ -56,7 +57,10 @@ export async function POST(req: Request) {
       ok: true,
       photoUrl,
       imageHash,
-      rawOcr:      result,          // full raw OCR — audit/troubleshooting only
+      // Compact, Postgres-safe OCR metadata for the audit record — never the
+      // base64/image/binary debug artifacts (those bloat the row and can carry
+      // NUL/control chars that crash the jsonb INSERT).
+      rawOcr:      sanitizeRawOcr(result),
       stockNumber: result.stockNumber ?? null,
       color:       result.color ?? null,
       year:        result.year ?? null,

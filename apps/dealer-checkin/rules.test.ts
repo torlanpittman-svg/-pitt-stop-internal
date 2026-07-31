@@ -8,9 +8,81 @@ import {
   normalizeStock,
   clampText,
   normalizeYear,
+  stripInvalidPgChars,
+  sanitizeRawOcr,
+  RAW_OCR_MAX_BYTES,
   STANDARD_RATE,
   NEW_STERLING_AUTO_RATE,
 } from './rules'
+
+const NUL = String.fromCharCode(0)
+
+describe('stripInvalidPgChars', () => {
+  it('removes NUL and other C0 control chars but keeps tab/newline/return', () => {
+    const out = stripInvalidPgChars(`a${NUL}bc\td\ne\rf`)
+    expect(out).toBe('abc\td\ne\rf')
+    expect(out.includes(NUL)).toBe(false)
+  })
+  it('keeps valid (paired) Unicode/emoji, drops lone surrogates', () => {
+    expect(stripInvalidPgChars('car 🚗 ok')).toBe('car 🚗 ok')
+    expect(stripInvalidPgChars('x\uD800y')).toBe('xy') // lone high surrogate removed
+  })
+})
+
+describe('sanitizeRawOcr (raw_ocr audit payload)', () => {
+  // Mirrors what extractVehicleData returns, incl. the heavy debug artifacts.
+  const ocr = {
+    stockNumber: 'TE291607', year: '2026', make: 'Kia', model: 'K4', modelName: 'K4 LXS',
+    color: 'Gray', confidence: { stockNumber: 0.94, color: 0.8 },
+    providerName: 'openai', promptVersion: 'v4',
+    rawResponse: { reasoning: `clear tag${NUL} readable` }, // contains the 22P05 trigger
+    stockDebugData: `detector-internals${NUL}`,
+    stockCropMimeType: 'image/png',
+    stockCropBase64: 'QUJD'.repeat(5000),
+    stockDebugOverlayBase64: 'A'.repeat(2_200_000), // 2.2 MB debug overlay
+  }
+
+  it('reproduces + neutralizes the SQLSTATE 22P05 trigger (no \\u0000 survives)', () => {
+    // A literal NUL in a jsonb string is what Postgres rejects with 22P05
+    // ("unsupported Unicode escape sequence"). The sanitized payload must be free of it.
+    const out = sanitizeRawOcr(ocr)!
+    const json = JSON.stringify(out)
+    expect(json.includes(NUL)).toBe(false)
+    expect(json.includes('\\u0000')).toBe(false)
+  })
+
+  it('excludes the 2.2 MB overlay and all base64/binary debug artifacts', () => {
+    const out = sanitizeRawOcr(ocr)!
+    expect(out).not.toHaveProperty('stockDebugOverlayBase64')
+    expect(out).not.toHaveProperty('stockCropBase64')
+    expect(out).not.toHaveProperty('stockCropMimeType')
+    expect(out).not.toHaveProperty('stockDebugData')
+    // and the whole row stays tiny, never multi-megabyte
+    expect(JSON.stringify(out).length).toBeLessThan(RAW_OCR_MAX_BYTES)
+  })
+
+  it('keeps the meaningful OCR metadata for audit/debugging', () => {
+    const out = sanitizeRawOcr(ocr)!
+    expect(out).toMatchObject({
+      stockNumber: 'TE291607', year: '2026', make: 'Kia', model: 'K4', modelName: 'K4 LXS',
+      color: 'Gray', providerName: 'openai', promptVersion: 'v4',
+      confidence: { stockNumber: 0.94, color: 0.8 },
+    })
+    expect(typeof out.rawResponse).toBe('string')
+    expect(String(out.rawResponse)).toContain('clear tag') // sanitized, still present
+  })
+
+  it('hard-caps an oversized raw model response', () => {
+    const out = sanitizeRawOcr({ stockNumber: 'K1', rawResponse: 'x'.repeat(50_000) })!
+    expect(String(out.rawResponse)).toContain('…[truncated]')
+    expect(JSON.stringify(out).length).toBeLessThan(RAW_OCR_MAX_BYTES)
+  })
+
+  it('returns null for empty/non-object input', () => {
+    expect(sanitizeRawOcr(null)).toBeNull()
+    expect(sanitizeRawOcr('nope')).toBeNull()
+  })
+})
 
 describe('normalizeYear (prevents year varchar(4) overflow)', () => {
   it('passes a clean 4-digit year through', () => {

@@ -17,7 +17,7 @@ export interface CheckInMetrics {
 }
 import { getDb } from '@/platform/db'
 import { dealerScans, dealerScanEvents } from './schema'
-import { clampText, normalizeYear, SCAN_TEXT_LIMITS as L } from './rules'
+import { clampText, normalizeYear, sanitizeRawOcr, SCAN_TEXT_LIMITS as L } from './rules'
 
 export type DealerScanRow = typeof dealerScans.$inferSelect
 export type NewDealerScan = typeof dealerScans.$inferInsert
@@ -43,6 +43,9 @@ function clampScanFields(data: NewDealerScan): NewDealerScan {
     ...(data.rawBarcode !== undefined && { rawBarcode: clampText(data.rawBarcode, L.rawBarcode) }),
     ...(data.qbLineId !== undefined && { qbLineId: clampText(data.qbLineId, L.qbLineId) }),
     ...(data.qbInvoiceNumber !== undefined && { qbInvoiceNumber: clampText(data.qbInvoiceNumber, L.qbInvoiceNumber) }),
+    // Defensive backstop: strip base64/debug artifacts + NUL/control chars and
+    // size-cap the OCR payload before it hits the raw_ocr jsonb column.
+    ...(data.rawOcr !== undefined && { rawOcr: sanitizeRawOcr(data.rawOcr) as never }),
   }
 }
 
