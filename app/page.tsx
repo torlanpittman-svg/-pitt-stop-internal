@@ -7,11 +7,6 @@ const MODULES = [
     sub:     'Scan a tag → confirm → done. Invoice + Work Board, automatically.',
   },
   {
-    href:    '/vehicle-entry',
-    label:   'Dealer Tag Scanner',
-    sub:     'Scan a dealership key tag and log the vehicle',
-  },
-  {
     href:    '/estimator',
     label:   'Retail Estimator',
     sub:     'Photograph a vehicle and create an estimate',
