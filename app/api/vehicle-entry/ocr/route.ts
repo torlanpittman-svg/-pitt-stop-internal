@@ -80,14 +80,18 @@ export async function POST(request: Request) {
     }
   }
 
-  async function storeImage(base64: string, suffix: string): Promise<string> {
+  // Optional crop/overlay images: store in Blob, else null on failure — never
+  // base64 when a Blob store is configured (that regrows the DB). The base64
+  // branch remains only for the no-Blob dev/demo case. These columns are nullable
+  // and non-critical, so a null on failure preserves the workflow.
+  async function storeImage(base64: string, suffix: string): Promise<string | null> {
     const mime = 'image/jpeg'
-    if (!hasBlob) return `data:${mime};base64,${base64}`
+    if (!hasBlob) return `data:${mime};base64,${base64}` // dev/demo only (no Blob store)
     try {
       return await uploadPhoto('vehicle-entry-crops', `${Date.now()}-${suffix}.jpg`, Buffer.from(base64, 'base64'), mime)
     } catch (err) {
       logger.error(LOG, `${suffix}.upload.failed`, { error: String(err) })
-      return `data:${mime};base64,${base64}`
+      return null
     }
   }
 
@@ -111,8 +115,9 @@ export async function POST(request: Request) {
       try {
         originalPhotoUrl = await uploadPhoto('vehicle-entry-originals', originalFile.name, origBuffer, origMime)
       } catch (err) {
+        // Optional original frame — null on failure, never base64 (avoid DB regrowth).
         logger.error(LOG, 'original.upload.failed', { error: String(err) })
-        originalPhotoUrl = `data:${origMime};base64,${origBuffer.toString('base64')}`
+        originalPhotoUrl = null
       }
     }
   }
