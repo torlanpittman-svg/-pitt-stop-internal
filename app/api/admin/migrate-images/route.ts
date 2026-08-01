@@ -11,7 +11,7 @@
  */
 import { NextResponse } from 'next/server'
 import { createHash } from 'node:crypto'
-import { put } from '@vercel/blob'
+import { put, list, del } from '@vercel/blob'
 import { neon } from '@neondatabase/serverless'
 import { logger } from '@/platform/logger'
 
@@ -41,6 +41,37 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   }
   const url = new URL(req.url)
+
+  // ── Orphan sweep: delete Blob objects not referenced by any image column ────
+  if (url.searchParams.get('action') === 'sweep') {
+    const dryRun = url.searchParams.get('dryRun') === 'true'
+    const sql = neon(process.env.DATABASE_URL!)
+    const refs = new Set<string>()
+    const refQueries = [
+      sql`select photo_url u from estimate_photos where photo_url like 'http%'`,
+      sql`select photo_url u from vehicle_entries where photo_url like 'http%'`,
+      sql`select original_photo_url u from vehicle_entries where original_photo_url like 'http%'`,
+      sql`select stock_debug_overlay_url u from vehicle_entries where stock_debug_overlay_url like 'http%'`,
+      sql`select stock_number_crop_url u from vehicle_entries where stock_number_crop_url like 'http%'`,
+      sql`select photo_url u from dealer_scans where photo_url like 'http%'`,
+      sql`select blob_url u from image_migration_log where blob_url is not null`,
+    ]
+    for (const q of refQueries) for (const r of (await q) as Array<{ u: string }>) if (r.u) refs.add(r.u)
+
+    const deleted: Array<{ pathname: string; size: number }> = []
+    let kept = 0, cursor: string | undefined
+    do {
+      const res = await list({ cursor, limit: 1000 })
+      for (const b of res.blobs) {
+        if (refs.has(b.url)) { kept++; continue }
+        if (!dryRun) await del(b.url)
+        deleted.push({ pathname: b.pathname, size: b.size })
+      }
+      cursor = res.cursor
+    } while (cursor)
+    return NextResponse.json({ ok: true, dryRun, referenced: refs.size, kept, orphans: deleted.length, deleted })
+  }
+
   const table = url.searchParams.get('table') ?? ''
   const column = url.searchParams.get('column') ?? ''
   const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') ?? '3', 10) || 3, 1), 10)
