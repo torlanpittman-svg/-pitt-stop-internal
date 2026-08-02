@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
+import PhotoInput from '@/app/components/PhotoInput'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -97,7 +98,6 @@ function VinScanner({ onDecoded, onManual }: {
   const streamRef   = useRef<MediaStream | null>(null)
   const scanningRef = useRef(true)
   const rafRef      = useRef<number>(0)
-  const fileRef     = useRef<HTMLInputElement>(null)
 
   const [camReady,      setCamReady]      = useState(false)
   const [camFailed,     setCamFailed]     = useState(false)
@@ -254,7 +254,6 @@ function VinScanner({ onDecoded, onManual }: {
     setEditedVin('')
     setVinNote(null)
     setOcrDecoded(null)
-    if (fileRef.current) fileRef.current.value = ''
   }, [])
 
   // ── Camera-failed fallback ───────────────────────────────────────────────────
@@ -303,16 +302,9 @@ function VinScanner({ onDecoded, onManual }: {
 
         {(scanState === 'scanning' || scanState === 'error') && (
           <>
-            <label className="w-full bg-blue-600 text-white font-bold text-xl py-5 rounded-2xl text-center block cursor-pointer active:bg-blue-700 mb-3">
-              Upload VIN Photo
-              <input
-                ref={fileRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f) }}
-              />
-            </label>
+            <div className="mb-3">
+              <PhotoInput uploadOnly normalize={false} uploadLabel="Upload VIN Photo" onCapture={(f) => handleUpload(f)} />
+            </div>
             <button onClick={onManual} className="w-full text-gray-500 text-base py-3 text-center">
               Enter VIN Manually
             </button>
@@ -419,16 +411,7 @@ function VinScanner({ onDecoded, onManual }: {
       {/* Bottom controls — only while actively scanning */}
       {camReady && scanState === 'scanning' && (
         <div className="bg-black shrink-0 px-6 pt-5 pb-8 space-y-3">
-          <label className="w-full bg-gray-800 border border-gray-700 text-white font-semibold text-base py-4 rounded-2xl active:bg-gray-700 transition-colors text-center block cursor-pointer">
-            Upload VIN Photo
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f) }}
-            />
-          </label>
+          <PhotoInput uploadOnly normalize={false} uploadLabel="Upload VIN Photo" onCapture={(f) => handleUpload(f)} />
           <button
             onClick={onManual}
             className="w-full text-gray-600 text-sm py-2 text-center"

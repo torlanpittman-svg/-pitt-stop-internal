@@ -43,7 +43,10 @@ interface PhotoInputProps {
    *  deliver(primary, original?). When set, the two-button gate is skipped. */
   renderCamera?: (api: { deliver: (primary: File, original?: File | null) => void }) => React.ReactNode
   live?: boolean
-  /** Label for the shared upload affordance in live mode. */
+  /** Upload-only: just the shared Upload affordance (for screens whose camera is
+   *  a specialized non-file capture, e.g. a live barcode scanner). */
+  uploadOnly?: boolean
+  /** Label for the shared upload affordance in live / upload-only mode. */
   uploadLabel?: string
 }
 
@@ -70,7 +73,7 @@ async function normalizeImage(file: File, maxDimension: number, quality: number)
 export default function PhotoInput({
   onCapture, onRemove, continueLabel = 'Use Photo', busy = false, className = '',
   normalize = true, maxDimension = 1600, quality = 0.85,
-  renderCamera, live = false, uploadLabel = 'Upload existing photo instead',
+  renderCamera, live = false, uploadOnly = false, uploadLabel = 'Upload existing photo instead',
 }: PhotoInputProps) {
   const cameraRef = useRef<HTMLInputElement>(null)
   const libraryRef = useRef<HTMLInputElement>(null)
@@ -118,6 +121,23 @@ export default function PhotoInput({
     <input ref={ref} type="file" accept="image/*" {...(camera ? { capture: 'environment' as const } : {})}
       hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; void onFile(f) }} />
   )
+
+  // ── Upload-only mode: just the shared upload affordance ────────────────────
+  if (uploadOnly) {
+    return (
+      <div className={`w-full ${className}`}>
+        <div className="relative w-full">
+          <div className="w-full rounded-2xl bg-blue-600 text-white text-lg font-bold py-4 text-center pointer-events-none select-none">
+            🖼 {working ? 'Preparing photo…' : uploadLabel}
+          </div>
+          <input ref={libraryRef} type="file" accept="image/*"
+            onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; void uploadDeliver(f) }}
+            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+        </div>
+        {error && <p className="text-amber-400 text-sm text-center mt-2">{error}</p>}
+      </div>
+    )
+  }
 
   // ── Live composition mode: specialized camera + shared upload ──────────────
   if (live && renderCamera) {
