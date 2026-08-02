@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import GuidedCamera from './GuidedCamera'
+import PhotoInput from '@/app/components/PhotoInput'
 
 type State = 'idle' | 'scanning' | 'error'
 
@@ -111,8 +112,16 @@ export default function CaptureView({
         </div>
       )}
 
-      {/* Camera / upload */}
-      <GuidedCamera onCapture={doOCR} />
+      {/* Camera / upload — GuidedCamera (specialized live capture) hosted inside
+          the shared PhotoInput, which owns the standardized upload path.
+          normalize={false} keeps the key-tag OCR input byte-for-byte as before. */}
+      <PhotoInput
+        live
+        normalize={false}
+        uploadLabel="Upload existing photo"
+        renderCamera={({ deliver }) => <GuidedCamera onCapture={(primary, original) => deliver(primary, original)} />}
+        onCapture={doOCR}
+      />
 
       {/* Fallback options */}
       <div className="bg-black shrink-0 border-t border-gray-900 flex flex-col items-center gap-1 pt-2 pb-3 pb-safe">

@@ -163,7 +163,7 @@ export default function VINEntry() {
           {/* Photo VIN scan — Take Photo or Upload Photo, same OCR */}
           <div className="space-y-1">
             <p className="text-gray-400 text-sm text-center">Scan the VIN sticker — or type it below</p>
-            <PhotoInput onImage={runVinScan} continueLabel="Scan VIN" busy={loading} />
+            <PhotoInput onCapture={(file) => runVinScan(file)} continueLabel="Scan VIN" busy={loading} />
           </div>
 
           {/* Divider */}

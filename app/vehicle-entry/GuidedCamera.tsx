@@ -47,7 +47,6 @@ export default function GuidedCamera({
   const [camFailed,  setCamFailed]  = useState(false)
   const [issues,     setIssues]     = useState<Issue[]>([])
   const [capturing,  setCapturing]  = useState(false)
-  const [fileKey,    setFileKey]    = useState(0)
 
   // ── Camera start ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -208,33 +207,14 @@ export default function GuidedCamera({
     }
   }, [capturing, onCapture])
 
-  // ── File upload fallback ───────────────────────────────────────────────────
-  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]
-    if (!f) return
-    setFileKey(k => k + 1)
-    onCapture(f, null)  // no original for uploads
-  }, [onCapture])
-
-  // ── Camera unavailable — show upload-only UI ───────────────────────────────
+  // ── Camera unavailable (e.g. desktop) — upload is provided by PhotoInput ────
   if (camFailed) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-5 px-6">
-        <p className="text-yellow-400 text-sm text-center">
-          For best results, take a new photo with the tag straight, centered, and well-lit.
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 text-center">
+        <span className="text-4xl">📷</span>
+        <p className="text-yellow-400 text-sm">
+          Camera unavailable on this device — use <span className="font-semibold">Upload existing photo</span> below.
         </p>
-        <div className="relative w-full">
-          <div className="bg-blue-700 rounded-2xl py-5 text-center text-white font-bold text-lg pointer-events-none select-none">
-            📷 Upload Key Tag Photo
-          </div>
-          <input
-            key={fileKey}
-            type="file"
-            accept="image/*"
-            onChange={handleFileChange}
-            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-          />
-        </div>
       </div>
     )
   }
@@ -337,22 +317,10 @@ export default function GuidedCamera({
           }
         </button>
 
-        {/* Upload fallback */}
+        {/* For best results hint — the shared Upload path is rendered by PhotoInput. */}
         <p className="text-gray-500 text-xs text-center px-8">
           For best results, take a new photo with the tag straight and centered.
         </p>
-        <div className="relative">
-          <span className="text-gray-400 text-sm underline cursor-pointer">
-            Upload existing photo instead
-          </span>
-          <input
-            key={fileKey}
-            type="file"
-            accept="image/*"
-            onChange={handleFileChange}
-            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-          />
-        </div>
       </div>
     </div>
   )

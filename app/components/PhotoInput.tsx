@@ -3,46 +3,54 @@
 /**
  * PhotoInput — the ONE standard image-entry component for all of Pitt Stop OS.
  *
- * Every feature that accepts an image uses this. It offers both entry paths —
- * 📷 Take Photo (camera) and 🖼 Upload Photo (library) — and funnels BOTH through
- * the exact same client pipeline: validation → orientation correction + downscale
- * + compression (dependency-free canvas), then hands the parent a single
- * normalized File via onImage(). The source (camera vs library) is invisible to
- * everything downstream, so a feature's OCR / Blob upload / storage / audit runs
- * identically regardless of where the image came from.
+ * Two modes, one contract (`onCapture(primary, original)`):
  *
- * UX: after a photo is chosen it is previewed with Replace Photo / Remove Photo,
- * then a primary action (continueLabel) hands the image to the parent workflow.
- * No OCR confidence, technical warnings, or storage details are ever shown here.
+ * 1. Default (simple): 📷 Take Photo + 🖼 Upload Photo buttons. Both run the same
+ *    client pipeline — validate → EXIF-orientation correct → downscale → JPEG
+ *    compress (dependency-free canvas) — then preview with Replace / Remove before
+ *    handing the parent a normalized File. `original` is always null here.
+ *
+ * 2. Live composition (`live` + `renderCamera`): a feature's SPECIALIZED live
+ *    camera (portrait guide, quality feedback, crop-to-frame, dual crop+original
+ *    output) is rendered immediately and plugs in via `deliver()`. A shared
+ *    "Upload existing photo instead" affordance provides the standard upload path.
+ *    The specialized camera's exact behavior and compression are preserved (set
+ *    `normalize={false}` to pass OCR inputs through untouched).
+ *
+ * Either way the image SOURCE (camera vs library) is invisible downstream, so a
+ * feature's OCR / Blob upload / storage / audit runs identically. No OCR
+ * confidence, technical warnings, or storage details are ever shown here.
  */
 import { useCallback, useRef, useState, useEffect } from 'react'
 import { isAcceptedMimeType } from '@/platform/image'
 
 interface PhotoInputProps {
-  /** Called with the normalized image when the operator confirms the photo. */
-  onImage: (file: File) => void
-  /** Optional: called when the operator removes the chosen photo. */
+  /** Called with the confirmed image. `original` is the full frame (specialized
+   *  cameras) or null (uploads / simple capture). */
+  onCapture: (primary: File, original: File | null) => void
   onRemove?: () => void
-  /** Primary button label shown on the preview (e.g. "Scan VIN", "Use Photo"). */
+  /** Primary button label on the preview (e.g. "Scan VIN", "Use Photo"). */
   continueLabel?: string
   /** Parent is processing (e.g. running OCR) — disables the controls. */
   busy?: boolean
   className?: string
+  /** Client normalization of the upload/simple-capture path (default on). Set
+   *  false to pass the raw file through unchanged (OCR-critical inputs). */
+  normalize?: boolean
+  maxDimension?: number
+  quality?: number
+  /** Live composition: render a specialized camera immediately; it reports via
+   *  deliver(primary, original?). When set, the two-button gate is skipped. */
+  renderCamera?: (api: { deliver: (primary: File, original?: File | null) => void }) => React.ReactNode
+  live?: boolean
+  /** Label for the shared upload affordance in live mode. */
+  uploadLabel?: string
 }
 
-const MAX_DIMENSION = 1600
-const JPEG_QUALITY = 0.85
-
-/**
- * Orientation-correct, downscale, and compress — dependency-free. Uses
- * createImageBitmap with imageOrientation:'from-image' so EXIF-rotated phone
- * photos come out upright. Falls back to the original file if the browser can't
- * process it, so a valid image is never blocked.
- */
-async function normalize(file: File): Promise<File> {
+async function normalizeImage(file: File, maxDimension: number, quality: number): Promise<File> {
   try {
     const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' } as ImageBitmapOptions)
-    const scale = Math.min(1, MAX_DIMENSION / Math.max(bitmap.width, bitmap.height))
+    const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height))
     const w = Math.max(1, Math.round(bitmap.width * scale))
     const h = Math.max(1, Math.round(bitmap.height * scale))
     const canvas = document.createElement('canvas')
@@ -51,37 +59,54 @@ async function normalize(file: File): Promise<File> {
     if (!ctx) return file
     ctx.drawImage(bitmap, 0, 0, w, h)
     bitmap.close?.()
-    const blob: Blob | null = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', JPEG_QUALITY))
+    const blob: Blob | null = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality))
     if (!blob) return file
-    const name = file.name.replace(/\.[^.]+$/, '') + '.jpg'
-    return new File([blob], name, { type: 'image/jpeg' })
+    return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' })
   } catch {
     return file
   }
 }
 
-export default function PhotoInput({ onImage, onRemove, continueLabel = 'Use Photo', busy = false, className = '' }: PhotoInputProps) {
-  const cameraRef = useRef<HTMLInputElement>(null)   // capture=environment → camera
-  const libraryRef = useRef<HTMLInputElement>(null)  // no capture → photo library
+export default function PhotoInput({
+  onCapture, onRemove, continueLabel = 'Use Photo', busy = false, className = '',
+  normalize = true, maxDimension = 1600, quality = 0.85,
+  renderCamera, live = false, uploadLabel = 'Upload existing photo instead',
+}: PhotoInputProps) {
+  const cameraRef = useRef<HTMLInputElement>(null)
+  const libraryRef = useRef<HTMLInputElement>(null)
   const [preview, setPreview] = useState<{ url: string; file: File } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [working, setWorking] = useState(false)
 
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url) }, [preview])
 
-  const pick = useCallback(async (file: File | undefined) => {
+  const validate = (file: File): boolean => {
+    const type = file.type || ''
+    if (type && !isAcceptedMimeType(type) && !type.startsWith('image/')) { setError('Please choose an image file.'); return false }
+    return true
+  }
+  const prepare = async (file: File): Promise<File> => (normalize ? normalizeImage(file, maxDimension, quality) : file)
+
+  // Live mode: upload affordance delivers immediately (matches specialized cameras).
+  const uploadDeliver = useCallback(async (file: File | undefined) => {
     if (!file) return
     setError(null)
-    const type = file.type || ''
-    if (type && !isAcceptedMimeType(type) && !type.startsWith('image/')) {
-      setError('Please choose an image file.'); return
-    }
+    if (!validate(file)) return
+    setWorking(true)
+    try { onCapture(await prepare(file), null) } finally { setWorking(false) }
+  }, [onCapture, normalize, maxDimension, quality])
+
+  // Simple mode: selection → normalize → preview (confirm before onCapture).
+  const pickForPreview = useCallback(async (file: File | undefined) => {
+    if (!file) return
+    setError(null)
+    if (!validate(file)) return
     setWorking(true)
     try {
-      const normalized = await normalize(file)
-      setPreview((prev) => { if (prev) URL.revokeObjectURL(prev.url); return { url: URL.createObjectURL(normalized), file: normalized } })
+      const out = await prepare(file)
+      setPreview((prev) => { if (prev) URL.revokeObjectURL(prev.url); return { url: URL.createObjectURL(out), file: out } })
     } finally { setWorking(false) }
-  }, [])
+  }, [normalize, maxDimension, quality])
 
   const clear = useCallback((notify: boolean) => {
     setPreview((prev) => { if (prev) URL.revokeObjectURL(prev.url); return null })
@@ -89,46 +114,59 @@ export default function PhotoInput({ onImage, onRemove, continueLabel = 'Use Pho
     if (notify) onRemove?.()
   }, [onRemove])
 
-  const hiddenInput = (ref: React.RefObject<HTMLInputElement | null>, camera: boolean) => (
-    <input
-      ref={ref}
-      type="file"
-      accept="image/*"
-      {...(camera ? { capture: 'environment' as const } : {})}
-      hidden
-      onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; void pick(f) }}
-    />
+  const hiddenInput = (ref: React.RefObject<HTMLInputElement | null>, camera: boolean, onFile: (f: File | undefined) => void) => (
+    <input ref={ref} type="file" accept="image/*" {...(camera ? { capture: 'environment' as const } : {})}
+      hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; void onFile(f) }} />
   )
 
-  // ── Empty: the two standard entry actions ──────────────────────────────────
+  // ── Live composition mode: specialized camera + shared upload ──────────────
+  if (live && renderCamera) {
+    return (
+      <div className={`flex flex-col flex-1 min-h-0 ${className}`}>
+        {renderCamera({ deliver: (primary, original = null) => onCapture(primary, original) })}
+        <div className="bg-black shrink-0 flex flex-col items-center gap-2 pt-3 pb-4 px-6">
+          {error && <p className="text-amber-400 text-xs text-center">{error}</p>}
+          {/* Shared upload path — prominent so it works on desktop / when the
+              camera is unavailable. Uploads deliver immediately (no re-compression
+              when normalize=false) to match the camera pipeline exactly. */}
+          <div className="relative w-full">
+            <div className="w-full rounded-2xl border-2 border-gray-700 text-white text-base font-semibold py-3.5 text-center pointer-events-none select-none">
+              🖼 {working ? 'Preparing photo…' : uploadLabel}
+            </div>
+            <input ref={libraryRef} type="file" accept="image/*"
+              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; void uploadDeliver(f) }}
+              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Default: empty two-button entry ────────────────────────────────────────
   if (!preview) {
     return (
       <div className={`space-y-3 ${className}`}>
-        {hiddenInput(cameraRef, true)}
-        {hiddenInput(libraryRef, false)}
+        {hiddenInput(cameraRef, true, pickForPreview)}
+        {hiddenInput(libraryRef, false, pickForPreview)}
         {error && <p className="text-amber-400 text-sm text-center">{error}</p>}
         <button type="button" disabled={busy || working} onClick={() => cameraRef.current?.click()}
-          className="w-full h-16 rounded-2xl bg-white text-black text-lg font-bold disabled:opacity-50">
-          📷 Take Photo
-        </button>
+          className="w-full h-16 rounded-2xl bg-white text-black text-lg font-bold disabled:opacity-50">📷 Take Photo</button>
         <button type="button" disabled={busy || working} onClick={() => libraryRef.current?.click()}
-          className="w-full h-16 rounded-2xl border-2 border-gray-700 text-white text-lg font-bold disabled:opacity-50">
-          🖼 Upload Photo
-        </button>
+          className="w-full h-16 rounded-2xl border-2 border-gray-700 text-white text-lg font-bold disabled:opacity-50">🖼 Upload Photo</button>
         {working && <p className="text-gray-400 text-sm text-center">Preparing photo…</p>}
       </div>
     )
   }
 
-  // ── Preview: preview + Replace / Remove + continue ─────────────────────────
+  // ── Default: preview + Replace / Remove + continue ─────────────────────────
   return (
     <div className={`space-y-3 ${className}`}>
-      {hiddenInput(cameraRef, true)}
-      {hiddenInput(libraryRef, false)}
+      {hiddenInput(cameraRef, true, pickForPreview)}
+      {hiddenInput(libraryRef, false, pickForPreview)}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={preview.url} alt="Selected photo" className="w-full max-h-72 object-contain rounded-2xl bg-gray-900 border border-gray-800" />
       {error && <p className="text-amber-400 text-sm text-center">{error}</p>}
-      <button type="button" disabled={busy || working} onClick={() => onImage(preview.file)}
+      <button type="button" disabled={busy || working} onClick={() => onCapture(preview.file, null)}
         className="w-full h-16 rounded-2xl bg-blue-600 active:bg-blue-700 text-white text-lg font-bold disabled:opacity-50">
         {busy ? 'Working…' : continueLabel}
       </button>

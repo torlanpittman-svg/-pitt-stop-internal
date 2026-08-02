@@ -289,7 +289,7 @@ export default function VehicleInfoPage() {
           {/* Primary: scan a VIN photo — Take Photo or Upload Photo, same OCR */}
           <div className="space-y-1">
             <p className="text-gray-400 text-sm text-center">Scan the VIN — door jamb sticker or windshield plate</p>
-            <PhotoInput onImage={runVinScan} continueLabel="Scan VIN" />
+            <PhotoInput onCapture={(file) => runVinScan(file)} continueLabel="Scan VIN" />
           </div>
 
           {/* Error banner */}
