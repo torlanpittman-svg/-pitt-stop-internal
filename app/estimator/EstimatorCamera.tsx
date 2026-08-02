@@ -23,26 +23,6 @@ function resizedCanvas(srcWidth: number, srcHeight: number): HTMLCanvasElement {
   return canvas
 }
 
-async function fileToResizedFile(file: File): Promise<File> {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    const url = URL.createObjectURL(file)
-    img.onload = async () => {
-      URL.revokeObjectURL(url)
-      const canvas = resizedCanvas(img.naturalWidth, img.naturalHeight)
-      canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height)
-      try {
-        const blob = await canvasToBlob(canvas, 'image/jpeg', 0.82)
-        resolve(new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' }))
-      } catch (e) {
-        reject(e)
-      }
-    }
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image load failed')) }
-    img.src = url
-  })
-}
-
 function FrameGuide({ orientation }: { orientation: PhotoOrientation }) {
   const corner = 'absolute w-8 h-8'
 
@@ -98,7 +78,6 @@ export default function EstimatorCamera({
   const [ready,       setReady]       = useState(false)
   const [camFailed,   setCamFailed]   = useState(false)
   const [capturing,   setCapturing]   = useState(false)
-  const [fileKey,     setFileKey]     = useState(0)
   const [isLandscape, setIsLandscape] = useState(false)
 
   useEffect(() => {
@@ -153,40 +132,18 @@ export default function EstimatorCamera({
     }
   }, [capturing, onCapture])
 
-  const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]
-    if (!f) return
-    setFileKey(k => k + 1)
-    try {
-      const resized = await fileToResizedFile(f)
-      onCapture(resized)
-    } catch {
-      onCapture(f)
-    }
-  }, [onCapture])
-
   const needsRotation = orientation === 'landscape' && !isLandscape
 
+  // Camera unavailable (e.g. desktop) — the shared Upload path is provided by
+  // PhotoInput below.
   if (camFailed) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-6 px-6">
-        <div className="text-center">
+      <div className="flex-1 flex flex-col items-center justify-center gap-4 px-6 text-center">
+        <div>
           <p className="text-white font-bold text-lg mb-1">{stepLabel}</p>
           <p className="text-gray-400 text-sm">{stepHint}</p>
         </div>
-        <div className="relative w-full max-w-sm">
-          <div className="bg-blue-600 rounded-2xl py-5 text-center text-white font-bold text-lg pointer-events-none select-none">
-            Upload Photo
-          </div>
-          <input
-            key={fileKey}
-            type="file"
-            accept="image/*"
-            capture="environment"
-            onChange={handleFileChange}
-            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-          />
-        </div>
+        <p className="text-yellow-400 text-sm">Camera unavailable — use <span className="font-semibold">Upload from library</span> below.</p>
       </div>
     )
   }
@@ -276,19 +233,7 @@ export default function EstimatorCamera({
             : <div className="w-[3.25rem] h-[3.25rem] rounded-full bg-white" />
           }
         </button>
-
-        <div className="relative">
-          <span className="text-gray-500 text-sm underline cursor-pointer">
-            Upload from library
-          </span>
-          <input
-            key={fileKey}
-            type="file"
-            accept="image/*"
-            onChange={handleFileChange}
-            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-          />
-        </div>
+        {/* Shared Upload path ("Upload from library") is provided by PhotoInput. */}
       </div>
     </div>
   )

@@ -124,13 +124,14 @@ export default function PhotoInput({
 
   // ── Upload-only mode: just the shared upload affordance ────────────────────
   if (uploadOnly) {
+    const locked = busy || working
     return (
       <div className={`w-full ${className}`}>
-        <div className="relative w-full">
+        <div className={`relative w-full ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
           <div className="w-full rounded-2xl bg-blue-600 text-white text-lg font-bold py-4 text-center pointer-events-none select-none">
             🖼 {working ? 'Preparing photo…' : uploadLabel}
           </div>
-          <input ref={libraryRef} type="file" accept="image/*"
+          <input ref={libraryRef} type="file" accept="image/*" disabled={locked}
             onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; void uploadDeliver(f) }}
             className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
         </div>
@@ -149,11 +150,11 @@ export default function PhotoInput({
           {/* Shared upload path — prominent so it works on desktop / when the
               camera is unavailable. Uploads deliver immediately (no re-compression
               when normalize=false) to match the camera pipeline exactly. */}
-          <div className="relative w-full">
+          <div className={`relative w-full ${busy || working ? 'opacity-60 pointer-events-none' : ''}`}>
             <div className="w-full rounded-2xl border-2 border-gray-700 text-white text-base font-semibold py-3.5 text-center pointer-events-none select-none">
               🖼 {working ? 'Preparing photo…' : uploadLabel}
             </div>
-            <input ref={libraryRef} type="file" accept="image/*"
+            <input ref={libraryRef} type="file" accept="image/*" disabled={busy || working}
               onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; void uploadDeliver(f) }}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
           </div>

@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import EstimatorCamera from '@/app/estimator/EstimatorCamera'
+import PhotoInput from '@/app/components/PhotoInput'
 import { buildPhotoSteps } from '@/apps/estimator/photo-steps'
 import { applyLayoutAnswers } from '@/apps/estimator/vehicle-layout'
 import type { LayoutInference, LayoutQuestion } from '@/apps/estimator/vehicle-layout'
@@ -236,12 +237,26 @@ export default function PhotoCapture({
         </div>
       )}
 
-      {/* Camera — re-mounts on each step change via key */}
-      <EstimatorCamera
-        key={keyRef.current}
-        stepLabel={currentStep.label}
-        stepHint={currentStep.hint}
-        orientation={currentStep.orientation}
+      {/* Per-step capture hosted in the shared PhotoInput: EstimatorCamera keeps
+          its frame guides / rotate-phone prompt / 1280px capture; PhotoInput owns
+          the standardized "Upload from library" path (same 1280px/0.82 resize).
+          busy={uploading} blocks a second upload → no duplicate photos. The
+          camera re-mounts per step via key, preserving ordering. */}
+      <PhotoInput
+        live
+        maxDimension={1280}
+        quality={0.82}
+        busy={uploading}
+        uploadLabel="Upload from library"
+        renderCamera={({ deliver }) => (
+          <EstimatorCamera
+            key={keyRef.current}
+            stepLabel={currentStep.label}
+            stepHint={currentStep.hint}
+            orientation={currentStep.orientation}
+            onCapture={(f) => deliver(f)}
+          />
+        )}
         onCapture={handleCapture}
       />
 
