@@ -15,6 +15,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { newClientRequestId, blankFields } from '@/apps/dealer-checkin/scan-session'
+import PhotoInput from '@/app/components/PhotoInput'
 
 type Phase = 'entry' | 'camera' | 'processing' | 'review' | 'submitting' | 'done'
 
@@ -46,7 +47,6 @@ export default function DealerCheckInFlow() {
   const router = useRouter()
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const submittingRef = useRef(false)
   const startedAt = useRef(0)
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -256,12 +256,6 @@ export default function DealerCheckInFlow() {
   }, [runPreview, fields.stockNumber, newVehicle])
 
   // ── Entry actions ───────────────────────────────────────────────────────────
-  const onUploadPick = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    e.target.value = '' // allow re-picking the same file
-    if (file) void processImage(file)
-  }, [processImage])
-
   const onCapture = useCallback(async () => {
     const blob = await captureFrame()
     stopCamera()
@@ -372,9 +366,10 @@ export default function DealerCheckInFlow() {
         )}
       </header>
 
-      <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={onUploadPick} />
-
-      {/* Entry: Take Photo / Upload Photo */}
+      {/* Entry: Take Photo (specialized in-app portrait-guide camera, unchanged)
+          / Upload Photo (shared PhotoInput). normalize={false} keeps the exact
+          bytes so OCR, Blob storage, and the image hash are identical. Both feed
+          the same processImage → OCR → editable review → approval pipeline. */}
       {phase === 'entry' && (
         <div className="flex-1 flex flex-col justify-center gap-4 px-6 pb-10">
           <p className="text-center text-gray-400 mb-2">Scan a dealer tag</p>
@@ -382,9 +377,7 @@ export default function DealerCheckInFlow() {
           <button onClick={() => { setCamFailed(false); setPhase('camera') }} className="w-full h-20 rounded-2xl bg-white text-black text-xl font-bold">
             📷 Take Photo
           </button>
-          <button onClick={() => fileInputRef.current?.click()} className="w-full h-20 rounded-2xl border-2 border-gray-700 text-white text-xl font-bold">
-            ⬆︎ Upload Photo
-          </button>
+          <PhotoInput uploadOnly normalize={false} uploadLabel="⬆︎ Upload Photo" onCapture={(f) => processImage(f)} />
         </div>
       )}
 
