@@ -1,10 +1,11 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
 import { validateVIN } from '@/apps/vehicle-entry/vin'
 import { YEARS, MAKES, COLORS, getModelsForMake } from '@/apps/vehicle-entry/vehicle-data'
+import PhotoInput from '@/app/components/PhotoInput'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -106,7 +107,6 @@ function SelectField({
 export default function VehicleInfoPage() {
   const router       = useRouter()
   const { id }       = useParams<{ id: string }>()
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [step,       setStep]       = useState<Step>('vin')
   const [vinInput,   setVinInput]   = useState('')
@@ -136,12 +136,8 @@ export default function VehicleInfoPage() {
     setStep('confirm')
   }, [])
 
-  // ── Photo VIN scan ────────────────────────────────────────────────────────
-  const handlePhotoCapture = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    if (fileInputRef.current) fileInputRef.current.value = ''
-
+  // ── Photo VIN scan (same OCR for both Take Photo and Upload Photo) ─────────
+  const runVinScan = useCallback(async (file: File) => {
     setStep('loading')
     setLoadMsg('Reading VIN from photo…')
     setVinError(null)
@@ -290,39 +286,18 @@ export default function VehicleInfoPage() {
 
         <div className="flex-1 overflow-y-auto px-5 pb-32 space-y-5 pt-2">
 
-          {/* Primary CTA — camera capture */}
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="w-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 rounded-2xl py-7 flex flex-col items-center gap-3 transition-colors shadow-lg shadow-blue-900/40"
-          >
-            <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            <div className="text-center">
-              <div className="text-white font-bold text-xl">Scan VIN</div>
-              <div className="text-blue-200 text-sm mt-0.5">
-                Door jamb sticker or windshield plate
-              </div>
-            </div>
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            capture="environment"
-            className="hidden"
-            onChange={handlePhotoCapture}
-          />
+          {/* Primary: scan a VIN photo — Take Photo or Upload Photo, same OCR */}
+          <div className="space-y-1">
+            <p className="text-gray-400 text-sm text-center">Scan the VIN — door jamb sticker or windshield plate</p>
+            <PhotoInput onImage={runVinScan} continueLabel="Scan VIN" />
+          </div>
 
           {/* Error banner */}
           {vinError && (
             <div className="bg-red-950 border border-red-800 rounded-xl px-4 py-3 space-y-2">
               <p className="text-red-300 text-sm font-medium">{vinError}</p>
               <button
-                onClick={() => { setVinError(null); fileInputRef.current?.click() }}
+                onClick={() => setVinError(null)}
                 className="text-red-400 text-xs underline"
               >
                 Try again

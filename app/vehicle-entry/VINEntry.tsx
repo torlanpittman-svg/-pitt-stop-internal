@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import PhotoInput from '@/app/components/PhotoInput'
 import { useRouter } from 'next/navigation'
 import { validateVIN, buildStockNumber } from '@/apps/vehicle-entry/vin'
 import type { VINDecodeResult } from '@/apps/vehicle-entry/vin'
@@ -34,7 +35,6 @@ export default function VINEntry() {
   const [selectedDealer, setSelectedDealer] = useState<DealershipRow | null>(null)
   const [color,          setColor]          = useState('')
   const [submitError,    setSubmitError]    = useState<string | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Pre-fetch dealerships so they're instant when employee reaches step 2
   useEffect(() => {
@@ -65,12 +65,8 @@ export default function VINEntry() {
     }
   }, [])
 
-  // ── VIN photo capture ──────────────────────────────────────────────────────
-  const handlePhotoCapture = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    if (fileInputRef.current) fileInputRef.current.value = ''
-
+  // ── VIN photo scan (same OCR for both Take Photo and Upload Photo) ─────────
+  const runVinScan = useCallback(async (file: File) => {
     setLoading(true)
     setVinError(null)
     const fd = new FormData()
@@ -164,35 +160,11 @@ export default function VINEntry() {
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 pb-10 space-y-5">
-          {/* Photo button */}
-          <button
-            onClick={() => !loading && fileInputRef.current?.click()}
-            disabled={loading}
-            className="w-full bg-gray-800 border-2 border-dashed border-gray-600 hover:border-blue-500 rounded-2xl py-8 flex flex-col items-center gap-3 transition-colors disabled:opacity-60"
-          >
-            {loading ? (
-              <>
-                <div className="w-9 h-9 border-[3px] border-blue-400 border-t-transparent rounded-full animate-spin" />
-                <span className="text-gray-400 text-sm">Reading VIN…</span>
-              </>
-            ) : (
-              <>
-                <span className="text-5xl leading-none">📷</span>
-                <div className="text-center">
-                  <div className="text-white font-semibold text-lg">Photograph the VIN sticker</div>
-                  <div className="text-gray-500 text-sm mt-0.5">Fastest option — or type it below</div>
-                </div>
-              </>
-            )}
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            capture="environment"
-            className="hidden"
-            onChange={handlePhotoCapture}
-          />
+          {/* Photo VIN scan — Take Photo or Upload Photo, same OCR */}
+          <div className="space-y-1">
+            <p className="text-gray-400 text-sm text-center">Scan the VIN sticker — or type it below</p>
+            <PhotoInput onImage={runVinScan} continueLabel="Scan VIN" busy={loading} />
+          </div>
 
           {/* Divider */}
           <div className="flex items-center gap-3">
