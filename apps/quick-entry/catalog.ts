@@ -27,6 +27,36 @@ export function resolveStartPriceCents(
   return item.defaultPriceCents
 }
 
+// ── Display / partition helpers (used by the read-only admin view) ──────────
+export interface CatalogLike {
+  kind: string; source?: string | null; quickEntry?: boolean
+  defaultPriceCents: number | null; hasSize?: boolean; hasCondition?: boolean
+}
+export function isDealerPackage(i: { source?: string | null }): boolean {
+  return i.source === 'dealer_rules'
+}
+export function partitionCatalog<T extends CatalogLike>(items: T[]): {
+  retailPackages: T[]; dealerPackages: T[]; quickAddons: T[]; customAddons: T[]
+} {
+  return {
+    retailPackages: items.filter((i) => i.kind === 'package' && !isDealerPackage(i)),
+    dealerPackages: items.filter((i) => isDealerPackage(i)),
+    quickAddons:    items.filter((i) => i.kind === 'addon' && i.quickEntry),
+    customAddons:   items.filter((i) => i.kind === 'addon' && !i.quickEntry),
+  }
+}
+/** Human label for a card's starting price: "from $X" for tiered, else the flat price. */
+export function startingPriceLabel(
+  i: { defaultPriceCents: number | null; hasSize?: boolean; hasCondition?: boolean },
+  tiers: { startPriceCents: number }[],
+): string {
+  if (i.hasSize || i.hasCondition) {
+    if (!tiers.length) return '—'
+    return `from ${centsToDollars(Math.min(...tiers.map((t) => t.startPriceCents)))}`
+  }
+  return centsToDollars(i.defaultPriceCents)
+}
+
 export interface SeedIssue { slug: string; issue: string }
 
 /** Structural checks the seed must satisfy (drives the regression test). */

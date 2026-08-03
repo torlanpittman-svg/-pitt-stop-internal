@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { CATALOG_ITEMS, TECH_INSTRUCTIONS } from './seed-data'
-import { validateCatalogSeed, resolveStartPriceCents, pickTierPrice } from './catalog'
+import { validateCatalogSeed, resolveStartPriceCents, pickTierPrice, partitionCatalog, startingPriceLabel, isDealerPackage } from './catalog'
 
 const bySlug = (s: string) => CATALOG_ITEMS.find((i) => i.slug === s)!
 
@@ -36,6 +36,29 @@ describe('price resolution', () => {
   it('resolves flat-priced items from the default', () => {
     expect(resolveStartPriceCents(bySlug('mini_detail'), [])).toBe(15000)
     expect(resolveStartPriceCents(bySlug('paint_correction_1step'), [])).toBe(65000)
+  })
+})
+
+describe('admin view: retail/dealer separation + tier rendering', () => {
+  const parts = partitionCatalog(CATALOG_ITEMS)
+  it('separates retail packages, dealer packages, and add-ons', () => {
+    expect(parts.retailPackages).toHaveLength(9)   // incl. Exterior Wash
+    expect(parts.dealerPackages).toHaveLength(3)
+    expect(parts.quickAddons).toHaveLength(3)
+    expect(parts.customAddons).toHaveLength(4)
+    expect(parts.retailPackages.length + parts.dealerPackages.length + parts.quickAddons.length + parts.customAddons.length).toBe(CATALOG_ITEMS.length)
+  })
+  it('dealer packages are exactly the dealer_rules ones; no dealer item lands in retail', () => {
+    expect(parts.dealerPackages.every((i) => isDealerPackage(i))).toBe(true)
+    expect(parts.retailPackages.some((i) => isDealerPackage(i))).toBe(false)
+  })
+  it('renders tiered price as "from $min" and flat price directly', () => {
+    const cd = CATALOG_ITEMS.find((i) => i.slug === 'complete_detail')!
+    expect(startingPriceLabel(cd, cd.tiers!)).toBe('from $350.00')
+    const mini = CATALOG_ITEMS.find((i) => i.slug === 'mini_detail')!
+    expect(startingPriceLabel(mini, [])).toBe('$150.00')
+    const wax = CATALOG_ITEMS.find((i) => i.slug === 'exterior_wax')!
+    expect(startingPriceLabel(wax, [])).toBe('—') // review item, no price
   })
 })
 

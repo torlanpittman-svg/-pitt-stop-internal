@@ -66,6 +66,24 @@ export async function listTechnicianInstructions(): Promise<TechRow[]> {
     .orderBy(asc(technicianInstructions.groupName), asc(technicianInstructions.sortOrder))
 }
 
+export interface FullCatalogItem { item: CatalogRow; tiers: TierRow[]; aliases: AliasRow[] }
+
+/** Whole catalog (non-archived) with tiers + aliases assembled — for the admin view. */
+export async function getFullCatalog(): Promise<FullCatalogItem[]> {
+  const db = getDb()
+  const items = await db.select().from(serviceCatalog).where(isNull(serviceCatalog.archivedAt))
+    .orderBy(asc(serviceCatalog.sortOrder), asc(serviceCatalog.name))
+  const [allTiers, allAliases] = await Promise.all([
+    db.select().from(servicePriceTiers).orderBy(asc(servicePriceTiers.sortOrder)),
+    db.select().from(serviceAliases),
+  ])
+  return items.map((item) => ({
+    item,
+    tiers: allTiers.filter((t) => t.catalogId === item.id),
+    aliases: allAliases.filter((a) => a.catalogId === item.id),
+  }))
+}
+
 /** Items whose QuickBooks mapping is still unresolved (new item needed / mapping review). */
 export async function listUnresolvedQbMappings(): Promise<CatalogRow[]> {
   const db = getDb()
