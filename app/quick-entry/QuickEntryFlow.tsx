@@ -1,16 +1,17 @@
 'use client'
 
 /**
- * Quick Entry — capture a job fast and put it on the Work Board.
- * Customer → Vehicle (VIN scan/enter) → Services (buttons) → Tech instructions →
- * Review → Create Work Order. No QuickBooks/AutoLeap. Prices editable; "close
- * enough" to start the work.
+ * Quick Entry — capture WHICH services we're doing and put the job on the Work Board.
+ * Customer → Vehicle (VIN scan/enter) → tap the services → Review → Create Work Order.
+ * No QuickBooks/AutoLeap. NO pricing here: no prices, tiers, size/condition, or totals —
+ * tap-to-select only. Pricing/estimating/invoicing is a separate later step (the catalog,
+ * price tiers, and price data stay in the DB for that).
  */
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import PhotoInput from '@/app/components/PhotoInput'
-import { jobTotalCents, fmt, tierLabel, type JobLine } from '@/apps/quick-entry/job-lines'
+import { type JobLine } from '@/apps/quick-entry/job-lines'
 
 type Phase = 'details' | 'services' | 'review' | 'submitting' | 'done'
 interface Tier { size: string; condition: string; startPriceCents: number }
@@ -41,7 +42,6 @@ export default function QuickEntryFlow() {
 
   const [lines, setLines] = useState<JobLine[]>([])
   const [tech, setTech] = useState<Set<string>>(new Set())
-  const [picker, setPicker] = useState<Pkg | null>(null)
   const [result, setResult] = useState<{ orderNumber: string; serviceOrderId: string } | null>(null)
 
   useEffect(() => {
@@ -81,25 +81,17 @@ export default function QuickEntryFlow() {
   }, [veh.vin])
 
   // ── Service selection ───────────────────────────────────────────────────────
+  // Pure tap-to-select: no price, no size/condition tiers. Tapping a service toggles it.
   const addLine = (l: Omit<JobLine, 'key'>) => setLines((xs) => [...xs, { ...l, key: `k${keySeq++}` }])
-  const tapPackage = (p: Pkg) => {
-    if (p.tiers.length > 0) { setPicker(p); return }
-    addLine({ catalogId: p.id, kind: 'package', name: p.name, priceCents: p.defaultPriceCents ?? 0 })
-  }
-  const pickTier = (p: Pkg, t: Tier) => {
-    addLine({ catalogId: p.id, kind: 'package', name: p.name, size: t.size, condition: t.condition, priceCents: t.startPriceCents })
-    setPicker(null)
-  }
+  const isSelected = (id: string) => lines.some((l) => l.catalogId === id)
+  const tapPackage = (p: Pkg) => setLines((xs) =>
+    xs.some((l) => l.catalogId === p.id)
+      ? xs.filter((l) => l.catalogId !== p.id)                                        // deselect
+      : [...xs, { key: `k${keySeq++}`, catalogId: p.id, kind: 'package', name: p.name, priceCents: 0 }]) // select
   const addOther = () => addLine({ catalogId: null, kind: 'custom', name: '', priceCents: 0 })
-  const setPrice = (key: string, dollars: string) => {
-    const cents = Math.round(parseFloat(dollars || '0') * 100)
-    setLines((xs) => xs.map((l) => (l.key === key ? { ...l, priceCents: Number.isFinite(cents) ? cents : 0 } : l)))
-  }
   const setLineName = (key: string, name: string) => setLines((xs) => xs.map((l) => (l.key === key ? { ...l, name } : l)))
   const removeLine = (key: string) => setLines((xs) => xs.filter((l) => l.key !== key))
   const toggleTech = (label: string) => setTech((s) => { const n = new Set(s); n.has(label) ? n.delete(label) : n.add(label); return n })
-
-  const total = jobTotalCents(lines)
 
   // ── Create the job ──────────────────────────────────────────────────────────
   const createJob = useCallback(async () => {
@@ -112,7 +104,8 @@ export default function QuickEntryFlow() {
           vehicle: { vin: veh.vin || null, year: veh.year || null, make: veh.make || null, model: veh.model || null, color: veh.color || null },
           lines: lines
             .filter((l) => l.kind !== 'custom' || l.name.trim())  // drop empty "Other" lines
-            .map((l) => ({ catalogId: l.catalogId, kind: l.kind, name: l.name.trim(), size: l.size ?? null, condition: l.condition ?? null, priceCents: l.priceCents })),
+            // Quick Entry ignores pricing: no size/condition, price 0 (set later in estimating/invoicing)
+            .map((l) => ({ catalogId: l.catalogId, kind: l.kind, name: l.name.trim(), size: null, condition: null, priceCents: 0 })),
           techInstructions: SHOW_TECH_INSTRUCTIONS ? [...tech] : [], createdBy: 'quick_entry',
         }),
       })
@@ -193,16 +186,17 @@ export default function QuickEntryFlow() {
           {!catalog && <p className="text-gray-500 text-sm">Loading services…</p>}
           {catalog && <>
             <div>
-              <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Packages</p>
+              <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Services — tap all that apply</p>
               <div className="grid grid-cols-2 gap-2">
                 {catalog.packages.map((p) => (
-                  <button key={p.id} onClick={() => tapPackage(p)} className="rounded-2xl bg-gray-900 border border-gray-800 px-3 py-3 text-left active:bg-gray-800">
+                  <button key={p.id} onClick={() => tapPackage(p)}
+                    className={`relative rounded-2xl border px-3 py-4 text-left ${isSelected(p.id) ? 'bg-blue-600/20 border-blue-500' : 'bg-gray-900 border-gray-800 active:bg-gray-800'}`}>
                     <span className="text-white text-sm font-semibold">{p.name}</span>
-                    <span className="block text-gray-500 text-xs mt-0.5">{p.tiers.length ? `from ${fmt(Math.min(...p.tiers.map((t) => t.startPriceCents)))}` : fmt(p.defaultPriceCents ?? 0)}</span>
+                    {isSelected(p.id) && <span className="absolute top-2 right-2 text-blue-400 text-sm">✓</span>}
                   </button>
                 ))}
-                {/* "Other" — free-text custom service; no default price, no catalog mapping */}
-                <button onClick={addOther} className="rounded-2xl bg-gray-900 border border-dashed border-gray-700 px-3 py-3 text-left active:bg-gray-800">
+                {/* "Other" — free-text custom service; no price, no catalog mapping */}
+                <button onClick={addOther} className="rounded-2xl bg-gray-900 border border-dashed border-gray-700 px-3 py-4 text-left active:bg-gray-800">
                   <span className="text-white text-sm font-semibold">＋ Other</span>
                   <span className="block text-gray-500 text-xs mt-0.5">What are we doing?</span>
                 </button>
@@ -223,11 +217,7 @@ export default function QuickEntryFlow() {
                         ) : (
                           <p className="text-white text-sm truncate">{l.name}</p>
                         )}
-                        {(l.size || l.condition) && <p className="text-gray-500 text-xs">{tierLabel(l.size, l.condition)}</p>}
                       </div>
-                      <span className="text-gray-500 text-sm">$</span>
-                      <input inputMode="decimal" value={(l.priceCents / 100).toString()} onChange={(e) => setPrice(l.key, e.target.value)}
-                        className="w-16 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-sm text-right" />
                       <button onClick={() => removeLine(l.key)} className="text-gray-600 text-lg px-1">×</button>
                     </div>
                   ))}
@@ -256,7 +246,7 @@ export default function QuickEntryFlow() {
           <div className="fixed bottom-0 inset-x-0 p-4 bg-gray-950/95 border-t border-gray-900 flex items-center gap-3">
             <button onClick={() => setPhase('details')} className="h-14 px-5 rounded-2xl border border-gray-700 text-gray-300 text-sm">Back</button>
             <button onClick={() => setPhase('review')} className="flex-1 h-14 rounded-2xl bg-blue-600 active:bg-blue-700 text-white text-lg font-bold">
-              Review · {fmt(total)} →
+              Review →
             </button>
           </div>
         </div>
@@ -272,17 +262,13 @@ export default function QuickEntryFlow() {
             {veh.vin && <p className="text-gray-600 text-xs font-mono">{veh.vin}</p>}
           </div>
           <div className="rounded-2xl bg-gray-900 border border-gray-800 divide-y divide-gray-800">
+            <p className="px-4 py-2 text-gray-500 text-xs uppercase tracking-widest">Services</p>
             {lines.length === 0 && <p className="px-4 py-3 text-gray-500 text-sm">No services selected.</p>}
             {lines.map((l) => (
-              <div key={l.key} className="flex items-center justify-between px-4 py-2 text-sm">
-                <span className="text-gray-300">{(l.name.trim() || (l.kind === 'custom' ? 'Custom service' : ''))}{(l.size || l.condition) ? ` (${tierLabel(l.size, l.condition)})` : ''}</span>
-                <span className="text-white">{fmt(l.priceCents)}</span>
+              <div key={l.key} className="px-4 py-2 text-sm">
+                <span className="text-gray-200">{l.name.trim() || (l.kind === 'custom' ? 'Custom service' : '')}</span>
               </div>
             ))}
-            <div className="flex items-center justify-between px-4 py-2.5">
-              <span className="text-gray-400 font-semibold">Total (editable later)</span>
-              <span className="text-white font-bold">{fmt(total)}</span>
-            </div>
           </div>
           {SHOW_TECH_INSTRUCTIONS && tech.size > 0 && (
             <div className="rounded-2xl bg-gray-900 border border-gray-800 p-4">
@@ -315,23 +301,6 @@ export default function QuickEntryFlow() {
         </div>
       )}
 
-      {/* package size/condition picker */}
-      {picker && (
-        <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-20 p-4" onClick={() => setPicker(null)}>
-          <div className="w-full max-w-sm bg-gray-900 border border-gray-800 rounded-3xl p-4" onClick={(e) => e.stopPropagation()}>
-            <p className="text-white font-semibold mb-3">{picker.name} — pick size{picker.hasCondition ? ' & condition' : ''}</p>
-            <div className="space-y-2">
-              {picker.tiers.map((t, i) => (
-                <button key={i} onClick={() => pickTier(picker, t)} className="w-full flex items-center justify-between rounded-2xl bg-gray-800 border border-gray-700 px-4 py-3 active:bg-gray-700">
-                  <span className="text-white text-sm">{tierLabel(t.size, t.condition)}</span>
-                  <span className="text-white font-bold">{fmt(t.startPriceCents)}</span>
-                </button>
-              ))}
-            </div>
-            <button onClick={() => setPicker(null)} className="w-full mt-3 h-11 rounded-2xl border border-gray-700 text-gray-400">Cancel</button>
-          </div>
-        </div>
-      )}
     </main>
   )
 }
