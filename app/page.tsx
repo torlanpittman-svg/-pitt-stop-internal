@@ -2,6 +2,11 @@ import Link from 'next/link'
 
 const MODULES = [
   {
+    href:    '/quick-entry',
+    label:   'Quick Entry',
+    sub:     'Customer + vehicle + services → Work Board in under a minute.',
+  },
+  {
     href:    '/dealer-check-in',
     label:   'Dealer Check-In',
     sub:     'Scan a tag → confirm → done. Invoice + Work Board, automatically.',

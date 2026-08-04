@@ -11,7 +11,7 @@
  * (role-based permissions come later). Dealer prices come from the Dealer Check-In
  * rules engine, not AI. AutoLeap mapping is pending an API.
  */
-import { pgTable, uuid, text, varchar, integer, boolean, timestamp, index, unique } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, varchar, integer, boolean, timestamp, jsonb, index, unique } from 'drizzle-orm/pg-core'
 
 export const serviceCatalog = pgTable(
   'service_catalog',
@@ -79,6 +79,45 @@ export const serviceAliases = pgTable(
     index('service_aliases_catalog_idx').on(t.catalogId),
     index('service_aliases_ai_idx').on(t.approvedForAi),
   ],
+)
+
+// ── Captured jobs (Quick Entry → Work Board) ────────────────────────────────
+export const quickEntryJobs = pgTable(
+  'quick_entry_jobs',
+  {
+    id:              uuid('id').primaryKey().defaultRandom(),
+    serviceOrderId:  uuid('service_order_id'),   // Work Board entry (workflow.service_orders)
+    vehicleId:       uuid('vehicle_id'),
+    customerName:    varchar('customer_name', { length: 200 }).notNull(),
+    customerPhone:   varchar('customer_phone', { length: 40 }),
+    customerEmail:   varchar('customer_email', { length: 200 }),
+    vin:             varchar('vin', { length: 17 }),
+    year:            varchar('year', { length: 4 }),
+    make:            varchar('make', { length: 100 }),
+    model:           varchar('model', { length: 100 }),
+    color:           varchar('color', { length: 100 }),
+    totalCents:      integer('total_cents').notNull().default(0),
+    techInstructions: jsonb('tech_instructions'),  // array of labels (non-billable)
+    createdBy:       varchar('created_by', { length: 200 }),
+    createdAt:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('quick_entry_jobs_order_idx').on(t.serviceOrderId), index('quick_entry_jobs_created_idx').on(t.createdAt)],
+)
+
+export const quickEntryJobLines = pgTable(
+  'quick_entry_job_lines',
+  {
+    id:         uuid('id').primaryKey().defaultRandom(),
+    jobId:      uuid('job_id').notNull().references(() => quickEntryJobs.id, { onDelete: 'cascade' }),
+    catalogId:  uuid('catalog_id'),                                  // null for a custom line
+    kind:       varchar('kind', { length: 20 }).notNull(),          // package | addon | custom
+    name:       varchar('name', { length: 160 }).notNull(),
+    size:       varchar('size', { length: 40 }),
+    condition:  varchar('condition', { length: 20 }),
+    priceCents: integer('price_cents').notNull().default(0),
+    sortOrder:  integer('sort_order').notNull().default(0),
+  },
+  (t) => [index('quick_entry_job_lines_job_idx').on(t.jobId)],
 )
 
 export const technicianInstructions = pgTable(
