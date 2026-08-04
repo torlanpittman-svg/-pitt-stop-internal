@@ -17,44 +17,54 @@ describe('plate input helpers', () => {
 
 describe('provider registry + feature flag', () => {
   const OLD = { ...process.env }
-  beforeEach(() => { delete process.env.AUTODEV_API_KEY; delete process.env.PLATE_LOOKUP_ENABLED; delete process.env.PLATE_LOOKUP_PROVIDER })
+  beforeEach(() => { delete process.env.AUTODEV_API_KEY; delete process.env.PLATETOVIN_API_KEY; delete process.env.PLATE_LOOKUP_ENABLED; delete process.env.PLATE_LOOKUP_PROVIDER })
   afterEach(() => { process.env = { ...OLD }; vi.unstubAllGlobals() })
 
   it('no key → no provider, feature disabled', () => {
     expect(getPlateProvider()).toBeNull()
     expect(isPlateLookupEnabled()).toBe(false)
   })
-  it('key present but flag off → still disabled', () => {
-    process.env.AUTODEV_API_KEY = 'secret'
-    expect(getPlateProvider()?.name).toBe('auto_dev')
+  it('defaults to platetovin; key present but flag off → still disabled', () => {
+    process.env.PLATETOVIN_API_KEY = 'secret'
+    expect(getPlateProvider()?.name).toBe('platetovin')
     expect(isPlateLookupEnabled()).toBe(false)
   })
-  it('key present AND flag on → enabled', () => {
-    process.env.AUTODEV_API_KEY = 'secret'
+  it('platetovin key present AND flag on → enabled', () => {
+    process.env.PLATETOVIN_API_KEY = 'secret'
     process.env.PLATE_LOOKUP_ENABLED = 'true'
     expect(isPlateLookupEnabled()).toBe(true)
   })
+  it('auto_dev kept as a selectable fallback provider', () => {
+    process.env.PLATE_LOOKUP_PROVIDER = 'auto_dev'
+    process.env.AUTODEV_API_KEY = 'secret'
+    expect(getPlateProvider()?.name).toBe('auto_dev')
+  })
 })
 
-describe('AutoDevProvider.lookup', () => {
+describe('PlateToVinProvider.lookup (active provider)', () => {
   const OLD = { ...process.env }
+  beforeEach(() => { process.env.PLATE_LOOKUP_PROVIDER = 'platetovin'; process.env.PLATETOVIN_API_KEY = 'secret' })
   afterEach(() => { process.env = { ...OLD }; vi.unstubAllGlobals() })
 
-  it('calls the plate/{state}/{plate} endpoint with Bearer auth and parses the vehicle', async () => {
-    process.env.AUTODEV_API_KEY = 'secret'
-    let calledUrl = '', authHeader = ''
-    vi.stubGlobal('fetch', vi.fn(async (url: string, opts: { headers: Record<string, string> }) => {
-      calledUrl = url; authHeader = opts.headers.Authorization
-      return { ok: true, status: 200, headers: { get: () => 'req_123' },
-        json: async () => ({ vin: '1N4BL4BV3LC205823', year: 2020, make: 'Nissan', model: 'Altima', trim: '2.5 S' }) } as unknown as Response
+  it('POSTs {state,plate} to /api/convert with raw Authorization and parses the vehicle', async () => {
+    let calledUrl = '', auth = '', body = ''
+    vi.stubGlobal('fetch', vi.fn(async (url: string, opts: { headers: Record<string, string>; body: string }) => {
+      calledUrl = url; auth = opts.headers.Authorization; body = opts.body
+      return { ok: true, status: 200, headers: { get: () => null },
+        json: async () => ({ success: true, vin: { vin: '4JGBB8GB9BA648907', year: '2011', make: 'Mercedes-Benz', model: 'M-Class', trim: 'ML 350', style: 'SUV' } }) } as unknown as Response
     }))
-    const r = await getPlateProvider()!.lookup('ABC123', 'TX')
-    expect(calledUrl).toBe('https://api.auto.dev/plate/TX/ABC123')
-    expect(authHeader).toBe('Bearer secret')
-    expect(r).toMatchObject({ vin: '1N4BL4BV3LC205823', year: '2020', make: 'Nissan', model: 'Altima', trim: '2.5 S', status: 'http_200', requestId: 'req_123' })
+    const r = await getPlateProvider()!.lookup('7ABC123', 'CA')
+    expect(calledUrl).toBe('https://platetovin.com/api/convert')
+    expect(auth).toBe('secret') // raw key, no Bearer
+    expect(JSON.parse(body)).toEqual({ state: 'CA', plate: '7ABC123' })
+    expect(r).toMatchObject({ vin: '4JGBB8GB9BA648907', year: '2011', make: 'Mercedes-Benz', model: 'M-Class', trim: 'ML 350', status: 'http_200' })
   })
-  it('returns vin:null on a 404 (plate not found)', async () => {
-    process.env.AUTODEV_API_KEY = 'secret'
+  it('returns vin:null when success:false / no vin', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => ({ success: false }) } as unknown as Response)))
+    const r = await getPlateProvider()!.lookup('NOPE', 'TX')
+    expect(r.vin).toBeNull()
+  })
+  it('returns vin:null on a non-200', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, headers: { get: () => null }, json: async () => ({}) } as unknown as Response)))
     const r = await getPlateProvider()!.lookup('NOPE', 'TX')
     expect(r.vin).toBeNull()

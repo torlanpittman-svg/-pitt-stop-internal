@@ -78,16 +78,58 @@ class AutoDevProvider implements PlateProvider {
   }
 }
 
+// ── PlateToVIN provider ──────────────────────────────────────────────────────
+// POST https://platetovin.com/api/convert  header Authorization: <API key> (raw)
+// body { state, plate } → { success, vin: { vin, year, make, model, trim, style, ... } }
+
+class PlateToVinProvider implements PlateProvider {
+  readonly name = 'platetovin'
+  constructor(private readonly apiKey: string) {}
+
+  async lookup(plate: string, state: string): Promise<PlateProviderResult> {
+    let res: Response
+    try {
+      res = await fetch('https://platetovin.com/api/convert', {
+        method: 'POST',
+        headers: { Authorization: this.apiKey, 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ state, plate }),
+        signal: AbortSignal.timeout(12_000),
+      })
+    } catch {
+      return { vin: null, status: 'error', requestId: null }
+    }
+    const requestId = res.headers.get('x-request-id')
+    if (!res.ok) return { vin: null, status: `http_${res.status}`, requestId }
+    const d = (await res.json().catch(() => ({}))) as { success?: boolean; vin?: Record<string, unknown> }
+    const v = d.vin ?? {}
+    const vin = typeof v.vin === 'string' && v.vin ? v.vin : null
+    if (!d.success || !vin) return { vin: null, status: `http_${res.status}`, requestId }
+    return {
+      vin,
+      year:  v.year != null ? String(v.year) : null,
+      make:  typeof v.make === 'string' ? v.make : null,
+      model: typeof v.model === 'string' ? v.model : null,
+      trim:  typeof v.trim === 'string' ? v.trim : null,
+      status: `http_${res.status}`,
+      requestId,
+    }
+  }
+}
+
 // ── Registry + feature flag ──────────────────────────────────────────────────
 
-/** The configured provider, or null if no key is present. */
+/** The configured provider, or null if its key is not present. Default: platetovin. */
 export function getPlateProvider(): PlateProvider | null {
-  const which = (process.env.PLATE_LOOKUP_PROVIDER || 'auto_dev').toLowerCase()
+  const which = (process.env.PLATE_LOOKUP_PROVIDER || 'platetovin').toLowerCase()
+  if (which === 'platetovin') {
+    const key = process.env.PLATETOVIN_API_KEY
+    return key ? new PlateToVinProvider(key) : null
+  }
   if (which === 'auto_dev') {
+    // Kept as a disabled fallback provider (Auto.dev plate-to-VIN needs a paid plan).
     const key = process.env.AUTODEV_API_KEY
     return key ? new AutoDevProvider(key) : null
   }
-  // Future: if (which === 'plate_to_vin') return new PlateToVinProvider(process.env.PLATETOVIN_API_KEY)
   return null
 }
 
