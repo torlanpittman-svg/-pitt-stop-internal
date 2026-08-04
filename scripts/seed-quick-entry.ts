@@ -13,7 +13,7 @@ for (const l of readFileSync('.env.local', 'utf8').split('\n')) {
 
 ;(async () => {
   const { neon } = await import('@neondatabase/serverless')
-  const { CATALOG_ITEMS, TECH_INSTRUCTIONS } = await import('@/apps/quick-entry/seed-data')
+  const { CATALOG_ITEMS, TECH_INSTRUCTIONS, LEGACY_TERMINOLOGY } = await import('@/apps/quick-entry/seed-data')
   const sql = neon(process.env.DATABASE_URL!)
 
   let items = 0, tiers = 0, aliases = 0, tech = 0
@@ -36,8 +36,10 @@ for (const l of readFileSync('.env.local', 'utf8').split('\n')) {
       tiers++
     }
     for (const a of it.aliases ?? []) {
-      await sql`insert into service_aliases (catalog_id,alias,source) values (${cid},${a},'quickbooks')
-        on conflict (catalog_id,alias) do nothing`
+      const src = LEGACY_TERMINOLOGY.includes(a) ? 'legacy_terminology' : 'quickbooks'
+      // Update only `source` on conflict (keeps owner approved_for_ai flags intact).
+      await sql`insert into service_aliases (catalog_id,alias,source) values (${cid},${a},${src})
+        on conflict (catalog_id,alias) do update set source=excluded.source`
       aliases++
     }
   }

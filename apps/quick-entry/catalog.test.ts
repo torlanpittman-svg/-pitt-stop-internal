@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CATALOG_ITEMS, TECH_INSTRUCTIONS } from './seed-data'
+import { CATALOG_ITEMS, TECH_INSTRUCTIONS, LEGACY_TERMINOLOGY } from './seed-data'
 import { validateCatalogSeed, resolveStartPriceCents, pickTierPrice, partitionCatalog, startingPriceLabel, isDealerPackage } from './catalog'
 
 const bySlug = (s: string) => CATALOG_ITEMS.find((i) => i.slug === s)!
@@ -92,5 +92,25 @@ describe('owner decisions are encoded', () => {
   it('aliases exist but are not yet AI-approved (owner approves later)', () => {
     // seed-data does not pre-approve aliases for AI
     expect(CATALOG_ITEMS.every((i) => !(i as { approvedForAi?: boolean }).approvedForAi)).toBe(true)
+  })
+})
+
+describe('legacy C/P terminology handling', () => {
+  it('C/P (Compound & Polish) terms are flagged legacy, kept only as aliases', () => {
+    expect(LEGACY_TERMINOLOGY).toEqual(expect.arrayContaining(['C/P Complete Detail', 'Compound/Polish', 'Compound/Sealant']))
+    // and each legacy term actually appears as an alias somewhere in the catalog
+    const allAliases = CATALOG_ITEMS.flatMap((i) => i.aliases ?? [])
+    for (const t of LEGACY_TERMINOLOGY) expect(allAliases).toContain(t)
+  })
+  it('no C/P terminology is attached to Interior Detail', () => {
+    const interior = CATALOG_ITEMS.find((i) => i.slug === 'interior_detail')!
+    expect((interior.aliases ?? []).some((a) => /c\/p/i.test(a))).toBe(false)
+  })
+  it('interior detail and complete detail are distinct services (C/P Detail is not Interior)', () => {
+    expect(CATALOG_ITEMS.find((i) => i.slug === 'interior_detail')).toBeDefined()
+    expect(CATALOG_ITEMS.find((i) => i.slug === 'complete_detail')).toBeDefined()
+    // legacy C/P Complete Detail maps to complete_detail, never interior_detail
+    const cpHost = CATALOG_ITEMS.find((i) => (i.aliases ?? []).includes('C/P Complete Detail'))!
+    expect(cpHost.slug).toBe('complete_detail')
   })
 })

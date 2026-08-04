@@ -10,6 +10,13 @@
  *  - Aliases are seeded but NOT approved_for_ai (owner approves later).
  */
 
+/**
+ * Legacy "C/P" (Compound & Polish) terminology — no longer marketed. Kept ONLY
+ * as aliases for AI learning; tagged source='legacy_terminology' and never
+ * approved_for_ai, so they can never override the current catalog or pricing.
+ */
+export const LEGACY_TERMINOLOGY: string[] = ['C/P Complete Detail', 'Compound/Polish', 'Compound/Sealant']
+
 export interface SeedTier { size: string; condition: string; startPriceCents: number; sortOrder: number }
 export interface SeedItem {
   slug: string; name: string; kind: 'package' | 'addon' | 'placeholder'

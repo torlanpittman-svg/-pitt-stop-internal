@@ -58,9 +58,13 @@ function ServiceCard({ f }: { f: FullCatalogItem }) {
         <div className="mt-3">
           <p className="text-gray-500 text-[11px] uppercase tracking-widest">Historical aliases</p>
           <div className="flex flex-wrap gap-1.5 mt-1">
-            {aliases.map((a) => <span key={a.id} className="text-[11px] text-gray-300 bg-gray-800 rounded px-1.5 py-0.5">{a.alias}</span>)}
+            {aliases.map((a) => (
+              <span key={a.id} className={`text-[11px] rounded px-1.5 py-0.5 ${a.source === 'legacy_terminology' ? 'text-amber-300/80 bg-amber-900/30' : 'text-gray-300 bg-gray-800'}`}>
+                {a.alias}{a.source === 'legacy_terminology' ? ' · legacy' : ''}
+              </span>
+            ))}
           </div>
-          <p className="text-amber-400/80 text-[11px] mt-1">AI use: not approved yet</p>
+          <p className="text-amber-400/80 text-[11px] mt-1">AI use: not approved yet · aliases never override current catalog/pricing</p>
         </div>
       )}
 
