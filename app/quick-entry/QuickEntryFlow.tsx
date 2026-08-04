@@ -34,6 +34,7 @@ export default function QuickEntryFlow() {
   const [veh, setVeh] = useState({ vin: '', year: '', make: '', model: '', color: '' })
   const [vinBusy, setVinBusy] = useState(false)
   const [vinMsg, setVinMsg] = useState<string | null>(null)
+  const [vinStatus, setVinStatus] = useState<'idle' | 'reading' | 'ok' | 'error'>('idle')
 
   const [lines, setLines] = useState<JobLine[]>([])
   const [tech, setTech] = useState<Set<string>>(new Set())
@@ -47,24 +48,30 @@ export default function QuickEntryFlow() {
   }, [])
 
   // ── VIN scan (photo or typed) — reuses the estimator VIN decode ────────────
+  // Auto-runs the moment a VIN photo is selected (Take or Upload) — no extra tap.
   const decodeVinPhoto = useCallback(async (file: File) => {
-    setVinBusy(true); setVinMsg('Reading VIN…')
+    setVinBusy(true); setVinStatus('reading'); setVinMsg('Reading VIN…')
     try {
       const fd = new FormData(); fd.append('vinImage', file, file.name)
-      const d = await (await fetch('/api/estimator/vin', { method: 'POST', body: fd })).json()
-      if (d.vin) { setVeh((v) => ({ ...v, vin: d.vin, year: d.year ?? v.year, make: d.make ?? v.make, model: d.model ?? v.model })); setVinMsg('VIN read ✓') }
-      else setVinMsg(d.error || 'Could not read VIN — type it below')
-    } catch { setVinMsg('Network error — type the VIN below') } finally { setVinBusy(false) }
+      const res = await fetch('/api/estimator/vin', { method: 'POST', body: fd })
+      const d = await res.json()
+      if (res.ok && d.vin) {
+        setVeh((v) => ({ ...v, vin: d.vin, year: d.year ?? v.year, make: d.make ?? v.make, model: d.model ?? v.model }))
+        setVinStatus('ok'); setVinMsg(`VIN read ✓ ${[d.year, d.make, d.model].filter(Boolean).join(' ')}`.trim())
+      } else {
+        setVinStatus('error'); setVinMsg(d.error || 'Could not read the VIN. Take/upload a clearer photo, or type it below.')
+      }
+    } catch { setVinStatus('error'); setVinMsg('Network error — type the VIN below.') } finally { setVinBusy(false) }
   }, [])
   const decodeVinText = useCallback(async () => {
     const vin = veh.vin.trim().toUpperCase()
-    if (vin.length !== 17) { setVinMsg('VIN must be 17 characters'); return }
-    setVinBusy(true); setVinMsg('Decoding…')
+    if (vin.length !== 17) { setVinStatus('error'); setVinMsg('VIN must be 17 characters'); return }
+    setVinBusy(true); setVinStatus('reading'); setVinMsg('Decoding…')
     try {
       const d = await (await fetch('/api/estimator/vin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vin }) })).json()
-      if (d.vin || d.make) { setVeh((v) => ({ ...v, year: d.year ?? v.year, make: d.make ?? v.make, model: d.model ?? v.model })); setVinMsg('Decoded ✓') }
-      else setVinMsg(d.error || 'Could not decode — enter vehicle manually')
-    } catch { setVinMsg('Network error') } finally { setVinBusy(false) }
+      if (d.vin || d.make) { setVeh((v) => ({ ...v, year: d.year ?? v.year, make: d.make ?? v.make, model: d.model ?? v.model })); setVinStatus('ok'); setVinMsg(`Decoded ✓ ${[d.year, d.make, d.model].filter(Boolean).join(' ')}`.trim()) }
+      else { setVinStatus('error'); setVinMsg(d.error || 'Could not decode — enter vehicle manually') }
+    } catch { setVinStatus('error'); setVinMsg('Network error') } finally { setVinBusy(false) }
   }, [veh.vin])
 
   // ── Service selection ───────────────────────────────────────────────────────
@@ -132,13 +139,29 @@ export default function QuickEntryFlow() {
           </div>
           <div>
             <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Vehicle</p>
-            <PhotoInput onCapture={(f) => decodeVinPhoto(f)} continueLabel="Scan VIN" busy={vinBusy} />
+            <p className="text-gray-500 text-xs mb-2">Take or upload a VIN photo — it reads automatically. Or type the VIN / enter the vehicle below.</p>
+            {/* immediate: OCR runs the moment a photo is chosen — no separate "Scan VIN" tap */}
+            <PhotoInput immediate onCapture={(f) => decodeVinPhoto(f)} busy={vinBusy} />
+
+            {/* prominent VIN status */}
+            {vinBusy && (
+              <div className="mt-2 flex items-center gap-2 rounded-xl bg-blue-950/40 border border-blue-800/50 px-3 py-2">
+                <span className="w-4 h-4 border-2 border-blue-300 border-t-transparent rounded-full animate-spin" />
+                <span className="text-blue-200 text-sm">{vinMsg ?? 'Reading VIN…'}</span>
+              </div>
+            )}
+            {!vinBusy && vinStatus === 'ok' && (
+              <div className="mt-2 rounded-xl bg-green-950/40 border border-green-800/50 px-3 py-2 text-green-300 text-sm">{vinMsg}</div>
+            )}
+            {!vinBusy && vinStatus === 'error' && (
+              <div className="mt-2 rounded-xl bg-red-950/40 border border-red-800/50 px-3 py-2 text-red-300 text-sm">{vinMsg}</div>
+            )}
+
             <div className="flex gap-2 mt-2">
               <input className={`${input} font-mono tracking-widest`} placeholder="VIN (17)" autoCapitalize="characters" autoCorrect="off"
                 value={veh.vin} onChange={(e) => setVeh({ ...veh, vin: e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '').slice(0, 17) })} />
               <button onClick={decodeVinText} disabled={vinBusy} className="px-4 rounded-xl bg-gray-800 border border-gray-700 text-sm font-semibold disabled:opacity-50">Decode</button>
             </div>
-            {vinMsg && <p className="text-gray-400 text-xs mt-1">{vinMsg}</p>}
             <div className="grid grid-cols-2 gap-2 mt-2">
               <input className={input} placeholder="Year" inputMode="numeric" value={veh.year} onChange={(e) => setVeh({ ...veh, year: e.target.value })} />
               <input className={input} placeholder="Make" value={veh.make} onChange={(e) => setVeh({ ...veh, make: e.target.value })} />
