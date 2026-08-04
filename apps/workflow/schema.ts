@@ -62,6 +62,9 @@ export const serviceOrders = pgTable(
     approvedPriceCents: integer('approved_price_cents'),
 
     notes:       text('notes'),
+    // Selected service labels for the Work Board card (Quick Entry: standard package
+    // names + custom "Other" text). Display-only; null for legacy / non-Quick-Entry orders.
+    services:    jsonb('services').$type<string[]>(),
     checkedInBy: varchar('checked_in_by', { length: 200 }),
 
     arrivedAt:   timestamp('arrived_at',   { withTimezone: true }),

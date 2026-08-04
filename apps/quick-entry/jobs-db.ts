@@ -6,6 +6,7 @@
 import { getDb } from '@/platform/db'
 import { quickEntryJobs, quickEntryJobLines } from './schema'
 import { getFullCatalog, listTechnicianInstructions, type FullCatalogItem, type TechRow } from './db'
+import { serviceLabels } from './job-lines'
 import { findOrCreateVehicle, createServiceOrder } from '@/apps/workflow/db'
 
 export interface QuickEntryCatalog { packages: FullCatalogItem[]; addons: FullCatalogItem[]; tech: TechRow[] }
@@ -40,11 +41,14 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
   const vehicle = await findOrCreateVehicle({ vin: v.vin ?? null, year: v.year ?? null, make: v.make ?? null, model: v.model ?? null, color: v.color ?? null })
 
   const vehicleLabel = [v.year, v.make, v.model].filter(Boolean).join(' ') || v.vin || 'vehicle'
-  const services = input.lines.map((l) => l.name).join(', ')
+  // Selected service labels (standard package names + custom "Other" text), for the
+  // Work Board card. Non-empty names only; no price / catalog metadata.
+  const labels = serviceLabels(input.lines)
+  const services = labels.join(', ')
   const notes = `Quick Entry · ${input.customerName} · ${vehicleLabel}${services ? ` · ${services}` : ''}`.slice(0, 500)
   const order = await createServiceOrder({
     vehicleId: vehicle.id, source: 'quick_entry', serviceType: 'retail',
-    checkedInBy: input.createdBy ?? 'quick_entry', notes,
+    checkedInBy: input.createdBy ?? 'quick_entry', notes, services: labels,
   })
 
   const db = getDb()

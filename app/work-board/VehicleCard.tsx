@@ -77,6 +77,19 @@ export default function VehicleCard({
         </span>
       </div>
 
+      {/* Selected services (Quick Entry). Compact chips; wraps on phone. No prices. */}
+      <div className="mt-2.5 flex flex-wrap gap-1.5">
+        {order.services && order.services.length > 0 ? (
+          order.services.map((s, i) => (
+            <span key={i} className="max-w-full truncate text-xs bg-gray-800 text-gray-300 px-2 py-0.5 rounded-md">
+              {s}
+            </span>
+          ))
+        ) : (
+          <span className="text-xs text-gray-600 italic">No services listed.</span>
+        )}
+      </div>
+
       <div className="mt-3 flex items-center gap-3 flex-wrap">
         {focusLabel && (
           <span className="text-xs bg-gray-800 text-gray-400 px-2.5 py-1 rounded-full">

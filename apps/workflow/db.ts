@@ -141,6 +141,8 @@ export async function createServiceOrder(data: {
   serviceFocus?: string
   checkedInBy?: string
   notes?:       string
+  /** Selected service labels for the Work Board card (Quick Entry). Omitted → null. */
+  services?:    string[]
 }): Promise<ServiceOrderRow> {
   const db = getDb()
   const orderNumber = await nextOrderNumber()
@@ -156,6 +158,7 @@ export async function createServiceOrder(data: {
       serviceFocus: data.serviceFocus ?? null,
       checkedInBy: data.checkedInBy ?? null,
       notes:       data.notes        ?? null,
+      services:    data.services && data.services.length > 0 ? data.services : null,
       status:      'arrived',
       arrivedAt:   new Date(),
     })

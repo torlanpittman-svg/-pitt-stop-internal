@@ -19,3 +19,9 @@ export function tierLabel(size?: string | null, condition?: string | null): stri
   const c = condition ?? ''
   return [s, c].filter(Boolean).join(' · ')
 }
+
+/** Selected service labels for the Work Board card: standard package names plus
+ *  the custom "Other" text. Trims and drops blanks (e.g. an empty Other line). */
+export function serviceLabels(lines: Pick<JobLine, 'name'>[]): string[] {
+  return lines.map((l) => l.name.trim()).filter(Boolean)
+}
