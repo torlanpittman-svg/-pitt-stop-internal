@@ -191,10 +191,11 @@ export default function QuickEntryFlow() {
           <div>
             <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Vehicle — VIN Photo</p>
 
-            {/* Two entry buttons, one OCR pipeline. Both run OCR automatically on selection. */}
-            <div className="grid grid-cols-2 gap-2">
-              <PhotoInput immediate cameraOnly onCapture={(f) => onVinPhoto(f, 'vin_camera')} busy={vinBusy} />
-              <PhotoInput immediate uploadOnly uploadLabel="Upload VIN Photo" onCapture={(f) => onVinPhoto(f, 'vin_upload')} busy={vinBusy} />
+            {/* Primary = take a photo (normal workflow). Secondary link = upload (fallback).
+                Same OCR pipeline; both auto-run OCR on selection. */}
+            <PhotoInput immediate cameraOnly cameraLabel="📷 Take Photo of VIN" onCapture={(f) => onVinPhoto(f, 'vin_camera')} busy={vinBusy} />
+            <div className="mt-2">
+              <PhotoInput immediate uploadOnly asLink uploadLabel="Upload a photo instead" onCapture={(f) => onVinPhoto(f, 'vin_upload')} busy={vinBusy} />
             </div>
 
             {/* Original photo preview — stays visible for review/correction */}

@@ -48,6 +48,10 @@ interface PhotoInputProps {
   uploadOnly?: boolean
   /** Camera-only: just the Take Photo button (no library upload option). */
   cameraOnly?: boolean
+  /** Label for the camera button in default / camera-only mode. */
+  cameraLabel?: string
+  /** Upload-only styled as a small centered text link (secondary/fallback) instead of a button. */
+  asLink?: boolean
   /** Two-button entry, but deliver onCapture IMMEDIATELY on selection (no
    *  preview/continue step) — e.g. VIN scan that auto-runs OCR after Take/Upload. */
   immediate?: boolean
@@ -78,7 +82,8 @@ async function normalizeImage(file: File, maxDimension: number, quality: number)
 export default function PhotoInput({
   onCapture, onRemove, continueLabel = 'Use Photo', busy = false, className = '',
   normalize = true, maxDimension = 1600, quality = 0.85,
-  renderCamera, live = false, uploadOnly = false, cameraOnly = false, immediate = false, uploadLabel = 'Upload existing photo instead',
+  renderCamera, live = false, uploadOnly = false, cameraOnly = false, cameraLabel = '📷 Take Photo', asLink = false,
+  immediate = false, uploadLabel = 'Upload existing photo instead',
 }: PhotoInputProps) {
   const cameraRef = useRef<HTMLInputElement>(null)
   const libraryRef = useRef<HTMLInputElement>(null)
@@ -129,9 +134,25 @@ export default function PhotoInput({
       hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; void onFile(f) }} />
   )
 
-  // ── Upload-only mode: just the shared upload affordance ────────────────────
+  // ── Upload-only mode: shared upload affordance (button, or small text link) ─
   if (uploadOnly) {
     const locked = busy || working
+    if (asLink) {
+      // Secondary/fallback affordance: a small, centered text link.
+      return (
+        <div className={`w-full text-center ${className}`}>
+          <span className={`relative inline-block ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
+            <span className="text-gray-400 text-sm underline underline-offset-2 pointer-events-none select-none">
+              {working ? 'Preparing photo…' : uploadLabel}
+            </span>
+            <input ref={libraryRef} type="file" accept="image/*" disabled={locked}
+              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; void uploadDeliver(f) }}
+              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+          </span>
+          {error && <p className="text-amber-400 text-sm text-center mt-2">{error}</p>}
+        </div>
+      )
+    }
     return (
       <div className={`w-full ${className}`}>
         <div className={`relative w-full ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
@@ -178,7 +199,7 @@ export default function PhotoInput({
         {hiddenInput(libraryRef, false, pickForPreview)}
         {error && <p className="text-amber-400 text-sm text-center">{error}</p>}
         <button type="button" disabled={busy || working} onClick={() => cameraRef.current?.click()}
-          className="w-full h-16 rounded-2xl bg-white text-black text-lg font-bold disabled:opacity-50">📷 Take Photo</button>
+          className="w-full h-16 rounded-2xl bg-white text-black text-lg font-bold disabled:opacity-50">{cameraLabel}</button>
         {!cameraOnly && (
           <button type="button" disabled={busy || working} onClick={() => libraryRef.current?.click()}
             className="w-full h-16 rounded-2xl border-2 border-gray-700 text-white text-lg font-bold disabled:opacity-50">🖼 Upload Photo</button>
