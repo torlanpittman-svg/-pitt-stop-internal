@@ -22,6 +22,9 @@ const GROUP_LABEL: Record<string, string> = {
   intake_condition_flags: 'Condition flags', pre_work_checks: 'Pre-work checks',
   process_instructions: 'Process', customer_communication: 'Customer comms', free_text: 'Other',
 }
+// Technician Instructions are hidden from Quick Entry for now. Backend (table, repo,
+// work-order techInstructions field) is intact — flip this to true to re-enable the UI.
+const SHOW_TECH_INSTRUCTIONS = false
 let keySeq = 0
 
 export default function QuickEntryFlow() {
@@ -110,7 +113,7 @@ export default function QuickEntryFlow() {
           lines: lines
             .filter((l) => l.kind !== 'custom' || l.name.trim())  // drop empty "Other" lines
             .map((l) => ({ catalogId: l.catalogId, kind: l.kind, name: l.name.trim(), size: l.size ?? null, condition: l.condition ?? null, priceCents: l.priceCents })),
-          techInstructions: [...tech], createdBy: 'quick_entry',
+          techInstructions: SHOW_TECH_INSTRUCTIONS ? [...tech] : [], createdBy: 'quick_entry',
         }),
       })
       const d = await res.json()
@@ -232,20 +235,22 @@ export default function QuickEntryFlow() {
               </div>
             )}
 
-            <div>
-              <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Technician Instructions</p>
-              {[...new Set(catalog.tech.map((t) => t.group))].map((g) => (
-                <div key={g} className="mb-2">
-                  <p className="text-gray-600 text-[11px] mb-1">{GROUP_LABEL[g] ?? g}</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {catalog.tech.filter((t) => t.group === g).map((t) => (
-                      <button key={t.slug} onClick={() => toggleTech(t.label)}
-                        className={`text-[11px] rounded-full px-2.5 py-1 border ${tech.has(t.label) ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-300'}`}>{t.label}</button>
-                    ))}
+            {SHOW_TECH_INSTRUCTIONS && (
+              <div>
+                <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Technician Instructions</p>
+                {[...new Set(catalog.tech.map((t) => t.group))].map((g) => (
+                  <div key={g} className="mb-2">
+                    <p className="text-gray-600 text-[11px] mb-1">{GROUP_LABEL[g] ?? g}</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {catalog.tech.filter((t) => t.group === g).map((t) => (
+                        <button key={t.slug} onClick={() => toggleTech(t.label)}
+                          className={`text-[11px] rounded-full px-2.5 py-1 border ${tech.has(t.label) ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-300'}`}>{t.label}</button>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </>}
 
           <div className="fixed bottom-0 inset-x-0 p-4 bg-gray-950/95 border-t border-gray-900 flex items-center gap-3">
@@ -279,7 +284,7 @@ export default function QuickEntryFlow() {
               <span className="text-white font-bold">{fmt(total)}</span>
             </div>
           </div>
-          {tech.size > 0 && (
+          {SHOW_TECH_INSTRUCTIONS && tech.size > 0 && (
             <div className="rounded-2xl bg-gray-900 border border-gray-800 p-4">
               <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">Technician instructions</p>
               <div className="flex flex-wrap gap-1.5">{[...tech].map((t) => <span key={t} className="text-[11px] text-gray-300 bg-gray-800 rounded px-2 py-0.5">{t}</span>)}</div>
