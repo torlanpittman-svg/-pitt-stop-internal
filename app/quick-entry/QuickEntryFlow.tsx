@@ -38,7 +38,7 @@ export default function QuickEntryFlow() {
   const [veh, setVeh] = useState({ vin: '', year: '', make: '', model: '', color: '' })
   const [vinBusy, setVinBusy] = useState(false)
   const [vinMsg, setVinMsg] = useState<string | null>(null)
-  const [vinStatus, setVinStatus] = useState<'idle' | 'reading' | 'ok' | 'error'>('idle')
+  const [vinStatus, setVinStatus] = useState<'idle' | 'reading' | 'ok' | 'error' | 'review'>('idle')
 
   const [lines, setLines] = useState<JobLine[]>([])
   const [tech, setTech] = useState<Set<string>>(new Set())
@@ -58,9 +58,13 @@ export default function QuickEntryFlow() {
       const fd = new FormData(); fd.append('vinImage', file, file.name)
       const res = await fetch('/api/estimator/vin', { method: 'POST', body: fd })
       const d = await res.json()
-      if (res.ok && d.vin && (d.make || d.year)) {
+      if (res.ok && d.valid && d.vin && (d.make || d.year)) {
         setVeh((v) => ({ ...v, vin: d.vin, year: d.year ?? v.year, make: d.make ?? v.make, model: d.model ?? v.model }))
         setVinStatus('ok'); setVinMsg(`VIN read ✓ ${[d.year, d.make, d.model].filter(Boolean).join(' ')}`.trim())
+      } else if (res.ok && d.vin && d.valid === false) {
+        // Misread candidate — preserve it in the editable field so it can be corrected.
+        setVeh((v) => ({ ...v, vin: d.vin }))
+        setVinStatus('review'); setVinMsg(d.message || 'We may have misread one or more characters. Review and correct the VIN.')
       } else if (res.ok && d.vin) {
         setVeh((v) => ({ ...v, vin: d.vin }))  // VIN read but vehicle decode failed — keep Decode/Retry
         setVinStatus('error'); setVinMsg('VIN read but vehicle not decoded — tap Decode to retry.')
@@ -75,8 +79,15 @@ export default function QuickEntryFlow() {
     setVinBusy(true); setVinStatus('reading'); setVinMsg('Decoding…')
     try {
       const d = await (await fetch('/api/estimator/vin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vin }) })).json()
-      if (d.vin || d.make) { setVeh((v) => ({ ...v, year: d.year ?? v.year, make: d.make ?? v.make, model: d.model ?? v.model })); setVinStatus('ok'); setVinMsg(`Decoded ✓ ${[d.year, d.make, d.model].filter(Boolean).join(' ')}`.trim()) }
-      else { setVinStatus('error'); setVinMsg(d.error || 'Could not decode — enter vehicle manually') }
+      if (d.valid && (d.make || d.year)) {
+        setVeh((v) => ({ ...v, vin: d.vin ?? v.vin, year: d.year ?? v.year, make: d.make ?? v.make, model: d.model ?? v.model }))
+        setVinStatus('ok'); setVinMsg(`Decoded ✓ ${[d.year, d.make, d.model].filter(Boolean).join(' ')}`.trim())
+      } else if (d.valid === false && d.vin) {
+        setVeh((v) => ({ ...v, vin: d.vin }))  // keep the corrected-but-still-invalid VIN editable
+        setVinStatus('review'); setVinMsg(d.message || 'We may have misread one or more characters. Review and correct the VIN.')
+      } else {
+        setVinStatus('error'); setVinMsg(d.error || 'Could not decode — enter vehicle manually below.')
+      }
     } catch { setVinStatus('error'); setVinMsg('Network error') } finally { setVinBusy(false) }
   }, [veh.vin])
 
@@ -158,13 +169,19 @@ export default function QuickEntryFlow() {
             {!vinBusy && vinStatus === 'error' && (
               <div className="mt-2 rounded-xl bg-red-950/40 border border-red-800/50 px-3 py-2 text-red-300 text-sm">{vinMsg}</div>
             )}
+            {!vinBusy && vinStatus === 'review' && (
+              <div className="mt-2 rounded-xl bg-amber-950/40 border border-amber-700/50 px-3 py-2">
+                <p className="text-amber-300 text-sm font-medium">{vinMsg}</p>
+                <p className="text-amber-400/70 text-xs mt-1">Fix the VIN below and tap Decode, retake/upload the photo, or enter the vehicle manually.</p>
+              </div>
+            )}
 
             <div className="flex gap-2 mt-2">
               <input className={`${input} font-mono tracking-widest`} placeholder="VIN (17)" autoCapitalize="characters" autoCorrect="off"
                 value={veh.vin} onChange={(e) => { setVeh({ ...veh, vin: e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '').slice(0, 17) }); setVinStatus('idle') }} />
               {/* Decode hides once a VIN is successfully decoded; reappears if the VIN is edited or decode failed */}
               {vinStatus !== 'ok' && (
-                <button onClick={decodeVinText} disabled={vinBusy} className="px-4 rounded-xl bg-gray-800 border border-gray-700 text-sm font-semibold disabled:opacity-50">Decode</button>
+                <button onClick={decodeVinText} disabled={vinBusy} className="px-4 rounded-xl bg-gray-800 border border-gray-700 text-sm font-semibold disabled:opacity-50">{vinStatus === 'review' ? 'Decode Again' : 'Decode'}</button>
               )}
             </div>
             <div className="grid grid-cols-3 gap-2 mt-2">

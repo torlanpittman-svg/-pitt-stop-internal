@@ -74,10 +74,22 @@ export async function POST(request: Request) {
     rawVIN = body.vin
   }
 
+  const candidate = normalizeVIN(rawVIN)
   const { valid, error } = validateVIN(rawVIN)
-  if (!valid) return NextResponse.json({ error }, { status: 422 })
+  if (!valid) {
+    // Never discard the candidate VIN solely because validation (e.g. check digit)
+    // failed — return it so the employee can review/correct it in an editable field.
+    // `error` (technical detail) is kept for logs/audit only; the client shows `message`.
+    logger.info(LOG, 'vin.invalid', { vin: candidate, reason: error })
+    return NextResponse.json({
+      vin:     candidate,
+      valid:   false,
+      year:    null, make: null, model: null, bodyClass: null,
+      message: 'We may have misread one or more characters. Review and correct the VIN.',
+    }, { status: 200 })
+  }
 
-  const vin = normalizeVIN(rawVIN)
+  const vin = candidate
   logger.info(LOG, 'vin.decode.start', { vin })
 
   try {
@@ -85,6 +97,7 @@ export async function POST(request: Request) {
     logger.info(LOG, 'vin.decode.complete', { vin, year: decoded.year, make: decoded.make, bodyClass: decoded.bodyClass })
     return NextResponse.json({
       vin:       decoded.vin,
+      valid:     true,
       year:      decoded.year,
       make:      decoded.make,
       model:     decoded.model,
