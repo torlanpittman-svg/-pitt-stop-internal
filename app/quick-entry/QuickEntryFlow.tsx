@@ -55,9 +55,12 @@ export default function QuickEntryFlow() {
       const fd = new FormData(); fd.append('vinImage', file, file.name)
       const res = await fetch('/api/estimator/vin', { method: 'POST', body: fd })
       const d = await res.json()
-      if (res.ok && d.vin) {
+      if (res.ok && d.vin && (d.make || d.year)) {
         setVeh((v) => ({ ...v, vin: d.vin, year: d.year ?? v.year, make: d.make ?? v.make, model: d.model ?? v.model }))
         setVinStatus('ok'); setVinMsg(`VIN read ✓ ${[d.year, d.make, d.model].filter(Boolean).join(' ')}`.trim())
+      } else if (res.ok && d.vin) {
+        setVeh((v) => ({ ...v, vin: d.vin }))  // VIN read but vehicle decode failed — keep Decode/Retry
+        setVinStatus('error'); setVinMsg('VIN read but vehicle not decoded — tap Decode to retry.')
       } else {
         setVinStatus('error'); setVinMsg(d.error || 'Could not read the VIN. Take/upload a clearer photo, or type it below.')
       }
@@ -84,11 +87,12 @@ export default function QuickEntryFlow() {
     addLine({ catalogId: p.id, kind: 'package', name: p.name, size: t.size, condition: t.condition, priceCents: t.startPriceCents })
     setPicker(null)
   }
-  const tapAddon = (a: Pkg) => addLine({ catalogId: a.id, kind: 'addon', name: a.name, priceCents: a.defaultPriceCents ?? 0 })
+  const addOther = () => addLine({ catalogId: null, kind: 'custom', name: '', priceCents: 0 })
   const setPrice = (key: string, dollars: string) => {
     const cents = Math.round(parseFloat(dollars || '0') * 100)
     setLines((xs) => xs.map((l) => (l.key === key ? { ...l, priceCents: Number.isFinite(cents) ? cents : 0 } : l)))
   }
+  const setLineName = (key: string, name: string) => setLines((xs) => xs.map((l) => (l.key === key ? { ...l, name } : l)))
   const removeLine = (key: string) => setLines((xs) => xs.filter((l) => l.key !== key))
   const toggleTech = (label: string) => setTech((s) => { const n = new Set(s); n.has(label) ? n.delete(label) : n.add(label); return n })
 
@@ -103,7 +107,9 @@ export default function QuickEntryFlow() {
         body: JSON.stringify({
           customerName: cust.name.trim(), customerPhone: cust.phone || null, customerEmail: cust.email || null,
           vehicle: { vin: veh.vin || null, year: veh.year || null, make: veh.make || null, model: veh.model || null, color: veh.color || null },
-          lines: lines.map((l) => ({ catalogId: l.catalogId, kind: l.kind, name: l.name, size: l.size ?? null, condition: l.condition ?? null, priceCents: l.priceCents })),
+          lines: lines
+            .filter((l) => l.kind !== 'custom' || l.name.trim())  // drop empty "Other" lines
+            .map((l) => ({ catalogId: l.catalogId, kind: l.kind, name: l.name.trim(), size: l.size ?? null, condition: l.condition ?? null, priceCents: l.priceCents })),
           techInstructions: [...tech], createdBy: 'quick_entry',
         }),
       })
@@ -159,14 +165,16 @@ export default function QuickEntryFlow() {
 
             <div className="flex gap-2 mt-2">
               <input className={`${input} font-mono tracking-widest`} placeholder="VIN (17)" autoCapitalize="characters" autoCorrect="off"
-                value={veh.vin} onChange={(e) => setVeh({ ...veh, vin: e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '').slice(0, 17) })} />
-              <button onClick={decodeVinText} disabled={vinBusy} className="px-4 rounded-xl bg-gray-800 border border-gray-700 text-sm font-semibold disabled:opacity-50">Decode</button>
+                value={veh.vin} onChange={(e) => { setVeh({ ...veh, vin: e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '').slice(0, 17) }); setVinStatus('idle') }} />
+              {/* Decode hides once a VIN is successfully decoded; reappears if the VIN is edited or decode failed */}
+              {vinStatus !== 'ok' && (
+                <button onClick={decodeVinText} disabled={vinBusy} className="px-4 rounded-xl bg-gray-800 border border-gray-700 text-sm font-semibold disabled:opacity-50">Decode</button>
+              )}
             </div>
-            <div className="grid grid-cols-2 gap-2 mt-2">
+            <div className="grid grid-cols-3 gap-2 mt-2">
               <input className={input} placeholder="Year" inputMode="numeric" value={veh.year} onChange={(e) => setVeh({ ...veh, year: e.target.value })} />
               <input className={input} placeholder="Make" value={veh.make} onChange={(e) => setVeh({ ...veh, make: e.target.value })} />
               <input className={input} placeholder="Model" value={veh.model} onChange={(e) => setVeh({ ...veh, model: e.target.value })} />
-              <input className={input} placeholder="Color" value={veh.color} onChange={(e) => setVeh({ ...veh, color: e.target.value })} />
             </div>
           </div>
           <div className="fixed bottom-0 inset-x-0 p-4 bg-gray-950/95 border-t border-gray-900">
@@ -190,17 +198,11 @@ export default function QuickEntryFlow() {
                     <span className="block text-gray-500 text-xs mt-0.5">{p.tiers.length ? `from ${fmt(Math.min(...p.tiers.map((t) => t.startPriceCents)))}` : fmt(p.defaultPriceCents ?? 0)}</span>
                   </button>
                 ))}
-              </div>
-            </div>
-            <div>
-              <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Add-Ons</p>
-              <div className="grid grid-cols-2 gap-2">
-                {catalog.addons.map((a) => (
-                  <button key={a.id} onClick={() => tapAddon(a)} className="rounded-2xl bg-gray-900 border border-gray-800 px-3 py-3 text-left active:bg-gray-800">
-                    <span className="text-white text-sm font-semibold">{a.name}</span>
-                    <span className="block text-gray-500 text-xs mt-0.5">{fmt(a.defaultPriceCents ?? 0)}</span>
-                  </button>
-                ))}
+                {/* "Other" — free-text custom service; no default price, no catalog mapping */}
+                <button onClick={addOther} className="rounded-2xl bg-gray-900 border border-dashed border-gray-700 px-3 py-3 text-left active:bg-gray-800">
+                  <span className="text-white text-sm font-semibold">＋ Other</span>
+                  <span className="block text-gray-500 text-xs mt-0.5">What are we doing?</span>
+                </button>
               </div>
             </div>
 
@@ -211,7 +213,13 @@ export default function QuickEntryFlow() {
                   {lines.map((l) => (
                     <div key={l.key} className="flex items-center gap-2 px-3 py-2">
                       <div className="flex-1 min-w-0">
-                        <p className="text-white text-sm truncate">{l.name}</p>
+                        {l.kind === 'custom' ? (
+                          // Free-text custom service — supports the keyboard mic (voice dictation)
+                          <input value={l.name} onChange={(e) => setLineName(l.key, e.target.value)} placeholder="What are we doing?" autoFocus
+                            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-sm" />
+                        ) : (
+                          <p className="text-white text-sm truncate">{l.name}</p>
+                        )}
                         {(l.size || l.condition) && <p className="text-gray-500 text-xs">{tierLabel(l.size, l.condition)}</p>}
                       </div>
                       <span className="text-gray-500 text-sm">$</span>
@@ -262,7 +270,7 @@ export default function QuickEntryFlow() {
             {lines.length === 0 && <p className="px-4 py-3 text-gray-500 text-sm">No services selected.</p>}
             {lines.map((l) => (
               <div key={l.key} className="flex items-center justify-between px-4 py-2 text-sm">
-                <span className="text-gray-300">{l.name}{(l.size || l.condition) ? ` (${tierLabel(l.size, l.condition)})` : ''}</span>
+                <span className="text-gray-300">{(l.name.trim() || (l.kind === 'custom' ? 'Custom service' : ''))}{(l.size || l.condition) ? ` (${tierLabel(l.size, l.condition)})` : ''}</span>
                 <span className="text-white">{fmt(l.priceCents)}</span>
               </div>
             ))}
