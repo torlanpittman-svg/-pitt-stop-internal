@@ -8,6 +8,7 @@ import {
   serviceOrderAssignments,
   serviceOrderEvents,
 } from './schema'
+import { partitionServices } from './services'
 
 export type EmployeeRow             = typeof employees.$inferSelect
 export type LocationRow             = typeof locations.$inferSelect
@@ -143,6 +144,8 @@ export async function createServiceOrder(data: {
   notes?:       string
   /** Selected service labels for the Work Board card (Quick Entry). Omitted → null. */
   services?:    string[]
+  /** Card title: retail customer name or dealer name. Omitted → null (→ "Unknown Customer"). */
+  customerName?: string | null
 }): Promise<ServiceOrderRow> {
   const db = getDb()
   const orderNumber = await nextOrderNumber()
@@ -159,6 +162,7 @@ export async function createServiceOrder(data: {
       checkedInBy: data.checkedInBy ?? null,
       notes:       data.notes        ?? null,
       services:    data.services && data.services.length > 0 ? data.services : null,
+      customerName: data.customerName?.trim() || null,
       status:      'arrived',
       arrivedAt:   new Date(),
     })
@@ -414,6 +418,46 @@ export async function stopAssignments(serviceOrderId: string): Promise<void> {
 }
 
 // ── Event Log ─────────────────────────────────────────────────────────────────
+
+/**
+ * Append services to an order's display list (Work Board card). Guards accidental
+ * duplicates: if a requested service already exists and confirmDuplicates is false,
+ * nothing is written and the duplicates are returned for the UI to confirm.
+ * Logs a `service_added` audit event (who + timestamp + work-order id + names).
+ * Display-only — no QuickBooks / AutoLeap writes.
+ */
+export async function addServiceToOrder(
+  orderId: string,
+  requested: string[],
+  opts: { addedBy?: string | null; confirmDuplicates?: boolean } = {},
+): Promise<{ ok: true; order: OrderWithContext } | { ok: false; needsConfirm: true; duplicates: string[] }> {
+  const db = getDb()
+  const [current] = await db.select({ services: serviceOrders.services }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
+  const existing = current?.services ?? []
+
+  const { fresh, duplicates } = partitionServices(existing, requested)
+  if (duplicates.length > 0 && !opts.confirmDuplicates) {
+    return { ok: false, needsConfirm: true, duplicates }
+  }
+  // On explicit confirm, keep duplicates too (same service intentionally repeated);
+  // otherwise just the fresh ones.
+  const toAdd = opts.confirmDuplicates ? [...fresh, ...duplicates] : fresh
+  if (toAdd.length === 0) {
+    const order = await getOrderWithContext(orderId)
+    return { ok: true, order: order! }
+  }
+
+  const nextServices = [...existing, ...toAdd]
+  await db.update(serviceOrders).set({ services: nextServices, updatedAt: new Date() }).where(eq(serviceOrders.id, orderId))
+  await logEvent({
+    serviceOrderId: orderId,
+    eventType:      'service_added',
+    employeeName:   opts.addedBy ?? null,
+    note:           toAdd.join(', '),
+  })
+  const order = await getOrderWithContext(orderId)
+  return { ok: true, order: order! }
+}
 
 async function logEvent(params: {
   serviceOrderId: string

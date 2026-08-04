@@ -65,6 +65,9 @@ export const serviceOrders = pgTable(
     // Selected service labels for the Work Board card (Quick Entry: standard package
     // names + custom "Other" text). Display-only; null for legacy / non-Quick-Entry orders.
     services:    jsonb('services').$type<string[]>(),
+    // Display title for the Work Board card: retail customer name (Quick Entry) or
+    // dealer name (Dealer Check-In). Null → card falls back to "Unknown Customer".
+    customerName: varchar('customer_name', { length: 200 }),
     checkedInBy: varchar('checked_in_by', { length: 200 }),
 
     arrivedAt:   timestamp('arrived_at',   { withTimezone: true }),

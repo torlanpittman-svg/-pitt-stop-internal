@@ -437,6 +437,8 @@ export async function checkInDealerVehicle(input: CheckInInput): Promise<CheckIn
       serviceType: 'dealer_detail',
       checkedInBy: input.approvedBy ?? undefined,
       notes:       `Stock: ${input.stockNumber ?? 'n/a'} | Invoice: ${invoiceLabel} | ${dealership.name}`,
+      customerName: dealership.name,       // Work Board card title = dealer
+      services:    ['Complete Detail'],    // operational default label only (no extra QB line)
     })
     await logScanEvent({ scanId: scan.id, eventType: 'work_board_created', newValue: { serviceOrderId: order.id, orderNumber: order.orderNumber } })
 

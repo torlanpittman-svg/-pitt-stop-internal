@@ -60,6 +60,7 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
   const order = await createServiceOrder({
     vehicleId: vehicle.id, source: 'quick_entry', serviceType: 'retail',
     checkedInBy: input.createdBy ?? 'quick_entry', notes, services: labels,
+    customerName: input.customerName,  // Work Board card title
   })
 
   const db = getDb()

@@ -52,7 +52,8 @@ export default function VehicleCard({
   }, [order.arrivedAt])
 
   const vehicleName = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Unknown Vehicle'
-  const colorHint   = vehicle.color ? ` · ${vehicle.color}` : ''
+  // Card title = retail customer or dealer name; vehicle info goes underneath.
+  const title = order.customerName?.trim() || 'Unknown Customer'
 
   return (
     <Link
@@ -66,10 +67,10 @@ export default function VehicleCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="text-white font-bold text-lg leading-tight truncate">
-            {vehicleName}
+            {title}
           </p>
           <p className="text-gray-500 text-sm mt-0.5 truncate">
-            {order.orderNumber}{colorHint}
+            {vehicleName}
           </p>
         </div>
         <span className={`flex-none text-xs font-semibold px-2.5 py-1 rounded-full ${style.bg} ${style.text}`}>

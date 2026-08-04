@@ -28,7 +28,11 @@ const EVENT_LABELS: Record<string, string> = {
   checked_in:     'Checked in',
   status_changed: 'Status changed',
   assigned:       'Assigned',
+  service_added:  'Service added',
 }
+
+// Simplified common services shown first in the picker (matches Quick Entry).
+const COMMON_SERVICES = ['Interior Detail', 'Exterior Wash', 'Polish', 'Wax', 'Mini Detail']
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -158,6 +162,66 @@ const STATUS_ACTIONS: Record<string, ActionConfig[]> = {
   cancelled: [],
 }
 
+// ── Add-Service Picker ────────────────────────────────────────────────────────
+
+function ServicePicker({ onAdd, onCancel, busy, error }: {
+  onAdd: (services: string[]) => void
+  onCancel: () => void
+  busy: boolean
+  error: string | null
+}) {
+  const [options, setOptions] = useState<string[]>(COMMON_SERVICES)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [otherText, setOtherText] = useState('')
+
+  // Pull the active catalog; keep the common ones first, append any others.
+  useEffect(() => {
+    fetch('/api/quick-entry/catalog').then((r) => r.json()).then((d) => {
+      const names: string[] = (d?.packages ?? []).map((p: { name: string }) => p.name)
+      const merged = [...COMMON_SERVICES, ...names.filter((n) => !COMMON_SERVICES.includes(n))]
+      setOptions(merged)
+    }).catch(() => { /* keep the built-in common list */ })
+  }, [])
+
+  const toggle = (name: string) => setSelected((s) => { const n = new Set(s); n.has(name) ? n.delete(name) : n.add(name); return n })
+  const chosen = [...selected, ...(otherText.trim() ? [otherText.trim()] : [])]
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
+      <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10 max-h-[85vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-white font-bold text-xl">Add a service</h2>
+          <button onClick={onCancel} className="text-gray-500 text-sm">Cancel</button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {options.map((name) => (
+            <button key={name} onClick={() => toggle(name)}
+              className={`relative rounded-2xl border px-3 py-4 text-left text-sm ${selected.has(name) ? 'bg-blue-600/20 border-blue-500 text-white font-semibold' : 'bg-gray-800 border-gray-700 text-gray-200 active:bg-gray-700'}`}>
+              {name}
+              {selected.has(name) && <span className="absolute top-2 right-2 text-blue-400">✓</span>}
+            </button>
+          ))}
+        </div>
+
+        {/* Other — free text (typed or dictated). No price. */}
+        <div className="mt-3">
+          <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">Other</p>
+          <input value={otherText} onChange={(e) => setOtherText(e.target.value)} placeholder="What are we doing?"
+            className="w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+
+        {error && <p className="text-amber-400 text-sm mt-3">{error}</p>}
+
+        <button onClick={() => onAdd(chosen)} disabled={busy || chosen.length === 0}
+          className="mt-5 w-full h-14 rounded-2xl bg-green-600 active:bg-green-700 text-white text-lg font-bold disabled:opacity-40">
+          {busy ? 'Adding…' : `Add ${chosen.length || ''} Service${chosen.length === 1 ? '' : 's'}`.replace('  ', ' ')}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithContext }) {
@@ -167,12 +231,40 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
   const [pending,     setPending]     = useState<string | null>(null)
   const [picking,     setPicking]     = useState<ActionConfig | null>(null)
   const [error,       setError]       = useState<string | null>(null)
+  const [addingService, setAddingService] = useState(false)  // picker open
+  const [addBusy,     setAddBusy]     = useState(false)
+  const [addError,    setAddError]    = useState<string | null>(null)
 
   const { vehicle } = order
   const statusCfg   = STATUS_CONFIG[order.status] ?? { label: order.status, color: 'text-gray-400' }
   const actions     = STATUS_ACTIONS[order.status] ?? []
   const activeTech  = order.activeTechs[0]?.employeeName ?? null
   const vehicleName = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Unknown Vehicle'
+  const title       = order.customerName?.trim() || vehicleName || 'Unknown Customer'
+  const services    = order.services ?? []
+
+  // Add services to this order (display-only). Attributes to the active tech when one
+  // is working, else 'staff'. Confirms before adding an already-present service.
+  const addServices = useCallback(async (names: string[], confirmDuplicates = false) => {
+    if (names.length === 0) return
+    setAddBusy(true); setAddError(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${order.id}/services`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ services: names, addedBy: activeTech ?? 'staff', confirmDuplicates }),
+      })
+      const data = await res.json()
+      if (res.status === 409 && data.needsConfirm) {
+        if (confirm(`Already added: ${data.duplicates.join(', ')}. Add again anyway?`)) {
+          await addServices(names, true)
+        }
+        return
+      }
+      if (!res.ok || !data.ok) { setAddError(data.error ?? 'Could not add the service.'); return }
+      setOrder(data.order)          // update the detail page immediately
+      setAddingService(false)
+    } catch { setAddError('Network error — try again.') } finally { setAddBusy(false) }
+  }, [order.id, activeTech])
 
   const reload = useCallback(async () => {
     const res = await fetch(`/api/workflow/orders/${order.id}`, { cache: 'no-store' })
@@ -235,11 +327,12 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
 
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h1 className="text-white font-bold text-2xl leading-tight">{vehicleName}</h1>
-            <p className="text-gray-500 text-sm mt-0.5">
-              {order.orderNumber}
-              {vehicle.color ? ` · ${vehicle.color}` : ''}
+            <h1 className="text-white font-bold text-2xl leading-tight truncate">{title}</h1>
+            <p className="text-gray-400 text-base mt-0.5">
+              {vehicleName}{vehicle.color ? ` · ${vehicle.color}` : ''}
             </p>
+            {/* SO number kept for reference/debugging (not shown on the Work Board card) */}
+            <p className="text-gray-700 text-xs mt-1">{order.orderNumber}</p>
           </div>
           <span className={`flex-none font-bold text-base mt-1 ${statusCfg.color}`}>
             {statusCfg.label}
@@ -262,6 +355,24 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
             </span>
           )}
         </div>
+      </div>
+
+      {/* Services (operational). Chips + Add Service. */}
+      <div className="px-6 mb-6">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Services</h2>
+          <button onClick={() => { setAddError(null); setAddingService(true) }}
+            className="text-blue-400 text-sm font-semibold active:opacity-70">+ Add Service</button>
+        </div>
+        {services.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            {services.map((s, i) => (
+              <span key={i} className="max-w-full truncate text-sm bg-gray-800 text-gray-200 px-2.5 py-1 rounded-lg">{s}</span>
+            ))}
+          </div>
+        ) : (
+          <p className="text-gray-600 text-sm italic">No services listed.</p>
+        )}
       </div>
 
       {/* Error banner */}
@@ -309,9 +420,10 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
                   <p className="text-gray-300 text-sm">
                     {event.newStatus
                       ? `${event.employeeName ? event.employeeName + ' — ' : ''}${STATUS_CONFIG[event.newStatus]?.label ?? event.newStatus}`
-                      : (EVENT_LABELS[event.eventType] ?? event.eventType)
+                      : event.eventType === 'service_added'
+                        ? `Service added: ${event.note ?? ''}${event.employeeName ? ` · ${event.employeeName}` : ''}`
+                        : `${EVENT_LABELS[event.eventType] ?? event.eventType}${event.employeeName ? ` · ${event.employeeName}` : ''}`
                     }
-                    {event.employeeName && !event.newStatus ? ` · ${event.employeeName}` : ''}
                   </p>
                   <p className="text-gray-600 text-xs"><EventTime date={event.createdAt} /></p>
                 </div>
@@ -326,6 +438,16 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
         <EmployeePicker
           onSelect={handleEmployeePick}
           onCancel={() => setPicking(null)}
+        />
+      )}
+
+      {/* Add-service picker */}
+      {addingService && (
+        <ServicePicker
+          onAdd={(names) => addServices(names)}
+          onCancel={() => setAddingService(false)}
+          busy={addBusy}
+          error={addError}
         />
       )}
 
