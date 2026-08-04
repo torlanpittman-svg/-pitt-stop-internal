@@ -26,7 +26,6 @@ const GROUP_LABEL: Record<string, string> = {
 // Technician Instructions are hidden from Quick Entry for now. Backend (table, repo,
 // work-order techInstructions field) is intact — flip this to true to re-enable the UI.
 const SHOW_TECH_INSTRUCTIONS = false
-const US_STATE_CODES = ['AL','AK','AZ','AR','CA','CO','CT','DE','DC','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY']
 let keySeq = 0
 
 export default function QuickEntryFlow() {
@@ -35,22 +34,20 @@ export default function QuickEntryFlow() {
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const [cust, setCust] = useState({ name: '', phone: '', email: '' })
+  const [cust, setCust] = useState({ first: '', last: '', phone: '', email: '' })
   const [veh, setVeh] = useState({ vin: '', year: '', make: '', model: '', color: '' })
   const [vinBusy, setVinBusy] = useState(false)
   const [vinMsg, setVinMsg] = useState<string | null>(null)
   const [vinStatus, setVinStatus] = useState<'idle' | 'reading' | 'ok' | 'error' | 'review'>('idle')
+  const [vinPhotoUrl, setVinPhotoUrl] = useState<string | null>(null)  // original VIN photo preview
 
-  // Vehicle identification method + plate lookup + audit
-  type IdMethod = 'plate_lookup' | 'vin_camera' | 'vin_upload' | 'vin_manual' | 'vehicle_manual'
-  const [idMethod, setIdMethod] = useState<IdMethod>('vin_camera')
-  const [plate, setPlate] = useState('')
-  const [plateState, setPlateState] = useState('TX')
-  const [plateBusy, setPlateBusy] = useState(false)
-  const [plateMsg, setPlateMsg] = useState<string | null>(null)
-  const [plateStatus, setPlateStatus] = useState<'idle' | 'working' | 'ok' | 'error'>('idle')
-  const audit = useRef({ rawOcrVin: '' as string, lookupProvider: '' as string, lookupStatus: '' as string, lookupRequestId: '' as string, autoIdentified: false, vehicleEdited: false })
+  // Identification is VIN-photo only (camera or upload). Plate lookup / manual entry are
+  // removed from the employee UI (provider code + DB kept, feature-flag disabled).
+  type IdMethod = 'vin_camera' | 'vin_upload'
+  const idMethodRef = useRef<IdMethod>('vin_camera')
+  const audit = useRef({ rawOcrVin: '' as string, autoIdentified: false, vehicleEdited: false })
   const markVehicleEdited = () => { if (audit.current.autoIdentified) audit.current.vehicleEdited = true }
+  const decodeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [lines, setLines] = useState<JobLine[]>([])
   const [tech, setTech] = useState<Set<string>>(new Set())
@@ -58,13 +55,14 @@ export default function QuickEntryFlow() {
 
   useEffect(() => {
     fetch('/api/quick-entry/catalog').then((r) => r.json()).then((d) => {
-      if (d.ok) { setCatalog(d); if (d.plateLookupEnabled) setIdMethod('plate_lookup') }
-      else setError(d.error || 'Could not load services')
+      if (d.ok) setCatalog(d); else setError(d.error || 'Could not load services')
     }).catch(() => setError('Could not load services'))
   }, [])
+  // Clean up the object URL + any pending debounce on unmount.
+  useEffect(() => () => { if (vinPhotoUrl) URL.revokeObjectURL(vinPhotoUrl); if (decodeTimer.current) clearTimeout(decodeTimer.current) }, [vinPhotoUrl])
 
-  // ── VIN scan (photo or typed) — reuses the estimator VIN decode ────────────
-  // Auto-runs the moment a VIN photo is selected (Take or Upload) — no extra tap.
+  // ── VIN photo → OCR → editable candidate → auto validate/decode ─────────────
+  // Runs automatically the moment a photo is selected (Take or Upload) — no extra tap.
   const decodeVinPhoto = useCallback(async (file: File) => {
     setVinBusy(true); setVinStatus('reading'); setVinMsg('Reading VIN…')
     try {
@@ -76,68 +74,49 @@ export default function QuickEntryFlow() {
         setVeh((v) => ({ ...v, vin: d.vin, year: d.year ?? v.year, make: d.make ?? v.make, model: d.model ?? v.model }))
         audit.current.autoIdentified = true
         setVinStatus('ok'); setVinMsg(`VIN read ✓ ${[d.year, d.make, d.model].filter(Boolean).join(' ')}`.trim())
-      } else if (res.ok && d.vin && d.valid === false) {
-        // Misread candidate — preserve it in the editable field so it can be corrected.
-        setVeh((v) => ({ ...v, vin: d.vin }))
-        setVinStatus('review'); setVinMsg(d.message || 'We may have misread one or more characters. Review and correct the VIN.')
       } else if (res.ok && d.vin) {
-        setVeh((v) => ({ ...v, vin: d.vin }))  // VIN read but vehicle decode failed — keep Decode/Retry
-        setVinStatus('error'); setVinMsg('VIN read but vehicle not decoded — tap Decode to retry.')
+        // Candidate read but not valid/decoded — keep it editable to correct.
+        setVeh((v) => ({ ...v, vin: d.vin }))
+        setVinStatus('review'); setVinMsg('Review the VIN. We may have misread one or more characters.')
       } else {
-        setVinStatus('error'); setVinMsg(d.error || 'Could not read the VIN. Take/upload a clearer photo, or type it below.')
+        setVinStatus('error'); setVinMsg('Could not read the VIN from the photo. Retake or upload a clearer photo.')
       }
-    } catch { setVinStatus('error'); setVinMsg('Network error — type the VIN below.') } finally { setVinBusy(false) }
+    } catch { setVinStatus('error'); setVinMsg('Network error reading the photo — retake or upload again.') } finally { setVinBusy(false) }
   }, [])
-  const decodeVinText = useCallback(async () => {
-    const vin = veh.vin.trim().toUpperCase()
-    if (vin.length !== 17) { setVinStatus('error'); setVinMsg('VIN must be 17 characters'); return }
-    setVinBusy(true); setVinStatus('reading'); setVinMsg('Decoding…')
+
+  // Show the original photo, then run OCR. Both Take and Upload funnel through here.
+  const onVinPhoto = useCallback((file: File, method: IdMethod) => {
+    idMethodRef.current = method
+    setVinPhotoUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(file) })
+    void decodeVinPhoto(file)
+  }, [decodeVinPhoto])
+
+  // Validate + decode a typed/edited VIN. Fills Year/Make/Model when valid; keeps the
+  // candidate editable when not. Used by the debounced auto-decode on edit.
+  const decodeVinValue = useCallback(async (raw: string) => {
+    const vin = raw.trim().toUpperCase()
+    if (vin.length !== 17) return
+    setVinBusy(true); setVinStatus('reading'); setVinMsg('Checking VIN…')
     try {
       const d = await (await fetch('/api/estimator/vin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vin }) })).json()
       if (d.valid && (d.make || d.year)) {
         setVeh((v) => ({ ...v, vin: d.vin ?? v.vin, year: d.year ?? v.year, make: d.make ?? v.make, model: d.model ?? v.model }))
         audit.current.autoIdentified = true
-        setVinStatus('ok'); setVinMsg(`Decoded ✓ ${[d.year, d.make, d.model].filter(Boolean).join(' ')}`.trim())
-      } else if (d.valid === false && d.vin) {
-        setVeh((v) => ({ ...v, vin: d.vin }))  // keep the corrected-but-still-invalid VIN editable
-        setVinStatus('review'); setVinMsg(d.message || 'We may have misread one or more characters. Review and correct the VIN.')
+        setVinStatus('ok'); setVinMsg(`VIN ✓ ${[d.year, d.make, d.model].filter(Boolean).join(' ')}`.trim())
       } else {
-        setVinStatus('error'); setVinMsg(d.error || 'Could not decode — enter vehicle manually below.')
+        setVinStatus('review'); setVinMsg('Review the VIN. We may have misread one or more characters.')
       }
-    } catch { setVinStatus('error'); setVinMsg('Network error') } finally { setVinBusy(false) }
-  }, [veh.vin])
-
-  // ── License Plate + State → VIN (only on explicit "Look Up Vehicle" tap) ─────
-  const lookupPlate = useCallback(async () => {
-    const p = plate.trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
-    if (!p) { setPlateStatus('error'); setPlateMsg('Enter a license plate.'); return }
-    setPlateBusy(true); setPlateStatus('working'); setPlateMsg('Looking up vehicle…'); setVinStatus('idle')
-    try {
-      const res = await fetch('/api/quick-entry/plate-lookup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plate: p, state: plateState }) })
-      const d = await res.json()
-      audit.current.lookupProvider = d.provider ?? ''
-      audit.current.lookupStatus = d.status ?? (res.ok ? '' : `http_${res.status}`)
-      audit.current.lookupRequestId = d.requestId ?? ''
-      if (res.ok && d.ok && d.vin) {
-        setVeh((v) => ({ ...v, vin: d.vin, year: d.year ?? v.year, make: d.make ?? v.make, model: d.model ?? v.model }))
-        audit.current.autoIdentified = true; audit.current.rawOcrVin = ''
-        setPlateStatus('ok'); setPlateMsg(`Found ✓ ${[d.year, d.make, d.model].filter(Boolean).join(' ')}`.trim())
-        setVinStatus('ok'); setVinMsg(`From plate ${p} · ${plateState}${d.cached ? ' (cached)' : ''}`)
-      } else {
-        setPlateStatus('error'); setPlateMsg(d.error || 'No vehicle found for that plate. Try a VIN photo or enter the vehicle manually.')
-      }
-    } catch { setPlateStatus('error'); setPlateMsg('Network error — try a VIN photo or enter the vehicle manually.') } finally { setPlateBusy(false) }
-  }, [plate, plateState])
-
-  const snapPlate = useCallback(async (file: File) => {
-    setPlateBusy(true); setPlateStatus('working'); setPlateMsg('Reading plate…')
-    try {
-      const fd = new FormData(); fd.append('plateImage', file, file.name)
-      const d = await (await fetch('/api/quick-entry/plate-ocr', { method: 'POST', body: fd })).json()
-      if (d.ok && d.plate) { setPlate(d.plate); setPlateStatus('idle'); setPlateMsg(`Read plate: ${d.plate} — check it, pick the state, then Look Up.`) }
-      else { setPlateStatus('error'); setPlateMsg(d.error || 'Could not read the plate — type it instead.') }
-    } catch { setPlateStatus('error'); setPlateMsg('Network error — type the plate instead.') } finally { setPlateBusy(false) }
+    } catch { setVinStatus('error'); setVinMsg('Network error — check the VIN and try again.') } finally { setVinBusy(false) }
   }, [])
+
+  // Debounced auto-decode as the employee corrects the VIN (no Decode button to tap).
+  const onVinEdit = useCallback((raw: string) => {
+    const vin = raw.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '').slice(0, 17)  // strip I/O/Q, spaces, punctuation
+    setVeh((v) => ({ ...v, vin })); markVehicleEdited()
+    if (decodeTimer.current) clearTimeout(decodeTimer.current)
+    if (vin.length === 17) { decodeTimer.current = setTimeout(() => void decodeVinValue(vin), 550) }
+    else { setVinStatus('idle'); setVinMsg(null) }
+  }, [decodeVinValue])
 
   // ── Service selection ───────────────────────────────────────────────────────
   // Pure tap-to-select: no price, no size/condition tiers. Tapping a service toggles it.
@@ -151,8 +130,6 @@ export default function QuickEntryFlow() {
   const setLineName = (key: string, name: string) => setLines((xs) => xs.map((l) => (l.key === key ? { ...l, name } : l)))
   const removeLine = (key: string) => setLines((xs) => xs.filter((l) => l.key !== key))
   const toggleTech = (label: string) => setTech((s) => { const n = new Set(s); n.has(label) ? n.delete(label) : n.add(label); return n })
-  // Switch identification method — reset transient status/messages, keep any identified vehicle + audit.
-  const chooseMethod = (m: IdMethod) => { setIdMethod(m); setVinStatus('idle'); setVinMsg(null); setPlateStatus('idle'); setPlateMsg(null) }
 
   // ── Create the job ──────────────────────────────────────────────────────────
   const createJob = useCallback(async () => {
@@ -161,22 +138,19 @@ export default function QuickEntryFlow() {
       const res = await fetch('/api/quick-entry/jobs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          customerName: cust.name.trim(), customerPhone: cust.phone || null, customerEmail: cust.email || null,
+          customerName: `${cust.first} ${cust.last}`.trim(), customerPhone: cust.phone || null, customerEmail: cust.email || null,
           vehicle: { vin: veh.vin || null, year: veh.year || null, make: veh.make || null, model: veh.model || null, color: veh.color || null },
           lines: lines
             .filter((l) => l.kind !== 'custom' || l.name.trim())  // drop empty "Other" lines
             // Quick Entry ignores pricing: no size/condition, price 0 (set later in estimating/invoicing)
             .map((l) => ({ catalogId: l.catalogId, kind: l.kind, name: l.name.trim(), size: null, condition: null, priceCents: 0 })),
           techInstructions: SHOW_TECH_INSTRUCTIONS ? [...tech] : [], createdBy: 'quick_entry',
-          // Vehicle-identification audit (how the vehicle was identified). No secrets.
+          // Vehicle-identification audit (VIN photo only now). No secrets.
           audit: {
-            idMethod,
-            plate: idMethod === 'plate_lookup' ? (plate.trim().toUpperCase().replace(/[^A-Z0-9]/g, '') || null) : null,
-            plateState: idMethod === 'plate_lookup' ? plateState : null,
+            idMethod: idMethodRef.current,
+            plate: null, plateState: null,
             rawOcrVin: audit.current.rawOcrVin || null,
-            lookupProvider: audit.current.lookupProvider || null,
-            lookupStatus: audit.current.lookupStatus || null,
-            lookupRequestId: audit.current.lookupRequestId || null,
+            lookupProvider: null, lookupStatus: null, lookupRequestId: null,
             vehicleEdited: audit.current.vehicleEdited,
           },
         }),
@@ -185,7 +159,7 @@ export default function QuickEntryFlow() {
       if (!res.ok || !d.ok) throw new Error(d.error || 'Could not create the work order')
       setResult({ orderNumber: d.orderNumber, serviceOrderId: d.serviceOrderId }); setPhase('done')
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); setPhase('review') }
-  }, [cust, veh, lines, tech, idMethod, plate, plateState])
+  }, [cust, veh, lines, tech])
 
   const input = 'w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500'
 
@@ -206,74 +180,30 @@ export default function QuickEntryFlow() {
           <div>
             <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Customer</p>
             <div className="space-y-2">
-              <input className={input} placeholder="Customer name *" value={cust.name} onChange={(e) => setCust({ ...cust, name: e.target.value })} />
-              <input className={input} placeholder="Phone" inputMode="tel" value={cust.phone} onChange={(e) => setCust({ ...cust, phone: e.target.value })} />
+              <div className="grid grid-cols-2 gap-2">
+                <input className={input} placeholder="First name *" value={cust.first} onChange={(e) => setCust({ ...cust, first: e.target.value })} />
+                <input className={input} placeholder="Last name" value={cust.last} onChange={(e) => setCust({ ...cust, last: e.target.value })} />
+              </div>
+              <input className={input} placeholder="Phone number" inputMode="tel" value={cust.phone} onChange={(e) => setCust({ ...cust, phone: e.target.value })} />
               <input className={input} placeholder="Email" inputMode="email" autoCapitalize="off" value={cust.email} onChange={(e) => setCust({ ...cust, email: e.target.value })} />
             </div>
           </div>
           <div>
-            <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Vehicle</p>
+            <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Vehicle — VIN Photo</p>
 
-            {/* Identification method — priority order. License Plate + State is the default when enabled. */}
-            <div className="grid grid-cols-1 gap-1.5 mb-3">
-              {([
-                ['plate_lookup',   'License Plate + State', catalog?.plateLookupEnabled ?? false],
-                ['vin_camera',     'Take VIN Photo',        true],
-                ['vin_upload',     'Upload VIN Photo',      true],
-                ['vin_manual',     'Enter VIN Manually',    true],
-                ['vehicle_manual', 'Enter Vehicle Manually',true],
-              ] as [IdMethod, string, boolean][]).filter(([, , show]) => show).map(([key, label]) => (
-                <button key={key} onClick={() => chooseMethod(key)}
-                  className={`flex items-center justify-between rounded-xl border px-3 py-2.5 text-sm ${idMethod === key ? 'bg-blue-600/20 border-blue-500 text-white font-semibold' : 'bg-gray-900 border-gray-800 text-gray-300'}`}>
-                  <span>{label}</span>
-                  {key === 'plate_lookup' && <span className="text-[10px] uppercase tracking-wide text-blue-300">Fastest</span>}
-                </button>
-              ))}
+            {/* Two entry buttons, one OCR pipeline. Both run OCR automatically on selection. */}
+            <div className="grid grid-cols-2 gap-2">
+              <PhotoInput immediate cameraOnly onCapture={(f) => onVinPhoto(f, 'vin_camera')} busy={vinBusy} />
+              <PhotoInput immediate uploadOnly uploadLabel="Upload VIN Photo" onCapture={(f) => onVinPhoto(f, 'vin_upload')} busy={vinBusy} />
             </div>
 
-            {/* License Plate + State */}
-            {idMethod === 'plate_lookup' && (
-              <div className="space-y-2 mb-1">
-                <div className="flex gap-2">
-                  <input className={`${input} font-mono tracking-widest`} placeholder="License plate" autoCapitalize="characters" autoCorrect="off"
-                    value={plate} onChange={(e) => { setPlate(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10)); setPlateStatus('idle') }} />
-                  <select className={`${input} w-24 pr-2`} value={plateState} onChange={(e) => setPlateState(e.target.value)} aria-label="Registration state">
-                    {US_STATE_CODES.map((s) => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </div>
-                <button onClick={lookupPlate} disabled={plateBusy || !plate.trim()}
-                  className="w-full h-12 rounded-xl bg-blue-600 active:bg-blue-700 text-white font-bold disabled:opacity-40">{plateBusy ? 'Looking up…' : 'Look Up Vehicle'}</button>
-                <p className="text-gray-600 text-xs text-center">or snap the plate</p>
-                <PhotoInput immediate cameraOnly onCapture={(f) => snapPlate(f)} busy={plateBusy} />
-                {plateStatus === 'working' && (
-                  <div className="flex items-center gap-2 rounded-xl bg-blue-950/40 border border-blue-800/50 px-3 py-2">
-                    <span className="w-4 h-4 border-2 border-blue-300 border-t-transparent rounded-full animate-spin" />
-                    <span className="text-blue-200 text-sm">{plateMsg}</span>
-                  </div>
-                )}
-                {plateStatus === 'error' && <div className="rounded-xl bg-red-950/40 border border-red-800/50 px-3 py-2 text-red-300 text-sm">{plateMsg}</div>}
-                {plateStatus === 'idle' && plateMsg && <div className="rounded-xl bg-gray-800/60 border border-gray-700 px-3 py-2 text-gray-300 text-sm">{plateMsg}</div>}
-              </div>
+            {/* Original photo preview — stays visible for review/correction */}
+            {vinPhotoUrl && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={vinPhotoUrl} alt="VIN photo" className="mt-3 w-full max-h-56 object-contain rounded-2xl bg-gray-900 border border-gray-800" />
             )}
 
-            {/* VIN photo — Take (camera) */}
-            {idMethod === 'vin_camera' && (
-              <div className="mb-1">
-                <p className="text-gray-500 text-xs mb-2">Take a VIN photo — it reads automatically.</p>
-                <PhotoInput immediate cameraOnly onCapture={(f) => decodeVinPhoto(f)} busy={vinBusy} />
-              </div>
-            )}
-            {/* VIN photo — Upload */}
-            {idMethod === 'vin_upload' && (
-              <div className="mb-1">
-                <p className="text-gray-500 text-xs mb-2">Upload a VIN photo — it reads automatically.</p>
-                <PhotoInput immediate uploadOnly uploadLabel="Upload VIN Photo" onCapture={(f) => decodeVinPhoto(f)} busy={vinBusy} />
-              </div>
-            )}
-            {idMethod === 'vin_manual' && <p className="text-gray-500 text-xs mb-2">Type the VIN below, then tap Decode.</p>}
-            {idMethod === 'vehicle_manual' && <p className="text-gray-500 text-xs mb-2">Enter the vehicle details below.</p>}
-
-            {/* Shared VIN status (used by VIN decode + plate lookup success) */}
+            {/* VIN status */}
             {vinBusy && (
               <div className="mt-2 flex items-center gap-2 rounded-xl bg-blue-950/40 border border-blue-800/50 px-3 py-2">
                 <span className="w-4 h-4 border-2 border-blue-300 border-t-transparent rounded-full animate-spin" />
@@ -288,23 +218,16 @@ export default function QuickEntryFlow() {
             )}
             {!vinBusy && vinStatus === 'review' && (
               <div className="mt-2 rounded-xl bg-amber-950/40 border border-amber-700/50 px-3 py-2">
-                <p className="text-amber-300 text-sm font-medium">{vinMsg}</p>
-                <p className="text-amber-400/70 text-xs mt-1">Fix the VIN below and tap Decode, retake/upload the photo, use the license plate, or enter the vehicle manually.</p>
+                <p className="text-amber-300 text-sm font-medium">Review the VIN. We may have misread one or more characters.</p>
+                <p className="text-amber-400/70 text-xs mt-1">Fix only the wrong character(s) below — it rechecks automatically. Or retake / upload a clearer photo.</p>
               </div>
             )}
 
-            {/* VIN (editable confirmation) + Decode — for all methods except pure manual vehicle entry */}
-            {idMethod !== 'vehicle_manual' && (
-              <div className="flex gap-2 mt-2">
-                <input className={`${input} font-mono tracking-widest`} placeholder="VIN (17)" autoCapitalize="characters" autoCorrect="off"
-                  value={veh.vin} onChange={(e) => { setVeh({ ...veh, vin: e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '').slice(0, 17) }); setVinStatus('idle'); markVehicleEdited() }} />
-                {/* Decode hides once a VIN is successfully decoded/looked up; reappears if the VIN is edited or decode failed */}
-                {vinStatus !== 'ok' && (
-                  <button onClick={decodeVinText} disabled={vinBusy} className="px-4 rounded-xl bg-gray-800 border border-gray-700 text-sm font-semibold disabled:opacity-50">{vinStatus === 'review' ? 'Decode Again' : 'Decode'}</button>
-                )}
-              </div>
-            )}
-            {/* Editable vehicle fields (confirmation). Color not required. */}
+            {/* Editable VIN — auto-validates/decodes as you correct it (no button to tap) */}
+            <input className={`${input} font-mono tracking-widest mt-2`} placeholder="VIN (17)" autoCapitalize="characters" autoCorrect="off"
+              value={veh.vin} onChange={(e) => onVinEdit(e.target.value)} />
+
+            {/* Auto-filled vehicle (editable). No color. */}
             <div className="grid grid-cols-3 gap-2 mt-2">
               <input className={input} placeholder="Year" inputMode="numeric" value={veh.year} onChange={(e) => { setVeh({ ...veh, year: e.target.value }); markVehicleEdited() }} />
               <input className={input} placeholder="Make" value={veh.make} onChange={(e) => { setVeh({ ...veh, make: e.target.value }); markVehicleEdited() }} />
@@ -312,8 +235,8 @@ export default function QuickEntryFlow() {
             </div>
           </div>
           <div className="fixed bottom-0 inset-x-0 p-4 bg-gray-950/95 border-t border-gray-900">
-            <button disabled={!cust.name.trim()} onClick={() => setPhase('services')}
-              className="w-full h-14 rounded-2xl bg-blue-600 active:bg-blue-700 text-white text-lg font-bold disabled:opacity-40">Next — Services →</button>
+            <button disabled={!cust.first.trim()} onClick={() => setPhase('services')}
+              className="w-full h-14 rounded-2xl bg-blue-600 active:bg-blue-700 text-white text-lg font-bold disabled:opacity-40">Continue →</button>
           </div>
         </div>
       )}
@@ -394,9 +317,9 @@ export default function QuickEntryFlow() {
       {phase === 'review' && (
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4 pb-28">
           <div className="rounded-2xl bg-gray-900 border border-gray-800 p-4">
-            <p className="text-white font-semibold">{cust.name}</p>
+            <p className="text-white font-semibold">{`${cust.first} ${cust.last}`.trim() || 'Customer'}</p>
             <p className="text-gray-400 text-sm">{[cust.phone, cust.email].filter(Boolean).join(' · ') || 'no contact'}</p>
-            <p className="text-gray-300 text-sm mt-1">{[veh.year, veh.make, veh.model, veh.color].filter(Boolean).join(' ') || veh.vin || 'vehicle TBD'}</p>
+            <p className="text-gray-300 text-sm mt-1">{[veh.year, veh.make, veh.model].filter(Boolean).join(' ') || veh.vin || 'vehicle TBD'}</p>
             {veh.vin && <p className="text-gray-600 text-xs font-mono">{veh.vin}</p>}
           </div>
           <div className="rounded-2xl bg-gray-900 border border-gray-800 divide-y divide-gray-800">
@@ -434,7 +357,7 @@ export default function QuickEntryFlow() {
           <p className="text-2xl font-bold">Work order created</p>
           <p className="text-gray-300">Order <span className="font-bold text-white">{result.orderNumber}</span> is on the Work Board.</p>
           <button onClick={() => router.push(`/work-board?new=${result.serviceOrderId}`)} className="mt-3 w-full max-w-xs h-14 rounded-2xl bg-white text-black text-lg font-bold">View Work Board</button>
-          <button onClick={() => { setCust({ name: '', phone: '', email: '' }); setVeh({ vin: '', year: '', make: '', model: '', color: '' }); setLines([]); setTech(new Set()); setResult(null); setVinMsg(null); setError(null); setPhase('details') }}
+          <button onClick={() => { setCust({ first: '', last: '', phone: '', email: '' }); setVeh({ vin: '', year: '', make: '', model: '', color: '' }); setLines([]); setTech(new Set()); setResult(null); setVinMsg(null); setVinStatus('idle'); setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null }); setError(null); setPhase('details') }}
             className="w-full max-w-xs h-12 rounded-2xl border border-gray-700 text-gray-300">New Quick Entry</button>
         </div>
       )}
