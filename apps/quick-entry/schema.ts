@@ -98,10 +98,42 @@ export const quickEntryJobs = pgTable(
     color:           varchar('color', { length: 100 }),
     totalCents:      integer('total_cents').notNull().default(0),
     techInstructions: jsonb('tech_instructions'),  // array of labels (non-billable)
+    // Vehicle-identification audit (how the vehicle was identified for this job).
+    idMethod:        varchar('id_method', { length: 20 }),   // plate_lookup | vin_camera | vin_upload | vin_manual | vehicle_manual
+    plate:           varchar('plate', { length: 16 }),
+    plateState:      varchar('plate_state', { length: 2 }),
+    rawOcrVin:       varchar('raw_ocr_vin', { length: 32 }),  // OCR/candidate VIN (may be invalid)
+    finalVin:        varchar('final_vin', { length: 17 }),
+    lookupProvider:  varchar('lookup_provider', { length: 40 }),
+    lookupStatus:    varchar('lookup_status', { length: 40 }),
+    lookupRequestId: varchar('lookup_request_id', { length: 120 }),
+    vehicleEdited:   boolean('vehicle_edited').notNull().default(false),
     createdBy:       varchar('created_by', { length: 200 }),
     createdAt:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('quick_entry_jobs_order_idx').on(t.serviceOrderId), index('quick_entry_jobs_created_idx').on(t.createdAt)],
+)
+
+// Durable cache of plate → VIN lookups (one row per plate+state) to avoid re-billing
+// the provider on repeat scans.
+export const plateLookupCache = pgTable(
+  'plate_lookup_cache',
+  {
+    id:        uuid('id').primaryKey().defaultRandom(),
+    plate:     varchar('plate', { length: 16 }).notNull(),
+    state:     varchar('state', { length: 2 }).notNull(),
+    vin:       varchar('vin', { length: 17 }),
+    provider:  varchar('provider', { length: 40 }).notNull(),
+    status:    varchar('status', { length: 40 }),
+    year:      varchar('year', { length: 4 }),
+    make:      varchar('make', { length: 100 }),
+    model:     varchar('model', { length: 100 }),
+    trim:      varchar('trim', { length: 120 }),
+    bodyClass: varchar('body_class', { length: 60 }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('plate_lookup_cache_key').on(t.plate, t.state)],
 )
 
 export const quickEntryJobLines = pgTable(

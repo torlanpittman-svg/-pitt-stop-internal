@@ -1,6 +1,7 @@
 /** GET /api/quick-entry/catalog — read-only buttons for the Quick Entry screen. */
 import { NextResponse } from 'next/server'
 import { getFullCatalog } from '@/apps/quick-entry/db'
+import { isPlateLookupEnabled } from '@/apps/quick-entry/plate-lookup'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -36,6 +37,7 @@ export async function GET() {
       // tech instructions intentionally omitted from Quick Entry for now; the
       // technician_instructions table / repo remain intact for later re-enable.
       tech: [],
+      plateLookupEnabled: isPlateLookupEnabled(),
     })
   } catch (err) {
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })

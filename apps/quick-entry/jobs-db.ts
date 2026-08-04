@@ -27,12 +27,23 @@ export interface JobLineInput {
   catalogId?: string | null; kind: 'package' | 'addon' | 'custom'
   name: string; size?: string | null; condition?: string | null; priceCents: number
 }
+export interface VehicleIdAudit {
+  idMethod?: string | null        // plate_lookup | vin_camera | vin_upload | vin_manual | vehicle_manual
+  plate?: string | null
+  plateState?: string | null
+  rawOcrVin?: string | null       // OCR/candidate VIN (may be invalid)
+  lookupProvider?: string | null
+  lookupStatus?: string | null
+  lookupRequestId?: string | null
+  vehicleEdited?: boolean | null
+}
 export interface CreateJobInput {
   customerName: string; customerPhone?: string | null; customerEmail?: string | null
   vehicle: { vin?: string | null; year?: string | null; make?: string | null; model?: string | null; color?: string | null }
   lines: JobLineInput[]
   techInstructions?: string[]
   createdBy?: string | null
+  audit?: VehicleIdAudit
 }
 
 /** Create the job: find/create the vehicle, put it on the Work Board, store the job + lines. */
@@ -52,12 +63,18 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
   })
 
   const db = getDb()
+  const a = input.audit ?? {}
   const totalCents = input.lines.reduce((s, l) => s + (Number(l.priceCents) || 0), 0)
   const [job] = await db.insert(quickEntryJobs).values({
     serviceOrderId: order.id, vehicleId: vehicle.id,
     customerName: input.customerName, customerPhone: input.customerPhone ?? null, customerEmail: input.customerEmail ?? null,
     vin: v.vin ?? null, year: v.year ?? null, make: v.make ?? null, model: v.model ?? null, color: v.color ?? null,
     totalCents, techInstructions: (input.techInstructions ?? []) as never, createdBy: input.createdBy ?? null,
+    // Vehicle-identification audit (how the vehicle was identified). No secrets.
+    idMethod: a.idMethod ?? null, plate: a.plate ?? null, plateState: a.plateState ?? null,
+    rawOcrVin: a.rawOcrVin ?? null, finalVin: v.vin ?? null,
+    lookupProvider: a.lookupProvider ?? null, lookupStatus: a.lookupStatus ?? null, lookupRequestId: a.lookupRequestId ?? null,
+    vehicleEdited: a.vehicleEdited ?? false,
   }).returning()
 
   if (input.lines.length > 0) {

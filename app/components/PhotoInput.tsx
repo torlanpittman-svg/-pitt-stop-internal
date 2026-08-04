@@ -46,6 +46,8 @@ interface PhotoInputProps {
   /** Upload-only: just the shared Upload affordance (for screens whose camera is
    *  a specialized non-file capture, e.g. a live barcode scanner). */
   uploadOnly?: boolean
+  /** Camera-only: just the Take Photo button (no library upload option). */
+  cameraOnly?: boolean
   /** Two-button entry, but deliver onCapture IMMEDIATELY on selection (no
    *  preview/continue step) — e.g. VIN scan that auto-runs OCR after Take/Upload. */
   immediate?: boolean
@@ -76,7 +78,7 @@ async function normalizeImage(file: File, maxDimension: number, quality: number)
 export default function PhotoInput({
   onCapture, onRemove, continueLabel = 'Use Photo', busy = false, className = '',
   normalize = true, maxDimension = 1600, quality = 0.85,
-  renderCamera, live = false, uploadOnly = false, immediate = false, uploadLabel = 'Upload existing photo instead',
+  renderCamera, live = false, uploadOnly = false, cameraOnly = false, immediate = false, uploadLabel = 'Upload existing photo instead',
 }: PhotoInputProps) {
   const cameraRef = useRef<HTMLInputElement>(null)
   const libraryRef = useRef<HTMLInputElement>(null)
@@ -177,8 +179,10 @@ export default function PhotoInput({
         {error && <p className="text-amber-400 text-sm text-center">{error}</p>}
         <button type="button" disabled={busy || working} onClick={() => cameraRef.current?.click()}
           className="w-full h-16 rounded-2xl bg-white text-black text-lg font-bold disabled:opacity-50">📷 Take Photo</button>
-        <button type="button" disabled={busy || working} onClick={() => libraryRef.current?.click()}
-          className="w-full h-16 rounded-2xl border-2 border-gray-700 text-white text-lg font-bold disabled:opacity-50">🖼 Upload Photo</button>
+        {!cameraOnly && (
+          <button type="button" disabled={busy || working} onClick={() => libraryRef.current?.click()}
+            className="w-full h-16 rounded-2xl border-2 border-gray-700 text-white text-lg font-bold disabled:opacity-50">🖼 Upload Photo</button>
+        )}
         {working && <p className="text-gray-400 text-sm text-center">Preparing photo…</p>}
       </div>
     )
