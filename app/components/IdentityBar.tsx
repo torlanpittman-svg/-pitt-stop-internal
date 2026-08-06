@@ -22,6 +22,13 @@ export function useIdentity() {
     try { const r = await fetch('/api/identity', { cache: 'no-store' }); setState(await r.json()) } catch { /* keep prior */ }
   }, [])
   useEffect(() => { void refresh() }, [refresh])
+  // Keep every useIdentity() instance (IdentityBar, AdminLink, future manager UI) in
+  // sync: any identity change broadcasts 'ps-identity' and all instances re-fetch.
+  useEffect(() => {
+    const h = () => void refresh()
+    window.addEventListener('ps-identity', h)
+    return () => window.removeEventListener('ps-identity', h)
+  }, [refresh])
   // When elevated, schedule a refresh right at expiry so manager sections auto-hide.
   useEffect(() => {
     if (!state.elevated || !state.elevatedUntil) return
@@ -65,18 +72,19 @@ export default function IdentityBar() {
 
   if (!id.enabled) return null
 
+  const sync = () => window.dispatchEvent(new Event('ps-identity'))
   const select = async (employeeId: string) => {
     await fetch('/api/identity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'select', employeeId }) })
-    setPanel(null); setMsg(null); await id.refresh()
+    setPanel(null); setMsg(null); sync()
   }
   const elevate = async () => {
     setMsg(null)
     const r = await fetch('/api/identity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'elevate', pin }) })
     const d = await r.json()
     if (!d.ok) { setMsg(d.error ?? 'Could not unlock'); return }
-    setPin(''); setPanel(null); await id.refresh()
+    setPin(''); setPanel(null); sync()
   }
-  const lock = async () => { await fetch('/api/identity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'lock' }) }); await id.refresh() }
+  const lock = async () => { await fetch('/api/identity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'lock' }) }); sync() }
 
   const canElevate = id.actor && (id.actor.role === 'manager' || id.actor.role === 'admin')
 
