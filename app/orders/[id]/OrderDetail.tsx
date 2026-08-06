@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import type { OrderWithContext, ServiceOrderEvent } from '@/apps/workflow/db'
+import { useIdentity } from '@/app/components/IdentityBar'
 
 // ── Status display config ─────────────────────────────────────────────────────
 
@@ -29,10 +30,16 @@ const EVENT_LABELS: Record<string, string> = {
   status_changed: 'Status changed',
   assigned:       'Assigned',
   service_added:  'Service added',
+  completed:      'Completed (Ready)',
+  reopened:       'Reopened',
 }
 
 // Simplified common services shown first in the picker (matches Quick Entry).
 const COMMON_SERVICES = ['Interior Detail', 'Exterior Wash', 'Polish', 'Wax', 'Mini Detail']
+
+function reopenReason(note: string | null): string {
+  try { const d = JSON.parse(note ?? '{}'); return d.reason ? ` — ${d.reason}` : '' } catch { return '' }
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -222,6 +229,67 @@ function ServicePicker({ onAdd, onCancel, busy, error }: {
   )
 }
 
+// ── Completion checklist ("Is this vehicle truly finished?") ──────────────────
+
+function CompletionModal({ services, qcRequired, busy, error, onConfirm, onCancel }: {
+  services: string[]
+  qcRequired: boolean
+  busy: boolean
+  error: string | null
+  onConfirm: (p: { servicesAck: string[]; noRemaining: boolean; finalTouches: boolean; qcPassed: boolean }) => void
+  onCancel: () => void
+}) {
+  const [ack, setAck] = useState<Set<string>>(new Set())
+  const [noRemaining, setNoRemaining] = useState(false)
+  const [finalTouches, setFinalTouches] = useState(false)
+  const [qcPassed, setQcPassed] = useState(false)
+  const noServices = services.length === 0
+  const allAck = services.every((s) => ack.has(s))
+  const ready = !noServices && allAck && noRemaining && finalTouches && (!qcRequired || qcPassed)
+  const toggle = (s: string) => setAck((p) => { const n = new Set(p); n.has(s) ? n.delete(s) : n.add(s); return n })
+
+  const Check = ({ on, set, label }: { on: boolean; set: (v: boolean) => void; label: string }) => (
+    <button onClick={() => set(!on)} className={`w-full flex items-center gap-3 rounded-2xl border px-4 py-3 text-left ${on ? 'bg-green-600/15 border-green-600' : 'bg-gray-800 border-gray-700'}`}>
+      <span className={`w-6 h-6 rounded-md flex items-center justify-center text-sm ${on ? 'bg-green-600 text-white' : 'border border-gray-600 text-transparent'}`}>✓</span>
+      <span className="text-white text-sm">{label}</span>
+    </button>
+  )
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
+      <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-1"><h2 className="text-white font-bold text-xl">Is this vehicle truly finished?</h2><button onClick={onCancel} className="text-gray-500 text-sm">Cancel</button></div>
+
+        {noServices ? (
+          <div className="mt-4 rounded-2xl bg-amber-950/40 border border-amber-700/50 px-4 py-4">
+            <p className="text-amber-300 font-medium text-sm">No services are listed on this Job.</p>
+            <p className="text-amber-400/80 text-xs mt-1">Add or confirm the work performed with <b>＋ Add Service</b> before marking it Ready.</p>
+          </div>
+        ) : (
+          <>
+            <p className="text-gray-500 text-xs uppercase tracking-widest mt-4 mb-2">Services to confirm</p>
+            <div className="space-y-2">
+              {services.map((s) => <Check key={s} on={ack.has(s)} set={() => toggle(s)} label={s} />)}
+            </div>
+            <p className="text-gray-500 text-xs uppercase tracking-widest mt-5 mb-2">Final checks</p>
+            <div className="space-y-2">
+              <Check on={noRemaining} set={setNoRemaining} label="No remaining or added work is unresolved" />
+              <Check on={finalTouches} set={setFinalTouches} label="Final touches are complete" />
+              {qcRequired && <Check on={qcPassed} set={setQcPassed} label="QC passed" />}
+            </div>
+          </>
+        )}
+
+        {error && <p className="text-amber-400 text-sm mt-3">{error}</p>}
+        <button onClick={() => onConfirm({ servicesAck: [...ack], noRemaining, finalTouches, qcPassed })} disabled={!ready || busy}
+          className="mt-5 w-full h-14 rounded-2xl bg-green-600 active:bg-green-700 text-white text-lg font-bold disabled:opacity-40">
+          {busy ? 'Marking Ready…' : 'Confirm — vehicle is Ready'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithContext }) {
@@ -234,6 +302,11 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
   const [addingService, setAddingService] = useState(false)  // picker open
   const [addBusy,     setAddBusy]     = useState(false)
   const [addError,    setAddError]    = useState<string | null>(null)
+  const [completing,  setCompleting]  = useState(false)   // completion checklist open
+  const [completeBusy, setCompleteBusy] = useState(false)
+  const [completeMsg, setCompleteMsg] = useState<string | null>(null)
+  const identity = useIdentity()
+  const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
 
   const { vehicle } = order
   const statusCfg   = STATUS_CONFIG[order.status] ?? { label: order.status, color: 'text-gray-400' }
@@ -300,12 +373,47 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
 
   const handleAction = useCallback((action: ActionConfig) => {
     setError(null)
+    // Becoming Ready goes through the completion checklist (server enforces the gate).
+    if (action.newStatus === 'ready' && identity.completionEnabled) { setCompleteMsg(null); setCompleting(true); return }
     if (action.needsEmployee) {
       setPicking(action)
     } else {
       doTransition(action, null)
     }
-  }, [doTransition])
+  }, [doTransition, identity.completionEnabled])
+
+  // Confirm completion → mark Ready (server validates every service + final checks).
+  const completeJob = useCallback(async (payload: { servicesAck: string[]; noRemaining: boolean; finalTouches: boolean; qcPassed: boolean }) => {
+    setCompleteBusy(true); setCompleteMsg(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${order.id}/transition`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newStatus: 'ready', completion: payload }),
+      })
+      const d = await res.json()
+      if (res.status === 422) {
+        setCompleteMsg(d.reason === 'services_unacknowledged' ? `Confirm every service first: ${(d.missing ?? []).join(', ')}`
+          : d.reason === 'no_services' ? 'Add or confirm the work performed first.'
+          : 'Complete every item before marking Ready.')
+        return
+      }
+      if (!res.ok) { setCompleteMsg(d.error ?? 'Could not mark Ready.'); return }
+      setCompleting(false); setOrder(d.order); await reload()
+    } catch { setCompleteMsg('Network error — try again.') } finally { setCompleteBusy(false) }
+  }, [order.id, reload])
+
+  // Manager-only correction: reopen a Ready Job (clears completed_at, keeps history).
+  const reopenJob = useCallback(async () => {
+    const reason = window.prompt('Reopen this Ready Job — reason (required):')
+    if (!reason?.trim()) return
+    setError(null)
+    const res = await fetch(`/api/workflow/orders/${order.id}/reopen`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }),
+    })
+    const d = await res.json()
+    if (!res.ok || !d.ok) { setError(d.error ?? 'Could not reopen.'); return }
+    setOrder(d.order); await reload()
+  }, [order.id, reload])
 
   const handleEmployeePick = useCallback((name: string) => {
     if (!picking) return
@@ -398,6 +506,16 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
         </div>
       )}
 
+      {/* Manager-only correction: reopen a Ready Job that wasn't truly finished */}
+      {order.status === 'ready' && isManager && (
+        <div className="px-6 -mt-4 mb-8">
+          <button onClick={reopenJob}
+            className="w-full text-amber-300 font-semibold text-sm py-3 rounded-2xl border border-amber-800/60 bg-amber-950/30 active:opacity-80">
+            Reopen Job (manager)
+          </button>
+        </div>
+      )}
+
       {(order.status === 'delivered' || order.status === 'cancelled') && (
         <div className="px-6 mb-8">
           <p className="text-gray-600 text-center text-base py-4">
@@ -418,11 +536,15 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
                 <div className="w-1.5 h-1.5 rounded-full bg-gray-700 mt-2 shrink-0" />
                 <div>
                   <p className="text-gray-300 text-sm">
-                    {event.newStatus
-                      ? `${event.employeeName ? event.employeeName + ' — ' : ''}${STATUS_CONFIG[event.newStatus]?.label ?? event.newStatus}`
-                      : event.eventType === 'service_added'
-                        ? `Service added: ${event.note ?? ''}${event.employeeName ? ` · ${event.employeeName}` : ''}`
-                        : `${EVENT_LABELS[event.eventType] ?? event.eventType}${event.employeeName ? ` · ${event.employeeName}` : ''}`
+                    {event.eventType === 'reopened'
+                      ? `Reopened${event.employeeName ? ' by ' + event.employeeName : ''}${reopenReason(event.note)}`
+                      : event.eventType === 'completed'
+                        ? `Completed (Ready)${event.employeeName ? ' · ' + event.employeeName : ''}`
+                        : event.eventType === 'service_added'
+                          ? `Service added: ${event.note ?? ''}${event.employeeName ? ` · ${event.employeeName}` : ''}`
+                          : event.newStatus
+                            ? `${event.employeeName ? event.employeeName + ' — ' : ''}${STATUS_CONFIG[event.newStatus]?.label ?? event.newStatus}`
+                            : `${EVENT_LABELS[event.eventType] ?? event.eventType}${event.employeeName ? ` · ${event.employeeName}` : ''}`
                     }
                   </p>
                   <p className="text-gray-600 text-xs"><EventTime date={event.createdAt} /></p>
@@ -448,6 +570,18 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
           onCancel={() => setAddingService(false)}
           busy={addBusy}
           error={addError}
+        />
+      )}
+
+      {/* Completion checklist */}
+      {completing && (
+        <CompletionModal
+          services={services}
+          qcRequired={order.qcRequired}
+          busy={completeBusy}
+          error={completeMsg}
+          onConfirm={completeJob}
+          onCancel={() => setCompleting(false)}
         />
       )}
 

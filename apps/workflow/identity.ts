@@ -73,14 +73,17 @@ export function readCookie(cookieHeader: string | null | undefined, name: string
   }
   return null
 }
-export function getActor(cookieHeader: string | null | undefined): Actor | null {
-  const raw = readCookie(cookieHeader, 'ps_actor')
-  if (!raw) return null
+/** Parse an actor from a raw cookie value (for server components using next/headers). */
+export function parseActor(value: string | null | undefined): Actor | null {
+  if (!value) return null
   try {
-    const a = JSON.parse(raw)
+    const a = JSON.parse(value)
     if (a && typeof a.name === 'string' && a.name) return { id: String(a.id ?? ''), name: a.name, role: (a.role ?? 'employee') as Role }
   } catch { /* ignore */ }
   return null
+}
+export function getActor(cookieHeader: string | null | undefined): Actor | null {
+  return parseActor(readCookie(cookieHeader, 'ps_actor'))
 }
 export function getElevation(cookieHeader: string | null | undefined, now: number = Date.now()): Elevation | null {
   return verifyElevation(readCookie(cookieHeader, 'ps_elev'), now)

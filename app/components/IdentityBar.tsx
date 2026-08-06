@@ -11,9 +11,10 @@ export interface IdentityState {
   elevatedUntil: number | null
   effectiveRole: Role
   minutes: number
+  completionEnabled: boolean
 }
 
-const EMPTY: IdentityState = { enabled: false, actor: null, elevated: false, elevatedUntil: null, effectiveRole: 'employee', minutes: 10 }
+const EMPTY: IdentityState = { enabled: false, actor: null, elevated: false, elevatedUntil: null, effectiveRole: 'employee', minutes: 10, completionEnabled: false }
 
 /** Fetches identity state once (+ on refresh); auto-refreshes when elevation expires. */
 export function useIdentity() {

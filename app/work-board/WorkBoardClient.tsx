@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import type { OrderWithContext } from '@/apps/workflow/db'
 import VehicleCard from './VehicleCard'
-import IdentityBar from '@/app/components/IdentityBar'
+import IdentityBar, { useIdentity } from '@/app/components/IdentityBar'
 
 const POLL_INTERVAL = 10_000
 const HIGHLIGHT_MS  = 4_000
@@ -30,6 +30,7 @@ export default function WorkBoardClient({
   initialOrders: OrderWithContext[]
   newOrderId?:   string
 }) {
+  const identity = useIdentity()
   const [orders,      setOrders]      = useState<OrderWithContext[]>(initialOrders)
   const [tab,         setTab]         = useState<FilterTab>('all')
   const [refreshing,  setRefreshing]  = useState(false)
@@ -98,6 +99,11 @@ export default function WorkBoardClient({
         <div className="flex items-center gap-3">
           {refreshing && (
             <div className="w-4 h-4 rounded-full border-2 border-gray-700 border-t-blue-500 animate-spin" />
+          )}
+          {identity.completionEnabled && (identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin') && (
+            <Link href="/production" className="text-gray-300 text-sm font-semibold px-3 py-2.5 rounded-xl border border-gray-700 active:bg-gray-800">
+              Production
+            </Link>
           )}
           <Link
             href="/check-in"

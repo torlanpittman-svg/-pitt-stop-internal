@@ -328,6 +328,9 @@ export async function transitionOrder(params: {
   newStatus:    string
   employeeName: string | null
   note?:        string
+  /** Completion gate outputs (only when newStatus === 'ready'). */
+  completedBy?: string | null
+  completionChecklist?: Record<string, unknown> | null
 }): Promise<{ ok: boolean; error?: string; order?: ServiceOrderRow }> {
   const db = getDb()
 
@@ -348,11 +351,15 @@ export async function transitionOrder(params: {
   if (params.newStatus === 'in_progress' && !order.startedAt) {
     updates.startedAt = now
   }
-  if (params.newStatus === 'qc_ready') {
+  // True completion = Ready. Stamp completed_at ONCE (never overwrite via ordinary
+  // transitions or delivery). Only the manager Reopen flow may clear it.
+  if (params.newStatus === 'ready' && !order.completedAt) {
     updates.completedAt = now
+    updates.completedBy = params.completedBy ?? params.employeeName ?? null
+    if (params.completionChecklist) updates.completionChecklist = params.completionChecklist
   }
   if (params.newStatus === 'delivered') {
-    updates.deliveredAt = now
+    updates.deliveredAt = now   // does NOT touch completed_at
   }
   if (params.newStatus === 'cancelled') {
     updates.cancelledAt = now
@@ -386,7 +393,52 @@ export async function transitionOrder(params: {
     newStatus:      params.newStatus,
     note:           params.note ?? null,
   })
+  // Distinct completion event when we actually stamped completed_at (Ready, first time).
+  if (params.newStatus === 'ready' && updates.completedAt) {
+    await logEvent({
+      serviceOrderId: params.orderId,
+      eventType:      'completed',
+      employeeName:   params.completedBy ?? params.employeeName ?? null,
+      note:           'Marked Ready (completion confirmed)',
+    })
+  }
 
+  return { ok: true, order: updated }
+}
+
+/**
+ * Manager-only correction: reopen a Ready Job because work was actually incomplete.
+ * Clears completed_at (so it counts only on its true final completion) while
+ * preserving the original completed_at + reason + manager + reopen time in the
+ * append-only audit history. Requires a reason. Not an employee action.
+ */
+export async function reopenOrder(params: {
+  orderId: string
+  reason:  string
+  managerName: string | null
+}): Promise<{ ok: boolean; error?: string; order?: ServiceOrderRow }> {
+  const db = getDb()
+  const rows = await db.select().from(serviceOrders).where(eq(serviceOrders.id, params.orderId)).limit(1)
+  if (!rows[0]) return { ok: false, error: 'Job not found' }
+  const order = rows[0]
+  if (order.status !== 'ready') return { ok: false, error: 'Only a Ready Job can be reopened.' }
+  if (!params.reason?.trim()) return { ok: false, error: 'A reason is required to reopen.' }
+
+  const now = new Date()
+  const priorCompletedAt = order.completedAt
+  const [updated] = await db.update(serviceOrders)
+    .set({ status: 'in_progress', completedAt: null, updatedAt: now })  // clears completion; may re-complete later
+    .where(eq(serviceOrders.id, params.orderId))
+    .returning()
+
+  await logEvent({
+    serviceOrderId: params.orderId,
+    eventType:      'reopened',
+    employeeName:   params.managerName,
+    oldStatus:      'ready',
+    newStatus:      'in_progress',
+    note:           JSON.stringify({ reason: params.reason.trim(), priorCompletedAt: priorCompletedAt?.toISOString() ?? null, reopenedAt: now.toISOString(), manager: params.managerName ?? null }),
+  })
   return { ok: true, order: updated }
 }
 

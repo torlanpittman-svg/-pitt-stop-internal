@@ -74,7 +74,10 @@ export const serviceOrders = pgTable(
 
     arrivedAt:   timestamp('arrived_at',   { withTimezone: true }),
     startedAt:   timestamp('started_at',   { withTimezone: true }),
-    completedAt: timestamp('completed_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }), // true completion (Ready); count-once
+    completedBy:  varchar('completed_by', { length: 200 }),
+    completionChecklist: jsonb('completion_checklist').$type<Record<string, unknown>>(),
+    qcRequired:  boolean('qc_required').notNull().default(false),
     deliveredAt: timestamp('delivered_at', { withTimezone: true }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
 

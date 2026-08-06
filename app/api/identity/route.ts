@@ -11,6 +11,7 @@ import {
   getActor, getElevation, effectiveRole, verifyPin, signElevation, elevationMinutes,
   identityEnabled, type Role,
 } from '@/apps/workflow/identity'
+import { completionEnabled } from '@/apps/workflow/completion'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -28,6 +29,7 @@ export async function GET(req: Request) {
     elevatedUntil: elev?.exp ?? null,
     effectiveRole: effectiveRole(actor, elev),
     minutes: elevationMinutes(),
+    completionEnabled: completionEnabled(),
   })
 }
 
