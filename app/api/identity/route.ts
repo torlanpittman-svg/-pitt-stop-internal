@@ -69,6 +69,14 @@ export async function POST(req: Request) {
 
   if (action === 'lock') {
     const res = NextResponse.json({ ok: true })
+    res.cookies.set('ps_elev', '', { path: '/', maxAge: 0 })  // drop any temporary above-base elevation only
+    return res
+  }
+
+  if (action === 'signout') {
+    // Lock the device: clear the remembered identity (next person must re-select).
+    const res = NextResponse.json({ ok: true })
+    res.cookies.set('ps_actor', '', { path: '/', maxAge: 0 })
     res.cookies.set('ps_elev', '', { path: '/', maxAge: 0 })
     return res
   }

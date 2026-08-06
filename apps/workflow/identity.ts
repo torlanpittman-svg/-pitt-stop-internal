@@ -89,10 +89,22 @@ export function getElevation(cookieHeader: string | null | undefined, now: numbe
   return verifyElevation(readCookie(cookieHeader, 'ps_elev'), now)
 }
 
-/** Effective role = base actor role, but manager/admin *capabilities* require a
- *  valid (unexpired) elevation. Without elevation everyone is treated as employee. */
+const RANK: Record<Role, number> = { employee: 0, manager: 1, admin: 2 }
+
+/** The remembered employee's base role (permanent on the device, no PIN). */
+export function baseRole(actor: Actor | null): Role { return actor?.role ?? 'employee' }
+
+/**
+ * Effective role = the remembered employee's BASE role, which is always available
+ * (no PIN, never expires). A temporary elevation can only RAISE the role above base
+ * (same person) for step-up scenarios; when it expires it drops back to base — it
+ * NEVER downgrades a Manager/Admin to Employee. Elevation only removes above-base
+ * privileges, never the person's normal role.
+ */
 export function effectiveRole(actor: Actor | null, elevation: Elevation | null): Role {
-  if (!actor) return 'employee'
-  if ((actor.role === 'manager' || actor.role === 'admin') && elevation && elevation.employeeId === actor.id) return actor.role
-  return 'employee'
+  const base = baseRole(actor)
+  if (actor && elevation && elevation.employeeId === actor.id && RANK[elevation.role] > RANK[base]) {
+    return elevation.role
+  }
+  return base
 }

@@ -55,26 +55,38 @@ describe('cookie parsing + actor', () => {
   })
 })
 
-describe('effectiveRole (elevation gating)', () => {
+describe('effectiveRole (base role is permanent; elevation only raises above base)', () => {
   const emp: Actor = { id: 'e1', name: 'Sam', role: 'employee' }
   const mgr: Actor = { id: 'e2', name: 'Alex', role: 'manager' }
-  const validElev: Elevation = { employeeId: 'e2', role: 'manager', exp: Date.now() + 60_000 }
+  const admin: Actor = { id: 'e3', name: 'Torlan', role: 'admin' }
 
-  it('employee is always employee', () => {
+  it('remembered base role is available with NO elevation (the fix)', () => {
     expect(effectiveRole(emp, null)).toBe('employee')
-    expect(effectiveRole(emp, validElev)).toBe('employee')
+    expect(effectiveRole(mgr, null)).toBe('manager')     // was wrongly 'employee' before
+    expect(effectiveRole(admin, null)).toBe('admin')     // was wrongly 'employee' before
   })
-  it('manager without elevation is treated as employee', () => {
-    expect(effectiveRole(mgr, null)).toBe('employee')
+  it('expired/absent elevation NEVER downgrades base role', () => {
+    const expired: Elevation = { employeeId: 'e2', role: 'manager', exp: Date.now() - 1 }
+    // verifyElevation would return null for expired; effectiveRole with null elevation → base
+    expect(effectiveRole(mgr, null)).toBe('manager')
+    expect(effectiveRole(admin, null)).toBe('admin')
+    // even a stale elevation object no higher than base leaves base intact
+    expect(effectiveRole(mgr, { employeeId: 'e2', role: 'manager', exp: Date.now() + 60_000 })).toBe('manager')
+    void expired
   })
-  it('manager with matching valid elevation is manager', () => {
-    expect(effectiveRole(mgr, validElev)).toBe('manager')
+  it('elevation can only RAISE above base (same person)', () => {
+    // employee stepping up to manager (e.g. a manager authorized on this device)
+    expect(effectiveRole(emp, { employeeId: 'e1', role: 'manager', exp: Date.now() + 60_000 })).toBe('manager')
+    // manager stepping up to admin
+    expect(effectiveRole(mgr, { employeeId: 'e2', role: 'admin', exp: Date.now() + 60_000 })).toBe('admin')
+    // a lower elevation never reduces a higher base
+    expect(effectiveRole(admin, { employeeId: 'e3', role: 'manager', exp: Date.now() + 60_000 })).toBe('admin')
   })
-  it('elevation for a different person does not apply', () => {
-    expect(effectiveRole(mgr, { ...validElev, employeeId: 'someone-else' })).toBe('employee')
+  it('elevation for a different person does not apply (base still granted)', () => {
+    expect(effectiveRole(mgr, { employeeId: 'someone-else', role: 'admin', exp: Date.now() + 60_000 })).toBe('manager')
   })
   it('no actor → employee', () => {
-    expect(effectiveRole(null, validElev)).toBe('employee')
+    expect(effectiveRole(null, { employeeId: 'x', role: 'admin', exp: Date.now() + 60_000 })).toBe('employee')
   })
 })
 

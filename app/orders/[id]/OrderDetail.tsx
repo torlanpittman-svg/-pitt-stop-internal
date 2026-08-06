@@ -290,6 +290,36 @@ function CompletionModal({ services, qcRequired, busy, error, onConfirm, onCance
   )
 }
 
+// ── Reopen (sensitive correction: reason + manager PIN step-up) ───────────────
+
+function ReopenModal({ busy, error, onConfirm, onCancel }: {
+  busy: boolean; error: string | null
+  onConfirm: (reason: string, pin: string) => void
+  onCancel: () => void
+}) {
+  const [reason, setReason] = useState('')
+  const [pin, setPin] = useState('')
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
+      <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10">
+        <div className="flex items-center justify-between mb-1"><h2 className="text-white font-bold text-xl">Reopen this Job</h2><button onClick={onCancel} className="text-gray-500 text-sm">Cancel</button></div>
+        <p className="text-gray-500 text-xs mb-4">This clears the completion (it will count only when finished again). The original completion is kept in history.</p>
+        <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">Reason</p>
+        <textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why is this being reopened?" rows={2}
+          className="w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base" />
+        <p className="text-gray-500 text-xs uppercase tracking-widest mt-4 mb-1">Manager PIN</p>
+        <input value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 8))} inputMode="numeric"
+          placeholder="PIN" className="w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-2xl tracking-[0.4em] text-center" />
+        {error && <p className="text-red-400 text-sm mt-3">{error}</p>}
+        <button onClick={() => onConfirm(reason, pin)} disabled={busy || !reason.trim() || pin.length < 4}
+          className="mt-5 w-full h-14 rounded-2xl bg-amber-600 active:bg-amber-700 text-white text-lg font-bold disabled:opacity-40">
+          {busy ? 'Reopening…' : 'Confirm reopen'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithContext }) {
@@ -305,6 +335,9 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
   const [completing,  setCompleting]  = useState(false)   // completion checklist open
   const [completeBusy, setCompleteBusy] = useState(false)
   const [completeMsg, setCompleteMsg] = useState<string | null>(null)
+  const [reopening,   setReopening]   = useState(false)   // reopen (reason + PIN) open
+  const [reopenBusy,  setReopenBusy]  = useState(false)
+  const [reopenMsg,   setReopenMsg]   = useState<string | null>(null)
   const identity = useIdentity()
   const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
 
@@ -402,17 +435,17 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
     } catch { setCompleteMsg('Network error — try again.') } finally { setCompleteBusy(false) }
   }, [order.id, reload])
 
-  // Manager-only correction: reopen a Ready Job (clears completed_at, keeps history).
-  const reopenJob = useCallback(async () => {
-    const reason = window.prompt('Reopen this Ready Job — reason (required):')
-    if (!reason?.trim()) return
-    setError(null)
-    const res = await fetch(`/api/workflow/orders/${order.id}/reopen`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }),
-    })
-    const d = await res.json()
-    if (!res.ok || !d.ok) { setError(d.error ?? 'Could not reopen.'); return }
-    setOrder(d.order); await reload()
+  // Manager correction: reopen a Ready Job (sensitive → reason + PIN step-up).
+  const submitReopen = useCallback(async (reason: string, pin: string) => {
+    setReopenBusy(true); setReopenMsg(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${order.id}/reopen`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason, pin }),
+      })
+      const d = await res.json()
+      if (!res.ok || !d.ok) { setReopenMsg(d.error ?? 'Could not reopen.'); return }
+      setReopening(false); setOrder(d.order); await reload()
+    } catch { setReopenMsg('Network error — try again.') } finally { setReopenBusy(false) }
   }, [order.id, reload])
 
   const handleEmployeePick = useCallback((name: string) => {
@@ -506,10 +539,10 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
         </div>
       )}
 
-      {/* Manager-only correction: reopen a Ready Job that wasn't truly finished */}
+      {/* Manager correction: reopen a Ready Job that wasn't truly finished (reason + PIN) */}
       {order.status === 'ready' && isManager && (
         <div className="px-6 -mt-4 mb-8">
-          <button onClick={reopenJob}
+          <button onClick={() => { setReopenMsg(null); setReopening(true) }}
             className="w-full text-amber-300 font-semibold text-sm py-3 rounded-2xl border border-amber-800/60 bg-amber-950/30 active:opacity-80">
             Reopen Job (manager)
           </button>
@@ -583,6 +616,11 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
           onConfirm={completeJob}
           onCancel={() => setCompleting(false)}
         />
+      )}
+
+      {/* Reopen (reason + PIN) */}
+      {reopening && (
+        <ReopenModal busy={reopenBusy} error={reopenMsg} onConfirm={submitReopen} onCancel={() => setReopening(false)} />
       )}
 
     </main>
