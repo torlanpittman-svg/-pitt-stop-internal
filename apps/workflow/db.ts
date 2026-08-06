@@ -64,15 +64,32 @@ export async function listEmployees(): Promise<EmployeeRow[]> {
     .orderBy(employees.name)
 }
 
-export async function createEmployee(name: string): Promise<EmployeeRow> {
+export async function createEmployee(name: string, role: 'employee' | 'manager' | 'admin' = 'employee'): Promise<EmployeeRow> {
   const db = getDb()
-  const [row] = await db.insert(employees).values({ name }).returning()
+  const [row] = await db.insert(employees).values({ name, role }).returning()
   return row
 }
 
 export async function deactivateEmployee(id: string): Promise<void> {
   const db = getDb()
   await db.update(employees).set({ active: false }).where(eq(employees.id, id))
+}
+
+export async function getEmployee(id: string): Promise<EmployeeRow | null> {
+  const db = getDb()
+  const [row] = await db.select().from(employees).where(eq(employees.id, id)).limit(1)
+  return row ?? null
+}
+
+export async function setEmployeeRole(id: string, role: 'employee' | 'manager' | 'admin'): Promise<void> {
+  const db = getDb()
+  await db.update(employees).set({ role }).where(eq(employees.id, id))
+}
+
+/** Set (or clear, when pinHash is null) an employee's elevation PIN hash. */
+export async function setEmployeePinHash(id: string, pinHash: string | null): Promise<void> {
+  const db = getDb()
+  await db.update(employees).set({ pinHash }).where(eq(employees.id, id))
 }
 
 // ── Vehicles ──────────────────────────────────────────────────────────────────

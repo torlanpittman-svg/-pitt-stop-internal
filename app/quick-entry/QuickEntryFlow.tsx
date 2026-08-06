@@ -156,7 +156,7 @@ export default function QuickEntryFlow() {
         }),
       })
       const d = await res.json()
-      if (!res.ok || !d.ok) throw new Error(d.error || 'Could not create the work order')
+      if (!res.ok || !d.ok) throw new Error(d.error || 'Could not create the Job')
       setResult({ orderNumber: d.orderNumber, serviceOrderId: d.serviceOrderId }); setPhase('done')
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); setPhase('review') }
   }, [cust, veh, lines, tech])
@@ -340,7 +340,7 @@ export default function QuickEntryFlow() {
           )}
           <div className="fixed bottom-0 inset-x-0 p-4 bg-gray-950/95 border-t border-gray-900 flex items-center gap-3">
             <button onClick={() => setPhase('services')} className="h-14 px-5 rounded-2xl border border-gray-700 text-gray-300 text-sm">Back</button>
-            <button onClick={createJob} className="flex-1 h-14 rounded-2xl bg-green-600 active:bg-green-700 text-white text-lg font-bold">Create Work Order</button>
+            <button onClick={createJob} className="flex-1 h-14 rounded-2xl bg-green-600 active:bg-green-700 text-white text-lg font-bold">Create Job</button>
           </div>
         </div>
       )}
@@ -348,15 +348,15 @@ export default function QuickEntryFlow() {
       {phase === 'submitting' && (
         <div className="flex-1 flex flex-col items-center justify-center gap-4">
           <div className="w-12 h-12 border-4 border-white/30 border-t-white rounded-full animate-spin" />
-          <p className="text-lg">Creating work order…</p>
+          <p className="text-lg">Creating the Job…</p>
         </div>
       )}
 
       {phase === 'done' && result && (
         <div className="flex-1 flex flex-col items-center justify-center gap-4 px-6 text-center">
           <div className="text-5xl text-green-400">✓</div>
-          <p className="text-2xl font-bold">Work order created</p>
-          <p className="text-gray-300">Order <span className="font-bold text-white">{result.orderNumber}</span> is on the Work Board.</p>
+          <p className="text-2xl font-bold">Job created</p>
+          <p className="text-gray-300">The Job is on the Work Board.</p>
           <button onClick={() => router.push(`/work-board?new=${result.serviceOrderId}`)} className="mt-3 w-full max-w-xs h-14 rounded-2xl bg-white text-black text-lg font-bold">View Work Board</button>
           <button onClick={() => { setCust({ first: '', last: '', phone: '', email: '' }); setVeh({ vin: '', year: '', make: '', model: '', color: '' }); setLines([]); setTech(new Set()); setResult(null); setVinMsg(null); setVinStatus('idle'); setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null }); setError(null); setPhase('details') }}
             className="w-full max-w-xs h-12 rounded-2xl border border-gray-700 text-gray-300">New Quick Entry</button>

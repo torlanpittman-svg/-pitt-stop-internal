@@ -7,6 +7,7 @@
  */
 import { NextResponse } from 'next/server'
 import { addServiceToOrder } from '@/apps/workflow/db'
+import { getActor } from '@/apps/workflow/identity'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -19,7 +20,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (services.length === 0) {
       return NextResponse.json({ ok: false, error: 'Select at least one service.' }, { status: 400 })
     }
-    const result = await addServiceToOrder(id, services, { addedBy: body.addedBy ?? null, confirmDuplicates: body.confirmDuplicates })
+    // Attribute to the active employee (falls back to client-provided actor / 'staff').
+    const addedBy = getActor(req.headers.get('cookie'))?.name || body.addedBy || null
+    const result = await addServiceToOrder(id, services, { addedBy, confirmDuplicates: body.confirmDuplicates })
     if (!result.ok) {
       return NextResponse.json({ ok: false, needsConfirm: true, duplicates: result.duplicates }, { status: 409 })
     }

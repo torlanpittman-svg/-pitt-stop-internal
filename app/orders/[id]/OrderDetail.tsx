@@ -401,7 +401,7 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
       {(order.status === 'delivered' || order.status === 'cancelled') && (
         <div className="px-6 mb-8">
           <p className="text-gray-600 text-center text-base py-4">
-            {order.status === 'delivered' ? 'Vehicle has been delivered.' : 'Order was cancelled.'}
+            {order.status === 'delivered' ? 'Vehicle has been delivered.' : 'Job was cancelled.'}
           </p>
         </div>
       )}

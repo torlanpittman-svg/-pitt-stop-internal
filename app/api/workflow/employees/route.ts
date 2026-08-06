@@ -6,7 +6,9 @@ export const dynamic = 'force-dynamic'
 export async function GET() {
   try {
     const list = await listEmployees()
-    return NextResponse.json({ employees: list })
+    // Never expose pin_hash to the client.
+    const safe = list.map((e) => ({ id: e.id, name: e.name, role: e.role, active: e.active }))
+    return NextResponse.json({ employees: safe })
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 })
   }

@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import IdentityBar, { AdminLink } from '@/app/components/IdentityBar'
 
 const MODULES = [
   {
@@ -27,7 +28,10 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-gray-950 flex flex-col">
 
-      <div className="px-6 pt-14 pb-10 text-center">
+      {/* Active employee identity (Phase 1) — renders nothing when IDENTITY_ENABLED is off */}
+      <div className="px-6 pt-5"><IdentityBar /></div>
+
+      <div className="px-6 pt-8 pb-10 text-center">
         <div className="inline-flex items-center justify-center w-14 h-14 bg-blue-600 rounded-2xl mb-4 shadow-lg shadow-blue-900/40">
           <span className="text-white font-black text-2xl leading-none">P</span>
         </div>
@@ -51,9 +55,7 @@ export default function Home() {
       </div>
 
       <div className="px-6 pb-10 text-center">
-        <Link href="/admin" className="text-gray-600 hover:text-gray-400 text-sm transition-colors">
-          Admin
-        </Link>
+        <AdminLink className="text-gray-600 hover:text-gray-400 text-sm transition-colors" />
       </div>
 
     </main>

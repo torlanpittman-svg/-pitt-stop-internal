@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import type { OrderWithContext } from '@/apps/workflow/db'
 import VehicleCard from './VehicleCard'
+import IdentityBar from '@/app/components/IdentityBar'
 
 const POLL_INTERVAL = 10_000
 const HIGHLIGHT_MS  = 4_000
@@ -83,8 +84,11 @@ export default function WorkBoardClient({
         </div>
       )}
 
+      {/* Active employee identity (Phase 1) — hidden when IDENTITY_ENABLED is off */}
+      <div className="px-4 pt-4"><IdentityBar /></div>
+
       {/* Header */}
-      <div className="px-4 pt-10 pb-4 flex items-center justify-between">
+      <div className="px-4 pt-4 pb-4 flex items-center justify-between">
         <div>
           <h1 className="text-white font-bold text-2xl leading-tight">Work Board</h1>
           <p className="text-gray-500 text-sm mt-0.5">

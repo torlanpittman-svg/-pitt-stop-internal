@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { transitionOrder, startAssignment } from '@/apps/workflow/db'
+import { getActor } from '@/apps/workflow/identity'
 
 export const dynamic = 'force-dynamic'
 
@@ -19,10 +20,14 @@ export async function POST(
       return NextResponse.json({ error: 'newStatus required' }, { status: 400 })
     }
 
+    // Who changed the status = the explicitly chosen tech (picker) or, failing that,
+    // the active employee. The tech ASSIGNMENT below still uses the chosen tech only.
+    const actorName = getActor(request.headers.get('cookie'))?.name ?? null
+
     const result = await transitionOrder({
       orderId:      id,
       newStatus:    body.newStatus,
-      employeeName: body.employeeName ?? null,
+      employeeName: body.employeeName ?? actorName,
       note:         body.note,
     })
 

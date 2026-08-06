@@ -13,6 +13,8 @@ import {
 export const employees = pgTable('employees', {
   id:        uuid('id').primaryKey().defaultRandom(),
   name:      varchar('name', { length: 200 }).notNull(),
+  role:      varchar('role', { length: 20 }).notNull().default('employee'), // employee | manager | admin
+  pinHash:   varchar('pin_hash', { length: 120 }),                          // scrypt; only managers/admins
   active:    boolean('active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })
