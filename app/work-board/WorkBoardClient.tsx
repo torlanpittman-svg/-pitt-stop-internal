@@ -106,7 +106,7 @@ export default function WorkBoardClient({
             </Link>
           )}
           <Link
-            href="/check-in"
+            href="/quick-entry"
             className="bg-blue-600 text-white font-bold text-sm px-4 py-2.5 rounded-xl active:bg-blue-700 transition-colors"
           >
             + Check In
@@ -150,7 +150,7 @@ export default function WorkBoardClient({
             </p>
             {tab === 'all' && (
               <Link
-                href="/check-in"
+                href="/quick-entry"
                 className="text-blue-500 text-sm font-medium"
               >
                 Check in a vehicle
