@@ -7,7 +7,9 @@ import {
   jsonb,
   varchar,
   integer,
+  numeric,
   index,
+  unique,
 } from 'drizzle-orm/pg-core'
 
 export const employees = pgTable('employees', {
@@ -118,4 +120,73 @@ export const serviceOrderEvents = pgTable(
     createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('events_order_idx').on(t.serviceOrderId)]
+)
+
+// ── Phase 3: optional Job Estimate layer (manager-only) ─────────────────────
+export const jobEstimates = pgTable(
+  'job_estimates',
+  {
+    id:                     uuid('id').primaryKey().defaultRandom(),
+    serviceOrderId:         uuid('service_order_id').notNull().references(() => serviceOrders.id, { onDelete: 'cascade' }),
+    status:                 varchar('status', { length: 24 }).notNull().default('draft'),
+    taxRateBps:             integer('tax_rate_bps').notNull().default(825),
+    taxableSubtotalCents:   integer('taxable_subtotal_cents').notNull().default(0),
+    nontaxableSubtotalCents:integer('nontaxable_subtotal_cents').notNull().default(0),
+    discountCents:          integer('discount_cents').notNull().default(0),
+    taxCents:               integer('tax_cents').notNull().default(0),
+    totalCents:             integer('total_cents').notNull().default(0),
+    needsTaxReview:         boolean('needs_tax_review').notNull().default(false),
+    customerNotes:          text('customer_notes'),
+    internalNotes:          text('internal_notes'),
+    sentAt:                 timestamp('sent_at', { withTimezone: true }),
+    decidedAt:              timestamp('decided_at', { withTimezone: true }),
+    convertedAt:            timestamp('converted_at', { withTimezone: true }),
+    createdBy:              varchar('created_by', { length: 200 }),
+    updatedBy:              varchar('updated_by', { length: 200 }),
+    createdAt:              timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:              timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('job_estimates_order_uniq').on(t.serviceOrderId)],
+)
+
+export const jobServices = pgTable(
+  'job_services',
+  {
+    id:            uuid('id').primaryKey().defaultRandom(),
+    jobEstimateId: uuid('job_estimate_id').notNull().references(() => jobEstimates.id, { onDelete: 'cascade' }),
+    title:         varchar('title', { length: 200 }).notNull(),
+    approvalState: varchar('approval_state', { length: 16 }).notNull().default('pending'),
+    technician:    varchar('technician', { length: 200 }),
+    notes:         text('notes'),
+    source:        varchar('source', { length: 24 }).notNull().default('manual'),
+    sortOrder:     integer('sort_order').notNull().default(0),
+    createdAt:     timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:     timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('job_services_estimate_idx').on(t.jobEstimateId)],
+)
+
+export const jobLineItems = pgTable(
+  'job_line_items',
+  {
+    id:           uuid('id').primaryKey().defaultRandom(),
+    jobServiceId: uuid('job_service_id').notNull().references(() => jobServices.id, { onDelete: 'cascade' }),
+    type:         varchar('type', { length: 12 }).notNull(),            // labor|part|fee|sublet
+    name:         varchar('name', { length: 200 }).notNull(),
+    description:  text('description'),
+    qty:          numeric('qty', { precision: 10, scale: 2 }).notNull().default('1'),
+    unit:         varchar('unit', { length: 12 }).notNull().default('each'),
+    costCents:    integer('cost_cents').notNull().default(0),
+    priceCents:   integer('price_cents').notNull().default(0),
+    taxable:      boolean('taxable').notNull().default(false),
+    taxCategory:  varchar('tax_category', { length: 30 }).notNull().default('other'),
+    sortOrder:    integer('sort_order').notNull().default(0),
+    partNumber:   varchar('part_number', { length: 80 }),
+    brand:        varchar('brand', { length: 80 }),
+    supplier:     varchar('supplier', { length: 120 }),
+    provider:     varchar('provider', { length: 40 }),
+    providerRef:  varchar('provider_ref', { length: 120 }),
+    createdAt:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('job_line_items_service_idx').on(t.jobServiceId)],
 )

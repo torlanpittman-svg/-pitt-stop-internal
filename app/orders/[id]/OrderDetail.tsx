@@ -514,6 +514,10 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
         ) : (
           <p className="text-gray-600 text-sm italic">No services listed.</p>
         )}
+        {/* Manager-only: open the optional Estimate layer (pricing + approval) */}
+        {isManager && identity.estimateEnabled && (
+          <a href={`/orders/${order.id}/estimate`} className="mt-3 inline-block text-blue-400 text-sm font-semibold active:opacity-70">Build / Edit Estimate →</a>
+        )}
       </div>
 
       {/* Error banner */}

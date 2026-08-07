@@ -12,6 +12,7 @@ import {
   identityEnabled, type Role,
 } from '@/apps/workflow/identity'
 import { completionEnabled } from '@/apps/workflow/completion'
+import { estimateEnabled } from '@/apps/workflow/estimate'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -30,6 +31,7 @@ export async function GET(req: Request) {
     effectiveRole: effectiveRole(actor, elev),
     minutes: elevationMinutes(),
     completionEnabled: completionEnabled(),
+    estimateEnabled: estimateEnabled(),
   })
 }
 
