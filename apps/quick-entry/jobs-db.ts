@@ -7,7 +7,7 @@ import { getDb } from '@/platform/db'
 import { quickEntryJobs, quickEntryJobLines } from './schema'
 import { getFullCatalog, listTechnicianInstructions, type FullCatalogItem, type TechRow } from './db'
 import { serviceLabels } from './job-lines'
-import { findOrCreateVehicle, createServiceOrder } from '@/apps/workflow/db'
+import { findOrCreateVehicle, getVehicleById, createServiceOrder } from '@/apps/workflow/db'
 
 export interface QuickEntryCatalog { packages: FullCatalogItem[]; addons: FullCatalogItem[]; tech: TechRow[] }
 
@@ -40,6 +40,8 @@ export interface VehicleIdAudit {
 export interface CreateJobInput {
   customerName: string; customerPhone?: string | null; customerEmail?: string | null
   vehicle: { vin?: string | null; year?: string | null; make?: string | null; model?: string | null; color?: string | null }
+  /** An existing vehicle chosen for a returning customer — reused directly (no duplicate). */
+  vehicleId?: string | null
   lines: JobLineInput[]
   techInstructions?: string[]
   createdBy?: string | null
@@ -49,7 +51,10 @@ export interface CreateJobInput {
 /** Create the job: find/create the vehicle, put it on the Work Board, store the job + lines. */
 export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobId: string; serviceOrderId: string; orderNumber: string }> {
   const v = input.vehicle
-  const vehicle = await findOrCreateVehicle({ vin: v.vin ?? null, year: v.year ?? null, make: v.make ?? null, model: v.model ?? null, color: v.color ?? null })
+  // Reuse the exact existing vehicle when one was selected; otherwise find-or-create
+  // (which itself de-dupes by VIN). Prevents duplicate vehicle rows for returning customers.
+  const vehicle = (input.vehicleId ? await getVehicleById(input.vehicleId) : null)
+    ?? await findOrCreateVehicle({ vin: v.vin ?? null, year: v.year ?? null, make: v.make ?? null, model: v.model ?? null, color: v.color ?? null })
 
   const vehicleLabel = [v.year, v.make, v.model].filter(Boolean).join(' ') || v.vin || 'vehicle'
   // Selected service labels (standard package names + custom "Other" text), for the

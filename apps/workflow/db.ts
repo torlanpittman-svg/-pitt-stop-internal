@@ -75,6 +75,12 @@ export async function deactivateEmployee(id: string): Promise<void> {
   await db.update(employees).set({ active: false }).where(eq(employees.id, id))
 }
 
+export async function getVehicleById(id: string): Promise<VehicleRow | null> {
+  const db = getDb()
+  const [row] = await db.select().from(vehicles).where(eq(vehicles.id, id)).limit(1)
+  return row ?? null
+}
+
 export async function getEmployee(id: string): Promise<EmployeeRow | null> {
   const db = getDb()
   const [row] = await db.select().from(employees).where(eq(employees.id, id)).limit(1)

@@ -12,6 +12,7 @@ import { useRouter } from 'next/navigation'
 import PhotoInput from '@/app/components/PhotoInput'
 import NavHeader from '@/app/components/NavHeader'
 import { type JobLine } from '@/apps/quick-entry/job-lines'
+import { type CustomerMatch, type CustVehicle } from '@/apps/quick-entry/customers'
 
 type Phase = 'details' | 'services' | 'review' | 'submitting' | 'done'
 interface Tier { size: string; condition: string; startPriceCents: number }
@@ -41,9 +42,16 @@ export default function QuickEntryFlow() {
   const [vinStatus, setVinStatus] = useState<'idle' | 'reading' | 'ok' | 'error' | 'review'>('idle')
   const [vinPhotoUrl, setVinPhotoUrl] = useState<string | null>(null)  // original VIN photo preview
 
+  // Returning-customer autofill
+  const [matches, setMatches] = useState<CustomerMatch[]>([])
+  const [custVehicles, setCustVehicles] = useState<CustVehicle[]>([])
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null)
+  const [vehicleMode, setVehicleMode] = useState<'new' | 'existing' | 'pick'>('new')
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   // Identification is VIN-photo only (camera or upload). Plate lookup / manual entry are
   // removed from the employee UI (provider code + DB kept, feature-flag disabled).
-  type IdMethod = 'vin_camera' | 'vin_upload'
+  type IdMethod = 'vin_camera' | 'vin_upload' | 'returning_vehicle'
   const idMethodRef = useRef<IdMethod>('vin_camera')
   const audit = useRef({ rawOcrVin: '' as string, autoIdentified: false, vehicleEdited: false })
   const markVehicleEdited = () => { if (audit.current.autoIdentified) audit.current.vehicleEdited = true }
@@ -118,6 +126,36 @@ export default function QuickEntryFlow() {
     else { setVinStatus('idle'); setVinMsg(null) }
   }, [decodeVinValue])
 
+  // ── Returning-customer search + selection ──────────────────────────────────
+  const searchCustomers = useCallback((q: string) => {
+    if (searchTimer.current) clearTimeout(searchTimer.current)
+    if (q.trim().length < 2) { setMatches([]); return }
+    searchTimer.current = setTimeout(async () => {
+      try { const d = await (await fetch(`/api/quick-entry/customers?q=${encodeURIComponent(q.trim())}`)).json(); setMatches(d.customers ?? []) }
+      catch { /* ignore */ }
+    }, 300)
+  }, [])
+  const selectVehicle = useCallback((vh: CustVehicle) => {
+    setVeh({ vin: vh.vin ?? '', year: vh.year ?? '', make: vh.make ?? '', model: vh.model ?? '', color: '' })
+    setSelectedVehicleId(vh.id); setVehicleMode('existing')
+    setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null })
+    idMethodRef.current = 'returning_vehicle'; audit.current.autoIdentified = true
+    setVinStatus('ok'); setVinMsg(`Saved vehicle ✓ ${vh.label}`)
+  }, [])
+  const addNewVehicle = useCallback(() => {
+    setSelectedVehicleId(null); setVeh({ vin: '', year: '', make: '', model: '', color: '' })
+    setVehicleMode('new'); setVinStatus('idle'); setVinMsg(null)
+    setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null })
+    idMethodRef.current = 'vin_camera'
+  }, [])
+  const selectCustomer = useCallback((m: CustomerMatch) => {
+    setCust({ first: m.first, last: m.last, phone: m.phone ?? '', email: m.email ?? '' })
+    setCustVehicles(m.vehicles); setMatches([])
+    if (m.vehicles.length === 1) selectVehicle(m.vehicles[0])
+    else if (m.vehicles.length > 1) { setVehicleMode('pick'); setSelectedVehicleId(null) }
+    else addNewVehicle()
+  }, [selectVehicle, addNewVehicle])
+
   // ── Service selection ───────────────────────────────────────────────────────
   // Pure tap-to-select: no price, no size/condition tiers. Tapping a service toggles it.
   const addLine = (l: Omit<JobLine, 'key'>) => setLines((xs) => [...xs, { ...l, key: `k${keySeq++}` }])
@@ -140,6 +178,7 @@ export default function QuickEntryFlow() {
         body: JSON.stringify({
           customerName: `${cust.first} ${cust.last}`.trim(), customerPhone: cust.phone || null, customerEmail: cust.email || null,
           vehicle: { vin: veh.vin || null, year: veh.year || null, make: veh.make || null, model: veh.model || null, color: veh.color || null },
+          vehicleId: vehicleMode === 'existing' ? selectedVehicleId : null,  // reuse the exact saved vehicle (no duplicate)
           lines: lines
             .filter((l) => l.kind !== 'custom' || l.name.trim())  // drop empty "Other" lines
             // Quick Entry ignores pricing: no size/condition, price 0 (set later in estimating/invoicing)
@@ -159,7 +198,7 @@ export default function QuickEntryFlow() {
       if (!res.ok || !d.ok) throw new Error(d.error || 'Could not create the Job')
       setResult({ orderNumber: d.orderNumber, serviceOrderId: d.serviceOrderId }); setPhase('done')
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); setPhase('review') }
-  }, [cust, veh, lines, tech])
+  }, [cust, veh, lines, tech, vehicleMode, selectedVehicleId])
 
   const input = 'w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500'
 
@@ -176,59 +215,101 @@ export default function QuickEntryFlow() {
             <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Customer</p>
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-2">
-                <input className={input} placeholder="First name *" value={cust.first} onChange={(e) => setCust({ ...cust, first: e.target.value })} />
-                <input className={input} placeholder="Last name" value={cust.last} onChange={(e) => setCust({ ...cust, last: e.target.value })} />
+                <input className={input} placeholder="First name *" value={cust.first} onChange={(e) => { setCust({ ...cust, first: e.target.value }); searchCustomers(e.target.value) }} />
+                <input className={input} placeholder="Last name" value={cust.last} onChange={(e) => { setCust({ ...cust, last: e.target.value }); searchCustomers(`${cust.first} ${e.target.value}`.trim()) }} />
               </div>
-              <input className={input} placeholder="Phone number" inputMode="tel" value={cust.phone} onChange={(e) => setCust({ ...cust, phone: e.target.value })} />
-              <input className={input} placeholder="Email" inputMode="email" autoCapitalize="off" value={cust.email} onChange={(e) => setCust({ ...cust, email: e.target.value })} />
+              <input className={input} placeholder="Phone number" inputMode="tel" value={cust.phone} onChange={(e) => { setCust({ ...cust, phone: e.target.value }); searchCustomers(e.target.value) }} />
+              <input className={input} placeholder="Email" inputMode="email" autoCapitalize="off" value={cust.email} onChange={(e) => { setCust({ ...cust, email: e.target.value }); searchCustomers(e.target.value) }} />
             </div>
+
+            {/* Returning-customer matches */}
+            {matches.length > 0 && (
+              <div className="mt-2 rounded-2xl bg-gray-900 border border-gray-800 divide-y divide-gray-800 overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-1.5">
+                  <span className="text-gray-500 text-[11px] uppercase tracking-widest">Returning customers</span>
+                  <button onClick={() => setMatches([])} className="text-gray-600 text-xs">Dismiss</button>
+                </div>
+                {matches.map((m, i) => (
+                  <button key={i} onClick={() => selectCustomer(m)} className="w-full text-left px-3 py-2.5 active:bg-gray-800">
+                    <p className="text-white text-sm font-semibold">{m.name || `${m.first} ${m.last}`.trim()}</p>
+                    <p className="text-gray-500 text-xs">{[m.phone, m.email].filter(Boolean).join(' · ') || 'no contact'}</p>
+                    {m.vehicles.length > 0 && <p className="text-gray-400 text-xs mt-0.5 truncate">{m.vehicles.map((v) => v.label).join(' · ')}</p>}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div>
-            <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Vehicle — VIN Photo</p>
+            <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Vehicle</p>
 
-            {/* Primary = take a photo (normal workflow). Secondary link = upload (fallback).
-                Same OCR pipeline; both auto-run OCR on selection. */}
-            <PhotoInput immediate cameraOnly cameraLabel="📷 Take Photo of VIN" onCapture={(f) => onVinPhoto(f, 'vin_camera')} busy={vinBusy} />
-            <div className="mt-2">
-              <PhotoInput immediate uploadOnly asLink uploadLabel="Upload a photo instead" onCapture={(f) => onVinPhoto(f, 'vin_upload')} busy={vinBusy} />
-            </div>
-
-            {/* Original photo preview — stays visible for review/correction */}
-            {vinPhotoUrl && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={vinPhotoUrl} alt="VIN photo" className="mt-3 w-full max-h-56 object-contain rounded-2xl bg-gray-900 border border-gray-800" />
-            )}
-
-            {/* VIN status */}
-            {vinBusy && (
-              <div className="mt-2 flex items-center gap-2 rounded-xl bg-blue-950/40 border border-blue-800/50 px-3 py-2">
-                <span className="w-4 h-4 border-2 border-blue-300 border-t-transparent rounded-full animate-spin" />
-                <span className="text-blue-200 text-sm">{vinMsg ?? 'Reading VIN…'}</span>
-              </div>
-            )}
-            {!vinBusy && vinStatus === 'ok' && (
-              <div className="mt-2 rounded-xl bg-green-950/40 border border-green-800/50 px-3 py-2 text-green-300 text-sm">{vinMsg}</div>
-            )}
-            {!vinBusy && vinStatus === 'error' && (
-              <div className="mt-2 rounded-xl bg-red-950/40 border border-red-800/50 px-3 py-2 text-red-300 text-sm">{vinMsg}</div>
-            )}
-            {!vinBusy && vinStatus === 'review' && (
-              <div className="mt-2 rounded-xl bg-amber-950/40 border border-amber-700/50 px-3 py-2">
-                <p className="text-amber-300 text-sm font-medium">Review the VIN. We may have misread one or more characters.</p>
-                <p className="text-amber-400/70 text-xs mt-1">Fix only the wrong character(s) below — it rechecks automatically. Or retake / upload a clearer photo.</p>
+            {/* Returning customer with multiple vehicles → pick one or add new */}
+            {vehicleMode === 'pick' && (
+              <div className="space-y-2">
+                <p className="text-gray-500 text-xs">Which vehicle is this?</p>
+                {custVehicles.map((vh) => (
+                  <button key={vh.id} onClick={() => selectVehicle(vh)} className="w-full text-left rounded-xl bg-gray-900 border border-gray-800 px-3 py-3 active:bg-gray-800">
+                    <p className="text-white text-sm font-semibold">{vh.label}</p>
+                    {vh.vin && <p className="text-gray-600 text-xs font-mono">{vh.vin}</p>}
+                  </button>
+                ))}
+                <button onClick={addNewVehicle} className="w-full rounded-xl border border-dashed border-gray-700 px-3 py-3 text-blue-400 text-sm active:bg-gray-800">＋ Add a new vehicle</button>
               </div>
             )}
 
-            {/* Editable VIN — auto-validates/decodes as you correct it (no button to tap) */}
-            <input className={`${input} font-mono tracking-widest mt-2`} placeholder="VIN (17)" autoCapitalize="characters" autoCorrect="off"
-              value={veh.vin} onChange={(e) => onVinEdit(e.target.value)} />
+            {/* Existing saved vehicle → no VIN photo needed */}
+            {vehicleMode === 'existing' && (
+              <div className="space-y-2">
+                <div className="rounded-2xl bg-green-950/30 border border-green-800/40 px-4 py-3">
+                  <p className="text-green-300 text-[11px] uppercase tracking-widest">Saved vehicle</p>
+                  <p className="text-white font-semibold mt-0.5">{[veh.year, veh.make, veh.model].filter(Boolean).join(' ') || 'Vehicle'}</p>
+                  {veh.vin && <p className="text-gray-500 text-xs font-mono mt-0.5">{veh.vin}</p>}
+                </div>
+                <div className="flex gap-4 text-sm">
+                  {custVehicles.length > 1 && <button onClick={() => setVehicleMode('pick')} className="text-gray-400 underline">Use a different vehicle</button>}
+                  <button onClick={addNewVehicle} className="text-blue-400 underline">Add new vehicle</button>
+                </div>
+              </div>
+            )}
 
-            {/* Auto-filled vehicle (editable). No color. */}
-            <div className="grid grid-cols-3 gap-2 mt-2">
-              <input className={input} placeholder="Year" inputMode="numeric" value={veh.year} onChange={(e) => { setVeh({ ...veh, year: e.target.value }); markVehicleEdited() }} />
-              <input className={input} placeholder="Make" value={veh.make} onChange={(e) => { setVeh({ ...veh, make: e.target.value }); markVehicleEdited() }} />
-              <input className={input} placeholder="Model" value={veh.model} onChange={(e) => { setVeh({ ...veh, model: e.target.value }); markVehicleEdited() }} />
-            </div>
+            {/* New vehicle → normal Take/Upload VIN photo flow */}
+            {vehicleMode === 'new' && (
+              <>
+                <p className="text-gray-500 text-xs mb-2">VIN Photo</p>
+                <PhotoInput immediate cameraOnly cameraLabel="📷 Take Photo of VIN" onCapture={(f) => onVinPhoto(f, 'vin_camera')} busy={vinBusy} />
+                <div className="mt-2">
+                  <PhotoInput immediate uploadOnly asLink uploadLabel="Upload a photo instead" onCapture={(f) => onVinPhoto(f, 'vin_upload')} busy={vinBusy} />
+                </div>
+                {vinPhotoUrl && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={vinPhotoUrl} alt="VIN photo" className="mt-3 w-full max-h-56 object-contain rounded-2xl bg-gray-900 border border-gray-800" />
+                )}
+                {vinBusy && (
+                  <div className="mt-2 flex items-center gap-2 rounded-xl bg-blue-950/40 border border-blue-800/50 px-3 py-2">
+                    <span className="w-4 h-4 border-2 border-blue-300 border-t-transparent rounded-full animate-spin" />
+                    <span className="text-blue-200 text-sm">{vinMsg ?? 'Reading VIN…'}</span>
+                  </div>
+                )}
+                {!vinBusy && vinStatus === 'ok' && (
+                  <div className="mt-2 rounded-xl bg-green-950/40 border border-green-800/50 px-3 py-2 text-green-300 text-sm">{vinMsg}</div>
+                )}
+                {!vinBusy && vinStatus === 'error' && (
+                  <div className="mt-2 rounded-xl bg-red-950/40 border border-red-800/50 px-3 py-2 text-red-300 text-sm">{vinMsg}</div>
+                )}
+                {!vinBusy && vinStatus === 'review' && (
+                  <div className="mt-2 rounded-xl bg-amber-950/40 border border-amber-700/50 px-3 py-2">
+                    <p className="text-amber-300 text-sm font-medium">Review the VIN. We may have misread one or more characters.</p>
+                    <p className="text-amber-400/70 text-xs mt-1">Fix only the wrong character(s) below — it rechecks automatically. Or retake / upload a clearer photo.</p>
+                  </div>
+                )}
+                <input className={`${input} font-mono tracking-widest mt-2`} placeholder="VIN (17)" autoCapitalize="characters" autoCorrect="off"
+                  value={veh.vin} onChange={(e) => onVinEdit(e.target.value)} />
+                <div className="grid grid-cols-3 gap-2 mt-2">
+                  <input className={input} placeholder="Year" inputMode="numeric" value={veh.year} onChange={(e) => { setVeh({ ...veh, year: e.target.value }); markVehicleEdited() }} />
+                  <input className={input} placeholder="Make" value={veh.make} onChange={(e) => { setVeh({ ...veh, make: e.target.value }); markVehicleEdited() }} />
+                  <input className={input} placeholder="Model" value={veh.model} onChange={(e) => { setVeh({ ...veh, model: e.target.value }); markVehicleEdited() }} />
+                </div>
+              </>
+            )}
           </div>
           <div className="fixed bottom-0 inset-x-0 p-4 bg-gray-950/95 border-t border-gray-900">
             <button disabled={!cust.first.trim()} onClick={() => setPhase('services')}
@@ -353,7 +434,7 @@ export default function QuickEntryFlow() {
           <p className="text-2xl font-bold">Job created</p>
           <p className="text-gray-300">The Job is on the Work Board.</p>
           <button onClick={() => router.push(`/work-board?new=${result.serviceOrderId}`)} className="mt-3 w-full max-w-xs h-14 rounded-2xl bg-white text-black text-lg font-bold">View Work Board</button>
-          <button onClick={() => { setCust({ first: '', last: '', phone: '', email: '' }); setVeh({ vin: '', year: '', make: '', model: '', color: '' }); setLines([]); setTech(new Set()); setResult(null); setVinMsg(null); setVinStatus('idle'); setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null }); setError(null); setPhase('details') }}
+          <button onClick={() => { setCust({ first: '', last: '', phone: '', email: '' }); setVeh({ vin: '', year: '', make: '', model: '', color: '' }); setLines([]); setTech(new Set()); setResult(null); setVinMsg(null); setVinStatus('idle'); setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null }); setMatches([]); setCustVehicles([]); setSelectedVehicleId(null); setVehicleMode('new'); setError(null); setPhase('details') }}
             className="w-full max-w-xs h-12 rounded-2xl border border-gray-700 text-gray-300">New Quick Entry</button>
         </div>
       )}
