@@ -5,6 +5,7 @@ import Link from 'next/link'
 import type { OrderWithContext } from '@/apps/workflow/db'
 import VehicleCard from './VehicleCard'
 import IdentityBar, { useIdentity } from '@/app/components/IdentityBar'
+import NavHeader from '@/app/components/NavHeader'
 
 const POLL_INTERVAL = 10_000
 const HIGHLIGHT_MS  = 4_000
@@ -77,6 +78,8 @@ export default function WorkBoardClient({
 
   return (
     <div className="min-h-screen bg-gray-950 flex flex-col">
+
+      <NavHeader title="Work Board" />
 
       {/* Success toast */}
       {showToast && (

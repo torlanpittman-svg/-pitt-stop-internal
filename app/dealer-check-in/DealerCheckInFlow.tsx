@@ -13,7 +13,7 @@
  */
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
+import NavHeader from '@/app/components/NavHeader'
 import { newClientRequestId, blankFields } from '@/apps/dealer-checkin/scan-session'
 import PhotoInput from '@/app/components/PhotoInput'
 
@@ -355,16 +355,9 @@ export default function DealerCheckInFlow() {
   // ── UI ──────────────────────────────────────────────────────────────────────
   return (
     <main className="min-h-screen bg-black text-white flex flex-col">
-      <header className="flex items-center gap-2 px-4 py-3 text-sm shrink-0">
-        <Link href="/" className="text-gray-500">← Pitt Stop</Link>
-        <span className="text-gray-700">›</span>
-        <span className="text-gray-300 font-medium">Dealer Check-In</span>
-        {phase !== 'entry' && phase !== 'submitting' && (
-          <button onClick={reset} className="ml-auto text-gray-400 border border-gray-700 rounded-full px-3 py-1 active:bg-gray-800">
-            Start Over
-          </button>
-        )}
-      </header>
+      <NavHeader title="Dealer Check-In" right={phase !== 'entry' && phase !== 'submitting' ? (
+        <button onClick={reset} className="text-gray-400 border border-gray-700 rounded-full px-3 py-1 active:bg-gray-800">Start Over</button>
+      ) : undefined} />
 
       {/* Entry: Take Photo (specialized in-app portrait-guide camera, unchanged)
           / Upload Photo (shared PhotoInput). normalize={false} keeps the exact

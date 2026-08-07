@@ -1,8 +1,8 @@
 'use client'
 
-import Link from 'next/link'
 import { useState, useCallback } from 'react'
 import type { DailyProduction } from '@/apps/workflow/production'
+import NavHeader from '@/app/components/NavHeader'
 
 export default function ProductionClient({ initial, today }: { initial: DailyProduction; today: string }) {
   const [data, setData] = useState<DailyProduction>(initial)
@@ -21,10 +21,10 @@ export default function ProductionClient({ initial, today }: { initial: DailyPro
 
   return (
     <main className="min-h-screen bg-gray-950 text-white">
+      <NavHeader back={{ href: '/work-board', label: 'Work Board' }} />
       <div className="max-w-5xl mx-auto px-6 py-8">
         <div className="flex items-center gap-3 mb-6">
-          <Link href="/work-board" className="text-gray-500 text-sm">← Work Board</Link>
-          <h1 className="text-2xl font-bold ml-2">Daily Production</h1>
+          <h1 className="text-2xl font-bold">Daily Production</h1>
           <input type="date" value={date} onChange={(e) => load(e.target.value)}
             className="ml-auto bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm" />
         </div>

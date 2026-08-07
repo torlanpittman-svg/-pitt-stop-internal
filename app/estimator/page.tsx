@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
+import NavHeader from '@/app/components/NavHeader'
 
 const SERVICE_OPTIONS = [
   { value: 'full_detail',      label: 'Full Detail',        hint: 'Interior + exterior' },
@@ -47,14 +47,7 @@ export default function EstimatorIntakePage() {
 
   return (
     <main className="min-h-screen bg-gray-950 flex flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between px-5 pt-6 pb-2 shrink-0">
-        <Link href="/" className="text-gray-500 text-sm hover:text-gray-300 transition-colors">
-          ← Pitt Stop OS
-        </Link>
-        <span className="text-white font-semibold">New Estimate</span>
-        <div className="w-20" />
-      </div>
+      <NavHeader title="New Estimate" />
 
       {/* Step indicator */}
       <div className="px-5 pt-2 pb-4 shrink-0">

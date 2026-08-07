@@ -9,8 +9,8 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
 import PhotoInput from '@/app/components/PhotoInput'
+import NavHeader from '@/app/components/NavHeader'
 import { type JobLine } from '@/apps/quick-entry/job-lines'
 
 type Phase = 'details' | 'services' | 'review' | 'submitting' | 'done'
@@ -165,12 +165,7 @@ export default function QuickEntryFlow() {
 
   return (
     <main className="min-h-screen bg-gray-950 text-white flex flex-col">
-      <header className="flex items-center gap-2 px-4 py-3 text-sm shrink-0 border-b border-gray-900">
-        <Link href="/" className="text-gray-500">← Pitt Stop</Link>
-        <span className="text-gray-700">›</span>
-        <span className="text-gray-300 font-medium">Quick Entry</span>
-        {phase !== 'done' && phase !== 'submitting' && <span className="ml-auto text-gray-600 text-xs">{phase === 'details' ? 'Step 1 · Details' : phase === 'services' ? 'Step 2 · Services' : 'Step 3 · Review'}</span>}
-      </header>
+      <NavHeader title={`Quick Entry${phase === 'details' ? ' · Details' : phase === 'services' ? ' · Services' : phase === 'review' ? ' · Review' : ''}`} />
 
       {error && <p className="text-red-400 text-sm text-center px-5 py-2">{error}</p>}
 

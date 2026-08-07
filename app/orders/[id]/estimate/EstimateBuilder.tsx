@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback } from 'react'
+import NavHeader from '@/app/components/NavHeader'
 
 type LineType = 'labor' | 'part' | 'fee' | 'sublet'
 type Approval = 'pending' | 'approved' | 'declined' | 'deferred'
@@ -66,9 +67,9 @@ export default function EstimateBuilder({ header, initial }: { header: Header; i
 
   return (
     <main className="min-h-screen bg-gray-950 text-white">
+      <NavHeader back={{ href: `/orders/${header.id}`, label: 'Job' }} />
       <div className="max-w-4xl mx-auto px-5 py-6">
-        <a href={`/orders/${header.id}`} className="text-gray-500 text-sm">← Job</a>
-        <div className="mt-2 mb-4">
+        <div className="mt-1 mb-4">
           <h1 className="text-2xl font-bold">Estimate</h1>
           <p className="text-gray-400">{header.customer} · {header.vehicle}</p>
           {header.requested.length > 0 && <p className="text-gray-600 text-xs mt-1">Requested: {header.requested.join(', ')}</p>}

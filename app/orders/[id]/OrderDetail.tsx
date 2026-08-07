@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import type { OrderWithContext, ServiceOrderEvent } from '@/apps/workflow/db'
 import { useIdentity } from '@/app/components/IdentityBar'
+import NavHeader from '@/app/components/NavHeader'
 
 // ── Status display config ─────────────────────────────────────────────────────
 
@@ -457,15 +458,10 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
   return (
     <main className="min-h-screen bg-gray-950 flex flex-col">
 
-      {/* Header */}
-      <div className="px-6 pt-10 pb-6">
-        <button
-          onClick={() => router.push('/work-board')}
-          className="text-gray-500 text-sm mb-6 block"
-        >
-          ← Work Board
-        </button>
+      <NavHeader back={{ href: '/work-board', label: 'Work Board' }} />
 
+      {/* Header */}
+      <div className="px-6 pt-6 pb-6">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h1 className="text-white font-bold text-2xl leading-tight truncate">{title}</h1>
