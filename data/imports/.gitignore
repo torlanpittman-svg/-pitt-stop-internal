@@ -1,0 +1,5 @@
+# Customer CSV exports contain PII — never commit them.
+# Ignore everything in this folder except the docs that explain it.
+*
+!.gitignore
+!README.md
