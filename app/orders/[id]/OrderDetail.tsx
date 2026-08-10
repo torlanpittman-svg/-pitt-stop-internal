@@ -232,15 +232,17 @@ function ServicePicker({ onAdd, onCancel, busy, error }: {
 
 // ── Completion checklist ("Is this vehicle truly finished?") ──────────────────
 
-function CompletionModal({ services, qcRequired, busy, error, onConfirm, onCancel }: {
+function CompletionModal({ services, qcRequired, busy, error, onConfirm, onCancel, initialAck }: {
   services: string[]
   qcRequired: boolean
   busy: boolean
   error: string | null
   onConfirm: (p: { servicesAck: string[]; noRemaining: boolean; finalTouches: boolean; qcPassed: boolean }) => void
   onCancel: () => void
+  initialAck?: Set<string>
 }) {
-  const [ack, setAck] = useState<Set<string>>(new Set())
+  // Pre-seed with services the employee already checked off on the to-do list.
+  const [ack, setAck] = useState<Set<string>>(() => new Set(initialAck ?? []))
   const [noRemaining, setNoRemaining] = useState(false)
   const [finalTouches, setFinalTouches] = useState(false)
   const [qcPassed, setQcPassed] = useState(false)
@@ -339,6 +341,7 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
   const [reopening,   setReopening]   = useState(false)   // reopen (reason + PIN) open
   const [reopenBusy,  setReopenBusy]  = useState(false)
   const [reopenMsg,   setReopenMsg]   = useState<string | null>(null)
+  const [acked,       setAcked]       = useState<Set<string>>(new Set())  // to-do checkoffs
   const identity = useIdentity()
   const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
 
@@ -349,6 +352,22 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
   const vehicleName = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Unknown Vehicle'
   const title       = order.customerName?.trim() || vehicleName || 'Unknown Customer'
   const services    = order.services ?? []
+
+  // Employee-facing simplifications:
+  // • one status read: is the Job still active, or finished (Ready) / gone.
+  const ACTIVE_STATUSES = ['arrived', 'in_progress', 'paused', 'drying', 'qc_ready']
+  const isActive = ACTIVE_STATUSES.includes(order.status)
+  const simpleStatus =
+    order.status === 'ready'     ? { label: 'Ready',     color: 'text-green-400' } :
+    order.status === 'delivered' ? { label: 'Delivered', color: 'text-gray-400'  } :
+    order.status === 'cancelled' ? { label: 'Cancelled', color: 'text-red-400'   } :
+                                   { label: 'Active',    color: 'text-blue-400'  }
+  // • Notes: show genuine notes only, not the auto-generated Quick Entry summary.
+  const rawNotes  = (order.notes ?? '').trim()
+  const showNotes = rawNotes.length > 0 && !/^quick entry ·/i.test(rawNotes)
+  const toggleAck = (s: string) => setAcked((p) => { const n = new Set(p); n.has(s) ? n.delete(s) : n.add(s); return n })
+  // Finish Job = the true completion flow, straight from the current active state.
+  const finishAction: ActionConfig = { label: 'Finish Job', newStatus: 'ready', style: 'bg-green-600', needsEmployee: false }
 
   // Add services to this order (display-only). Attributes to the active tech when one
   // is working, else 'staff'. Confirms before adding an already-present service.
@@ -460,41 +479,30 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
 
       <NavHeader back={{ href: '/work-board', label: 'Work Board' }} />
 
-      {/* Header */}
-      <div className="px-6 pt-6 pb-6">
+      {/* Header — customer/dealer + vehicle + one simple status (active vs finished) */}
+      <div className="px-6 pt-6 pb-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h1 className="text-white font-bold text-2xl leading-tight truncate">{title}</h1>
             <p className="text-gray-400 text-base mt-0.5">
               {vehicleName}{vehicle.color ? ` · ${vehicle.color}` : ''}
             </p>
-            {/* SO number kept for reference/debugging (not shown on the Work Board card) */}
-            <p className="text-gray-700 text-xs mt-1">{order.orderNumber}</p>
           </div>
-          <span className={`flex-none font-bold text-base mt-1 ${statusCfg.color}`}>
-            {statusCfg.label}
+          <span className={`flex-none font-bold text-base mt-1 ${simpleStatus.color}`}>
+            {simpleStatus.label}
           </span>
-        </div>
-
-        {/* Service focus + tech + timer row */}
-        <div className="mt-4 flex items-center gap-3 flex-wrap">
-          {order.serviceFocus && (
-            <span className="text-xs bg-gray-800 text-gray-400 px-2.5 py-1 rounded-full">
-              {FOCUS_LABELS[order.serviceFocus] ?? order.serviceFocus}
-            </span>
-          )}
-          {activeTech && (
-            <span className="text-xs text-gray-400">{activeTech} working</span>
-          )}
-          {order.arrivedAt && (
-            <span className="text-xs text-gray-600">
-              <ElapsedTime from={order.arrivedAt} /> on lot
-            </span>
-          )}
         </div>
       </div>
 
-      {/* Services (operational). Chips + Add Service. */}
+      {/* Notes — genuine notes only (not the auto-generated Quick Entry summary) */}
+      {showNotes && (
+        <div className="px-6 mb-6">
+          <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-2">Notes</h2>
+          <p className="text-gray-300 text-sm whitespace-pre-wrap">{rawNotes}</p>
+        </div>
+      )}
+
+      {/* Services — a simple to-do list the employee checks off */}
       <div className="px-6 mb-6">
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Services</h2>
@@ -502,17 +510,20 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
             className="text-blue-400 text-sm font-semibold active:opacity-70">+ Add Service</button>
         </div>
         {services.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5">
-            {services.map((s, i) => (
-              <span key={i} className="max-w-full truncate text-sm bg-gray-800 text-gray-200 px-2.5 py-1 rounded-lg">{s}</span>
-            ))}
+          <div className="space-y-2">
+            {services.map((s, i) => {
+              const on = acked.has(s)
+              return (
+                <button key={i} onClick={() => toggleAck(s)}
+                  className={`w-full flex items-center gap-3 rounded-2xl border px-4 py-3.5 text-left ${on ? 'bg-green-600/15 border-green-600' : 'bg-gray-900 border-gray-800 active:bg-gray-800'}`}>
+                  <span className={`w-6 h-6 rounded-md flex items-center justify-center text-sm shrink-0 ${on ? 'bg-green-600 text-white' : 'border border-gray-600 text-transparent'}`}>✓</span>
+                  <span className="text-white text-base">{s}</span>
+                </button>
+              )
+            })}
           </div>
         ) : (
-          <p className="text-gray-600 text-sm italic">No services listed.</p>
-        )}
-        {/* Manager-only: open the optional Estimate layer (pricing + approval) */}
-        {isManager && identity.estimateEnabled && (
-          <a href={`/orders/${order.id}/estimate`} className="mt-3 inline-block text-blue-400 text-sm font-semibold active:opacity-70">Build / Edit Estimate →</a>
+          <p className="text-gray-600 text-sm italic">No services yet — tap ＋ Add Service.</p>
         )}
       </div>
 
@@ -523,32 +534,21 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
         </div>
       )}
 
-      {/* Action buttons */}
-      {actions.length > 0 && (
-        <div className="px-6 space-y-3 mb-8">
-          {actions.map(action => (
-            <button
-              key={action.newStatus}
-              onClick={() => handleAction(action)}
-              disabled={pending !== null}
-              className={`w-full text-white font-bold text-xl py-5 rounded-2xl transition-colors active:opacity-80 disabled:opacity-40 ${action.style}`}
-            >
-              {pending === action.newStatus ? 'Updating…' : action.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Manager correction: reopen a Ready Job that wasn't truly finished (reason + PIN) */}
-      {order.status === 'ready' && isManager && (
-        <div className="px-6 -mt-4 mb-8">
-          <button onClick={() => { setReopenMsg(null); setReopening(true) }}
-            className="w-full text-amber-300 font-semibold text-sm py-3 rounded-2xl border border-amber-800/60 bg-amber-950/30 active:opacity-80">
-            Reopen Job (manager)
+      {/* Finish Job — one tap into the true Completion flow, from any active state */}
+      {isActive && (
+        <div className="px-6 mb-8">
+          <button onClick={() => handleAction(finishAction)} disabled={pending !== null || completeBusy}
+            className="w-full text-white font-bold text-xl py-5 rounded-2xl bg-green-600 active:bg-green-700 transition-colors disabled:opacity-40">
+            {completeBusy ? 'Finishing…' : 'Finish Job'}
           </button>
         </div>
       )}
 
+      {order.status === 'ready' && (
+        <div className="px-6 mb-8">
+          <p className="text-green-400 text-center font-semibold py-3">✓ Finished — Ready for pickup</p>
+        </div>
+      )}
       {(order.status === 'delivered' || order.status === 'cancelled') && (
         <div className="px-6 mb-8">
           <p className="text-gray-600 text-center text-base py-4">
@@ -557,34 +557,73 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
         </div>
       )}
 
-      {/* Event timeline */}
-      {order.recentEvents.length > 0 && (
-        <div className="px-6 flex-1">
-          <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
-            Activity
-          </h2>
-          <div className="space-y-2">
-            {order.recentEvents.map((event: ServiceOrderEvent) => (
-              <div key={event.id} className="flex items-start gap-3">
-                <div className="w-1.5 h-1.5 rounded-full bg-gray-700 mt-2 shrink-0" />
-                <div>
-                  <p className="text-gray-300 text-sm">
-                    {event.eventType === 'reopened'
-                      ? `Reopened${event.employeeName ? ' by ' + event.employeeName : ''}${reopenReason(event.note)}`
-                      : event.eventType === 'completed'
-                        ? `Completed (Ready)${event.employeeName ? ' · ' + event.employeeName : ''}`
-                        : event.eventType === 'service_added'
-                          ? `Service added: ${event.note ?? ''}${event.employeeName ? ` · ${event.employeeName}` : ''}`
-                          : event.newStatus
-                            ? `${event.employeeName ? event.employeeName + ' — ' : ''}${STATUS_CONFIG[event.newStatus]?.label ?? event.newStatus}`
-                            : `${EVENT_LABELS[event.eventType] ?? event.eventType}${event.employeeName ? ` · ${event.employeeName}` : ''}`
-                    }
-                  </p>
-                  <p className="text-gray-600 text-xs"><EventTime date={event.createdAt} /></p>
-                </div>
-              </div>
-            ))}
+      {/* ── Manager controls (detailed) — hidden from employees, backend untouched ── */}
+      {isManager && (
+        <div className="px-6 mt-2 mb-8 border-t border-gray-900 pt-5">
+          <h2 className="text-gray-600 text-xs font-semibold uppercase tracking-widest mb-3">Manager controls</h2>
+
+          {/* precise status + focus + tech + timer + SO number */}
+          <div className="text-xs text-gray-500 flex flex-wrap items-center gap-x-3 gap-y-1 mb-4">
+            <span className={statusCfg.color}>{statusCfg.label}</span>
+            {order.serviceFocus && <span className="bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">{FOCUS_LABELS[order.serviceFocus] ?? order.serviceFocus}</span>}
+            {activeTech && <span>{activeTech} working</span>}
+            {order.arrivedAt && <span className="text-gray-600"><ElapsedTime from={order.arrivedAt} /> on lot</span>}
+            <span className="text-gray-700 ml-auto">{order.orderNumber}</span>
           </div>
+
+          {/* granular status actions (Start Work, Pause, QC, Deliver, …) */}
+          {actions.length > 0 && (
+            <div className="space-y-2 mb-4">
+              {actions.map(action => (
+                <button key={action.newStatus} onClick={() => handleAction(action)} disabled={pending !== null}
+                  className={`w-full text-white font-semibold text-base py-3.5 rounded-2xl active:opacity-80 disabled:opacity-40 ${action.style}`}>
+                  {pending === action.newStatus ? 'Updating…' : action.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* reopen a Ready Job that wasn't truly finished (reason + PIN) */}
+          {order.status === 'ready' && (
+            <button onClick={() => { setReopenMsg(null); setReopening(true) }}
+              className="w-full text-amber-300 font-semibold text-sm py-3 rounded-2xl border border-amber-800/60 bg-amber-950/30 active:opacity-80 mb-4">
+              Reopen Job
+            </button>
+          )}
+
+          {/* optional Estimate layer (pricing + approval) */}
+          {identity.estimateEnabled && (
+            <a href={`/orders/${order.id}/estimate`} className="inline-block text-blue-400 text-sm font-semibold active:opacity-70 mb-4">Build / Edit Estimate →</a>
+          )}
+
+          {/* activity / audit timeline */}
+          {order.recentEvents.length > 0 && (
+            <div className="mt-2">
+              <h3 className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">Activity</h3>
+              <div className="space-y-2">
+                {order.recentEvents.map((event: ServiceOrderEvent) => (
+                  <div key={event.id} className="flex items-start gap-3">
+                    <div className="w-1.5 h-1.5 rounded-full bg-gray-700 mt-2 shrink-0" />
+                    <div>
+                      <p className="text-gray-300 text-sm">
+                        {event.eventType === 'reopened'
+                          ? `Reopened${event.employeeName ? ' by ' + event.employeeName : ''}${reopenReason(event.note)}`
+                          : event.eventType === 'completed'
+                            ? `Completed (Ready)${event.employeeName ? ' · ' + event.employeeName : ''}`
+                            : event.eventType === 'service_added'
+                              ? `Service added: ${event.note ?? ''}${event.employeeName ? ` · ${event.employeeName}` : ''}`
+                              : event.newStatus
+                                ? `${event.employeeName ? event.employeeName + ' — ' : ''}${STATUS_CONFIG[event.newStatus]?.label ?? event.newStatus}`
+                                : `${EVENT_LABELS[event.eventType] ?? event.eventType}${event.employeeName ? ` · ${event.employeeName}` : ''}`
+                        }
+                      </p>
+                      <p className="text-gray-600 text-xs"><EventTime date={event.createdAt} /></p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -615,6 +654,7 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
           error={completeMsg}
           onConfirm={completeJob}
           onCancel={() => setCompleting(false)}
+          initialAck={acked}
         />
       )}
 

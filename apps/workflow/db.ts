@@ -24,11 +24,15 @@ export type OrderWithContext = ServiceOrderRow & {
 }
 
 // ── Status transition rules ────────────────────────────────────────────────────
+// `ready` is reachable directly from every active state so the simplified employee
+// "Finish Job" can complete a Job without first stepping through Start Work / QC.
+// This is additive — the granular manager transitions are all still allowed, and
+// the completion GATE (validateCompletion) still runs on any → ready.
 const ALLOWED_TRANSITIONS: Record<string, string[]> = {
-  arrived:    ['in_progress', 'cancelled'],
-  in_progress:['paused', 'drying', 'qc_ready', 'cancelled'],
-  paused:     ['in_progress', 'cancelled'],
-  drying:     ['qc_ready', 'in_progress'],
+  arrived:    ['in_progress', 'ready', 'cancelled'],
+  in_progress:['paused', 'drying', 'qc_ready', 'ready', 'cancelled'],
+  paused:     ['in_progress', 'ready', 'cancelled'],
+  drying:     ['qc_ready', 'ready', 'in_progress'],
   qc_ready:   ['ready', 'in_progress'],
   ready:      ['delivered'],
   delivered:  [],
