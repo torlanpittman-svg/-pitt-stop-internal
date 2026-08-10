@@ -369,6 +369,18 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
   // Finish Job = the true completion flow, straight from the current active state.
   const finishAction: ActionConfig = { label: 'Finish Job', newStatus: 'ready', style: 'bg-green-600', needsEmployee: false }
 
+  // Refetch the FULL order context (vehicle + assignments + events). The mutation
+  // APIs (transition / services / reopen) return a bare service_orders row, so we
+  // must reload() here — never setOrder() that partial row, or the next render
+  // dereferences order.vehicle and crashes into a dead-end error page.
+  const reload = useCallback(async () => {
+    const res = await fetch(`/api/workflow/orders/${order.id}`, { cache: 'no-store' })
+    if (res.ok) {
+      const data = await res.json()
+      setOrder(data.order)
+    }
+  }, [order.id])
+
   // Add services to this order (display-only). Attributes to the active tech when one
   // is working, else 'staff'. Confirms before adding an already-present service.
   const addServices = useCallback(async (names: string[], confirmDuplicates = false) => {
@@ -387,18 +399,10 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
         return
       }
       if (!res.ok || !data.ok) { setAddError(data.error ?? 'Could not add the service.'); return }
-      setOrder(data.order)          // update the detail page immediately
       setAddingService(false)
+      await reload()                // full-context refetch (not the bare API row)
     } catch { setAddError('Network error — try again.') } finally { setAddBusy(false) }
-  }, [order.id, activeTech])
-
-  const reload = useCallback(async () => {
-    const res = await fetch(`/api/workflow/orders/${order.id}`, { cache: 'no-store' })
-    if (res.ok) {
-      const data = await res.json()
-      setOrder(data.order)
-    }
-  }, [order.id])
+  }, [order.id, activeTech, reload])
 
   const doTransition = useCallback(async (action: ActionConfig, employeeName: string | null) => {
     setPending(action.newStatus)
@@ -451,9 +455,13 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
         return
       }
       if (!res.ok) { setCompleteMsg(d.error ?? 'Could not mark Ready.'); return }
-      setCompleting(false); setOrder(d.order); await reload()
+      // Success: the Job is Ready (completed_at stamped, counted once). Close the
+      // modal and return to the Work Board — the now-Ready Job leaves the default
+      // Active view and appears under Ready. (Do NOT setOrder the bare API row.)
+      setCompleting(false)
+      router.push('/work-board')
     } catch { setCompleteMsg('Network error — try again.') } finally { setCompleteBusy(false) }
-  }, [order.id, reload])
+  }, [order.id, router])
 
   // Manager correction: reopen a Ready Job (sensitive → reason + PIN step-up).
   const submitReopen = useCallback(async (reason: string, pin: string) => {
@@ -464,7 +472,7 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
       })
       const d = await res.json()
       if (!res.ok || !d.ok) { setReopenMsg(d.error ?? 'Could not reopen.'); return }
-      setReopening(false); setOrder(d.order); await reload()
+      setReopening(false); await reload()   // full-context refetch (not the bare API row)
     } catch { setReopenMsg('Network error — try again.') } finally { setReopenBusy(false) }
   }, [order.id, reload])
 
