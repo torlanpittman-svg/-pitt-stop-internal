@@ -10,18 +10,16 @@ import NavHeader from '@/app/components/NavHeader'
 const POLL_INTERVAL = 10_000
 const HIGHLIGHT_MS  = 4_000
 
-type FilterTab = 'all' | 'active' | 'waiting' | 'finishing'
+type FilterTab = 'active' | 'ready'
 
-const ACTIVE_STATUSES    = new Set(['in_progress', 'paused', 'drying'])
-const WAITING_STATUSES   = new Set(['arrived'])
-const FINISHING_STATUSES = new Set(['qc_ready', 'ready'])
+// Jobs that still require shop work — the DEFAULT board view. A Job leaves this view
+// the instant it completes (becomes Ready); it is not deleted and still counts in
+// Daily Production. Ready Jobs move to the "Ready" tab (pickup/delivery/reopen).
+const ACTIVE_WORK_STATUSES = new Set(['arrived', 'in_progress', 'paused', 'drying', 'qc_ready'])
 
 function filterOrders(orders: OrderWithContext[], tab: FilterTab): OrderWithContext[] {
-  if (tab === 'all')       return orders
-  if (tab === 'active')    return orders.filter(o => ACTIVE_STATUSES.has(o.status))
-  if (tab === 'waiting')   return orders.filter(o => WAITING_STATUSES.has(o.status))
-  if (tab === 'finishing') return orders.filter(o => FINISHING_STATUSES.has(o.status))
-  return orders
+  if (tab === 'ready') return orders.filter(o => o.status === 'ready')
+  return orders.filter(o => ACTIVE_WORK_STATUSES.has(o.status))
 }
 
 export default function WorkBoardClient({
@@ -33,7 +31,7 @@ export default function WorkBoardClient({
 }) {
   const identity = useIdentity()
   const [orders,      setOrders]      = useState<OrderWithContext[]>(initialOrders)
-  const [tab,         setTab]         = useState<FilterTab>('all')
+  const [tab,         setTab]         = useState<FilterTab>('active')
   const [refreshing,  setRefreshing]  = useState(false)
   const [highlightId, setHighlightId] = useState<string | null>(newOrderId ?? null)
   const [showToast,   setShowToast]   = useState(!!newOrderId)
@@ -70,10 +68,8 @@ export default function WorkBoardClient({
   const visible = filterOrders(orders, tab)
 
   const counts = {
-    all:       orders.length,
-    waiting:   orders.filter(o => WAITING_STATUSES.has(o.status)).length,
-    active:    orders.filter(o => ACTIVE_STATUSES.has(o.status)).length,
-    finishing: orders.filter(o => FINISHING_STATUSES.has(o.status)).length,
+    active: orders.filter(o => ACTIVE_WORK_STATUSES.has(o.status)).length,
+    ready:  orders.filter(o => o.status === 'ready').length,
   }
 
   return (
@@ -96,7 +92,10 @@ export default function WorkBoardClient({
         <div>
           <h1 className="text-white font-bold text-2xl leading-tight">Work Board</h1>
           <p className="text-gray-500 text-sm mt-0.5">
-            {orders.length === 0 ? 'No active vehicles' : `${orders.length} vehicle${orders.length !== 1 ? 's' : ''} on lot`}
+            {counts.active === 0
+              ? 'No vehicles need work'
+              : `${counts.active} vehicle${counts.active !== 1 ? 's' : ''} need work`}
+            {counts.ready > 0 ? ` · ${counts.ready} ready` : ''}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -121,10 +120,8 @@ export default function WorkBoardClient({
       <div className="px-4 pb-3 flex gap-2 overflow-x-auto scrollbar-none">
         {(
           [
-            { key: 'all',       label: 'All',       count: counts.all       },
-            { key: 'waiting',   label: 'Waiting',   count: counts.waiting   },
-            { key: 'active',    label: 'Active',    count: counts.active    },
-            { key: 'finishing', label: 'Finishing', count: counts.finishing  },
+            { key: 'active', label: 'Active', count: counts.active },
+            { key: 'ready',  label: 'Ready',  count: counts.ready  },
           ] as { key: FilterTab; label: string; count: number }[]
         ).map(t => (
           <button
@@ -149,9 +146,9 @@ export default function WorkBoardClient({
         {visible.length === 0 ? (
           <div className="flex flex-col items-center justify-center pt-24 gap-3">
             <p className="text-gray-600 text-base">
-              {tab === 'all' ? 'No vehicles on the lot' : `No ${tab} vehicles`}
+              {tab === 'ready' ? 'No finished vehicles yet' : 'No vehicles need work'}
             </p>
-            {tab === 'all' && (
+            {tab === 'active' && (
               <Link
                 href="/quick-entry"
                 className="text-blue-500 text-sm font-medium"
