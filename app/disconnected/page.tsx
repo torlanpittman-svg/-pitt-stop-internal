@@ -13,6 +13,7 @@ export default function DisconnectedPage() {
         </p>
         <Link
           href="/admin/integrations/quickbooks"
+          prefetch={false}
           className="inline-block px-5 py-3 rounded-xl bg-green-600 hover:bg-green-500 text-white font-semibold"
         >
           Reconnect QuickBooks

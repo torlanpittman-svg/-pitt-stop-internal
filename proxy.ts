@@ -23,6 +23,20 @@ export function proxy(request: NextRequest) {
     }
   }
 
+  // Prefetch requests must NOT emit a Basic-Auth challenge: Next.js / the browser
+  // background-prefetch admin <Link>s that can appear on normal pages, and a 401
+  // carrying `WWW-Authenticate: Basic` makes mobile Safari pop the native sign-in
+  // dialog even though the user never navigated to /admin. Deny the prefetch
+  // silently (no challenge) — real navigations below still get the login prompt,
+  // so /admin stays fully protected.
+  const isPrefetch =
+    request.headers.get('next-router-prefetch') === '1' ||
+    request.headers.get('purpose') === 'prefetch' ||
+    /prefetch/i.test(request.headers.get('sec-purpose') ?? '')
+  if (isPrefetch) {
+    return new NextResponse(null, { status: 401 })
+  }
+
   return new NextResponse('Unauthorized', {
     status: 401,
     headers: {

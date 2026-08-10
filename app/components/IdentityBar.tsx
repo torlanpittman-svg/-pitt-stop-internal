@@ -47,7 +47,10 @@ export function useIdentity() {
 export function AdminLink({ className = '' }: { className?: string }) {
   const id = useIdentity()
   if (id.enabled && id.effectiveRole !== 'admin') return null
-  return <Link href="/admin" className={className}>Admin</Link>
+  // prefetch={false}: /admin is Basic-Auth gated. A background prefetch would hit a
+  // 401 and make mobile browsers pop the native sign-in dialog on normal pages.
+  // The link still works on click (a real navigation shows the admin login).
+  return <Link href="/admin" prefetch={false} className={className}>Admin</Link>
 }
 
 const ROLE_LABEL: Record<Role, string> = { employee: '', manager: 'Manager', admin: 'Admin' }
