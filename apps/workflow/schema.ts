@@ -181,6 +181,10 @@ export const jobLineItems = pgTable(
     taxable:      boolean('taxable').notNull().default(false),
     taxCategory:  varchar('tax_category', { length: 30 }).notNull().default('other'),
     sortOrder:    integer('sort_order').notNull().default(0),
+    // Generated fee identity (P-A). `generated`=true fee lines are owned by the fee
+    // engine and reconciled in place by fee_code; never hand-edited or duplicated.
+    generated:    boolean('generated').notNull().default(false),
+    feeCode:      varchar('fee_code', { length: 40 }),                 // 'shop_supplies' | 'card_fee'
     partNumber:   varchar('part_number', { length: 80 }),
     brand:        varchar('brand', { length: 80 }),
     supplier:     varchar('supplier', { length: 120 }),

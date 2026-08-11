@@ -67,6 +67,16 @@ const ADMIN_SECTIONS: AdminSection[] = [
       },
     ],
   },
+  {
+    group: 'Business Settings',
+    links: [
+      {
+        label: 'Fees & Tax',
+        description: 'Shop-supplies + card-processing fees and default tax rate',
+        href: '/admin/settings',
+      },
+    ],
+  },
 ]
 
 export default function AdminPage() {
