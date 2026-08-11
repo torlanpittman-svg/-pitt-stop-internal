@@ -35,12 +35,15 @@ let keySeq = 0
 type BizConfig = { shopSuppliesEnabled: boolean; shopSuppliesBps: number; shopSuppliesCapCents: number; cardFeeEnabled: boolean; cardFeeBps: number; defaultTaxBps: number }
 const pct = (bps: number) => `${(bps / 100).toString()}%`
 const usd = (cents: number) => `$${(cents / 100).toFixed(2)}`
+const dollarsToCents = (s: string) => { const n = parseFloat(String(s).replace(/[^0-9.]/g, '')); return Number.isFinite(n) ? Math.round(n * 100) : 0 }
 
 export default function QuickEntryFlow() {
   const router = useRouter()
   const identity = useIdentity()
   const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
   const [bizCfg, setBizCfg] = useState<BizConfig | null>(null)
+  const [workPrice, setWorkPrice] = useState('')                 // dollars string, manager-only
+  const [pricePreview, setPricePreview] = useState<null | { workPriceCents: number; shopSuppliesCents: number; cardFeeCents: number; cardFeeEnabled: boolean; taxCents: number; needsTaxReview: boolean; totalCents: number }>(null)
   const [phase, setPhase] = useState<Phase>('details')
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -50,6 +53,18 @@ export default function QuickEntryFlow() {
     if (!isManager || bizCfg) return
     fetch('/api/settings/business').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d && !d.error) setBizCfg(d) }).catch(() => {})
   }, [isManager, bizCfg])
+
+  // Live explicit-price preview (manager only, debounced) — uses the real engine.
+  useEffect(() => {
+    if (!isManager) { setPricePreview(null); return }
+    const cents = dollarsToCents(workPrice)
+    if (!cents) { setPricePreview(null); return }
+    const t = setTimeout(() => {
+      fetch('/api/quick-entry/pricing-preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workPriceCents: cents }) })
+        .then((r) => (r.ok ? r.json() : null)).then((d) => { if (d && !d.error) setPricePreview(d) }).catch(() => {})
+    }, 350)
+    return () => clearTimeout(t)
+  }, [workPrice, isManager])
 
   const [cust, setCust] = useState({ first: '', last: '', phone: '', email: '' })
   const [veh, setVeh] = useState({ vin: '', year: '', make: '', model: '', color: '' })
@@ -200,6 +215,8 @@ export default function QuickEntryFlow() {
             // Quick Entry ignores pricing: no size/condition, price 0 (set later in estimating/invoicing)
             .map((l) => ({ catalogId: l.catalogId, kind: l.kind, name: l.name.trim(), size: null, condition: null, priceCents: 0 })),
           techInstructions: SHOW_TECH_INSTRUCTIONS ? [...tech] : [], createdBy: 'quick_entry',
+          // Manager-entered work price (server drops it for non-managers → itemized/$0).
+          workPriceCents: dollarsToCents(workPrice) || null,
           // Vehicle-identification audit (VIN photo only now). No secrets.
           audit: {
             idMethod: idMethodRef.current,
@@ -431,18 +448,31 @@ export default function QuickEntryFlow() {
             </div>
           )}
 
-          {/* P-B1: manager/admin-only, read-only commercial layer preview. Employees never
-              see this. Informational — pricing input arrives in P-B2. No extra taps. */}
+          {/* P-B2: manager/admin-only pricing. Optional Work Price → live engine preview.
+              Employees never see this. Leaving it blank keeps the itemized/$0 path. */}
           {isManager && bizCfg && (
             <div className="rounded-2xl bg-gray-900 border border-gray-800 p-4">
               <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Pricing · manager view</p>
-              <div className="space-y-1.5 text-sm">
-                <div className="flex justify-between"><span className="text-gray-400">Work price</span><span className="text-gray-500">set after check-in</span></div>
-                <div className="flex justify-between"><span className="text-gray-400">Shop supplies</span><span className="text-gray-300">{bizCfg.shopSuppliesEnabled ? `${pct(bizCfg.shopSuppliesBps)} (max ${usd(bizCfg.shopSuppliesCapCents)})` : 'off'}</span></div>
-                <div className="flex justify-between"><span className="text-gray-400">Sales tax</span><span className="text-gray-300">{pct(bizCfg.defaultTaxBps)}</span></div>
-                <div className="flex justify-between"><span className="text-gray-400">Card processing</span><span className="text-gray-300">{bizCfg.cardFeeEnabled ? pct(bizCfg.cardFeeBps) : 'off'}</span></div>
-              </div>
-              <p className="text-gray-600 text-xs mt-2.5">This Job carries a commercial layer. Work price and total are set after check-in.</p>
+              <label className="block">
+                <span className="text-gray-400 text-sm">Work price <span className="text-gray-600">(optional)</span></span>
+                <div className="mt-1 flex items-center rounded-xl bg-gray-800 border border-gray-700 px-3">
+                  <span className="text-gray-500">$</span>
+                  <input value={workPrice} onChange={(e) => setWorkPrice(e.target.value)} inputMode="decimal" placeholder="0.00"
+                    className="flex-1 bg-transparent px-2 py-3 text-white text-base focus:outline-none" />
+                </div>
+              </label>
+              {pricePreview ? (
+                <div className="mt-3 space-y-1.5 text-sm">
+                  <div className="flex justify-between"><span className="text-gray-400">Work price</span><span className="text-gray-200">{usd(pricePreview.workPriceCents)}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">Shop supplies{bizCfg.shopSuppliesEnabled ? ` (${pct(bizCfg.shopSuppliesBps)}, max ${usd(bizCfg.shopSuppliesCapCents)})` : ''}</span><span className="text-gray-200">{usd(pricePreview.shopSuppliesCents)}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">Tax</span><span className={pricePreview.needsTaxReview ? 'text-amber-400' : 'text-gray-200'}>{pricePreview.needsTaxReview ? 'review — pending CPA' : usd(pricePreview.taxCents)}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">Card processing</span><span className="text-gray-200">{pricePreview.cardFeeEnabled ? usd(pricePreview.cardFeeCents) : 'Off'}</span></div>
+                  <div className="border-t border-gray-800 my-1.5" />
+                  <div className="flex justify-between"><span className="text-white font-semibold">Estimated total</span><span className="text-white font-semibold">{usd(pricePreview.totalCents)}</span></div>
+                </div>
+              ) : (
+                <p className="text-gray-600 text-xs mt-2.5">Shop supplies {pct(bizCfg.shopSuppliesBps)} (max {usd(bizCfg.shopSuppliesCapCents)}) · tax {pct(bizCfg.defaultTaxBps)} · card {bizCfg.cardFeeEnabled ? pct(bizCfg.cardFeeBps) : 'off'}. Enter a work price to preview the total, or leave blank.</p>
+              )}
             </div>
           )}
           <div className="fixed bottom-0 inset-x-0 p-4 bg-gray-950/95 border-t border-gray-900 flex items-center gap-3">

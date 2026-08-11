@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   feePercentLabel, eligibleBasisCents, computeShopSupplies, computeCardFee,
-  computeFees, reconcilePlan, type FeeConfig, type ExistingFeeLine,
+  computeFees, reconcilePlan, explicitPretaxTotals, type FeeConfig, type ExistingFeeLine,
 } from './fees'
 
 const CFG = (over: Partial<FeeConfig> = {}): FeeConfig => ({
@@ -68,6 +68,41 @@ describe('computeFees', () => {
   })
   it('shop supplies respects the cap inside computeFees', () => {
     expect(computeFees(500000, CFG())[0].priceCents).toBe(2000)
+  })
+})
+
+describe('explicitPretaxTotals (manager work price + fees/tax on top)', () => {
+  it('$650 → shop supplies $19.50, tax review $0, total $669.50', () => {
+    const t = explicitPretaxTotals(65000, CFG(), 825, 'review')
+    expect(t.workPriceCents).toBe(65000)
+    expect(t.shopSuppliesCents).toBe(1950)          // 3% of $650
+    expect(t.cardFeeCents).toBe(0)                  // card disabled
+    expect(t.needsTaxReview).toBe(true)             // 'review' → do not guess tax
+    expect(t.taxCents).toBe(0)
+    expect(t.nontaxableSubtotalCents).toBe(66950)   // work + shop supplies, both non-taxable(review)
+    expect(t.taxableSubtotalCents).toBe(0)
+    expect(t.totalCents).toBe(66950)                // $669.50 — no double-count of service lines
+  })
+  it('shop supplies capped at $20 for large work prices', () => {
+    const t = explicitPretaxTotals(100000, CFG(), 825, 'review')  // $1000
+    expect(t.shopSuppliesCents).toBe(2000)
+    expect(t.totalCents).toBe(102000)
+  })
+  it('card fee applies on top when enabled', () => {
+    const t = explicitPretaxTotals(65000, CFG({ cardFeeEnabled: true }), 825, 'review')
+    expect(t.cardFeeCents).toBe(1950)
+    expect(t.totalCents).toBe(65000 + 1950 + 1950)  // work + shop + card
+  })
+  it('zero work price → all zero', () => {
+    const t = explicitPretaxTotals(0, CFG(), 825, 'review')
+    expect(t.totalCents).toBe(0); expect(t.shopSuppliesCents).toBe(0)
+  })
+  it('taxable category taxes the work amount (engine supports it; P-B2 defaults to review)', () => {
+    const t = explicitPretaxTotals(65000, CFG(), 825, 'repair_parts')
+    expect(t.taxableSubtotalCents).toBe(65000)                 // work amount taxed
+    expect(t.taxCents).toBe(Math.round(65000 * 825 / 10000))   // 5363
+    // needs_tax_review stays true: the shop-supplies fee line is still 'review' (CPA-pending)
+    expect(t.needsTaxReview).toBe(true)
   })
 })
 

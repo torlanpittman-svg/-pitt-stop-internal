@@ -10,7 +10,7 @@ import {
   computeTotals, rollUpDecision, defaultTaxForType, defaultTaxBps, approvedTitlesToSync, convertSyncsServices,
   type LineType, type ApprovalState, type EstimateStatus, type TaxCategory,
 } from './estimate'
-import { computeFees, eligibleBasisCents, reconcilePlan, type FeeCode } from './fees'
+import { computeFees, eligibleBasisCents, reconcilePlan, explicitPretaxTotals, type FeeCode } from './fees'
 import { getBusinessConfig } from '@/apps/settings/db'
 
 export type EstimateRow = typeof jobEstimates.$inferSelect
@@ -91,7 +91,13 @@ export async function reconcileFees(estimateId: string): Promise<void> {
   const db = getDb()
   const lines = await loadEstimateLines(estimateId)
   const cfg = await getBusinessConfig()
-  const basis = eligibleBasisCents(lines.map((l) => ({ priceCents: l.priceCents, qty: l.qty, generated: l.generated })))
+  const [est] = await db.select({ priceMode: jobEstimates.priceMode, explicitTotalCents: jobEstimates.explicitTotalCents })
+    .from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
+  // Fee basis: for an explicit-price Job the manager's amount IS the work subtotal;
+  // otherwise sum the real (non-generated) line items. Never both (no double-count).
+  const basis = est?.priceMode === 'explicit_pretax' && est.explicitTotalCents != null
+    ? est.explicitTotalCents
+    : eligibleBasisCents(lines.map((l) => ({ priceCents: l.priceCents, qty: l.qty, generated: l.generated })))
   const desired = computeFees(basis, cfg)
   const existingFees = lines
     .filter((l) => l.generated && l.feeCode)
@@ -114,16 +120,39 @@ export async function reconcileFees(estimateId: string): Promise<void> {
   }
 }
 
-/** Recompute generated fees, then cached totals + needs_tax_review from all lines. */
+/** Recompute generated fees, then cached totals — respecting price_mode. */
 export async function recomputeEstimate(estimateId: string): Promise<void> {
   await reconcileFees(estimateId)   // fee lines are upserted BEFORE totals are summed
   const db = getDb()
-  const lines = await loadEstimateLines(estimateId)
-  const [est] = await db.select({ rate: jobEstimates.taxRateBps, discount: jobEstimates.discountCents }).from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
-  const t = computeTotals(lines.map((l) => ({ priceCents: l.priceCents, qty: l.qty, taxable: l.taxable, taxCategory: l.taxCategory })), est?.rate ?? defaultTaxBps(), est?.discount ?? 0)
+  const [est] = await db.select({
+    rate: jobEstimates.taxRateBps, discount: jobEstimates.discountCents,
+    priceMode: jobEstimates.priceMode, explicitTotalCents: jobEstimates.explicitTotalCents,
+    taxCategory: jobEstimates.explicitTaxCategory,
+  }).from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
+
+  let t
+  if (est?.priceMode === 'explicit_pretax' && est.explicitTotalCents != null) {
+    // Manager's amount is the authoritative work subtotal; fees/tax computed on top.
+    // No per-service line prices are fabricated (services remain job_services only).
+    const cfg = await getBusinessConfig()
+    t = explicitPretaxTotals(est.explicitTotalCents, cfg, est.rate ?? defaultTaxBps(), est.taxCategory ?? 'review')
+  } else {
+    // Itemized (today's behavior): totals from the real line items.
+    const lines = await loadEstimateLines(estimateId)
+    t = computeTotals(lines.map((l) => ({ priceCents: l.priceCents, qty: l.qty, taxable: l.taxable, taxCategory: l.taxCategory })), est?.rate ?? defaultTaxBps(), est?.discount ?? 0)
+  }
+
   await db.update(jobEstimates).set({
     taxableSubtotalCents: t.taxableSubtotalCents, nontaxableSubtotalCents: t.nontaxableSubtotalCents,
     taxCents: t.taxCents, totalCents: t.totalCents, needsTaxReview: t.needsTaxReview, updatedAt: new Date(),
+  }).where(eq(jobEstimates.id, estimateId))
+}
+
+/** Set the manager's authoritative pre-fee/pre-tax work price (explicit_pretax mode). */
+export async function setExplicitPrice(estimateId: string, workPriceCents: number, actor: string | null): Promise<void> {
+  await getDb().update(jobEstimates).set({
+    priceMode: 'explicit_pretax', explicitTotalCents: Math.max(0, Math.round(workPriceCents)),
+    pricingSetBy: actor, pricingSetAt: new Date(), updatedAt: new Date(),
   }).where(eq(jobEstimates.id, estimateId))
 }
 

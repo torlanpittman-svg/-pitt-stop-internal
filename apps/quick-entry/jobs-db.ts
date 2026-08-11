@@ -8,7 +8,7 @@ import { quickEntryJobs } from './schema'
 import { getFullCatalog, listTechnicianInstructions, type FullCatalogItem, type TechRow } from './db'
 import { serviceLabels } from './job-lines'
 import { findOrCreateVehicle, getVehicleById, createServiceOrder } from '@/apps/workflow/db'
-import { getOrCreateEstimate, promoteTextServices, recomputeEstimate } from '@/apps/workflow/estimate-db'
+import { getOrCreateEstimate, promoteTextServices, recomputeEstimate, setExplicitPrice } from '@/apps/workflow/estimate-db'
 
 export interface QuickEntryCatalog { packages: FullCatalogItem[]; addons: FullCatalogItem[]; tech: TechRow[] }
 
@@ -47,6 +47,9 @@ export interface CreateJobInput {
   techInstructions?: string[]
   createdBy?: string | null
   audit?: VehicleIdAudit
+  /** Manager/admin-entered authoritative pre-fee/pre-tax work price (cents). The route
+   *  only sets this for a manager/admin actor; null/absent → itemized/$0 as today. */
+  workPriceCents?: number | null
 }
 
 /** Create the job: find/create the vehicle, put it on the Work Board, store the job + lines. */
@@ -97,7 +100,12 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
   try {
     const est = await getOrCreateEstimate(order.id, input.createdBy ?? null)
     await promoteTextServices(est.id, order.id)   // service_orders.services → job_services (deduped)
-    await recomputeEstimate(est.id)               // totals/fees; $0 basis at check-in → no charges
+    if (input.workPriceCents && input.workPriceCents > 0) {
+      // Manager priced this Job: the amount is the authoritative pre-fee/pre-tax work
+      // subtotal (explicit_pretax). No per-service line prices are fabricated.
+      await setExplicitPrice(est.id, input.workPriceCents, input.createdBy ?? null)
+    }
+    await recomputeEstimate(est.id)               // itemized $0, or explicit price + fees/tax
   } catch (err) {
     console.error('[quick-entry] unified estimate build failed (Job still created):', err)
   }
