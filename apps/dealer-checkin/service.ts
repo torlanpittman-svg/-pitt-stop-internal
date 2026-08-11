@@ -23,6 +23,7 @@ import {
 } from '@/apps/quickbooks/invoice-write'
 import {
   extractStockPrefix,
+  matchDealershipByStock,
   formatLineDescription,
   decidePricing,
   normalizeStock,
@@ -177,9 +178,9 @@ function pgCause(err: unknown): { message: string | null; code: string | null; c
 async function resolveDealer(input: CheckInInput) {
   const all = await listDealerships(false)
   if (input.dealershipId) return all.find((d) => d.id === input.dealershipId) ?? null
-  const prefix = extractStockPrefix(input.stockNumber)
-  if (!prefix) return null
-  return all.find((d) => d.stockPrefix.toUpperCase() === prefix) ?? null
+  // Longest matching stock_prefix (supports multi-char prefixes like "AP" → Purdy
+  // Mazda; identical to the old first-letter match for the single-letter dealers).
+  return matchDealershipByStock(input.stockNumber, all)
 }
 
 export interface CheckInPreview {

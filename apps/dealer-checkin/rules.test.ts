@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   extractStockPrefix,
+  matchDealershipByStock,
   formatLineDescription,
   decidePricing,
   selectAppendableInvoice,
@@ -123,6 +124,44 @@ describe('extractStockPrefix', () => {
     expect(extractStockPrefix(null)).toBeNull()
     expect(extractStockPrefix('')).toBeNull()
     expect(extractStockPrefix('123456')).toBeNull()
+  })
+})
+
+describe('matchDealershipByStock (dealer resolution incl. Purdy "AP")', () => {
+  // Mirrors the real prod dealers + the new Purdy Mazda.
+  const dealers = [
+    { id: 's', name: 'Sterling Auto Group', stockPrefix: 'S' },
+    { id: 't', name: 'Sterling Auto Group', stockPrefix: 'T' },
+    { id: 'k', name: 'Sterling Kia', stockPrefix: 'K' },
+    { id: 'u', name: 'Sterling Subaru', stockPrefix: 'U' },
+    { id: 'ap', name: 'Purdy Mazda', stockPrefix: 'AP' },
+  ]
+  const who = (stock: string) => matchDealershipByStock(stock, dealers)?.name ?? null
+
+  it('AP resolves only to Purdy Mazda', () => {
+    expect(who('AP12345')).toBe('Purdy Mazda')
+    expect(who('ap00042')).toBe('Purdy Mazda')   // case-insensitive
+    expect(who(' AP-7 ')).toBe('Purdy Mazda')     // trims
+  })
+  it('existing single-letter dealers resolve exactly as before', () => {
+    expect(who('S515324')).toBe('Sterling Auto Group')
+    expect(who('TJ285137')).toBe('Sterling Auto Group')
+    expect(who('K518991')).toBe('Sterling Kia')
+    expect(who('up003483')).toBe('Sterling Subaru')
+  })
+  it('A-but-not-AP stocks do NOT match Purdy (no over-capture)', () => {
+    expect(who('AT1234')).toBeNull()   // real OCR noise seen in prod — must not hit Purdy
+    expect(who('A9999')).toBeNull()
+  })
+  it('longest prefix wins when prefixes overlap', () => {
+    const overlap = [{ id: 'a', name: 'A Dealer', stockPrefix: 'A' }, { id: 'ap', name: 'Purdy Mazda', stockPrefix: 'AP' }]
+    expect(matchDealershipByStock('AP123', overlap)?.name).toBe('Purdy Mazda')
+    expect(matchDealershipByStock('AB123', overlap)?.name).toBe('A Dealer')
+  })
+  it('no stock / no match → null', () => {
+    expect(who('')).toBeNull()
+    expect(matchDealershipByStock(null, dealers)).toBeNull()
+    expect(who('W71')).toBeNull()
   })
 })
 
