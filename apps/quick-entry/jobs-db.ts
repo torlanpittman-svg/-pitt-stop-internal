@@ -4,7 +4,7 @@
  * appears on /work-board, plus a quick_entry_jobs record (customer + lines).
  */
 import { getDb } from '@/platform/db'
-import { quickEntryJobs, quickEntryJobLines } from './schema'
+import { quickEntryJobs } from './schema'
 import { getFullCatalog, listTechnicianInstructions, type FullCatalogItem, type TechRow } from './db'
 import { serviceLabels } from './job-lines'
 import { findOrCreateVehicle, getVehicleById, createServiceOrder } from '@/apps/workflow/db'
@@ -84,17 +84,15 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
     vehicleEdited: a.vehicleEdited ?? false,
   }).returning()
 
-  if (input.lines.length > 0) {
-    await db.insert(quickEntryJobLines).values(input.lines.map((l, i) => ({
-      jobId: job.id, catalogId: l.catalogId ?? null, kind: l.kind, name: l.name,
-      size: l.size ?? null, condition: l.condition ?? null, priceCents: Number(l.priceCents) || 0, sortOrder: i,
-    })))
-  }
+  // Release 2: the legacy quick_entry_job_lines INSERT has been removed — the unified
+  // structures below (job_estimates → job_services, and job_line_items when pricing is
+  // added later) are now the authoritative source for a new retail Job's services.
+  // The quick_entry_job_lines table + all historical rows are left intact and untouched.
 
-  // Release 1 (additive dual-write): also build the unified commercial structures so
-  // job_estimates/job_services become authoritative — WITHOUT changing the Quick Entry
-  // front-end. `service_orders.services` stays the employee-facing summary; this only
-  // mirrors it into job_services (idempotent, deduped) and creates the draft estimate.
+  // Build the unified commercial structures so job_estimates/job_services are the
+  // authoritative source — WITHOUT changing the Quick Entry front-end. `service_orders
+  // .services` stays the employee-facing summary; this only mirrors it into job_services
+  // (idempotent, deduped) and creates the draft estimate.
   // Best-effort: this must never fail the Job creation (the Quick Entry contract).
   try {
     const est = await getOrCreateEstimate(order.id, input.createdBy ?? null)
