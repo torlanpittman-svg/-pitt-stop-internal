@@ -8,6 +8,7 @@ import { quickEntryJobs, quickEntryJobLines } from './schema'
 import { getFullCatalog, listTechnicianInstructions, type FullCatalogItem, type TechRow } from './db'
 import { serviceLabels } from './job-lines'
 import { findOrCreateVehicle, getVehicleById, createServiceOrder } from '@/apps/workflow/db'
+import { getOrCreateEstimate, promoteTextServices, recomputeEstimate } from '@/apps/workflow/estimate-db'
 
 export interface QuickEntryCatalog { packages: FullCatalogItem[]; addons: FullCatalogItem[]; tech: TechRow[] }
 
@@ -89,5 +90,19 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
       size: l.size ?? null, condition: l.condition ?? null, priceCents: Number(l.priceCents) || 0, sortOrder: i,
     })))
   }
+
+  // Release 1 (additive dual-write): also build the unified commercial structures so
+  // job_estimates/job_services become authoritative — WITHOUT changing the Quick Entry
+  // front-end. `service_orders.services` stays the employee-facing summary; this only
+  // mirrors it into job_services (idempotent, deduped) and creates the draft estimate.
+  // Best-effort: this must never fail the Job creation (the Quick Entry contract).
+  try {
+    const est = await getOrCreateEstimate(order.id, input.createdBy ?? null)
+    await promoteTextServices(est.id, order.id)   // service_orders.services → job_services (deduped)
+    await recomputeEstimate(est.id)               // totals/fees; $0 basis at check-in → no charges
+  } catch (err) {
+    console.error('[quick-entry] unified estimate build failed (Job still created):', err)
+  }
+
   return { jobId: job.id, serviceOrderId: order.id, orderNumber: order.orderNumber }
 }

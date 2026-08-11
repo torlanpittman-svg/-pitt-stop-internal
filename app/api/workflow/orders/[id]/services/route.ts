@@ -8,6 +8,7 @@
 import { NextResponse } from 'next/server'
 import { addServiceToOrder } from '@/apps/workflow/db'
 import { getActor } from '@/apps/workflow/identity'
+import { getOrCreateEstimate, promoteTextServices, recomputeEstimate } from '@/apps/workflow/estimate-db'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -25,6 +26,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const result = await addServiceToOrder(id, services, { addedBy, confirmDuplicates: body.confirmDuplicates })
     if (!result.ok) {
       return NextResponse.json({ ok: false, needsConfirm: true, duplicates: result.duplicates }, { status: 409 })
+    }
+    // Keep the unified job_services in sync with the employee-facing list (idempotent,
+    // deduped). Best-effort: never fail Add Service if the estimate mirror hiccups.
+    try {
+      const est = await getOrCreateEstimate(id, addedBy)
+      await promoteTextServices(est.id, id)
+      await recomputeEstimate(est.id)
+    } catch (err) {
+      console.error('[add-service] unified job_services sync failed (service still added):', err)
     }
     return NextResponse.json({ ok: true, order: result.order })
   } catch (err) {
