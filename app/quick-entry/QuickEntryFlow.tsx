@@ -11,6 +11,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import PhotoInput from '@/app/components/PhotoInput'
 import NavHeader from '@/app/components/NavHeader'
+import { useIdentity } from '@/app/components/IdentityBar'
 import { type JobLine } from '@/apps/quick-entry/job-lines'
 import { type CustomerMatch, type CustVehicle } from '@/apps/quick-entry/customers'
 
@@ -29,11 +30,26 @@ const GROUP_LABEL: Record<string, string> = {
 const SHOW_TECH_INSTRUCTIONS = false
 let keySeq = 0
 
+// P-B1 manager-only pricing card: the shop's fee/tax rules that will apply to this
+// Job's commercial layer. Informational/read-only — no price input, no new taps.
+type BizConfig = { shopSuppliesEnabled: boolean; shopSuppliesBps: number; shopSuppliesCapCents: number; cardFeeEnabled: boolean; cardFeeBps: number; defaultTaxBps: number }
+const pct = (bps: number) => `${(bps / 100).toString()}%`
+const usd = (cents: number) => `$${(cents / 100).toFixed(2)}`
+
 export default function QuickEntryFlow() {
   const router = useRouter()
+  const identity = useIdentity()
+  const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
+  const [bizCfg, setBizCfg] = useState<BizConfig | null>(null)
   const [phase, setPhase] = useState<Phase>('details')
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Load the fee/tax rules once, only for a manager/admin (endpoint is role-gated).
+  useEffect(() => {
+    if (!isManager || bizCfg) return
+    fetch('/api/settings/business').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d && !d.error) setBizCfg(d) }).catch(() => {})
+  }, [isManager, bizCfg])
 
   const [cust, setCust] = useState({ first: '', last: '', phone: '', email: '' })
   const [veh, setVeh] = useState({ vin: '', year: '', make: '', model: '', color: '' })
@@ -412,6 +428,21 @@ export default function QuickEntryFlow() {
             <div className="rounded-2xl bg-gray-900 border border-gray-800 p-4">
               <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">Technician instructions</p>
               <div className="flex flex-wrap gap-1.5">{[...tech].map((t) => <span key={t} className="text-[11px] text-gray-300 bg-gray-800 rounded px-2 py-0.5">{t}</span>)}</div>
+            </div>
+          )}
+
+          {/* P-B1: manager/admin-only, read-only commercial layer preview. Employees never
+              see this. Informational — pricing input arrives in P-B2. No extra taps. */}
+          {isManager && bizCfg && (
+            <div className="rounded-2xl bg-gray-900 border border-gray-800 p-4">
+              <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Pricing · manager view</p>
+              <div className="space-y-1.5 text-sm">
+                <div className="flex justify-between"><span className="text-gray-400">Work price</span><span className="text-gray-500">set after check-in</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Shop supplies</span><span className="text-gray-300">{bizCfg.shopSuppliesEnabled ? `${pct(bizCfg.shopSuppliesBps)} (max ${usd(bizCfg.shopSuppliesCapCents)})` : 'off'}</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Sales tax</span><span className="text-gray-300">{pct(bizCfg.defaultTaxBps)}</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Card processing</span><span className="text-gray-300">{bizCfg.cardFeeEnabled ? pct(bizCfg.cardFeeBps) : 'off'}</span></div>
+              </div>
+              <p className="text-gray-600 text-xs mt-2.5">This Job carries a commercial layer. Work price and total are set after check-in.</p>
             </div>
           )}
           <div className="fixed bottom-0 inset-x-0 p-4 bg-gray-950/95 border-t border-gray-900 flex items-center gap-3">

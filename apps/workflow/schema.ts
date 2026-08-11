@@ -136,6 +136,17 @@ export const jobEstimates = pgTable(
     taxCents:               integer('tax_cents').notNull().default(0),
     totalCents:             integer('total_cents').notNull().default(0),
     needsTaxReview:         boolean('needs_tax_review').notNull().default(false),
+    // P-B commercial-layer fields (additive). Defaults preserve today's behavior:
+    // 'itemized' + unpriced. A manager sets these later (P-B2+); the fee engine reads
+    // them only when price_mode is not 'itemized'.
+    priceMode:              varchar('price_mode', { length: 20 }).notNull().default('itemized'), // itemized|explicit_pretax|out_the_door
+    explicitTotalCents:     integer('explicit_total_cents'),
+    explicitTaxCategory:    varchar('explicit_tax_category', { length: 30 }).notNull().default('review'),
+    waiveShopSupplies:      boolean('waive_shop_supplies').notNull().default(false),
+    waiveCardFee:           boolean('waive_card_fee').notNull().default(false),
+    taxExempt:              boolean('tax_exempt').notNull().default(false),
+    pricingSetBy:           varchar('pricing_set_by', { length: 200 }),
+    pricingSetAt:           timestamp('pricing_set_at', { withTimezone: true }),
     customerNotes:          text('customer_notes'),
     internalNotes:          text('internal_notes'),
     sentAt:                 timestamp('sent_at', { withTimezone: true }),
