@@ -196,6 +196,52 @@ export async function appendDealerLine(params: {
   return summarize(res.Invoice)
 }
 
+export interface LineUpdateResult {
+  ok:             boolean
+  invoiceId?:     string
+  invoiceNumber?: string | null
+  reason?:        'invoice_not_found' | 'line_not_found' | 'qb_error'
+  error?:         string
+}
+
+/**
+ * Correct ONE existing invoice line's Description, identified by exact DocNumber +
+ * line Id (never a name/customer search). Changes only that line's Description — not
+ * its amount, item, or any other line — via read-modify-write with the invoice's
+ * SyncToken (409-safe: one retry). Returns a structured result so the caller can flag
+ * "QuickBooks sync needs review" rather than ever writing to the wrong invoice. Used
+ * by the Job-detail vehicle correction; does NOT create invoices.
+ */
+export async function updateDealerLineByDescription(params: {
+  invoiceNumber: string
+  lineId:        string
+  description:   string
+}): Promise<LineUpdateResult> {
+  const attempt = async (): Promise<LineUpdateResult> => {
+    const q = await queryQBO<{ Invoice?: RawInvoice[] }>(
+      `SELECT * FROM Invoice WHERE DocNumber = '${qboEscape(params.invoiceNumber)}'`
+    )
+    const matches = q.Invoice ?? []
+    if (matches.length !== 1) return { ok: false, reason: 'invoice_not_found', error: `${matches.length} invoice(s) for DocNumber ${params.invoiceNumber}` }
+    const inv = matches[0]
+    const target = (inv.Line ?? []).find((l) => String(l.Id) === String(params.lineId) && l.DetailType === 'SalesItemLineDetail')
+    if (!target) return { ok: false, reason: 'line_not_found', error: `line ${params.lineId} not found on invoice ${params.invoiceNumber}` }
+    const nextLines = (inv.Line ?? []).map((l) => (String(l.Id) === String(params.lineId) ? { ...l, Description: params.description } : l))
+    const res = await qbApiRequest<{ Invoice: RawInvoice }>({ method: 'POST', path: '/invoice', body: { ...inv, Line: nextLines, sparse: false } })
+    logger.info(APP, 'invoice.line_corrected', { id: res.Invoice.Id, docNumber: res.Invoice.DocNumber, lineId: params.lineId })
+    return { ok: true, invoiceId: String(res.Invoice.Id), invoiceNumber: res.Invoice.DocNumber ?? null }
+  }
+  try {
+    return await attempt()
+  } catch {
+    try { return await attempt() }               // one retry for SyncToken/transient conflicts
+    catch (e2) {
+      logger.error(APP, 'invoice.line_correct_failed', { invoiceNumber: params.invoiceNumber, error: String(e2) })
+      return { ok: false, reason: 'qb_error', error: String((e2 as Error)?.message ?? e2) }
+    }
+  }
+}
+
 /** Read a fresh summary of an invoice (id, number, syncToken, line count). */
 export async function getInvoiceSummary(invoiceId: string): Promise<WrittenInvoice> {
   const res = await qbApiRequest<{ Invoice: RawInvoice }>({ path: `/invoice/${invoiceId}` })

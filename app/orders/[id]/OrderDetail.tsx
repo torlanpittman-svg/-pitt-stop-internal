@@ -323,6 +323,89 @@ function ReopenModal({ busy, error, onConfirm, onCancel }: {
   )
 }
 
+// ── Edit Vehicle (manager correction of a wrong OCR read) ─────────────────────
+
+function VehicleEditModal({ orderId, onClose, onSaved }: {
+  orderId: string
+  onClose: () => void
+  onSaved: (message: string) => void
+}) {
+  const [form, setForm] = useState({ year: '', make: '', model: '', vin: '', stockNumber: '' })
+  const [ctx, setCtx] = useState({ isDealer: false, qbLinked: false })
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch(`/api/workflow/orders/${orderId}/vehicle`)
+      .then((r) => r.json())
+      .then((d) => {
+        setForm({ year: d.year ?? '', make: d.make ?? '', model: d.model ?? '', vin: d.vin ?? '', stockNumber: d.stockNumber ?? '' })
+        setCtx({ isDealer: !!d.isDealer, qbLinked: !!d.qbLinked })
+      })
+      .catch(() => setErr('Could not load vehicle info.'))
+      .finally(() => setLoading(false))
+  }, [orderId])
+
+  const save = async () => {
+    setBusy(true); setErr(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/vehicle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-QB-Write-Approved': 'true' },
+        body: JSON.stringify(form),
+      })
+      const d = await res.json()
+      if (!res.ok || !d.ok) { setErr(d.error ?? 'Could not save the correction.'); return }
+      const msg = d.qb?.action === 'updated' ? 'Vehicle updated · QuickBooks invoice corrected'
+        : d.qb?.action === 'needs_review' ? 'Vehicle updated · QuickBooks sync needs review'
+        : (d.changed?.length ? 'Vehicle updated' : 'No changes made')
+      onSaved(msg)
+    } catch { setErr('Network error — try again.') } finally { setBusy(false) }
+  }
+
+  const Field = ({ label, k, mode }: { label: string; k: keyof typeof form; mode?: 'text' | 'numeric' }) => (
+    <div>
+      <label className="text-gray-500 text-xs uppercase tracking-widest">{label}</label>
+      <input
+        value={form[k]}
+        onChange={(e) => setForm((f) => ({ ...f, [k]: e.target.value }))}
+        inputMode={mode === 'numeric' ? 'numeric' : undefined}
+        autoCapitalize={k === 'vin' || k === 'stockNumber' ? 'characters' : 'words'}
+        className="mt-1 w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+    </div>
+  )
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
+      <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-white font-bold text-xl">Edit Vehicle</h2>
+          <button onClick={onClose} className="text-gray-500 text-sm">Cancel</button>
+        </div>
+        {loading ? (
+          <div className="flex justify-center py-10"><div className="w-8 h-8 border-2 border-gray-700 border-t-blue-500 rounded-full animate-spin" /></div>
+        ) : (
+          <div className="space-y-4">
+            <Field label="Year" k="year" mode="numeric" />
+            <Field label="Make" k="make" />
+            <Field label="Model" k="model" />
+            <Field label="VIN" k="vin" />
+            {ctx.isDealer && <Field label="Stock / tag number" k="stockNumber" />}
+            {ctx.qbLinked && <p className="text-gray-500 text-xs">This Job has a QuickBooks invoice — saving will also correct the invoice line description.</p>}
+            {err && <p className="text-amber-400 text-sm">{err}</p>}
+            <button onClick={save} disabled={busy}
+              className="w-full h-14 rounded-2xl bg-green-600 active:bg-green-700 text-white text-lg font-bold disabled:opacity-40">
+              {busy ? 'Saving…' : 'Save correction'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithContext }) {
@@ -342,6 +425,8 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
   const [reopenBusy,  setReopenBusy]  = useState(false)
   const [reopenMsg,   setReopenMsg]   = useState<string | null>(null)
   const [acked,       setAcked]       = useState<Set<string>>(new Set())  // to-do checkoffs
+  const [editingVehicle, setEditingVehicle] = useState(false)
+  const [vehToast,    setVehToast]    = useState<string | null>(null)
   const identity = useIdentity()
   const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
 
@@ -495,12 +580,22 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
             <p className="text-gray-400 text-base mt-0.5">
               {vehicleName}{vehicle.color ? ` · ${vehicle.color}` : ''}
             </p>
+            {isManager && (
+              <button onClick={() => setEditingVehicle(true)}
+                className="text-blue-400 text-sm font-semibold mt-1 active:opacity-70">Edit Vehicle</button>
+            )}
           </div>
           <span className={`flex-none font-bold text-base mt-1 ${simpleStatus.color}`}>
             {simpleStatus.label}
           </span>
         </div>
       </div>
+
+      {vehToast && (
+        <div className="mx-6 -mt-2 mb-4 bg-green-900/40 border border-green-700/50 rounded-xl px-4 py-3">
+          <p className="text-green-300 text-sm font-medium">{vehToast}</p>
+        </div>
+      )}
 
       {/* Notes — genuine notes only (not the auto-generated Quick Entry summary) */}
       {showNotes && (
@@ -669,6 +764,15 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
       {/* Reopen (reason + PIN) */}
       {reopening && (
         <ReopenModal busy={reopenBusy} error={reopenMsg} onConfirm={submitReopen} onCancel={() => setReopening(false)} />
+      )}
+
+      {/* Edit Vehicle (manager correction) */}
+      {editingVehicle && (
+        <VehicleEditModal
+          orderId={order.id}
+          onClose={() => setEditingVehicle(false)}
+          onSaved={async (msg) => { setEditingVehicle(false); setVehToast(msg); await reload(); setTimeout(() => setVehToast(null), 6000) }}
+        />
       )}
 
     </main>

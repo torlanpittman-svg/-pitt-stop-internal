@@ -85,6 +85,17 @@ export async function getVehicleById(id: string): Promise<VehicleRow | null> {
   return row ?? null
 }
 
+/** Correct an existing vehicle's identifying fields in place (no new row). Used by
+ *  the Job-detail vehicle correction so the Work Board + Job detail update instantly. */
+export async function updateVehicleFields(
+  id: string,
+  patch: Partial<Pick<VehicleRow, 'year' | 'make' | 'model' | 'vin'>>,
+): Promise<VehicleRow | null> {
+  const db = getDb()
+  const [row] = await db.update(vehicles).set(patch).where(eq(vehicles.id, id)).returning()
+  return row ?? null
+}
+
 export async function getEmployee(id: string): Promise<EmployeeRow | null> {
   const db = getDb()
   const [row] = await db.select().from(employees).where(eq(employees.id, id)).limit(1)
@@ -538,7 +549,7 @@ export async function addServiceToOrder(
   return { ok: true, order: order! }
 }
 
-async function logEvent(params: {
+export async function logEvent(params: {
   serviceOrderId: string
   eventType:      string
   employeeName?:  string | null

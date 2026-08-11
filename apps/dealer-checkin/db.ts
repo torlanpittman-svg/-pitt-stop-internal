@@ -71,6 +71,16 @@ export async function getScan(id: string): Promise<DealerScanRow | null> {
   return row ?? null
 }
 
+/** The dealer scan behind a Job (Work Board order), or null for a retail Job.
+ *  Newest first in the unlikely case a Job was linked more than once. */
+export async function getScanByServiceOrderId(serviceOrderId: string): Promise<DealerScanRow | null> {
+  const db = getDb()
+  const [row] = await db.select().from(dealerScans)
+    .where(eq(dealerScans.serviceOrderId, serviceOrderId))
+    .orderBy(desc(dealerScans.createdAt)).limit(1)
+  return row ?? null
+}
+
 /** Reuse an already-stored image URL for identical bytes (dedup by sha-256). */
 export async function findImageUrlByHash(hash: string): Promise<string | null> {
   const db = getDb()
