@@ -325,6 +325,30 @@ function ReopenModal({ busy, error, onConfirm, onCancel }: {
 
 // ── Edit Vehicle (manager correction of a wrong OCR read) ─────────────────────
 
+// Module-level (stable identity) so typing never remounts the input — defining this
+// INSIDE the modal made React create a new component type each render, which unmounts
+// the <input> and drops focus/keyboard on every keystroke.
+function VehField({ label, value, onChange, numeric = false, upper = false }: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  numeric?: boolean
+  upper?: boolean
+}) {
+  return (
+    <div>
+      <label className="text-gray-500 text-xs uppercase tracking-widest">{label}</label>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        inputMode={numeric ? 'numeric' : undefined}
+        autoCapitalize={upper ? 'characters' : 'words'}
+        className="mt-1 w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+    </div>
+  )
+}
+
 function VehicleEditModal({ orderId, onClose, onSaved }: {
   orderId: string
   onClose: () => void
@@ -364,19 +388,6 @@ function VehicleEditModal({ orderId, onClose, onSaved }: {
     } catch { setErr('Network error — try again.') } finally { setBusy(false) }
   }
 
-  const Field = ({ label, k, mode }: { label: string; k: keyof typeof form; mode?: 'text' | 'numeric' }) => (
-    <div>
-      <label className="text-gray-500 text-xs uppercase tracking-widest">{label}</label>
-      <input
-        value={form[k]}
-        onChange={(e) => setForm((f) => ({ ...f, [k]: e.target.value }))}
-        inputMode={mode === 'numeric' ? 'numeric' : undefined}
-        autoCapitalize={k === 'vin' || k === 'stockNumber' ? 'characters' : 'words'}
-        className="mt-1 w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
-      />
-    </div>
-  )
-
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
       <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10 max-h-[90vh] overflow-y-auto">
@@ -388,11 +399,11 @@ function VehicleEditModal({ orderId, onClose, onSaved }: {
           <div className="flex justify-center py-10"><div className="w-8 h-8 border-2 border-gray-700 border-t-blue-500 rounded-full animate-spin" /></div>
         ) : (
           <div className="space-y-4">
-            <Field label="Year" k="year" mode="numeric" />
-            <Field label="Make" k="make" />
-            <Field label="Model" k="model" />
-            <Field label="VIN" k="vin" />
-            {ctx.isDealer && <Field label="Stock / tag number" k="stockNumber" />}
+            <VehField label="Year" value={form.year} onChange={(v) => setForm((f) => ({ ...f, year: v }))} numeric />
+            <VehField label="Make" value={form.make} onChange={(v) => setForm((f) => ({ ...f, make: v }))} />
+            <VehField label="Model" value={form.model} onChange={(v) => setForm((f) => ({ ...f, model: v }))} />
+            <VehField label="VIN" value={form.vin} onChange={(v) => setForm((f) => ({ ...f, vin: v }))} upper />
+            {ctx.isDealer && <VehField label="Stock / tag number" value={form.stockNumber} onChange={(v) => setForm((f) => ({ ...f, stockNumber: v }))} upper />}
             {ctx.qbLinked && <p className="text-gray-500 text-xs">This Job has a QuickBooks invoice — saving will also correct the invoice line description.</p>}
             {err && <p className="text-amber-400 text-sm">{err}</p>}
             <button onClick={save} disabled={busy}
