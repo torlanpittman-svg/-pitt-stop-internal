@@ -20,7 +20,7 @@ type Phase = 'details' | 'services' | 'review' | 'submitting' | 'done'
 interface Tier { size: string; condition: string; startPriceCents: number }
 interface Pkg { id: string; slug: string; name: string; hasSize: boolean; hasCondition: boolean; defaultPriceCents: number | null; tiers: Tier[] }
 interface Tech { slug: string; label: string; group: string }
-interface Catalog { packages: Pkg[]; addons: Pkg[]; tech: Tech[]; plateLookupEnabled?: boolean; nlEnabled?: boolean }
+interface Catalog { packages: Pkg[]; addons: Pkg[]; tech: Tech[]; plateLookupEnabled?: boolean; nlEnabled?: boolean; voiceEnabled?: boolean }
 
 const GROUP_LABEL: Record<string, string> = {
   intake_condition_flags: 'Condition flags', pre_work_checks: 'Pre-work checks',
@@ -49,6 +49,11 @@ export default function QuickEntryFlow() {
   const [nlBusy, setNlBusy] = useState(false)
   const [nlNote, setNlNote] = useState('')                       // interpreted internal note (editable)
   const [nlMsg, setNlMsg] = useState<string | null>(null)
+  const [listening, setListening] = useState(false)              // P-B4 voice
+  const [micMsg, setMicMsg] = useState<string | null>(null)
+  const [voiceSupported, setVoiceSupported] = useState(false)
+  const recognitionRef = useRef<any>(null)
+  const baseTextRef = useRef('')
   const [phase, setPhase] = useState<Phase>('details')
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -231,6 +236,47 @@ export default function QuickEntryFlow() {
       setNlText('')
     } catch { setNlMsg('Network error — try again.') } finally { setNlBusy(false) }
   }, [nlText])
+
+  // P-B4 voice: browser-native Web Speech API (webkitSpeechRecognition on iOS Safari).
+  // Feature-detected; unsupported → no mic. Voice ONLY fills the same nlText field and
+  // reuses the P-B3 interpreter via the existing "Add" action — no separate path, no
+  // auto-interpret, no auto-create. Failures never erase typed text or selections.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const SR = (window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown })
+    setVoiceSupported(!!(SR.SpeechRecognition || SR.webkitSpeechRecognition))
+  }, [])
+
+  const stopMic = useCallback(() => { try { recognitionRef.current?.stop() } catch { /* noop */ } setListening(false) }, [])
+  const startMic = useCallback(() => {
+    const w = window as unknown as { SpeechRecognition?: new () => any; webkitSpeechRecognition?: new () => any }
+    const SR = w.SpeechRecognition || w.webkitSpeechRecognition
+    if (!SR) return
+    try {
+      const rec = new SR()
+      rec.lang = 'en-US'; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1
+      baseTextRef.current = nlText   // preserve whatever is already typed
+      rec.onresult = (e: any) => {
+        let s = ''
+        for (let i = 0; i < e.results.length; i++) s += e.results[i][0].transcript
+        const base = baseTextRef.current
+        setNlText(base ? `${base} ${s}`.trim() : s.trim())   // transcript stays editable
+      }
+      rec.onerror = (e: any) => {
+        setListening(false)
+        const err = e?.error
+        if (err === 'not-allowed' || err === 'service-not-allowed') setMicMsg('Microphone blocked — you can still type or tap services.')
+        else if (err === 'no-speech') setMicMsg("Didn't catch that — try again or type.")
+        else if (err !== 'aborted') setMicMsg('Voice unavailable — type instead.')
+        // never erase existing text / selected services
+      }
+      rec.onend = () => setListening(false)
+      recognitionRef.current = rec
+      setMicMsg(null); setListening(true)
+      rec.start()
+    } catch { setListening(false); setMicMsg('Voice unavailable — type instead.') }
+  }, [nlText])
+  const toggleMic = useCallback(() => { listening ? stopMic() : startMic() }, [listening, startMic, stopMic])
   const setLineName = (key: string, name: string) => setLines((xs) => xs.map((l) => (l.key === key ? { ...l, name } : l)))
   const removeLine = (key: string) => setLines((xs) => xs.filter((l) => l.key !== key))
   const toggleTech = (label: string) => setTech((s) => { const n = new Set(s); n.has(label) ? n.delete(label) : n.add(label); return n })
@@ -401,9 +447,15 @@ export default function QuickEntryFlow() {
                   <input value={nlText} onChange={(e) => setNlText(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); interpretNL() } }}
                     placeholder="e.g. interior detail, wash, wax, 650" className={`${input} flex-1`} />
+                  {catalog.voiceEnabled && voiceSupported && (
+                    <button onClick={toggleMic} aria-label={listening ? 'Stop listening' : 'Speak'}
+                      className={`h-14 px-4 rounded-2xl text-lg ${listening ? 'bg-red-600 animate-pulse text-white' : 'bg-gray-800 border border-gray-700'}`}>{listening ? '⏹' : '🎤'}</button>
+                  )}
                   <button onClick={interpretNL} disabled={nlBusy || !nlText.trim()}
                     className="h-14 px-4 rounded-2xl bg-blue-600 text-white text-sm font-semibold disabled:opacity-40">{nlBusy ? '…' : 'Add'}</button>
                 </div>
+                {listening && <p className="text-blue-400 text-xs mt-1">Listening… speak, then tap ⏹ or pause. Review before Add.</p>}
+                {micMsg && <p className="text-amber-400 text-xs mt-1">{micMsg}</p>}
                 {nlMsg && <p className="text-gray-500 text-xs mt-1">{nlMsg}</p>}
                 {nlNote && (
                   <div className="mt-2">

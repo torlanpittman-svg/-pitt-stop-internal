@@ -2,7 +2,7 @@
 import { NextResponse } from 'next/server'
 import { getFullCatalog } from '@/apps/quick-entry/db'
 import { isPlateLookupEnabled } from '@/apps/quick-entry/plate-lookup'
-import { nlEnabled } from '@/apps/settings/db'
+import { nlEnabled, voiceEnabled } from '@/apps/settings/db'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -40,6 +40,7 @@ export async function GET() {
       tech: [],
       plateLookupEnabled: isPlateLookupEnabled(),
       nlEnabled: await nlEnabled(),
+      voiceEnabled: await voiceEnabled(),
     })
   } catch (err) {
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })
