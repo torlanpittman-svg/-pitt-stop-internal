@@ -19,7 +19,8 @@ export async function POST(req: Request) {
     // For anyone else the price is dropped → the Job stays itemized/$0 as today.
     const isManager = actor?.role === 'manager' || actor?.role === 'admin'
     const workPriceCents = isManager && body.workPriceCents && body.workPriceCents > 0 ? Math.round(body.workPriceCents) : null
-    const res = await createQuickEntryJob({ ...body, customerName: body.customerName.trim(), createdBy, workPriceCents })
+    const internalNote = typeof body.internalNote === 'string' ? body.internalNote.slice(0, 500) : null
+    const res = await createQuickEntryJob({ ...body, customerName: body.customerName.trim(), createdBy, workPriceCents, internalNote })
     return NextResponse.json({ ok: true, ...res })
   } catch (err) {
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })

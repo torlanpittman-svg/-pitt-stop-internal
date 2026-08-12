@@ -19,6 +19,7 @@ export const SETTINGS: Record<string, SettingDef> = {
   card_fee_enabled:        { key: 'card_fee_enabled',        type: 'bool', def: false, env: 'CARD_FEE_ENABLED' },
   card_fee_bps:            { key: 'card_fee_bps',            type: 'int',  def: 300,   env: 'CARD_FEE_BPS' },
   default_tax_bps:         { key: 'default_tax_bps',         type: 'int',  def: 825,   env: 'ESTIMATE_DEFAULT_TAX_BPS' },
+  qe_nl_enabled:           { key: 'qe_nl_enabled',           type: 'bool', def: false, env: 'QE_NL_ENABLED' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
@@ -56,6 +57,12 @@ export async function getBusinessConfig(): Promise<BusinessConfig> {
     cardFeeBps:           g('card_fee_bps') as number,
     defaultTaxBps:        g('default_tax_bps') as number,
   }
+}
+
+/** Single flag read (public) — is the Quick Entry NL intake enabled? */
+export async function nlEnabled(): Promise<boolean> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'qe_nl_enabled'))
+  return resolve(SETTINGS.qe_nl_enabled, rows[0]?.value) as boolean
 }
 
 export type SettingView = { key: string; value: unknown; type: string; category: string | null; label: string | null; description: string | null }

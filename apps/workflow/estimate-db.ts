@@ -148,6 +148,11 @@ export async function recomputeEstimate(estimateId: string): Promise<void> {
   }).where(eq(jobEstimates.id, estimateId))
 }
 
+/** Store an internal note/instruction on the estimate (manager/commercial layer). */
+export async function setInternalNote(estimateId: string, note: string): Promise<void> {
+  await getDb().update(jobEstimates).set({ internalNotes: note.slice(0, 500), updatedAt: new Date() }).where(eq(jobEstimates.id, estimateId))
+}
+
 /** Set the manager's authoritative pre-fee/pre-tax work price (explicit_pretax mode). */
 export async function setExplicitPrice(estimateId: string, workPriceCents: number, actor: string | null): Promise<void> {
   await getDb().update(jobEstimates).set({

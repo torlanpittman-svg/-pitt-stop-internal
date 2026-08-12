@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server'
 import { getFullCatalog } from '@/apps/quick-entry/db'
 import { isPlateLookupEnabled } from '@/apps/quick-entry/plate-lookup'
+import { nlEnabled } from '@/apps/settings/db'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -38,6 +39,7 @@ export async function GET() {
       // technician_instructions table / repo remain intact for later re-enable.
       tech: [],
       plateLookupEnabled: isPlateLookupEnabled(),
+      nlEnabled: await nlEnabled(),
     })
   } catch (err) {
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })

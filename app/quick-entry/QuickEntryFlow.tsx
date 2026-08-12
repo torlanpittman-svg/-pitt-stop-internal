@@ -14,12 +14,13 @@ import NavHeader from '@/app/components/NavHeader'
 import { useIdentity } from '@/app/components/IdentityBar'
 import { type JobLine } from '@/apps/quick-entry/job-lines'
 import { type CustomerMatch, type CustVehicle } from '@/apps/quick-entry/customers'
+import { norm } from '@/apps/quick-entry/interpret'
 
 type Phase = 'details' | 'services' | 'review' | 'submitting' | 'done'
 interface Tier { size: string; condition: string; startPriceCents: number }
 interface Pkg { id: string; slug: string; name: string; hasSize: boolean; hasCondition: boolean; defaultPriceCents: number | null; tiers: Tier[] }
 interface Tech { slug: string; label: string; group: string }
-interface Catalog { packages: Pkg[]; addons: Pkg[]; tech: Tech[]; plateLookupEnabled?: boolean }
+interface Catalog { packages: Pkg[]; addons: Pkg[]; tech: Tech[]; plateLookupEnabled?: boolean; nlEnabled?: boolean }
 
 const GROUP_LABEL: Record<string, string> = {
   intake_condition_flags: 'Condition flags', pre_work_checks: 'Pre-work checks',
@@ -44,6 +45,10 @@ export default function QuickEntryFlow() {
   const [bizCfg, setBizCfg] = useState<BizConfig | null>(null)
   const [workPrice, setWorkPrice] = useState('')                 // dollars string, manager-only
   const [pricePreview, setPricePreview] = useState<null | { workPriceCents: number; shopSuppliesCents: number; cardFeeCents: number; cardFeeEnabled: boolean; taxCents: number; needsTaxReview: boolean; totalCents: number }>(null)
+  const [nlText, setNlText] = useState('')                       // natural-language intake (additional input)
+  const [nlBusy, setNlBusy] = useState(false)
+  const [nlNote, setNlNote] = useState('')                       // interpreted internal note (editable)
+  const [nlMsg, setNlMsg] = useState<string | null>(null)
   const [phase, setPhase] = useState<Phase>('details')
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -196,6 +201,36 @@ export default function QuickEntryFlow() {
       ? xs.filter((l) => l.catalogId !== p.id)                                        // deselect
       : [...xs, { key: `k${keySeq++}`, catalogId: p.id, kind: 'package', name: p.name, priceCents: 0 }]) // select
   const addOther = () => addLine({ catalogId: null, kind: 'custom', name: '', priceCents: 0 })
+
+  // Natural-language intake (P-B3) — merges into the SAME lines (dedup by title),
+  // preserving bubbles/custom. Populates Work Price only when the server allows it
+  // (manager/admin). Additional input method; the bubble flow is untouched.
+  const interpretNL = useCallback(async () => {
+    const text = nlText.trim()
+    if (!text) return
+    setNlBusy(true); setNlMsg(null)
+    try {
+      const r = await fetch('/api/quick-entry/interpret', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })
+      const d = await r.json()
+      if (!d?.ok) { setNlMsg('Could not interpret that.'); return }
+      setLines((xs) => {
+        const have = new Set(xs.map((l) => norm(l.name)))
+        const add: JobLine[] = []
+        for (const s of (d.services ?? []) as { title: string; catalogId: string | null }[]) {
+          const k = norm(s.title)
+          if (!k || have.has(k)) continue
+          have.add(k)
+          add.push({ key: `nl${keySeq++}`, catalogId: s.catalogId ?? null, kind: s.catalogId ? 'package' : 'custom', name: s.title, priceCents: 0 })
+        }
+        return [...xs, ...add]
+      })
+      if (d.note) setNlNote((n) => (n ? `${n}; ${d.note}` : d.note))
+      if (d.priceAllowed && d.priceCents) setWorkPrice((d.priceCents / 100).toFixed(2))
+      const added = (d.services ?? []).length
+      setNlMsg(added || d.note || d.priceCents ? `Added ${added} service${added === 1 ? '' : 's'}${d.priceCents && d.priceAllowed ? ` · $${(d.priceCents / 100).toFixed(2)}` : ''}${d.note ? ' · note' : ''}` : 'Nothing recognized — try the buttons.')
+      setNlText('')
+    } catch { setNlMsg('Network error — try again.') } finally { setNlBusy(false) }
+  }, [nlText])
   const setLineName = (key: string, name: string) => setLines((xs) => xs.map((l) => (l.key === key ? { ...l, name } : l)))
   const removeLine = (key: string) => setLines((xs) => xs.filter((l) => l.key !== key))
   const toggleTech = (label: string) => setTech((s) => { const n = new Set(s); n.has(label) ? n.delete(label) : n.add(label); return n })
@@ -217,6 +252,7 @@ export default function QuickEntryFlow() {
           techInstructions: SHOW_TECH_INSTRUCTIONS ? [...tech] : [], createdBy: 'quick_entry',
           // Manager-entered work price (server drops it for non-managers → itemized/$0).
           workPriceCents: dollarsToCents(workPrice) || null,
+          internalNote: nlNote.trim() || null,
           // Vehicle-identification audit (VIN photo only now). No secrets.
           audit: {
             idMethod: idMethodRef.current,
@@ -356,6 +392,28 @@ export default function QuickEntryFlow() {
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5 pb-40">
           {!catalog && <p className="text-gray-500 text-sm">Loading services…</p>}
           {catalog && <>
+            {/* P-B3: optional natural-language intake. Additional input — the bubbles
+                below are unchanged. Hidden unless qe_nl_enabled. */}
+            {catalog.nlEnabled && (
+              <div>
+                <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">What are we doing?</p>
+                <div className="flex gap-2">
+                  <input value={nlText} onChange={(e) => setNlText(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); interpretNL() } }}
+                    placeholder="e.g. interior detail, wash, wax, 650" className={`${input} flex-1`} />
+                  <button onClick={interpretNL} disabled={nlBusy || !nlText.trim()}
+                    className="h-14 px-4 rounded-2xl bg-blue-600 text-white text-sm font-semibold disabled:opacity-40">{nlBusy ? '…' : 'Add'}</button>
+                </div>
+                {nlMsg && <p className="text-gray-500 text-xs mt-1">{nlMsg}</p>}
+                {nlNote && (
+                  <div className="mt-2">
+                    <p className="text-gray-500 text-xs mb-1">Note (internal)</p>
+                    <textarea value={nlNote} onChange={(e) => setNlNote(e.target.value)} rows={2}
+                      className="w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-3 py-2 text-sm" />
+                  </div>
+                )}
+              </div>
+            )}
             <div>
               <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Services — tap all that apply</p>
               <div className="grid grid-cols-2 gap-2">

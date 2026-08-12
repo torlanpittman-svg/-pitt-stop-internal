@@ -8,7 +8,7 @@ import { quickEntryJobs } from './schema'
 import { getFullCatalog, listTechnicianInstructions, type FullCatalogItem, type TechRow } from './db'
 import { serviceLabels } from './job-lines'
 import { findOrCreateVehicle, getVehicleById, createServiceOrder } from '@/apps/workflow/db'
-import { getOrCreateEstimate, promoteTextServices, recomputeEstimate, setExplicitPrice } from '@/apps/workflow/estimate-db'
+import { getOrCreateEstimate, promoteTextServices, recomputeEstimate, setExplicitPrice, setInternalNote } from '@/apps/workflow/estimate-db'
 
 export interface QuickEntryCatalog { packages: FullCatalogItem[]; addons: FullCatalogItem[]; tech: TechRow[] }
 
@@ -50,6 +50,8 @@ export interface CreateJobInput {
   /** Manager/admin-entered authoritative pre-fee/pre-tax work price (cents). The route
    *  only sets this for a manager/admin actor; null/absent → itemized/$0 as today. */
   workPriceCents?: number | null
+  /** Internal note/instruction captured from NL intake → job_estimates.internalNotes. */
+  internalNote?: string | null
 }
 
 /** Create the job: find/create the vehicle, put it on the Work Board, store the job + lines. */
@@ -104,6 +106,9 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
       // Manager priced this Job: the amount is the authoritative pre-fee/pre-tax work
       // subtotal (explicit_pretax). No per-service line prices are fabricated.
       await setExplicitPrice(est.id, input.workPriceCents, input.createdBy ?? null)
+    }
+    if (input.internalNote && input.internalNote.trim()) {
+      await setInternalNote(est.id, input.internalNote.trim())
     }
     await recomputeEstimate(est.id)               // itemized $0, or explicit price + fees/tax
   } catch (err) {
