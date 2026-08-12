@@ -33,7 +33,7 @@ let keySeq = 0
 
 // P-B1 manager-only pricing card: the shop's fee/tax rules that will apply to this
 // Job's commercial layer. Informational/read-only — no price input, no new taps.
-type BizConfig = { shopSuppliesEnabled: boolean; shopSuppliesBps: number; shopSuppliesCapCents: number; cardFeeEnabled: boolean; cardFeeBps: number; defaultTaxBps: number }
+type BizConfig = { shopSuppliesEnabled: boolean; shopSuppliesBps: number; shopSuppliesCapCents: number; paymentEnabled: boolean; paymentBps: number; paymentLabel: string; paymentBasis: string; defaultTaxBps: number }
 const pct = (bps: number) => `${(bps / 100).toString()}%`
 const usd = (cents: number) => `$${(cents / 100).toFixed(2)}`
 const dollarsToCents = (s: string) => { const n = parseFloat(String(s).replace(/[^0-9.]/g, '')); return Number.isFinite(n) ? Math.round(n * 100) : 0 }
@@ -44,7 +44,7 @@ export default function QuickEntryFlow() {
   const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
   const [bizCfg, setBizCfg] = useState<BizConfig | null>(null)
   const [workPrice, setWorkPrice] = useState('')                 // dollars string, manager-only
-  const [pricePreview, setPricePreview] = useState<null | { workPriceCents: number; shopSuppliesCents: number; cardFeeCents: number; cardFeeEnabled: boolean; taxCents: number; needsTaxReview: boolean; totalCents: number }>(null)
+  const [pricePreview, setPricePreview] = useState<null | { workPriceCents: number; shopSuppliesCents: number; shopSuppliesEnabled: boolean; paymentChargeCents: number; paymentEnabled: boolean; paymentLabel: string; taxCents: number; needsTaxReview: boolean; totalCents: number }>(null)
   const [nlText, setNlText] = useState('')                       // natural-language intake (additional input)
   const [nlBusy, setNlBusy] = useState(false)
   const [nlNote, setNlNote] = useState('')                       // interpreted internal note (editable)
@@ -576,14 +576,14 @@ export default function QuickEntryFlow() {
               {pricePreview ? (
                 <div className="mt-3 space-y-1.5 text-sm">
                   <div className="flex justify-between"><span className="text-gray-400">Work price</span><span className="text-gray-200">{usd(pricePreview.workPriceCents)}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-400">Shop supplies{bizCfg.shopSuppliesEnabled ? ` (${pct(bizCfg.shopSuppliesBps)}, max ${usd(bizCfg.shopSuppliesCapCents)})` : ''}</span><span className="text-gray-200">{usd(pricePreview.shopSuppliesCents)}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-400">Tax</span><span className={pricePreview.needsTaxReview ? 'text-amber-400' : 'text-gray-200'}>{pricePreview.needsTaxReview ? 'review — pending CPA' : usd(pricePreview.taxCents)}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-400">Card processing</span><span className="text-gray-200">{pricePreview.cardFeeEnabled ? usd(pricePreview.cardFeeCents) : 'Off'}</span></div>
+                  {pricePreview.shopSuppliesEnabled && <div className="flex justify-between"><span className="text-gray-400">Shop supplies ({pct(bizCfg.shopSuppliesBps)}, max {usd(bizCfg.shopSuppliesCapCents)})</span><span className="text-gray-200">{usd(pricePreview.shopSuppliesCents)}</span></div>}
+                  {pricePreview.paymentEnabled && <div className="flex justify-between"><span className="text-gray-400">{pricePreview.paymentLabel} ({pct(bizCfg.paymentBps)})</span><span className="text-gray-200">{usd(pricePreview.paymentChargeCents)}</span></div>}
+                  {(pricePreview.taxCents > 0 || pricePreview.needsTaxReview) && <div className="flex justify-between"><span className="text-gray-400">Tax</span><span className={pricePreview.needsTaxReview ? 'text-amber-400' : 'text-gray-200'}>{pricePreview.needsTaxReview ? 'review — pending CPA' : usd(pricePreview.taxCents)}</span></div>}
                   <div className="border-t border-gray-800 my-1.5" />
                   <div className="flex justify-between"><span className="text-white font-semibold">Estimated total</span><span className="text-white font-semibold">{usd(pricePreview.totalCents)}</span></div>
                 </div>
               ) : (
-                <p className="text-gray-600 text-xs mt-2.5">Shop supplies {pct(bizCfg.shopSuppliesBps)} (max {usd(bizCfg.shopSuppliesCapCents)}) · tax {pct(bizCfg.defaultTaxBps)} · card {bizCfg.cardFeeEnabled ? pct(bizCfg.cardFeeBps) : 'off'}. Enter a work price to preview the total, or leave blank.</p>
+                <p className="text-gray-600 text-xs mt-2.5">Shop supplies {pct(bizCfg.shopSuppliesBps)} (max {usd(bizCfg.shopSuppliesCapCents)}){bizCfg.paymentEnabled ? ` · ${bizCfg.paymentLabel} ${pct(bizCfg.paymentBps)}` : ''}. Enter a work price to preview the total, or leave blank.</p>
               )}
             </div>
           )}

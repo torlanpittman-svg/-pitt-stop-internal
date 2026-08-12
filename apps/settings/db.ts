@@ -16,11 +16,18 @@ export const SETTINGS: Record<string, SettingDef> = {
   shop_supplies_enabled:   { key: 'shop_supplies_enabled',   type: 'bool', def: true,  env: 'SHOP_SUPPLIES_ENABLED' },
   shop_supplies_bps:       { key: 'shop_supplies_bps',       type: 'int',  def: 300,   env: 'SHOP_SUPPLIES_BPS' },
   shop_supplies_cap_cents: { key: 'shop_supplies_cap_cents', type: 'int',  def: 2000,  env: 'SHOP_SUPPLIES_CAP_CENTS' },
-  card_fee_enabled:        { key: 'card_fee_enabled',        type: 'bool', def: false, env: 'CARD_FEE_ENABLED' },
-  card_fee_bps:            { key: 'card_fee_bps',            type: 'int',  def: 300,   env: 'CARD_FEE_BPS' },
+  // card_fee_* superseded by payment_charge_* below (P-D1). Old rows, if any, are inert.
   default_tax_bps:         { key: 'default_tax_bps',         type: 'int',  def: 825,   env: 'ESTIMATE_DEFAULT_TAX_BPS' },
   qe_nl_enabled:           { key: 'qe_nl_enabled',           type: 'bool', def: false, env: 'QE_NL_ENABLED' },
   qe_voice_enabled:        { key: 'qe_voice_enabled',        type: 'bool', def: false, env: 'QE_VOICE_ENABLED' },
+  // Configurable payment charge (card). Label + basis + applicability are NOT hard-coded.
+  // Default ON for RETAIL (most customers pay by card); the engine forces it OFF for dealer
+  // Jobs. Final customer-facing label + surcharge/"cash discount" compliance need CPA/processor
+  // sign-off before automated QuickBooks invoicing.
+  payment_charge_enabled:  { key: 'payment_charge_enabled',  type: 'bool',   def: true,               env: 'PAYMENT_CHARGE_ENABLED' },
+  payment_charge_bps:      { key: 'payment_charge_bps',      type: 'int',    def: 300,                env: 'PAYMENT_CHARGE_BPS' },
+  payment_charge_label:    { key: 'payment_charge_label',    type: 'string', def: 'Card Payment',     env: 'PAYMENT_CHARGE_LABEL' },
+  payment_charge_basis:    { key: 'payment_charge_basis',    type: 'string', def: 'work_plus_supplies', env: 'PAYMENT_CHARGE_BASIS' }, // work_only | work_plus_supplies | grand_pretax
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
@@ -40,8 +47,10 @@ export interface BusinessConfig {
   shopSuppliesEnabled: boolean
   shopSuppliesBps: number
   shopSuppliesCapCents: number
-  cardFeeEnabled: boolean
-  cardFeeBps: number
+  paymentEnabled: boolean
+  paymentBps: number
+  paymentLabel: string
+  paymentBasis: string   // work_only | work_plus_supplies | grand_pretax
   defaultTaxBps: number
 }
 
@@ -54,8 +63,10 @@ export async function getBusinessConfig(): Promise<BusinessConfig> {
     shopSuppliesEnabled:  g('shop_supplies_enabled') as boolean,
     shopSuppliesBps:      g('shop_supplies_bps') as number,
     shopSuppliesCapCents: g('shop_supplies_cap_cents') as number,
-    cardFeeEnabled:       g('card_fee_enabled') as boolean,
-    cardFeeBps:           g('card_fee_bps') as number,
+    paymentEnabled:       g('payment_charge_enabled') as boolean,
+    paymentBps:           g('payment_charge_bps') as number,
+    paymentLabel:         g('payment_charge_label') as string,
+    paymentBasis:         g('payment_charge_basis') as string,
     defaultTaxBps:        g('default_tax_bps') as number,
   }
 }

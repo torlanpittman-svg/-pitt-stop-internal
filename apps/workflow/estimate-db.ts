@@ -10,7 +10,7 @@ import {
   computeTotals, rollUpDecision, defaultTaxForType, defaultTaxBps, approvedTitlesToSync, convertSyncsServices,
   type LineType, type ApprovalState, type EstimateStatus, type TaxCategory,
 } from './estimate'
-import { computeFees, eligibleBasisCents, reconcilePlan, explicitPretaxTotals, type FeeCode } from './fees'
+import { computeFees, eligibleBasisCents, reconcilePlan, explicitPretaxTotals, effectiveFeeConfig, isDealerOrder, FEE_TAX_CATEGORY, type FeeCode } from './fees'
 import { getBusinessConfig } from '@/apps/settings/db'
 
 export type EstimateRow = typeof jobEstimates.$inferSelect
@@ -35,7 +35,9 @@ export async function getOrCreateEstimate(orderId: string, actor: string | null)
   // (falls back to env/825). Each estimate keeps its own overridable rate.
   const cfg = await getBusinessConfig().catch(() => null)
   const taxRateBps = cfg?.defaultTaxBps ?? defaultTaxBps()
-  const [row] = await db.insert(jobEstimates).values({ serviceOrderId: orderId, taxRateBps, status: 'draft', createdBy: actor, updatedBy: actor }).returning()
+  // Retail estimates are detailing by default → non-taxable, no tax-review clutter.
+  // Mechanical/parts/collision would set a taxable category later (P-D+).
+  const [row] = await db.insert(jobEstimates).values({ serviceOrderId: orderId, taxRateBps, explicitTaxCategory: 'detailing', status: 'draft', createdBy: actor, updatedBy: actor }).returning()
   await logJobEvent(orderId, 'estimate_started', actor, null)
   return row
 }
@@ -80,23 +82,37 @@ async function getOrCreateFeeService(estimateId: string): Promise<string> {
   }
 }
 
+/** Estimate + its Job's billing context (source/type for retail-vs-dealer + waivers). */
+async function loadEstimateContext(estimateId: string) {
+  const db = getDb()
+  const [row] = await db.select({
+    priceMode: jobEstimates.priceMode, explicitTotalCents: jobEstimates.explicitTotalCents,
+    taxCategory: jobEstimates.explicitTaxCategory, rate: jobEstimates.taxRateBps, discount: jobEstimates.discountCents,
+    waiveShopSupplies: jobEstimates.waiveShopSupplies, waiveCardFee: jobEstimates.waiveCardFee, taxExempt: jobEstimates.taxExempt,
+    source: serviceOrders.source, serviceType: serviceOrders.serviceType,
+  }).from(jobEstimates).innerJoin(serviceOrders, eq(serviceOrders.id, jobEstimates.serviceOrderId))
+    .where(eq(jobEstimates.id, estimateId)).limit(1)
+  return row
+}
+
 /**
- * Reconcile generated fee lines (shop supplies / card processing) for an estimate.
- * Idempotent: computes the desired fees from the eligible pre-tax basis + settings,
- * then updates/inserts/deletes so there is exactly ONE line per fee_code. Fee lines
- * are type='fee', non-taxable, taxCategory='review' (needs_tax_review until the CPA
- * confirms treatment). Never touches hand-entered (non-generated) lines.
+ * Reconcile generated fee lines (shop supplies / payment charge) for an estimate.
+ * Idempotent: exactly ONE line per fee_code. Uses the EFFECTIVE config — dealer Jobs get
+ * no retail charges, and per-Job waivers remove a charge. Fee lines are type='fee',
+ * non-taxable, taxCategory='fee' (retail detailing is confirmed non-taxable — no review
+ * clutter). Never touches hand-entered (non-generated) lines.
  */
 export async function reconcileFees(estimateId: string): Promise<void> {
   const db = getDb()
+  const ctx = await loadEstimateContext(estimateId)
   const lines = await loadEstimateLines(estimateId)
-  const cfg = await getBusinessConfig()
-  const [est] = await db.select({ priceMode: jobEstimates.priceMode, explicitTotalCents: jobEstimates.explicitTotalCents })
-    .from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
-  // Fee basis: for an explicit-price Job the manager's amount IS the work subtotal;
-  // otherwise sum the real (non-generated) line items. Never both (no double-count).
-  const basis = est?.priceMode === 'explicit_pretax' && est.explicitTotalCents != null
-    ? est.explicitTotalCents
+  const baseCfg = await getBusinessConfig()
+  const cfg = effectiveFeeConfig(baseCfg, {
+    isDealer: ctx ? isDealerOrder(ctx) : false,
+    waiveShopSupplies: ctx?.waiveShopSupplies, waivePayment: ctx?.waiveCardFee,
+  })
+  const basis = ctx?.priceMode === 'explicit_pretax' && ctx.explicitTotalCents != null
+    ? ctx.explicitTotalCents
     : eligibleBasisCents(lines.map((l) => ({ priceCents: l.priceCents, qty: l.qty, generated: l.generated })))
   const desired = computeFees(basis, cfg)
   const existingFees = lines
@@ -113,33 +129,31 @@ export async function reconcileFees(estimateId: string): Promise<void> {
     for (const [i, d] of plan.toInsert.entries()) {
       await db.insert(jobLineItems).values({
         jobServiceId: feeServiceId, type: 'fee', name: d.name, qty: '1', unit: 'each',
-        costCents: 0, priceCents: d.priceCents, taxable: false, taxCategory: 'review',
+        costCents: 0, priceCents: d.priceCents, taxable: false, taxCategory: FEE_TAX_CATEGORY,
         generated: true, feeCode: d.feeCode, sortOrder: 9000 + i,
       })
     }
   }
 }
 
-/** Recompute generated fees, then cached totals — respecting price_mode. */
+/** Recompute generated fees, then cached totals — respecting price_mode, dealer gating,
+ *  per-Job waivers, and tax treatment (dealer / tax-exempt / non-taxable detailing → $0). */
 export async function recomputeEstimate(estimateId: string): Promise<void> {
   await reconcileFees(estimateId)   // fee lines are upserted BEFORE totals are summed
   const db = getDb()
-  const [est] = await db.select({
-    rate: jobEstimates.taxRateBps, discount: jobEstimates.discountCents,
-    priceMode: jobEstimates.priceMode, explicitTotalCents: jobEstimates.explicitTotalCents,
-    taxCategory: jobEstimates.explicitTaxCategory,
-  }).from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
+  const ctx = await loadEstimateContext(estimateId)
 
   let t
-  if (est?.priceMode === 'explicit_pretax' && est.explicitTotalCents != null) {
-    // Manager's amount is the authoritative work subtotal; fees/tax computed on top.
-    // No per-service line prices are fabricated (services remain job_services only).
-    const cfg = await getBusinessConfig()
-    t = explicitPretaxTotals(est.explicitTotalCents, cfg, est.rate ?? defaultTaxBps(), est.taxCategory ?? 'review')
+  if (ctx?.priceMode === 'explicit_pretax' && ctx.explicitTotalCents != null) {
+    const isDealer = isDealerOrder(ctx)
+    const cfg = effectiveFeeConfig(await getBusinessConfig(), { isDealer, waiveShopSupplies: ctx.waiveShopSupplies, waivePayment: ctx.waiveCardFee })
+    // Dealer Jobs and admin tax-exempt overrides carry no tax; non-taxable categories
+    // (detailing) also resolve to $0 inside explicitPretaxTotals.
+    const effRate = isDealer || ctx.taxExempt ? 0 : (ctx.rate ?? defaultTaxBps())
+    t = explicitPretaxTotals(ctx.explicitTotalCents, cfg, effRate, ctx.taxCategory ?? 'detailing')
   } else {
-    // Itemized (today's behavior): totals from the real line items.
     const lines = await loadEstimateLines(estimateId)
-    t = computeTotals(lines.map((l) => ({ priceCents: l.priceCents, qty: l.qty, taxable: l.taxable, taxCategory: l.taxCategory })), est?.rate ?? defaultTaxBps(), est?.discount ?? 0)
+    t = computeTotals(lines.map((l) => ({ priceCents: l.priceCents, qty: l.qty, taxable: l.taxable, taxCategory: l.taxCategory })), ctx?.rate ?? defaultTaxBps(), ctx?.discount ?? 0)
   }
 
   await db.update(jobEstimates).set({

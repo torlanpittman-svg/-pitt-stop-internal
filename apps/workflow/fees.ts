@@ -7,14 +7,42 @@
  */
 import { lineAmountCents, computeTotals, type Totals } from './estimate'
 
-export type FeeCode = 'shop_supplies' | 'card_fee'
+export type FeeCode = 'shop_supplies' | 'payment_charge'
 
 export interface FeeConfig {
   shopSuppliesEnabled: boolean
   shopSuppliesBps: number
   shopSuppliesCapCents: number
-  cardFeeEnabled: boolean
-  cardFeeBps: number
+  paymentEnabled: boolean
+  paymentBps: number
+  paymentLabel: string
+  paymentBasis: string   // work_only | work_plus_supplies | grand_pretax
+}
+
+// Generated fee lines are non-taxable and NOT flagged for review (retail detailing is
+// confirmed non-taxable, so the normal invoice carries no tax clutter). Kept separate
+// from the taxable-service 'review' path used by mechanical/parts later.
+export const FEE_TAX_CATEGORY = 'fee'
+
+/** Retail vs dealer, from the Job's source/type. Dealer Jobs get NO retail charges/tax. */
+export function isDealerOrder(order: { source?: string | null; serviceType?: string | null }): boolean {
+  const s = (order.source ?? '').toLowerCase()
+  const t = (order.serviceType ?? '').toLowerCase()
+  return s === 'dealer' || s === 'dealer_checkin' || t.startsWith('dealer')
+}
+
+/**
+ * The config the engine actually uses for a Job. Dealer Jobs → shop supplies + payment
+ * charge forced OFF (dealer billing is unchanged: work price only). Retail Jobs → global
+ * settings minus this Job's manager/admin waivers.
+ */
+export function effectiveFeeConfig(base: FeeConfig, opts: { isDealer: boolean; waiveShopSupplies?: boolean; waivePayment?: boolean }): FeeConfig {
+  if (opts.isDealer) return { ...base, shopSuppliesEnabled: false, paymentEnabled: false }
+  return {
+    ...base,
+    shopSuppliesEnabled: base.shopSuppliesEnabled && !opts.waiveShopSupplies,
+    paymentEnabled:      base.paymentEnabled && !opts.waivePayment,
+  }
 }
 
 /** One fee the engine wants to exist on the estimate. */
@@ -44,25 +72,28 @@ export function computeShopSupplies(basisCents: number, bps: number, capCents: n
   return Math.max(0, capped)
 }
 
-/** Card processing = basis × bps (no cap in P-A). */
-export function computeCardFee(basisCents: number, bps: number): number {
+/** Payment charge = basis × bps (no cap). Basis (work vs work+supplies) is config. */
+export function computePaymentCharge(basisCents: number, bps: number): number {
   return Math.max(0, Math.round((Math.max(0, basisCents) * (Number.isFinite(bps) ? bps : 0)) / 10_000))
 }
 
 /**
- * The fee lines that SHOULD exist for this basis under the given config. Only enabled
- * fees with a positive amount are returned; anything absent here gets removed by the
- * reconciler (so disabling a fee, or a zero basis, deletes its line).
+ * The fee lines that SHOULD exist for this work basis under the given config. Shop supplies
+ * is computed on the work amount; the payment charge is computed on its configured basis
+ * (default work + shop supplies — e.g. 3% of $669.50 = $20.09). Only enabled fees with a
+ * positive amount are returned; anything absent gets removed by the reconciler.
  */
 export function computeFees(basisCents: number, cfg: FeeConfig): DesiredFee[] {
   const out: DesiredFee[] = []
+  let shop = 0
   if (cfg.shopSuppliesEnabled) {
-    const cents = computeShopSupplies(basisCents, cfg.shopSuppliesBps, cfg.shopSuppliesCapCents)
-    if (cents > 0) out.push({ feeCode: 'shop_supplies', name: `Shop supplies (${feePercentLabel(cfg.shopSuppliesBps)})`, priceCents: cents })
+    shop = computeShopSupplies(basisCents, cfg.shopSuppliesBps, cfg.shopSuppliesCapCents)
+    if (shop > 0) out.push({ feeCode: 'shop_supplies', name: `Shop supplies (${feePercentLabel(cfg.shopSuppliesBps)})`, priceCents: shop })
   }
-  if (cfg.cardFeeEnabled) {
-    const cents = computeCardFee(basisCents, cfg.cardFeeBps)
-    if (cents > 0) out.push({ feeCode: 'card_fee', name: `Card processing (${feePercentLabel(cfg.cardFeeBps)})`, priceCents: cents })
+  if (cfg.paymentEnabled) {
+    const payBasis = cfg.paymentBasis === 'work_only' ? basisCents : basisCents + shop   // work_plus_supplies | grand_pretax
+    const cents = computePaymentCharge(payBasis, cfg.paymentBps)
+    if (cents > 0) out.push({ feeCode: 'payment_charge', name: `${cfg.paymentLabel} (${feePercentLabel(cfg.paymentBps)})`, priceCents: cents })
   }
   return out
 }
@@ -89,7 +120,7 @@ export function taxCategoryTaxable(cat: string | null | undefined): boolean {
 export interface ExplicitTotals extends Totals {
   workPriceCents: number
   shopSuppliesCents: number
-  cardFeeCents: number
+  paymentChargeCents: number
 }
 
 /**
@@ -107,12 +138,12 @@ export function explicitPretaxTotals(
 ): ExplicitTotals {
   const fees = computeFees(explicitTotalCents, cfg)
   const workLine = { priceCents: explicitTotalCents, qty: 1, taxable: taxCategoryTaxable(taxCategory), taxCategory }
-  const feeLines = fees.map((f) => ({ priceCents: f.priceCents, qty: 1, taxable: false, taxCategory: 'review' }))
+  const feeLines = fees.map((f) => ({ priceCents: f.priceCents, qty: 1, taxable: false, taxCategory: FEE_TAX_CATEGORY }))
   const totals = computeTotals([workLine, ...feeLines], taxRateBps, 0)
   return {
     workPriceCents: explicitTotalCents,
     shopSuppliesCents: fees.find((f) => f.feeCode === 'shop_supplies')?.priceCents ?? 0,
-    cardFeeCents: fees.find((f) => f.feeCode === 'card_fee')?.priceCents ?? 0,
+    paymentChargeCents: fees.find((f) => f.feeCode === 'payment_charge')?.priceCents ?? 0,
     ...totals,
   }
 }

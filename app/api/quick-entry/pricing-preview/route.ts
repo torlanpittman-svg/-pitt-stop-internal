@@ -21,14 +21,18 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({})) as { workPriceCents?: number }
   const cents = Math.max(0, Math.round(Number(body.workPriceCents) || 0))
   const cfg = await getBusinessConfig()
-  const t = explicitPretaxTotals(cents, cfg, cfg.defaultTaxBps, 'review')
+  // Quick Entry is retail detailing → non-taxable ('detailing'): shop supplies + payment
+  // charge on top, no tax. (Dealer Jobs never go through this preview.)
+  const t = explicitPretaxTotals(cents, cfg, cfg.defaultTaxBps, 'detailing')
   return NextResponse.json({
-    workPriceCents:    t.workPriceCents,
-    shopSuppliesCents: t.shopSuppliesCents,
-    cardFeeCents:      t.cardFeeCents,
-    cardFeeEnabled:    cfg.cardFeeEnabled,
-    taxCents:          t.taxCents,
-    needsTaxReview:    t.needsTaxReview,
-    totalCents:        t.totalCents,
+    workPriceCents:     t.workPriceCents,
+    shopSuppliesCents:  t.shopSuppliesCents,
+    shopSuppliesEnabled: cfg.shopSuppliesEnabled,
+    paymentChargeCents: t.paymentChargeCents,
+    paymentEnabled:     cfg.paymentEnabled,
+    paymentLabel:       cfg.paymentLabel,
+    taxCents:           t.taxCents,
+    needsTaxReview:     t.needsTaxReview,
+    totalCents:         t.totalCents,
   })
 }
