@@ -313,7 +313,9 @@ export default function QuickEntryFlow() {
       if (!res.ok || !d.ok) throw new Error(d.error || 'Could not create the Job')
       setResult({ orderNumber: d.orderNumber, serviceOrderId: d.serviceOrderId }); setPhase('done')
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); setPhase('review') }
-  }, [cust, veh, lines, tech, vehicleMode, selectedVehicleId])
+    // workPrice + nlNote MUST be deps: otherwise the create closure reads their stale
+    // initial values and the manager's Work Price / internal note are silently dropped.
+  }, [cust, veh, lines, tech, vehicleMode, selectedVehicleId, workPrice, nlNote])
 
   const input = 'w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500'
 
