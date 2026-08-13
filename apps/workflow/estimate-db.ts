@@ -162,6 +162,15 @@ export async function recomputeEstimate(estimateId: string): Promise<void> {
   }).where(eq(jobEstimates.id, estimateId))
 }
 
+/** Set one per-Job charge waiver (Invoice Draft controls). Caller enforces permissions.
+ *  Recompute is done by the caller so the change flows through the single engine. */
+export async function setEstimateWaiver(estimateId: string, field: 'shop_supplies' | 'payment' | 'tax_exempt', value: boolean): Promise<void> {
+  const patch = field === 'shop_supplies' ? { waiveShopSupplies: value }
+    : field === 'payment' ? { waiveCardFee: value }
+    : { taxExempt: value }
+  await getDb().update(jobEstimates).set({ ...patch, updatedAt: new Date() }).where(eq(jobEstimates.id, estimateId))
+}
+
 /** Store an internal note/instruction on the estimate (manager/commercial layer). */
 export async function setInternalNote(estimateId: string, note: string): Promise<void> {
   await getDb().update(jobEstimates).set({ internalNotes: note.slice(0, 500), updatedAt: new Date() }).where(eq(jobEstimates.id, estimateId))

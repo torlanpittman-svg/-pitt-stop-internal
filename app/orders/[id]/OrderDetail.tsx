@@ -417,6 +417,174 @@ function VehicleEditModal({ orderId, onClose, onSaved }: {
   )
 }
 
+// ── Invoice Draft (manager/admin) ─────────────────────────────────────────────
+// A clean "what would this customer be invoiced right now?" view built from the
+// authoritative Job estimate. Read-only totals; the only writes are the Remove/Restore
+// charge toggles (server-enforced: shop/payment = manager+admin, tax exempt = admin+reason).
+// NO QuickBooks — this never creates or sends an invoice.
+interface InvoiceDraftData {
+  priced: boolean; isDealer: boolean
+  customer: string | null; vehicle: string; services: string[]
+  workPriceCents: number
+  shopSupplies: { cents: number; waived: boolean }
+  paymentCharge: { cents: number; waived: boolean; label: string }
+  tax: { cents: number; applicable: boolean; needsReview: boolean; exempt: boolean }
+  totalCents: number; role: string
+}
+const money = (c: number) => `$${(c / 100).toFixed(2)}`
+
+function ChargeRow({ label, cents, waived, canEdit, busy, onToggle }: {
+  label: string; cents: number; waived: boolean; canEdit: boolean; busy: boolean; onToggle: (removed: boolean) => void
+}) {
+  return (
+    <div className="flex items-center justify-between py-2.5 border-b border-gray-800">
+      <div className="min-w-0">
+        <p className={`text-sm ${waived ? 'text-gray-600 line-through' : 'text-gray-300'}`}>{label}</p>
+        {waived && <p className="text-gray-600 text-xs">Removed — not billed</p>}
+      </div>
+      <div className="flex items-center gap-3 shrink-0">
+        <span className={`text-sm tabular-nums ${waived ? 'text-gray-600 line-through' : 'text-gray-200'}`}>{money(cents)}</span>
+        {canEdit && (
+          <button onClick={() => onToggle(!waived)} disabled={busy}
+            className={`text-xs font-semibold px-2.5 py-1 rounded-lg active:opacity-70 disabled:opacity-40 ${waived ? 'text-blue-400 border border-blue-900/60' : 'text-gray-400 border border-gray-700'}`}>
+            {waived ? 'Restore' : 'Remove'}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () => void }) {
+  const [draft, setDraft] = useState<InvoiceDraftData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [taxReasonOpen, setTaxReasonOpen] = useState(false)
+  const [taxReason, setTaxReason] = useState('')
+
+  useEffect(() => {
+    let ok = true
+    fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => { if (ok) { if (d.draft) setDraft(d.draft); else setErr(d.error ?? 'Could not load the invoice draft.') } })
+      .catch(() => { if (ok) setErr('Could not load the invoice draft.') })
+      .finally(() => { if (ok) setLoading(false) })
+    return () => { ok = false }
+  }, [orderId])
+
+  const override = useCallback(async (field: 'shop_supplies' | 'payment' | 'tax_exempt', removed: boolean, reason?: string) => {
+    setBusy(true); setErr(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/invoice/override`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ field, removed, reason }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setErr(data.error ?? 'That change was not allowed.'); return }
+      setDraft(data.draft)
+      setTaxReasonOpen(false); setTaxReason('')
+    } catch { setErr('Network error — please try again.') }
+    finally { setBusy(false) }
+  }, [orderId])
+
+  const isAdmin = draft?.role === 'admin'
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
+      <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10 max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-white font-bold text-xl">Invoice Draft</h2>
+          <button onClick={onClose} className="text-gray-500 text-sm">Close</button>
+        </div>
+
+        {loading && <p className="text-gray-500 text-sm py-8 text-center">Loading…</p>}
+
+        {!loading && draft && (
+          <>
+            {/* Header: who / what */}
+            <div className="mb-4">
+              {draft.customer && <p className="text-white text-base font-semibold">{draft.customer}</p>}
+              <p className="text-gray-400 text-sm">{draft.vehicle}</p>
+              {draft.services.length > 0 && <p className="text-gray-500 text-xs mt-1">{draft.services.join(' · ')}</p>}
+            </div>
+
+            {draft.isDealer ? (
+              <p className="text-gray-400 text-sm bg-gray-800/60 rounded-xl px-4 py-4">
+                This is a Dealer Job — billed through Dealer Check-In / QuickBooks. No retail Shop Supplies, Payment Charge, or sales tax apply.
+              </p>
+            ) : !draft.priced ? (
+              <p className="text-gray-400 text-sm bg-gray-800/60 rounded-xl px-4 py-4">
+                No Work Price yet. Set a Work Price in Quick Entry (manager pricing) before an invoice draft can be prepared.
+              </p>
+            ) : (
+              <>
+                {/* Work price */}
+                <div className="flex items-center justify-between py-2.5 border-b border-gray-800">
+                  <p className="text-sm text-gray-300">Work</p>
+                  <span className="text-sm tabular-nums text-gray-200">{money(draft.workPriceCents)}</span>
+                </div>
+
+                {/* Shop supplies — manager + admin */}
+                <ChargeRow label="Shop supplies" cents={draft.shopSupplies.cents} waived={draft.shopSupplies.waived}
+                  canEdit busy={busy} onToggle={(removed) => override('shop_supplies', removed)} />
+
+                {/* Payment charge — manager + admin */}
+                <ChargeRow label={draft.paymentCharge.label} cents={draft.paymentCharge.cents} waived={draft.paymentCharge.waived}
+                  canEdit busy={busy} onToggle={(removed) => override('payment', removed)} />
+
+                {/* Tax — only when it applies; exemption is admin-only + reason */}
+                {(draft.tax.applicable || draft.tax.exempt) && (
+                  <div className="py-2.5 border-b border-gray-800">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className={`text-sm ${draft.tax.exempt ? 'text-gray-600 line-through' : 'text-gray-300'}`}>
+                          Sales tax{draft.tax.needsReview && !draft.tax.exempt ? ' (pending review)' : ''}
+                        </p>
+                        {draft.tax.exempt && <p className="text-gray-600 text-xs">Tax exempt</p>}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className={`text-sm tabular-nums ${draft.tax.exempt ? 'text-gray-600 line-through' : 'text-gray-200'}`}>{money(draft.tax.cents)}</span>
+                        {isAdmin && (draft.tax.exempt
+                          ? <button onClick={() => override('tax_exempt', false)} disabled={busy}
+                              className="text-xs font-semibold px-2.5 py-1 rounded-lg text-blue-400 border border-blue-900/60 active:opacity-70 disabled:opacity-40">Restore</button>
+                          : <button onClick={() => setTaxReasonOpen((v) => !v)} disabled={busy}
+                              className="text-xs font-semibold px-2.5 py-1 rounded-lg text-gray-400 border border-gray-700 active:opacity-70 disabled:opacity-40">Exempt</button>
+                        )}
+                      </div>
+                    </div>
+                    {isAdmin && taxReasonOpen && !draft.tax.exempt && (
+                      <div className="mt-3">
+                        <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">Reason for exemption (required)</p>
+                        <textarea value={taxReason} onChange={(e) => setTaxReason(e.target.value)} rows={2}
+                          placeholder="e.g. resale certificate on file / government entity"
+                          className="w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-sm" />
+                        <button onClick={() => override('tax_exempt', true, taxReason)} disabled={busy || !taxReason.trim()}
+                          className="mt-2 w-full h-11 rounded-xl bg-amber-600 active:bg-amber-700 text-white text-sm font-bold disabled:opacity-40">
+                          {busy ? 'Saving…' : 'Confirm tax exempt'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Total */}
+                <div className="flex items-center justify-between pt-4">
+                  <p className="text-white font-bold text-base">Total</p>
+                  <span className="text-white font-bold text-lg tabular-nums">{money(draft.totalCents)}</span>
+                </div>
+                <p className="text-gray-600 text-xs mt-4">Draft only — no invoice has been created or sent. Every change is recorded.</p>
+              </>
+            )}
+          </>
+        )}
+
+        {err && <p className="text-red-400 text-sm mt-4">{err}</p>}
+      </div>
+    </div>
+  )
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithContext }) {
@@ -438,6 +606,7 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
   const [acked,       setAcked]       = useState<Set<string>>(new Set())  // to-do checkoffs
   const [editingVehicle, setEditingVehicle] = useState(false)
   const [vehToast,    setVehToast]    = useState<string | null>(null)
+  const [showInvoice, setShowInvoice] = useState(false)   // Invoice Draft (manager/admin)
   const identity = useIdentity()
   const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
 
@@ -697,6 +866,12 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
             </div>
           )}
 
+          {/* Invoice Draft — clean billing summary from the estimate (no QuickBooks) */}
+          <button onClick={() => setShowInvoice(true)}
+            className="w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80 mb-4">
+            Invoice Draft
+          </button>
+
           {/* reopen a Ready Job that wasn't truly finished (reason + PIN) */}
           {order.status === 'ready' && (
             <button onClick={() => { setReopenMsg(null); setReopening(true) }}
@@ -775,6 +950,11 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
       {/* Reopen (reason + PIN) */}
       {reopening && (
         <ReopenModal busy={reopenBusy} error={reopenMsg} onConfirm={submitReopen} onCancel={() => setReopening(false)} />
+      )}
+
+      {/* Invoice Draft (manager/admin) */}
+      {showInvoice && (
+        <InvoiceDraftModal orderId={order.id} onClose={() => setShowInvoice(false)} />
       )}
 
       {/* Edit Vehicle (manager correction) */}

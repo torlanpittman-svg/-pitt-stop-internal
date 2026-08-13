@@ -1,0 +1,68 @@
+/**
+ * Invoice Draft read model (P-D2) — a clean "what would this customer be invoiced right
+ * now?" summary built from the AUTHORITATIVE Job estimate (no second calculation system).
+ * Totals come straight from job_estimates (which the fee engine computed); fee amounts
+ * come from the generated line items. Dealer Jobs are flagged so the UI shows no retail
+ * charges.
+ */
+import type { OrderWithContext } from './db'
+import type { FullEstimate } from './estimate-db'
+import { isDealerOrder } from './fees'
+
+export interface InvoiceDraft {
+  priced: boolean
+  isDealer: boolean
+  customer: string | null
+  vehicle: string
+  services: string[]
+  workPriceCents: number
+  shopSupplies: { cents: number; waived: boolean }
+  paymentCharge: { cents: number; waived: boolean; label: string }
+  tax: { cents: number; applicable: boolean; needsReview: boolean; exempt: boolean }
+  totalCents: number
+  role: string
+}
+
+export function buildInvoiceDraft(params: {
+  order: OrderWithContext
+  full: FullEstimate | null
+  paymentLabel: string
+  role: string
+}): InvoiceDraft {
+  const { order, full, paymentLabel, role } = params
+  const v = order.vehicle
+  const vehicle = [v.year, v.make, v.model].filter(Boolean).join(' ') || v.vin || 'Vehicle'
+  const isDealer = isDealerOrder(order)
+
+  // Dealer Jobs and unpriced Jobs carry no retail draft. (Dealer billing stays in
+  // Dealer Check-In / QuickBooks; this view never shows retail charges for them.)
+  const priced = !isDealer && !!full && full.estimate.priceMode === 'explicit_pretax' && full.estimate.explicitTotalCents != null
+
+  const base: InvoiceDraft = {
+    priced, isDealer,
+    customer: order.customerName?.trim() || null,
+    vehicle, services: order.services ?? [],
+    workPriceCents: 0,
+    shopSupplies: { cents: 0, waived: false },
+    paymentCharge: { cents: 0, waived: false, label: paymentLabel },
+    tax: { cents: 0, applicable: false, needsReview: false, exempt: false },
+    totalCents: 0,
+    role,
+  }
+  if (!priced || !full) return base
+
+  const est = full.estimate
+  const feeLines = full.services.flatMap((s) => s.lines).filter((l) => l.generated && l.feeCode)
+  const shop = feeLines.find((l) => l.feeCode === 'shop_supplies')?.priceCents ?? 0
+  const pay = feeLines.find((l) => l.feeCode === 'payment_charge')?.priceCents ?? 0
+
+  return {
+    ...base,
+    workPriceCents: est.explicitTotalCents ?? 0,
+    shopSupplies: { cents: shop, waived: est.waiveShopSupplies },
+    paymentCharge: { cents: pay, waived: est.waiveCardFee, label: paymentLabel },
+    // Tax row shows only when it actually applies (>$0) or a category is under review.
+    tax: { cents: est.taxCents, applicable: est.taxCents > 0 || est.needsTaxReview, needsReview: est.needsTaxReview, exempt: est.taxExempt },
+    totalCents: est.totalCents,
+  }
+}
