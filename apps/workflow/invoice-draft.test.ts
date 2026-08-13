@@ -59,6 +59,29 @@ describe('buildInvoiceDraft', () => {
     expect(d.totalCents).toBe(66950)
   })
 
+  it('prices an ITEMIZED Job from the sum of service lines (fees excluded, no double-count)', () => {
+    const full = {
+      estimate: {
+        priceMode: 'itemized', explicitTotalCents: null, taxCents: 0, totalCents: 68959,
+        needsTaxReview: false, waiveShopSupplies: false, waiveCardFee: false, taxExempt: false,
+      },
+      services: [
+        { lines: [{ generated: false, priceCents: 30000, qty: '1' }] },   // Interior Detail
+        { lines: [{ generated: false, priceCents: 35000, qty: '1' }] },   // Exterior + Wax
+        { lines: [
+          { generated: true, feeCode: 'shop_supplies', priceCents: 1950, qty: '1' },
+          { generated: true, feeCode: 'payment_charge', priceCents: 2009, qty: '1' },
+        ] },
+      ],
+    } as never
+    const d = buildInvoiceDraft({ order: order(), full, ...P })
+    expect(d.priced).toBe(true)
+    expect(d.workPriceCents).toBe(65000)   // 300 + 350, fee lines excluded
+    expect(d.shopSupplies.cents).toBe(1950)
+    expect(d.paymentCharge.cents).toBe(2009)
+    expect(d.totalCents).toBe(68959)
+  })
+
   it('shows the tax row when tax applies or is under review', () => {
     const taxed = buildInvoiceDraft({ order: order(), full: full({ taxCents: 5363, totalCents: 74322 }), ...P })
     expect(taxed.tax.applicable).toBe(true)

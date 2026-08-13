@@ -8,6 +8,7 @@
 import type { OrderWithContext } from './db'
 import type { FullEstimate } from './estimate-db'
 import { isDealerOrder } from './fees'
+import { lineAmountCents } from './estimate'
 
 export interface InvoiceDraft {
   priced: boolean
@@ -34,9 +35,16 @@ export function buildInvoiceDraft(params: {
   const vehicle = [v.year, v.make, v.model].filter(Boolean).join(' ') || v.vin || 'Vehicle'
   const isDealer = isDealerOrder(order)
 
-  // Dealer Jobs and unpriced Jobs carry no retail draft. (Dealer billing stays in
-  // Dealer Check-In / QuickBooks; this view never shows retail charges for them.)
-  const priced = !isDealer && !!full && full.estimate.priceMode === 'explicit_pretax' && full.estimate.explicitTotalCents != null
+  // Work basis = the authoritative work price in EITHER mode: explicit_pretax → the flat
+  // total; itemized → the sum of the (non-generated) service lines. Fee lines are
+  // generated=true and excluded, so Work + fees never double-count.
+  const est = full?.estimate
+  const eligibleBasis = full
+    ? full.services.flatMap((s) => s.lines).filter((l) => !l.generated).reduce((sum, l) => sum + lineAmountCents(l.priceCents, l.qty), 0)
+    : 0
+  const workBasis = est && est.priceMode === 'explicit_pretax' && est.explicitTotalCents != null ? est.explicitTotalCents : eligibleBasis
+  // Dealer Jobs carry no retail draft. (Dealer billing stays in Dealer Check-In / QuickBooks.)
+  const priced = !isDealer && !!full && workBasis > 0
 
   const base: InvoiceDraft = {
     priced, isDealer,
@@ -49,16 +57,15 @@ export function buildInvoiceDraft(params: {
     totalCents: 0,
     role,
   }
-  if (!priced || !full) return base
+  if (!priced || !full || !est) return base
 
-  const est = full.estimate
   const feeLines = full.services.flatMap((s) => s.lines).filter((l) => l.generated && l.feeCode)
   const shop = feeLines.find((l) => l.feeCode === 'shop_supplies')?.priceCents ?? 0
   const pay = feeLines.find((l) => l.feeCode === 'payment_charge')?.priceCents ?? 0
 
   return {
     ...base,
-    workPriceCents: est.explicitTotalCents ?? 0,
+    workPriceCents: workBasis,
     shopSupplies: { cents: shop, waived: est.waiveShopSupplies },
     paymentCharge: { cents: pay, waived: est.waiveCardFee, label: paymentLabel },
     // Tax row shows only when it actually applies (>$0) or a category is under review.

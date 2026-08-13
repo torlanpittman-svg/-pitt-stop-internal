@@ -1,159 +1,165 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import NavHeader from '@/app/components/NavHeader'
 
-type LineType = 'labor' | 'part' | 'fee' | 'sublet'
-type Approval = 'pending' | 'approved' | 'declined' | 'deferred'
-interface Line { id: string; type: string; name: string; qty: string; unit: string; costCents: number; priceCents: number; taxable: boolean; taxCategory: string }
-interface Service { id: string; title: string; approvalState: string; technician: string | null; lines: Line[] }
-interface Estimate { id: string; status: string; taxRateBps: number; taxableSubtotalCents: number; nontaxableSubtotalCents: number; taxCents: number; totalCents: number; needsTaxReview: boolean }
-interface Full { estimate: Estimate | null; services: Service[] }
+/**
+ * Simplified mobile Estimate — "what are we doing, and what are we charging?".
+ * One visible service + one editable price, plus one authoritative Work Total.
+ * No cost / labor-guide / tax / approval clutter (that infrastructure still exists
+ * for the future richer desktop view). Fees are handled separately by the billing
+ * engine and never appear here.
+ */
+interface ServiceView { id: string; title: string; priceCents: number | null; suggestedCents: number | null }
+interface View { exists: boolean; flat: boolean; workTotalCents: number; services: ServiceView[] }
 interface Header { id: string; customer: string; vehicle: string; requested: string[] }
 
-const TAX_CATS = ['repair_parts', 'mechanical_labor', 'taxable_consumable', 'remodeling', 'detailing', 'collision', 'exempt', 'fee', 'sublet', 'review', 'other']
-const fmt = (c: number) => `$${((c || 0) / 100).toFixed(2)}`
-const amt = (l: Line) => Math.round(l.priceCents * (parseFloat(l.qty) || 0))
-const defForType = (t: LineType) => t === 'part' ? { taxable: true, taxCategory: 'repair_parts' } : t === 'labor' ? { taxable: false, taxCategory: 'mechanical_labor' } : { taxable: false, taxCategory: 'review' }
+const dollars = (c: number) => (c / 100).toFixed(2)
+const parseDollars = (s: string): number => Math.max(0, Math.round((parseFloat(s.replace(/[^0-9.]/g, '')) || 0) * 100))
 
-const APPROVAL_STYLE: Record<Approval, string> = { approved: 'bg-green-600', declined: 'bg-red-600', deferred: 'bg-amber-600', pending: 'bg-gray-700' }
-const inputCls = 'bg-gray-800 border border-gray-700 text-white rounded-lg px-2 py-1.5 text-sm'
-
-function AddLineForm({ onAdd }: { onAdd: (l: { type: LineType; name: string; qty: number; priceCents: number; costCents: number; taxable: boolean; taxCategory: string }) => void }) {
-  const [type, setType] = useState<LineType>('labor')
-  const [name, setName] = useState('')
-  const [qty, setQty] = useState('1')
-  const [price, setPrice] = useState('')
-  const [cost, setCost] = useState('')
-  const [taxable, setTaxable] = useState(false)
-  const [cat, setCat] = useState('mechanical_labor')
-  const setT = (t: LineType) => { setType(t); const d = defForType(t); setTaxable(d.taxable); setCat(d.taxCategory) }
+// ── Inline price field: commits on blur / Enter, never per-keystroke ──────────────
+function PriceInput({ cents, onCommit, busy, big }: { cents: number | null; onCommit: (c: number) => void; busy: boolean; big?: boolean }) {
+  const [text, setText] = useState(cents != null ? dollars(cents) : '')
+  const [editing, setEditing] = useState(false)
+  // Keep in sync when the server value changes and we're not actively editing.
+  if (!editing && cents != null && text !== dollars(cents)) setText(dollars(cents))
+  const commit = () => { setEditing(false); const c = parseDollars(text); if (c !== (cents ?? -1)) onCommit(c) }
   return (
-    <div className="mt-2 grid grid-cols-2 md:grid-cols-8 gap-2 items-center bg-gray-950/40 rounded-xl p-2">
-      <select value={type} onChange={(e) => setT(e.target.value as LineType)} className={inputCls}>
-        <option value="labor">Labor</option><option value="part">Part</option><option value="fee">Fee</option><option value="sublet">Sublet</option>
-      </select>
-      <input className={`${inputCls} md:col-span-2`} placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
-      <input className={inputCls} placeholder={type === 'labor' ? 'Hours' : 'Qty'} inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} />
-      <input className={inputCls} placeholder="Price $" inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} />
-      <input className={inputCls} placeholder="Cost $" inputMode="decimal" value={cost} onChange={(e) => setCost(e.target.value)} />
-      <label className="flex items-center gap-1 text-xs text-gray-300"><input type="checkbox" checked={taxable} onChange={(e) => setTaxable(e.target.checked)} /> Tax</label>
-      <select value={cat} onChange={(e) => setCat(e.target.value)} className={`${inputCls} text-xs`}>{TAX_CATS.map((c) => <option key={c} value={c}>{c}</option>)}</select>
-      <button onClick={() => { if (!name.trim()) return; onAdd({ type, name: name.trim(), qty: parseFloat(qty) || 0, priceCents: Math.round((parseFloat(price) || 0) * 100), costCents: Math.round((parseFloat(cost) || 0) * 100), taxable, taxCategory: cat }); setName(''); setQty('1'); setPrice(''); setCost('') }}
-        className="md:col-span-8 bg-blue-600 text-white text-sm font-semibold rounded-lg py-2 active:bg-blue-700">+ Add line</button>
+    <div className="flex items-center">
+      <span className={`text-gray-500 ${big ? 'text-lg' : ''}`}>$</span>
+      <input
+        value={text} inputMode="decimal" placeholder="0.00" disabled={busy}
+        onFocus={(e) => { setEditing(true); e.currentTarget.select() }}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+        className={`bg-transparent text-right text-white tabular-nums outline-none focus:border-b focus:border-gray-500 ${big ? 'text-2xl font-bold w-32' : 'text-base w-20'}`}
+      />
     </div>
   )
 }
 
-export default function EstimateBuilder({ header, initial }: { header: Header; initial: Full | null }) {
-  const [data, setData] = useState<Full>(initial ?? { estimate: null, services: [] })
+// ── Swipe-left row: drag left to reveal Remove; deliberate tap required ────────────
+function SwipeRow({ children, onRemove, busy }: { children: React.ReactNode; onRemove: () => void; busy: boolean }) {
+  const [dx, setDx] = useState(0)
+  const start = useRef<number | null>(null)
+  const open = dx <= -44
+  const onStart = (x: number) => { start.current = x }
+  const onMove = (x: number) => { if (start.current != null) setDx(Math.max(-96, Math.min(0, x - start.current))) }
+  const onEnd = () => { start.current = null; setDx((d) => (d <= -44 ? -88 : 0)) }
+  return (
+    <div className="relative overflow-hidden rounded-xl group">
+      {/* Red Remove revealed underneath */}
+      <div className="absolute inset-y-0 right-0 flex items-stretch">
+        <button onClick={onRemove} disabled={busy} aria-label="Remove service"
+          className="px-5 bg-red-600 text-white text-sm font-semibold active:bg-red-700 disabled:opacity-50">Remove</button>
+      </div>
+      {/* Foreground */}
+      <div
+        className="relative flex items-center gap-3 bg-gray-900 border border-gray-800 px-4 py-3.5 touch-pan-y"
+        style={{ transform: `translateX(${dx}px)`, transition: start.current == null ? 'transform .18s ease' : 'none' }}
+        onClick={() => { if (open) setDx(0) }}
+        onTouchStart={(e) => onStart(e.touches[0].clientX)}
+        onTouchMove={(e) => onMove(e.touches[0].clientX)}
+        onTouchEnd={onEnd}
+      >
+        {children}
+        {/* Desktop / keyboard fallback: subtle, appears on hover or focus — no permanent icon */}
+        <button onClick={onRemove} disabled={busy}
+          className="hidden md:block md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 text-gray-500 hover:text-red-400 text-xs ml-1 transition-opacity">Remove</button>
+      </div>
+    </div>
+  )
+}
+
+export default function EstimateBuilder({ header, initialView }: { header: Header; initialView: View }) {
+  const [view, setView] = useState<View>(initialView)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const [newSvc, setNewSvc] = useState('')
+  const [newName, setNewName] = useState('')
+  const [newPrice, setNewPrice] = useState('')
 
   const post = useCallback(async (payload: Record<string, unknown>) => {
     setBusy(true); setErr(null)
     try {
-      const res = await fetch(`/api/workflow/orders/${header.id}/estimate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const res = await fetch(`/api/workflow/orders/${header.id}/estimate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      })
       const d = await res.json()
-      if (!res.ok || !d.ok) { setErr(d.error ?? 'Action failed'); return d }
-      setData({ estimate: d.estimate ?? null, services: d.services ?? [] })
-      return d
-    } catch { setErr('Network error'); return null } finally { setBusy(false) }
+      if (!res.ok || !d.ok) { setErr(d.error ?? 'Action failed'); return }
+      if (d.view) setView(d.view)
+    } catch { setErr('Network error') } finally { setBusy(false) }
   }, [header.id])
 
-  const est = data.estimate
-  const taxPct = est ? (est.taxRateBps / 100).toFixed(2) : '8.25'
+  const services = view.services
+  const isFlat = view.flat
 
   return (
     <main className="min-h-screen bg-gray-950 text-white">
       <NavHeader back={{ href: `/orders/${header.id}`, label: 'Job' }} />
-      <div className="max-w-4xl mx-auto px-5 py-6">
-        <div className="mt-1 mb-4">
+      <div className="max-w-xl mx-auto px-4 py-5">
+        <div className="mb-4">
           <h1 className="text-2xl font-bold">Estimate</h1>
-          <p className="text-gray-400">{header.customer} · {header.vehicle}</p>
-          {header.requested.length > 0 && <p className="text-gray-600 text-xs mt-1">Requested: {header.requested.join(', ')}</p>}
+          <p className="text-gray-400 text-sm">{header.customer} · {header.vehicle}</p>
         </div>
         {err && <p className="text-red-400 text-sm mb-3">{err}</p>}
 
-        {!est ? (
-          <button onClick={() => post({ action: 'build' })} disabled={busy}
-            className="w-full h-14 rounded-2xl bg-blue-600 text-white text-lg font-bold disabled:opacity-40">
-            {busy ? 'Starting…' : 'Start estimate (promote requested services)'}
-          </button>
-        ) : (
-          <>
-            {/* Status + actions */}
-            <div className="flex items-center flex-wrap gap-2 mb-4">
-              <span className="text-xs uppercase tracking-wide bg-gray-800 border border-gray-700 rounded-full px-3 py-1">{est.status.replace(/_/g, ' ')}</span>
-              <button onClick={() => post({ action: 'set_status', status: 'ready_to_send' })} className="text-xs text-gray-300 border border-gray-700 rounded-full px-3 py-1">Ready to send</button>
-              <button onClick={() => post({ action: 'set_status', status: 'sent' })} className="text-xs text-gray-300 border border-gray-700 rounded-full px-3 py-1">Mark sent</button>
-              <button onClick={() => post({ action: 'convert' })} className="text-xs text-white bg-green-700 rounded-full px-3 py-1">Convert to work</button>
-              <a href={`/orders/${header.id}/estimate/print`} target="_blank" className="text-xs text-blue-400 underline ml-auto">Printable summary ↗</a>
-            </div>
-
-            {/* Services */}
-            <div className="space-y-4">
-              {data.services.map((s) => (
-                <div key={s.id} className="rounded-2xl bg-gray-900 border border-gray-800 p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <p className="font-semibold flex-1">{s.title}</p>
-                    <button onClick={() => post({ action: 'remove_service', serviceId: s.id })} className="text-gray-600 text-sm">Remove</button>
-                  </div>
-                  <div className="flex gap-1.5 mb-3">
-                    {(['approved', 'declined', 'deferred', 'pending'] as Approval[]).map((a) => (
-                      <button key={a} onClick={() => post({ action: 'set_approval', serviceId: s.id, state: a })}
-                        className={`text-[11px] rounded-full px-2.5 py-1 capitalize ${s.approvalState === a ? APPROVAL_STYLE[a] + ' text-white' : 'bg-gray-800 text-gray-400 border border-gray-700'}`}>{a}</button>
-                    ))}
-                  </div>
-                  {s.lines.length > 0 && (
-                    <div className="space-y-1">
-                      {s.lines.map((l) => (
-                        <div key={l.id} className="flex items-center gap-2 text-sm text-gray-300 bg-gray-950/40 rounded-lg px-2 py-1.5">
-                          <span className="text-[10px] uppercase text-gray-500 w-12">{l.type}</span>
-                          <span className="flex-1 truncate">{l.name}</span>
-                          <span className="text-gray-500 text-xs">{parseFloat(l.qty)}×{fmt(l.priceCents)}</span>
-                          <span className={`text-[10px] px-1.5 rounded ${l.taxable ? 'bg-blue-900/60 text-blue-300' : 'bg-gray-800 text-gray-500'}`}>{l.taxable ? 'tax' : 'no tax'}{l.taxCategory === 'review' ? ' ⚠' : ''}</span>
-                          <span className="w-16 text-right">{fmt(amt(l))}</span>
-                          <button onClick={() => post({ action: 'remove_line', lineId: l.id })} className="text-gray-600">×</button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <AddLineForm onAdd={(line) => post({ action: 'add_line', serviceId: s.id, line })} />
-                </div>
-              ))}
-            </div>
-
-            {/* Add service */}
-            <div className="flex gap-2 mt-4">
-              <input className={`${inputCls} flex-1`} placeholder="Add a service" value={newSvc} onChange={(e) => setNewSvc(e.target.value)} />
-              <button onClick={() => { if (newSvc.trim()) { post({ action: 'add_service', title: newSvc.trim() }); setNewSvc('') } }} className="bg-gray-800 border border-gray-700 rounded-lg px-4 text-sm">Add</button>
-            </div>
-
-            {/* Tax rate + totals */}
-            <div className="mt-6 rounded-2xl bg-gray-900 border border-gray-800 p-4">
-              <div className="flex items-center gap-2 mb-3">
-                <span className="text-gray-400 text-sm">Tax rate</span>
-                <input className={`${inputCls} w-20`} defaultValue={taxPct} inputMode="decimal"
-                  onBlur={(e) => post({ action: 'set_tax', bps: Math.round((parseFloat(e.target.value) || 0) * 100) })} />
-                <span className="text-gray-500 text-sm">%</span>
-                {est.needsTaxReview && <span className="ml-auto text-amber-400 text-xs">⚠ Some lines need tax review</span>}
+        {/* Services */}
+        <div className="space-y-2">
+          {services.map((s) => (
+            <SwipeRow key={s.id} busy={busy} onRemove={() => post({ action: 'remove_service', serviceId: s.id })}>
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold truncate">{s.title}</p>
+                {!isFlat && s.suggestedCents != null && s.priceCents !== s.suggestedCents && (
+                  <button onClick={() => post({ action: 'set_service_price', serviceId: s.id, cents: s.suggestedCents })}
+                    className="text-gray-500 text-xs active:opacity-70">Suggested ${dollars(s.suggestedCents)}</button>
+                )}
               </div>
-              <div className="space-y-1 text-sm">
-                <Row label="Taxable subtotal" value={fmt(est.taxableSubtotalCents)} />
-                <Row label="Non-taxable subtotal" value={fmt(est.nontaxableSubtotalCents)} />
-                <Row label={`Tax (${taxPct}%)`} value={fmt(est.taxCents)} />
-                <div className="border-t border-gray-800 mt-1 pt-1"><Row label="Grand total" value={fmt(est.totalCents)} bold /></div>
-              </div>
+              {!isFlat && (
+                <PriceInput cents={s.priceCents} busy={busy}
+                  onCommit={(c) => post({ action: 'set_service_price', serviceId: s.id, cents: c })} />
+              )}
+            </SwipeRow>
+          ))}
+          {services.length === 0 && <p className="text-gray-600 text-sm py-4 text-center">No services yet.</p>}
+        </div>
+
+        {/* Add service */}
+        <div className="mt-3 flex gap-2">
+          <input className="flex-1 bg-gray-900 border border-gray-800 text-white rounded-xl px-3 py-2.5 text-sm"
+            placeholder="+ Add service" value={newName} onChange={(e) => setNewName(e.target.value)} />
+          {!isFlat && (
+            <input className="w-24 bg-gray-900 border border-gray-800 text-white rounded-xl px-3 py-2.5 text-sm"
+              placeholder="$ price" inputMode="decimal" value={newPrice} onChange={(e) => setNewPrice(e.target.value)} />
+          )}
+          <button
+            onClick={() => {
+              const title = newName.trim(); if (!title) return
+              const payload: Record<string, unknown> = { action: 'add_service', title }
+              if (!isFlat && newPrice.trim()) payload.cents = parseDollars(newPrice)
+              post(payload); setNewName(''); setNewPrice('')
+            }}
+            disabled={busy || !newName.trim()}
+            className="bg-gray-800 border border-gray-700 rounded-xl px-4 text-sm font-semibold disabled:opacity-40">Add</button>
+        </div>
+
+        {/* Work Total (authoritative) */}
+        <div className="mt-6 rounded-2xl bg-gray-900 border border-gray-800 px-4 py-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-white font-bold text-lg">Work Total</p>
+              {isFlat && <p className="text-gray-500 text-xs">Flat price · edit a service price to itemize</p>}
             </div>
-          </>
-        )}
+            <PriceInput cents={view.workTotalCents} busy={busy} big
+              onCommit={(c) => post({ action: 'set_work_total', cents: c })} />
+          </div>
+          {isFlat && services.length > 0 && (
+            <button onClick={() => post({ action: 'itemize' })} disabled={busy}
+              className="mt-3 text-blue-400 text-sm font-semibold active:opacity-70 disabled:opacity-40">Set individual prices →</button>
+          )}
+          <p className="text-gray-600 text-xs mt-3">Work price only. Shop supplies, card charge, and tax are added on the invoice.</p>
+        </div>
       </div>
     </main>
   )
-}
-
-function Row({ label, value, bold }: { label: string; value: string; bold?: boolean }) {
-  return <div className="flex justify-between"><span className={bold ? 'text-white font-semibold' : 'text-gray-400'}>{label}</span><span className={bold ? 'text-white font-bold' : 'text-gray-200'}>{value}</span></div>
 }

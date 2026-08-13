@@ -29,6 +29,51 @@ export async function listQuickEntry(kind: 'package' | 'addon'): Promise<Catalog
     .orderBy(asc(serviceCatalog.sortOrder), asc(serviceCatalog.name))
 }
 
+/**
+ * Suggested starting prices for a set of service titles, keyed by the lowercased title.
+ * A suggestion is the catalog item's default price (or its lowest price tier) matched by
+ * name OR approved alias (case-insensitive). Titles with no catalog match are omitted —
+ * they simply have no suggestion. STARTING VALUES ONLY: callers never overwrite a saved
+ * manager price with these.
+ */
+export async function suggestedPricesForTitles(titles: string[]): Promise<Record<string, number>> {
+  const wanted = new Set(titles.map((t) => t.trim().toLowerCase()).filter(Boolean))
+  if (wanted.size === 0) return {}
+  const db = getDb()
+  const [items, tiers, aliases] = await Promise.all([
+    db.select().from(serviceCatalog).where(isNull(serviceCatalog.archivedAt)),
+    db.select().from(servicePriceTiers),
+    db.select().from(serviceAliases),
+  ])
+  // Lowest starting price per catalog item (default price, else min tier).
+  const minTier: Record<string, number> = {}
+  for (const t of tiers) {
+    const cur = minTier[t.catalogId]
+    if (cur === undefined || t.startPriceCents < cur) minTier[t.catalogId] = t.startPriceCents
+  }
+  const priceFor = (item: CatalogRow): number | null =>
+    item.defaultPriceCents != null ? item.defaultPriceCents : (minTier[item.id] ?? null)
+
+  // Build title/alias → price lookup.
+  const byName: Record<string, number> = {}
+  for (const item of items) {
+    const p = priceFor(item)
+    if (p == null) continue
+    byName[item.name.trim().toLowerCase()] ??= p
+  }
+  for (const a of aliases) {
+    const item = items.find((i) => i.id === a.catalogId)
+    if (!item) continue
+    const p = priceFor(item)
+    if (p == null) continue
+    byName[a.alias.trim().toLowerCase()] ??= p
+  }
+
+  const out: Record<string, number> = {}
+  for (const key of wanted) if (byName[key] != null) out[key] = byName[key]
+  return out
+}
+
 export async function getCatalogItem(slug: string): Promise<CatalogRow | null> {
   const db = getDb()
   const [row] = await db.select().from(serviceCatalog).where(eq(serviceCatalog.slug, slug)).limit(1)

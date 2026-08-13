@@ -854,13 +854,15 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
             <span className="text-gray-700 ml-auto">{order.orderNumber}</span>
           </div>
 
-          {/* granular status actions (Start Work, Pause, QC, Deliver, …) */}
+          {/* granular status actions (Start Work, Cancel, Pause, QC, Deliver, …) — compact
+              secondary controls; Finish Job stays the large green primary, Invoice Draft is
+              the prominent manager action */}
           {actions.length > 0 && (
-            <div className="space-y-2 mb-4">
+            <div className="flex flex-wrap gap-2 mb-3">
               {actions.map(action => (
                 <button key={action.newStatus} onClick={() => handleAction(action)} disabled={pending !== null}
-                  className={`w-full text-white font-semibold text-base py-3.5 rounded-2xl active:opacity-80 disabled:opacity-40 ${action.style}`}>
-                  {pending === action.newStatus ? 'Updating…' : action.label}
+                  className="text-sm font-medium text-gray-300 bg-gray-800/70 border border-gray-700 px-3 py-1.5 rounded-lg active:opacity-70 disabled:opacity-40">
+                  {pending === action.newStatus ? '…' : action.label}
                 </button>
               ))}
             </div>

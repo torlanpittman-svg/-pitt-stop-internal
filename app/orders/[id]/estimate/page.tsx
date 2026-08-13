@@ -7,7 +7,7 @@ import { redirect, notFound } from 'next/navigation'
 import { parseActor, verifyElevation, effectiveRole } from '@/apps/workflow/identity'
 import { estimateEnabled } from '@/apps/workflow/estimate'
 import { getOrderWithContext } from '@/apps/workflow/db'
-import { getFullEstimate } from '@/apps/workflow/estimate-db'
+import { prepareEstimateView } from '@/apps/workflow/estimate-db'
 import EstimateBuilder from './EstimateBuilder'
 
 export const dynamic = 'force-dynamic'
@@ -21,7 +21,11 @@ export default async function EstimatePage({ params }: { params: Promise<{ id: s
   const { id } = await params
   const order = await getOrderWithContext(id)
   if (!order) notFound()
-  const full = await getFullEstimate(id)
+  // Idempotent: ensure the estimate exists, mirror the Job's services, and seed suggested
+  // prices for a truly fresh Job — so the manager sees a useful draft without an extra tap.
+  // Never itemizes a flat (Quick Entry Work Price) Job just by opening the page.
+  const actor = parseActor(c.get('ps_actor')?.value)
+  const view = await prepareEstimateView(id, actor?.name ?? null)
 
   const header = {
     id,
@@ -29,5 +33,5 @@ export default async function EstimatePage({ params }: { params: Promise<{ id: s
     vehicle: [order.vehicle.year, order.vehicle.make, order.vehicle.model].filter(Boolean).join(' ') || 'Vehicle',
     requested: order.services ?? [],
   }
-  return <EstimateBuilder header={header} initial={full} />
+  return <EstimateBuilder header={header} initialView={view} />
 }

@@ -7,11 +7,13 @@ import { getDb } from '@/platform/db'
 import { eq, ne, and, asc, inArray } from 'drizzle-orm'
 import { jobEstimates, jobServices, jobLineItems, serviceOrders, serviceOrderEvents } from './schema'
 import {
-  computeTotals, rollUpDecision, defaultTaxForType, defaultTaxBps, approvedTitlesToSync, convertSyncsServices,
+  computeTotals, rollUpDecision, defaultTaxForType, defaultTaxBps, approvedTitlesToSync, convertSyncsServices, lineAmountCents,
   type LineType, type ApprovalState, type EstimateStatus, type TaxCategory,
 } from './estimate'
 import { computeFees, eligibleBasisCents, reconcilePlan, explicitPretaxTotals, effectiveFeeConfig, isDealerOrder, FEE_TAX_CATEGORY, type FeeCode } from './fees'
+import { allocateProportional } from './allocate'
 import { getBusinessConfig } from '@/apps/settings/db'
+import { suggestedPricesForTitles } from '@/apps/quick-entry/db'
 
 export type EstimateRow = typeof jobEstimates.$inferSelect
 export type JobServiceRow = typeof jobServices.$inferSelect
@@ -182,6 +184,136 @@ export async function setExplicitPrice(estimateId: string, workPriceCents: numbe
     priceMode: 'explicit_pretax', explicitTotalCents: Math.max(0, Math.round(workPriceCents)),
     pricingSetBy: actor, pricingSetAt: new Date(), updatedAt: new Date(),
   }).where(eq(jobEstimates.id, estimateId))
+}
+
+// ── Simplified mobile Estimate: one visible service = one editable price ──────────
+// A service's price is carried by a single non-generated line (type 'labor', non-taxable
+// detailing → tax $0). The manager never sees line types/cost/tax; they see title + price.
+// Two price modes coexist over ONE record: explicit_pretax (flat Work Total, authoritative)
+// and itemized (sum of these price lines). We never itemize a flat Job just by viewing it.
+const DETAIL_LINE = { type: 'labor' as LineType, qty: 1, unit: 'each', taxable: false, taxCategory: 'detailing' as TaxCategory }
+
+/** Non-system services for an estimate, in display order. */
+async function listUserServices(estimateId: string): Promise<JobServiceRow[]> {
+  return getDb().select().from(jobServices)
+    .where(and(eq(jobServices.jobEstimateId, estimateId), ne(jobServices.source, 'system')))
+    .orderBy(asc(jobServices.sortOrder), asc(jobServices.createdAt))
+}
+/** The single non-generated price line under a service (or null). */
+async function getServicePriceLine(serviceId: string): Promise<JobLineRow | null> {
+  const rows = await getDb().select().from(jobLineItems)
+    .where(and(eq(jobLineItems.jobServiceId, serviceId), eq(jobLineItems.generated, false))).limit(1)
+  return rows[0] ?? null
+}
+/** Upsert a service's single price line to an exact amount (qty 1, non-taxable detailing). */
+async function upsertServicePrice(service: JobServiceRow, cents: number): Promise<void> {
+  const existing = await getServicePriceLine(service.id)
+  const price = Math.max(0, Math.round(cents))
+  if (existing) await updateLine(existing.id, { priceCents: price, qty: 1 })
+  else await addLine(service.id, { name: service.title, priceCents: price, ...DETAIL_LINE })
+}
+/** Flip the estimate to itemized mode (lines become authoritative; flat total dropped). */
+async function setItemizedMode(estimateId: string): Promise<void> {
+  await getDb().update(jobEstimates).set({ priceMode: 'itemized', explicitTotalCents: null, updatedAt: new Date() }).where(eq(jobEstimates.id, estimateId))
+}
+
+/** Convert a flat (explicit_pretax) Job into itemized by allocating its Work Total across
+ *  services (weighted by catalog suggestion; even split if none). Basis-preserving. */
+async function itemizeFromFlat(estimateId: string, actor: string | null): Promise<void> {
+  void actor
+  const [est] = await getDb().select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
+  const total = est?.explicitTotalCents ?? 0
+  const services = await listUserServices(estimateId)
+  if (services.length === 0) { await setItemizedMode(estimateId); return }
+  const sugg = await suggestedPricesForTitles(services.map((s) => s.title))
+  const weights = services.map((s) => sugg[s.title.trim().toLowerCase()] ?? 0)
+  const alloc = allocateProportional(total, weights)
+  for (let i = 0; i < services.length; i++) await upsertServicePrice(services[i], alloc[i])
+  await setItemizedMode(estimateId)
+}
+
+/** Seed suggested prices for a TRULY fresh Job (itemized, no flat total, zero saved service
+ *  prices). Never overwrites a saved price; once the manager has priced anything, no re-seed. */
+export async function seedSuggestedPrices(estimateId: string): Promise<void> {
+  const [est] = await getDb().select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
+  if (!est || est.priceMode !== 'itemized' || est.explicitTotalCents != null) return
+  const services = await listUserServices(estimateId)
+  if (services.length === 0) return
+  for (const s of services) if (await getServicePriceLine(s.id)) return   // already engaged → stop
+  const sugg = await suggestedPricesForTitles(services.map((s) => s.title))
+  for (const s of services) {
+    const p = sugg[s.title.trim().toLowerCase()]
+    if (p != null) await addLine(s.id, { name: s.title, priceCents: p, ...DETAIL_LINE })
+  }
+}
+
+/** Explicitly break a flat Job into per-service prices at its current Work Total. */
+export async function itemizeEstimate(estimateId: string, actor: string | null): Promise<void> {
+  await itemizeFromFlat(estimateId, actor)
+  await recomputeEstimate(estimateId)
+}
+
+/** Set ONE service's price. Editing an individual price is the trigger that itemizes a
+ *  flat Job (never on mere viewing). Recomputes fees/tax through the single engine. */
+export async function setServicePrice(estimateId: string, serviceId: string, cents: number, actor: string | null): Promise<void> {
+  const [est] = await getDb().select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
+  if (est?.priceMode === 'explicit_pretax' && est.explicitTotalCents != null) await itemizeFromFlat(estimateId, actor)
+  const [svc] = await getDb().select().from(jobServices).where(eq(jobServices.id, serviceId)).limit(1)
+  if (svc) await upsertServicePrice(svc, cents)
+  await setItemizedMode(estimateId)
+  await recomputeEstimate(estimateId)
+}
+
+/** Set the authoritative Work Total. Flat Job → stays flat (explicit_pretax). Itemized Job
+ *  with lines → proportionally reallocate so the visible prices sum EXACTLY to the total. */
+export async function setWorkTotal(estimateId: string, cents: number, actor: string | null): Promise<void> {
+  const [est] = await getDb().select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
+  const services = await listUserServices(estimateId)
+  const lines: { service: JobServiceRow; line: JobLineRow }[] = []
+  for (const s of services) { const l = await getServicePriceLine(s.id); if (l) lines.push({ service: s, line: l }) }
+  if (est?.priceMode === 'itemized' && lines.length > 0) {
+    const weights = lines.map(({ line }) => lineAmountCents(line.priceCents, line.qty))
+    const alloc = allocateProportional(cents, weights)
+    for (let i = 0; i < lines.length; i++) await updateLine(lines[i].line.id, { priceCents: Math.max(0, alloc[i]), qty: 1 })
+    await setItemizedMode(estimateId)
+  } else {
+    await setExplicitPrice(estimateId, cents, actor)   // flat stays flat / fresh-no-lines becomes flat
+  }
+  await recomputeEstimate(estimateId)
+}
+
+/** A clean view for the mobile Estimate page — title + price per service, plus the one
+ *  authoritative Work Total. Hides line types / cost / tax / approval entirely. */
+export interface EstimateServiceView { id: string; title: string; priceCents: number | null; suggestedCents: number | null }
+export interface EstimateView { exists: boolean; flat: boolean; workTotalCents: number; services: EstimateServiceView[] }
+
+export async function getEstimateView(orderId: string): Promise<EstimateView> {
+  const full = await getFullEstimate(orderId)
+  if (!full) return { exists: false, flat: false, workTotalCents: 0, services: [] }
+  const est = full.estimate
+  const services = full.services.filter((s) => s.source !== 'system')
+  const sugg = await suggestedPricesForTitles(services.map((s) => s.title))
+  const views: EstimateServiceView[] = services.map((s) => {
+    const line = s.lines.find((l) => !l.generated)
+    return {
+      id: s.id, title: s.title,
+      priceCents: line ? lineAmountCents(line.priceCents, line.qty) : null,
+      suggestedCents: sugg[s.title.trim().toLowerCase()] ?? null,
+    }
+  })
+  const flat = est.priceMode === 'explicit_pretax' && est.explicitTotalCents != null
+  const eligible = views.reduce((sum, v) => sum + (v.priceCents ?? 0), 0)
+  return { exists: true, flat, workTotalCents: flat ? est.explicitTotalCents! : eligible, services: views }
+}
+
+/** Page entry: ensure the estimate exists, mirror the Job's services, seed suggestions for a
+ *  truly fresh Job, recompute, and return the view. Idempotent; safe to call on every open. */
+export async function prepareEstimateView(orderId: string, actor: string | null): Promise<EstimateView> {
+  const est = await getOrCreateEstimate(orderId, actor)
+  await promoteTextServices(est.id, orderId)
+  await seedSuggestedPrices(est.id)
+  await recomputeEstimate(est.id)
+  return getEstimateView(orderId)
 }
 
 /** Seed job_services from the Job's employee-facing text services (idempotent). */

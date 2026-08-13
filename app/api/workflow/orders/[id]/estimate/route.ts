@@ -10,6 +10,7 @@ import {
   getOrCreateEstimate, getEstimateRow, getFullEstimate, promoteTextServices, recomputeEstimate,
   addService, updateService, removeService, addLine, updateLine, removeLine,
   setTaxRate, setStatus, setApproval, convertEstimate, type LineInput,
+  prepareEstimateView, getEstimateView, setServicePrice, setWorkTotal, itemizeEstimate,
 } from '@/apps/workflow/estimate-db'
 import type { ApprovalState, EstimateStatus } from '@/apps/workflow/estimate'
 
@@ -33,7 +34,10 @@ function guard(req: Request): { ok: true; name: string | null } | { ok: false; r
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const g = guard(req); if (!g.ok) return g.res
   const { id } = await params
-  return NextResponse.json({ ok: true, ...(await getFullEstimate(id) ?? { estimate: null, services: [] }) })
+  // Simplified mobile view (title + price + Work Total). Raw estimate/services also
+  // included for the future richer desktop view over the same record.
+  const [view, full] = await Promise.all([getEstimateView(id), getFullEstimate(id)])
+  return NextResponse.json({ ok: true, view, ...(full ?? { estimate: null, services: [] }) })
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -47,13 +51,33 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const estimateId = async () => (await getEstimateRow(id))?.id ?? (await getOrCreateEstimate(id, actor)).id
 
     switch (action) {
-      case 'build': {
-        const e = await getOrCreateEstimate(id, actor)
-        await promoteTextServices(e.id, id)
-        await recomputeEstimate(e.id)
-        break
+      case 'build':
+      case 'prepare': {
+        // Idempotent page entry: ensure estimate, mirror services, seed a fresh Job.
+        return NextResponse.json({ ok: true, view: await prepareEstimateView(id, actor) })
       }
-      case 'add_service':     await addService(await estimateId(), String(body.title ?? '').trim() || 'Service'); break
+      case 'set_service_price': {
+        const eid = await estimateId()
+        await setServicePrice(eid, String(body.serviceId), Math.max(0, Math.round(Number(body.cents) || 0)), actor)
+        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
+      }
+      case 'set_work_total': {
+        const eid = await estimateId()
+        await setWorkTotal(eid, Math.max(0, Math.round(Number(body.cents) || 0)), actor)
+        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
+      }
+      case 'itemize': {
+        await itemizeEstimate(await estimateId(), actor)
+        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
+      }
+      case 'add_service': {
+        // Custom service (optionally with a price). A priced add itemizes; a name-only add
+        // on a flat Job leaves it flat.
+        const eid = await estimateId()
+        const svc = await addService(eid, String(body.title ?? '').trim() || 'Service')
+        if (body.cents != null) await setServicePrice(eid, svc.id, Math.max(0, Math.round(Number(body.cents) || 0)), actor)
+        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
+      }
       case 'update_service':  await updateService(String(body.serviceId), body.patch as Record<string, never>); break
       case 'remove_service':  await removeService(String(body.serviceId)); await recomputeEstimate(await estimateId()); break
       case 'add_line':        await addLine(String(body.serviceId), body.line as LineInput); await recomputeEstimate(await estimateId()); break
@@ -69,7 +93,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       default:
         return NextResponse.json({ ok: false, error: 'Unknown action' }, { status: 400 })
     }
-    return NextResponse.json({ ok: true, ...(await getFullEstimate(id)) })
+    return NextResponse.json({ ok: true, view: await getEstimateView(id), ...(await getFullEstimate(id)) })
   } catch (err) {
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })
   }
