@@ -1,7 +1,10 @@
 'use client'
 
 import Link from 'next/link'
+import { useState } from 'react'
 import type { OrderWithContext } from '@/apps/workflow/db'
+import { isDealerOrder } from '@/apps/workflow/fees'
+import CustomerContactModal from '@/app/components/CustomerContactModal'
 
 // Employee-facing card status: is the Job still active, or finished? The detailed
 // lifecycle (in_progress/paused/drying/qc_ready) stays in the data model + manager
@@ -22,12 +25,15 @@ export default function VehicleCard({
 }) {
   const { vehicle } = order
   const style = simpleStatus(order.status)
+  const [contactOpen, setContactOpen] = useState(false)
 
   const vehicleName = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Unknown Vehicle'
   // Card title = retail customer or dealer name; vehicle info goes underneath.
   const title = order.customerName?.trim() || 'Unknown Customer'
+  const isDealer = isDealerOrder(order)
 
   return (
+    <>
     <Link
       href={`/orders/${order.id}`}
       className={`block bg-gray-900 rounded-2xl px-5 py-4 active:bg-gray-800 transition-all border ${
@@ -38,9 +44,16 @@ export default function VehicleCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="text-white font-bold text-lg leading-tight truncate">
-            {title}
-          </p>
+          {/* Retail customer name → tap opens the contact popup (doesn't navigate). Dealer name is plain. */}
+          {isDealer ? (
+            <p className="text-white font-bold text-lg leading-tight truncate">{title}</p>
+          ) : (
+            <button
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setContactOpen(true) }}
+              className="text-white font-bold text-lg leading-tight truncate text-left underline decoration-dotted decoration-gray-600 underline-offset-4 active:opacity-70 max-w-full">
+              {title}
+            </button>
+          )}
           <p className="text-gray-500 text-sm mt-0.5 truncate">
             {vehicleName}
           </p>
@@ -63,5 +76,7 @@ export default function VehicleCard({
         )}
       </div>
     </Link>
+    {contactOpen && <CustomerContactModal orderId={order.id} customerName={title} onClose={() => setContactOpen(false)} />}
+    </>
   )
 }

@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 import type { OrderWithContext, ServiceOrderEvent } from '@/apps/workflow/db'
 import { useIdentity } from '@/app/components/IdentityBar'
 import NavHeader from '@/app/components/NavHeader'
+import CustomerContactModal from '@/app/components/CustomerContactModal'
+import { isDealerOrder } from '@/apps/workflow/fees'
 
 // ── Status display config ─────────────────────────────────────────────────────
 
@@ -769,6 +771,7 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
   const [editingVehicle, setEditingVehicle] = useState(false)
   const [vehToast,    setVehToast]    = useState<string | null>(null)
   const [showInvoice, setShowInvoice] = useState(false)   // Invoice Draft (manager/admin)
+  const [showContact, setShowContact] = useState(false)   // customer contact popup (all staff)
   const identity = useIdentity()
   const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
 
@@ -918,7 +921,15 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
       <div className="px-6 pt-6 pb-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h1 className="text-white font-bold text-2xl leading-tight truncate">{title}</h1>
+            {/* Retail customer name → tap for contact popup (call/email); dealer name is plain. */}
+            {isDealerOrder(order) ? (
+              <h1 className="text-white font-bold text-2xl leading-tight truncate">{title}</h1>
+            ) : (
+              <button onClick={() => setShowContact(true)}
+                className="text-white font-bold text-2xl leading-tight truncate text-left underline decoration-dotted decoration-gray-600 underline-offset-4 active:opacity-70 max-w-full">
+                {title}
+              </button>
+            )}
             <p className="text-gray-400 text-base mt-0.5">
               {vehicleName}{vehicle.color ? ` · ${vehicle.color}` : ''}
             </p>
@@ -1114,6 +1125,11 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
       {/* Reopen (reason + PIN) */}
       {reopening && (
         <ReopenModal busy={reopenBusy} error={reopenMsg} onConfirm={submitReopen} onCancel={() => setReopening(false)} />
+      )}
+
+      {/* Customer contact popup (all staff) */}
+      {showContact && (
+        <CustomerContactModal orderId={order.id} customerName={title} onClose={() => setShowContact(false)} />
       )}
 
       {/* Invoice Draft (manager/admin) */}
