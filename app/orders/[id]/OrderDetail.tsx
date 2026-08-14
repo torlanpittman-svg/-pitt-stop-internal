@@ -430,6 +430,8 @@ interface InvoiceDraftData {
   paymentCharge: { cents: number; waived: boolean; label: string }
   tax: { cents: number; applicable: boolean; needsReview: boolean; exempt: boolean }
   totalCents: number; role: string
+  itemized: boolean
+  serviceBreakdown: { title: string; cents: number }[]
   qb: { status: string; invoiceNumber: string | null; error: string | null }
 }
 const money = (c: number) => `$${(c / 100).toFixed(2)}`
@@ -482,6 +484,20 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
     const d = await r.json()
     if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled) }
   }, [orderId])
+
+  // Break a flat Work Total into editable per-service prices (reuses the Estimate engine's
+  // proportional allocation; preserves the Work Total exactly). Fine-tune on the Estimate screen.
+  const itemize = useCallback(async () => {
+    setBusy(true); setErr(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/estimate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'itemize' }),
+      })
+      if (!res.ok) { const d = await res.json().catch(() => ({})); setErr(d.error ?? 'Could not set service prices.'); return }
+      await refetch()
+    } catch { setErr('Network error — please try again.') }
+    finally { setBusy(false) }
+  }, [orderId, refetch])
 
   // Create the QuickBooks invoice (idempotent server-side; a stable requestId dedupes taps).
   const createQb = useCallback(async () => {
@@ -545,11 +561,32 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
               </p>
             ) : (
               <>
-                {/* Work price */}
-                <div className="flex items-center justify-between py-2.5 border-b border-gray-800">
-                  <p className="text-sm text-gray-300">Work</p>
-                  <span className="text-sm tabular-nums text-gray-200">{money(draft.workPriceCents)}</span>
-                </div>
+                {/* Work — per-service breakdown (itemized) or a single Work total (flat) */}
+                {draft.serviceBreakdown.length > 0 ? (
+                  <>
+                    {draft.serviceBreakdown.map((s, i) => (
+                      <div key={i} className="flex items-center justify-between py-2 border-b border-gray-800">
+                        <p className="text-sm text-gray-300 truncate pr-3">{s.title}</p>
+                        <span className="text-sm tabular-nums text-gray-200">{money(s.cents)}</span>
+                      </div>
+                    ))}
+                    <div className="flex items-center justify-between py-1.5">
+                      <p className="text-xs text-gray-500">Work total</p>
+                      <span className="text-xs tabular-nums text-gray-400">{money(draft.workPriceCents)}</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="py-2.5 border-b border-gray-800">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm text-gray-300">Work</p>
+                      <span className="text-sm tabular-nums text-gray-200">{money(draft.workPriceCents)}</span>
+                    </div>
+                    {draft.qb.status !== 'created' && (
+                      <button onClick={itemize} disabled={busy || creating}
+                        className="mt-1.5 text-blue-400 text-xs font-semibold active:opacity-70 disabled:opacity-40">Set individual service prices →</button>
+                    )}
+                  </div>
+                )}
 
                 {/* Shop supplies — manager + admin */}
                 <ChargeRow label="Shop supplies" cents={draft.shopSupplies.cents} waived={draft.shopSupplies.waived}

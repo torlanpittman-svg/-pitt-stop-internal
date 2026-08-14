@@ -22,6 +22,9 @@ export interface InvoiceDraft {
   tax: { cents: number; applicable: boolean; needsReview: boolean; exempt: boolean }
   totalCents: number
   role: string
+  // Per-service price breakdown (itemized Jobs). Flat Jobs → empty until "Set prices".
+  itemized: boolean
+  serviceBreakdown: { title: string; cents: number }[]
   // Retail QuickBooks link state (P-D3.1). status: none|creating|created|sent|error.
   qb: { status: string; invoiceNumber: string | null; error: string | null }
 }
@@ -58,10 +61,18 @@ export function buildInvoiceDraft(params: {
     tax: { cents: 0, applicable: false, needsReview: false, exempt: false },
     totalCents: 0,
     role,
+    itemized: !!est && est.priceMode === 'itemized',
+    serviceBreakdown: [],
     qb: est ? { status: est.qbStatus ?? 'none', invoiceNumber: est.qbInvoiceNumber ?? null, error: est.qbSyncError ?? null }
             : { status: 'none', invoiceNumber: null, error: null },
   }
   if (!priced || !full || !est) return base
+
+  // Per-service breakdown from the non-generated price lines (itemized Jobs).
+  const serviceBreakdown = full.services.filter((s) => s.source !== 'system').flatMap((s) => {
+    const l = s.lines.find((x) => !x.generated)
+    return l ? [{ title: s.title, cents: lineAmountCents(l.priceCents, l.qty) }] : []
+  })
 
   const feeLines = full.services.flatMap((s) => s.lines).filter((l) => l.generated && l.feeCode)
   const shop = feeLines.find((l) => l.feeCode === 'shop_supplies')?.priceCents ?? 0
@@ -69,6 +80,7 @@ export function buildInvoiceDraft(params: {
 
   return {
     ...base,
+    serviceBreakdown,
     workPriceCents: workBasis,
     shopSupplies: { cents: shop, waived: est.waiveShopSupplies },
     paymentCharge: { cents: pay, waived: est.waiveCardFee, label: paymentLabel },

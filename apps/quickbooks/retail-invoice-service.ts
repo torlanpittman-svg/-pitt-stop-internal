@@ -19,12 +19,14 @@ import { getDb } from '@/platform/db'
 import { jobEstimates } from '@/apps/workflow/schema'
 import { quickEntryJobs } from '@/apps/quick-entry/schema'
 import { getOrderWithContext, logEvent } from '@/apps/workflow/db'
-import { getEstimateRow, getFullEstimate } from '@/apps/workflow/estimate-db'
+import { getEstimateRow, getFullEstimate, itemizeEstimate } from '@/apps/workflow/estimate-db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { lineAmountCents } from '@/apps/workflow/estimate'
 import { getBusinessConfig, shopSuppliesLabel } from '@/apps/settings/db'
-import { buildRetailPayload, RetailTotalMismatchError } from './retail-invoice'
+import { buildRetailPayload, RetailTotalMismatchError, type RetailWorkService } from './retail-invoice'
+import { serviceDescription } from './retail-format'
+import { loadRetailItemIndex } from './retail-item-map'
 import { resolveRetailCustomer } from './retail-customer'
 import { resolveRetailItems, createRetailInvoiceInQB, findRetailInvoiceByPsid } from './retail-invoice-write'
 import { logger } from '@/platform/logger'
@@ -88,30 +90,49 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
   }
 
   try {
-    // Build work lines from the authoritative record: flat → one line; itemized → per service.
-    const userServices = (full?.services ?? []).filter((s) => s.source !== 'system')
-    let workLines: { description: string; amountCents: number }[]
+    // Retail needs per-service prices for separate QB lines. If the Job is flat, itemize it
+    // now — REUSING the simplified-Estimate proportional allocation, which preserves the
+    // Work Total exactly (explicit_pretax → itemized). Already-itemized Jobs are unchanged.
+    let fullNow = full
+    let draftNow = draft
     if (est0.priceMode === 'explicit_pretax') {
-      workLines = [{ description: (draft.services ?? []).join('\n') || 'Detailing services', amountCents: draft.workPriceCents }]
-    } else {
-      workLines = userServices
-        .map((s) => { const l = s.lines.find((x) => !x.generated); return l ? { description: s.title, amountCents: lineAmountCents(l.priceCents, l.qty) } : null })
-        .filter((x): x is { description: string; amountCents: number } => !!x && x.amountCents >= 0)
-      if (workLines.length === 0) workLines = [{ description: (draft.services ?? []).join('\n') || 'Detailing services', amountCents: draft.workPriceCents }]
+      await itemizeEstimate(est0.id, actor)
+      fullNow = await getFullEstimate(orderId)
+      draftNow = buildInvoiceDraft({ order, full: fullNow, paymentLabel: cfg.paymentLabel, role: 'admin' })
+    }
+
+    // One line per actual service, each with its resolved QB Product/Service item
+    // (catalog qb_item_ref when confidently mapped, else generic "Labor" fallback).
+    const items = await resolveRetailItems()
+    const index = await loadRetailItemIndex()
+    const userServices = (fullNow?.services ?? []).filter((s) => s.source !== 'system')
+    const fallbacks: string[] = []
+    let workServices: RetailWorkService[] = userServices
+      .map((s) => {
+        const l = s.lines.find((x) => !x.generated); if (!l) return null
+        const m = index.match(s.title)
+        if (!m.usable) fallbacks.push(`${s.title}→Labor`)
+        return { itemId: m.usable ? m.itemRef! : items.labor, description: serviceDescription(s.title), amountCents: lineAmountCents(l.priceCents, l.qty) }
+      })
+      .filter((x): x is RetailWorkService => !!x)
+    // Safety net: an itemized Job with no priced service lines → one generic Labor line.
+    if (workServices.length === 0) {
+      workServices = [{ itemId: items.labor, description: (draftNow.services ?? []).join(', ') || 'Detailing services', amountCents: draftNow.workPriceCents }]
     }
 
     const v = order.vehicle
-    const vehicle = { year: v.year, make: v.make, model: v.model, vin: v.vin }
+    const vehicle = { year: v.year, make: v.make, model: v.model, vin: v.vin, licensePlate: v.licensePlate }
     // Pure builder — throws RetailTotalMismatchError if Σlines != draft total (invariant).
     const payload = buildRetailPayload({
-      estimateId: est0.id, vehicle, workLines,
-      shopSuppliesCents: draft.shopSupplies.cents, paymentChargeCents: draft.paymentCharge.cents,
-      paymentLabel: draft.paymentCharge.label, shopSuppliesLabel: await shopSuppliesLabel(),
-      expectedTotalCents: draft.totalCents,
+      estimateId: est0.id, vehicle, workServices, feesItemId: items.fees,
+      shopSuppliesCents: draftNow.shopSupplies.cents, paymentChargeCents: draftNow.paymentCharge.cents,
+      paymentLabel: draftNow.paymentCharge.label, shopSuppliesLabel: await shopSuppliesLabel(),
+      expectedTotalCents: draftNow.totalCents,
     })
+    const draft2 = draftNow
 
-    // Resolve + cache the QB customer.
-    const contact = await jobContact(orderId, draft.customer ?? '')
+    // Resolve + cache the QB customer (with email reconciliation policy).
+    const contact = await jobContact(orderId, draft2.customer ?? '')
     const customer = await resolveRetailCustomer(contact)
 
     // (3) PSID adoption — never duplicate a create that already succeeded in QB.
@@ -123,20 +144,21 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
         qbStatus: 'created', qbContentHash: hash, qbSyncedAt: new Date(), qbSyncError: null, updatedAt: new Date(),
       }).where(eq(jobEstimates.id, est0.id))
       await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_created', employeeName: actor, note: `adopted #${adopted.invoiceNumber} (${adopted.invoiceId})` })
-      return { ok: true, status: 'created', invoiceId: adopted.invoiceId, invoiceNumber: adopted.invoiceNumber, totalCents: draft.totalCents, matchedBy: customer.matchedBy, adopted: true }
+      return { ok: true, status: 'created', invoiceId: adopted.invoiceId, invoiceNumber: adopted.invoiceNumber, totalCents: draft2.totalCents, matchedBy: customer.matchedBy, adopted: true }
     }
 
-    // Resolve items + create.
-    const items = await resolveRetailItems()
-    const writeLines = payload.lines.map((l) => ({ itemId: l.itemKind === 'labor' ? items.labor : items.fees, description: l.description, amountCents: l.amountCents }))
-    const inv = await createRetailInvoiceInQB({ customerId: customer.qbCustomerId, lines: writeLines, privateNote: payload.privateNote })
+    // Create — per-service lines already carry resolved item ids; add customer-facing memo
+    // (vehicle) + BillEmail. PSID stays internal in PrivateNote.
+    const inv = await createRetailInvoiceInQB({
+      customerId: customer.qbCustomerId, lines: payload.lines, privateNote: payload.privateNote,
+      customerMemo: payload.customerMemo, billEmail: customer.billEmail,
+    })
 
     // Post-write invariant — QB TotalAmt must equal the Pitt Stop draft total exactly.
-    if (inv.totalAmtCents !== draft.totalCents) {
-      const msg = `QuickBooks TotalAmt ${inv.totalAmtCents}¢ != Pitt Stop total ${draft.totalCents}¢`
-      // Store the invoice id so we never create a second; flag for manual review/void.
+    if (inv.totalAmtCents !== draft2.totalCents) {
+      const msg = `QuickBooks TotalAmt ${inv.totalAmtCents}¢ != Pitt Stop total ${draft2.totalCents}¢`
       await markError(msg, { qbInvoiceId: inv.invoiceId, qbInvoiceNumber: inv.invoiceNumber, qbSyncToken: inv.syncToken })
-      logger.error(APP, 'total_mismatch', { orderId, invoiceId: inv.invoiceId, qb: inv.totalAmtCents, draft: draft.totalCents })
+      logger.error(APP, 'total_mismatch', { orderId, invoiceId: inv.invoiceId, qb: inv.totalAmtCents, draft: draft2.totalCents })
       return { ok: false, status: 'error', invoiceId: inv.invoiceId, invoiceNumber: inv.invoiceNumber, error: msg }
     }
 
@@ -146,9 +168,11 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
       qbStatus: 'created', qbContentHash: hash, qbSyncedAt: new Date(), qbLastRequestId: requestId,
       qbSyncError: null, updatedAt: new Date(),
     }).where(eq(jobEstimates.id, est0.id))
-    await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_created', employeeName: actor, note: `#${inv.invoiceNumber} (${inv.invoiceId}) total $${(draft.totalCents / 100).toFixed(2)} · ${customer.matchedBy}${customer.created ? '+created' : ''}` })
-    logger.info(APP, 'created', { orderId, invoiceId: inv.invoiceId, number: inv.invoiceNumber, total: draft.totalCents })
-    return { ok: true, status: 'created', invoiceId: inv.invoiceId, invoiceNumber: inv.invoiceNumber, totalCents: draft.totalCents, matchedBy: customer.matchedBy }
+    const emailNote = customer.emailConflict ? ' · EMAIL CONFLICT (review before Send)' : (customer.billEmail ? '' : ' · no email (Send blocked)')
+    const itemNote = fallbacks.length ? ` · Labor fallback: ${fallbacks.join(', ')}` : ''
+    await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_created', employeeName: actor, note: `#${inv.invoiceNumber} (${inv.invoiceId}) total $${(draft2.totalCents / 100).toFixed(2)} · ${customer.matchedBy}${customer.created ? '+created' : ''}${emailNote}${itemNote}` })
+    logger.info(APP, 'created', { orderId, invoiceId: inv.invoiceId, number: inv.invoiceNumber, total: draft2.totalCents, emailStatus: customer.emailStatus, fallbacks })
+    return { ok: true, status: 'created', invoiceId: inv.invoiceId, invoiceNumber: inv.invoiceNumber, totalCents: draft2.totalCents, matchedBy: customer.matchedBy }
   } catch (err) {
     const msg = err instanceof RetailTotalMismatchError ? err.message : safeErr(err)
     await markError(msg)

@@ -22,6 +22,7 @@ export interface InvoiceVehicle {
   make?:  string | null
   model?: string | null
   vin?:   string | null
+  licensePlate?: string | null
 }
 
 export interface RetailFormatConfig {
@@ -58,18 +59,35 @@ export function extractPsid(note: string | null | undefined): string | null {
   return m ? m[1] : null
 }
 
-/** Invoice PrivateNote (internal): PSID tag + vehicle summary (+ optional extra). */
-export function buildPrivateNote(estimateId: string, v: InvoiceVehicle, extra?: string, cfg: RetailFormatConfig = DEFAULT_RETAIL_FORMAT): string {
+/**
+ * Invoice PrivateNote — INTERNAL only. Carries the PSID recovery tag (never customer-
+ * facing). Vehicle now lives in the customer-facing CustomerMemo, NOT here.
+ */
+export function buildPrivateNote(estimateId: string, extra?: string): string {
   const parts = [psidTag(estimateId)]
-  const veh = formatInvoiceVehicle(v, cfg).replace(/\n/g, ' ')
-  if (veh) parts.push(veh)
   if (extra && extra.trim()) parts.push(extra.trim())
   return parts.join(' | ')
 }
 
-/** First work line's Description = vehicle header, then the work text. */
-export function firstLineDescription(v: InvoiceVehicle, work: string, cfg: RetailFormatConfig = DEFAULT_RETAIL_FORMAT): string {
-  const header = formatInvoiceVehicle(v, cfg)
-  const body = (work ?? '').trim()
-  return header ? (body ? `${header}\n\n${body}` : header) : body
+/**
+ * Customer-facing note = QuickBooks CustomerMemo (shown as "Message displayed on invoice").
+ * Clean vehicle block: Year Make Model / VIN / (Plate). No PSID, no internal metadata.
+ */
+export function buildCustomerMemo(v: InvoiceVehicle, cfg: RetailFormatConfig = DEFAULT_RETAIL_FORMAT): string {
+  const lines: string[] = []
+  const ymm = [v.year, v.make, v.model].map((x) => (x ?? '').toString().trim()).filter(Boolean).join(' ')
+  if (ymm) lines.push(ymm)
+  if (cfg.includeVin && v.vin && v.vin.trim()) lines.push(`VIN: ${v.vin.trim()}`)
+  if (v.licensePlate && v.licensePlate.trim()) lines.push(`Plate: ${v.licensePlate.trim()}`)
+  return lines.join('\n')
+}
+
+/**
+ * Service line description. No managed description store yet → the clean fallback is the
+ * service name itself (never AI-invented). Later a standard per-service description can flow
+ * Estimate → Invoice Draft → QuickBooks by passing `stored` from the catalog.
+ */
+export function serviceDescription(serviceName: string, stored?: string | null): string {
+  const s = (stored ?? '').trim()
+  return s || serviceName.trim()
 }

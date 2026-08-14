@@ -30,6 +30,11 @@ export interface ResolvedCustomer {
   created: boolean
   matchedBy: 'directory-cache' | 'qb-email' | 'qb-name' | 'created'
   directoryCustomerId: string | null
+  /** The email to put on the invoice BillEmail (null → none; future Send stays blocked). */
+  billEmail: string | null
+  /** Email reconciliation outcome per the approved policy. */
+  emailStatus: 'match' | 'filled_qb_blank' | 'conflict' | 'used_qb' | 'none'
+  emailConflict: boolean
 }
 
 interface DirRow { id: string; quickbooksCustomerId: string | null }
@@ -44,20 +49,42 @@ async function findDirectoryCustomer(c: RetailContact): Promise<DirRow | null> {
   return null
 }
 
-async function qbFindByEmail(email: string): Promise<string | null> {
-  const res = await queryQBO<{ Customer?: Array<{ Id: string }> }>(`SELECT Id FROM Customer WHERE PrimaryEmailAddr = '${qboEscape(email)}'`)
-  return res.Customer?.[0]?.Id ?? null
+interface QbCust { id: string; email: string | null; syncToken: string }
+const mapCust = (c: { Id: string; PrimaryEmailAddr?: { Address?: string }; SyncToken: string }): QbCust =>
+  ({ id: c.Id, email: c.PrimaryEmailAddr?.Address ?? null, syncToken: c.SyncToken })
+
+async function qbFindByEmail(email: string): Promise<QbCust | null> {
+  const res = await queryQBO<{ Customer?: Array<Parameters<typeof mapCust>[0]> }>(`SELECT * FROM Customer WHERE PrimaryEmailAddr = '${qboEscape(email)}'`)
+  return res.Customer?.[0] ? mapCust(res.Customer[0]) : null
 }
-async function qbFindByName(displayName: string): Promise<string | null> {
-  const res = await queryQBO<{ Customer?: Array<{ Id: string }> }>(`SELECT Id FROM Customer WHERE DisplayName = '${qboEscape(displayName)}'`)
-  return res.Customer?.[0]?.Id ?? null
+async function qbFindByName(displayName: string): Promise<QbCust | null> {
+  const res = await queryQBO<{ Customer?: Array<Parameters<typeof mapCust>[0]> }>(`SELECT * FROM Customer WHERE DisplayName = '${qboEscape(displayName)}'`)
+  return res.Customer?.[0] ? mapCust(res.Customer[0]) : null
 }
-async function qbCreate(c: RetailContact): Promise<string> {
+async function qbCreate(c: RetailContact): Promise<QbCust> {
   const body: Record<string, unknown> = { DisplayName: c.name.trim() }
   if (c.email?.trim()) body.PrimaryEmailAddr = { Address: c.email.trim() }
   if (c.phone?.trim()) body.PrimaryPhone = { FreeFormNumber: c.phone.trim() }
-  const res = await qbApiRequest<{ Customer: { Id: string } }>({ method: 'POST', path: '/customer', body })
-  return res.Customer.Id
+  const res = await qbApiRequest<{ Customer: Parameters<typeof mapCust>[0] }>({ method: 'POST', path: '/customer', body })
+  return mapCust(res.Customer)
+}
+/** Sparse-update ONLY the email on an existing QB customer (used to fill a blank). */
+async function qbFillEmail(cust: QbCust, email: string): Promise<void> {
+  await qbApiRequest({ method: 'POST', path: '/customer', body: { Id: cust.id, SyncToken: cust.syncToken, sparse: true, PrimaryEmailAddr: { Address: email } } })
+}
+
+/**
+ * Email policy (approved): QB blank + PS email → fill QB; equal → reuse; differ → flag for
+ * review (never silently overwrite); PS blank + QB has → use QB; neither → none.
+ * Returns the BillEmail to use + the outcome. Only mutates QB in the blank-fill case.
+ */
+async function reconcileEmail(cust: QbCust, psEmail: string | null): Promise<{ billEmail: string | null; emailStatus: ResolvedCustomer['emailStatus']; emailConflict: boolean }> {
+  const ps = normEmail(psEmail), qb = normEmail(cust.email)
+  if (ps && !qb) { await qbFillEmail(cust, psEmail!.trim()).catch((e) => logger.warn(APP, 'email_fill_failed', { error: String(e) })); return { billEmail: psEmail!.trim(), emailStatus: 'filled_qb_blank', emailConflict: false } }
+  if (ps && qb && ps === qb) return { billEmail: cust.email, emailStatus: 'match', emailConflict: false }
+  if (ps && qb && ps !== qb) return { billEmail: psEmail!.trim(), emailStatus: 'conflict', emailConflict: true }
+  if (!ps && qb) return { billEmail: cust.email, emailStatus: 'used_qb', emailConflict: false }
+  return { billEmail: null, emailStatus: 'none', emailConflict: false }
 }
 
 /** Cache the resolved QB id onto the directory (update the matched row, or insert one). */
@@ -75,20 +102,36 @@ async function cacheToDirectory(dir: DirRow | null, c: RetailContact, qbId: stri
   return row.id
 }
 
+async function qbGetCustomer(id: string): Promise<QbCust | null> {
+  const res = await queryQBO<{ Customer?: Array<Parameters<typeof mapCust>[0]> }>(`SELECT * FROM Customer WHERE Id = '${qboEscape(id)}'`)
+  return res.Customer?.[0] ? mapCust(res.Customer[0]) : null
+}
+
 export async function resolveRetailCustomer(c: RetailContact): Promise<ResolvedCustomer> {
+  const psEmail = c.email?.trim() || null
   const dir = await findDirectoryCustomer(c)
+
+  // 1. Directory cache hit → reconcile email against the cached QB customer.
   if (dir?.quickbooksCustomerId) {
-    return { qbCustomerId: dir.quickbooksCustomerId, created: false, matchedBy: 'directory-cache', directoryCustomerId: dir.id }
+    const cust = await qbGetCustomer(dir.quickbooksCustomerId)
+    const rec = cust ? await reconcileEmail(cust, psEmail) : { billEmail: psEmail, emailStatus: 'none' as const, emailConflict: false }
+    return { qbCustomerId: dir.quickbooksCustomerId, created: false, matchedBy: 'directory-cache', directoryCustomerId: dir.id, ...rec }
   }
-  const email = normEmail(c.email)
-  let qbId: string | null = null
+
+  // 2–4. QB email → QB name → create.
+  let cust: QbCust | null = null
   let matchedBy: ResolvedCustomer['matchedBy'] = 'created'
-  if (email) { qbId = await qbFindByEmail(email); if (qbId) matchedBy = 'qb-email' }
-  if (!qbId) { qbId = await qbFindByName(c.name.trim()); if (qbId) matchedBy = 'qb-name' }
-  const created = !qbId
-  if (!qbId) { qbId = await qbCreate(c); matchedBy = 'created' }
-  const directoryCustomerId = await cacheToDirectory(dir, c, qbId).catch((e) => {
+  if (normEmail(psEmail)) { cust = await qbFindByEmail(normEmail(psEmail)); if (cust) matchedBy = 'qb-email' }
+  if (!cust) { cust = await qbFindByName(c.name.trim()); if (cust) matchedBy = 'qb-name' }
+  const created = !cust
+  if (!cust) { cust = await qbCreate(c); matchedBy = 'created' }
+
+  const rec = created
+    ? { billEmail: psEmail, emailStatus: (psEmail ? 'match' : 'none') as ResolvedCustomer['emailStatus'], emailConflict: false }
+    : await reconcileEmail(cust, psEmail)
+
+  const directoryCustomerId = await cacheToDirectory(dir, c, cust.id).catch((e) => {
     logger.warn(APP, 'cache_failed', { error: String(e) }); return dir?.id ?? null
   })
-  return { qbCustomerId: qbId, created, matchedBy, directoryCustomerId }
+  return { qbCustomerId: cust.id, created, matchedBy, directoryCustomerId, ...rec }
 }

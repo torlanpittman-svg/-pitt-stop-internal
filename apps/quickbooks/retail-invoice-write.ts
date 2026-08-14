@@ -63,11 +63,15 @@ function buildLine(l: RetailWriteLine) {
 }
 
 /** Create a retail invoice. Assigns the next DocNumber (company uses custom transaction
- *  numbers). PrivateNote carries the PSID recovery tag (internal only). No email is sent. */
+ *  numbers). CustomerMemo = customer-facing vehicle note ("Message displayed on invoice");
+ *  PrivateNote = internal PSID tag; BillEmail = customer email (set explicitly, not relying
+ *  on QB auto-copy). No email is sent — creation only. */
 export async function createRetailInvoiceInQB(params: {
   customerId: string
   lines: RetailWriteLine[]
   privateNote: string
+  customerMemo?: string | null
+  billEmail?: string | null
   docNumber?: string | null
 }): Promise<WrittenRetailInvoice> {
   const body: Record<string, unknown> = {
@@ -75,6 +79,8 @@ export async function createRetailInvoiceInQB(params: {
     Line: params.lines.map(buildLine),
     PrivateNote: params.privateNote,
   }
+  if (params.customerMemo && params.customerMemo.trim()) body.CustomerMemo = { value: params.customerMemo.trim() }
+  if (params.billEmail && params.billEmail.trim()) body.BillEmail = { Address: params.billEmail.trim() }
   const docNumber = params.docNumber ?? (await nextInvoiceDocNumber())
   if (docNumber) body.DocNumber = docNumber
 

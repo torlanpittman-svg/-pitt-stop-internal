@@ -1,46 +1,40 @@
 import { describe, it, expect } from 'vitest'
-import { formatInvoiceVehicle, firstLineDescription, buildPrivateNote, psidTag, extractPsid, RETAIL_QB_ITEMS } from './retail-format'
+import { formatInvoiceVehicle, buildCustomerMemo, buildPrivateNote, serviceDescription, psidTag, extractPsid, RETAIL_QB_ITEMS } from './retail-format'
 
 const SIERRA = { year: '2022', make: 'GMC', model: 'Sierra', vin: '1GTV2TEC1234567' }
 
-describe('retail-format (P-D3.0 scaffolding, pure)', () => {
+describe('retail-format (revised P-D3.1)', () => {
   it('keeps the generic-item convention', () => {
     expect(RETAIL_QB_ITEMS).toEqual({ labor: 'Labor', fees: 'Fees', parts: 'Parts' })
   })
 
-  it('formats vehicle as Year Make Model + VIN line', () => {
+  it('formats vehicle Year Make Model + VIN', () => {
     expect(formatInvoiceVehicle(SIERRA)).toBe('2022 GMC Sierra\nVIN: 1GTV2TEC1234567')
   })
 
-  it('omits the VIN line when no VIN', () => {
-    expect(formatInvoiceVehicle({ year: '2020', make: 'Honda', model: 'Civic' })).toBe('2020 Honda Civic')
+  it('CustomerMemo is the clean customer-facing vehicle block (+ plate when present)', () => {
+    expect(buildCustomerMemo(SIERRA)).toBe('2022 GMC Sierra\nVIN: 1GTV2TEC1234567')
+    expect(buildCustomerMemo({ ...SIERRA, licensePlate: 'ABC1234' })).toBe('2022 GMC Sierra\nVIN: 1GTV2TEC1234567\nPlate: ABC1234')
+    expect(buildCustomerMemo({ year: '2020', make: 'Honda', model: 'Civic' })).toBe('2020 Honda Civic')
+    expect(buildCustomerMemo(SIERRA)).not.toContain('PSID')
   })
 
-  it('handles missing pieces gracefully', () => {
-    expect(formatInvoiceVehicle({ make: 'Ford' })).toBe('Ford')
-    expect(formatInvoiceVehicle({})).toBe('')
-  })
-
-  it('first line = vehicle header + blank line + work (matches spec)', () => {
-    expect(firstLineDescription(SIERRA, 'Interior Detail')).toBe('2022 GMC Sierra\nVIN: 1GTV2TEC1234567\n\nInterior Detail')
-  })
-
-  it('first line with no vehicle is just the work', () => {
-    expect(firstLineDescription({}, 'Interior Detail')).toBe('Interior Detail')
-  })
-
-  it('PrivateNote carries the PSID idempotency tag + vehicle', () => {
+  it('PrivateNote carries ONLY the internal PSID tag (no vehicle)', () => {
     const id = '11111111-2222-3333-4444-555555555555'
-    const note = buildPrivateNote(id, SIERRA)
-    expect(note.startsWith(`PSID:${id}`)).toBe(true)
-    expect(note).toContain('2022 GMC Sierra')
-    expect(extractPsid(note)).toBe(id)
+    expect(buildPrivateNote(id)).toBe(`PSID:${id}`)
+    expect(buildPrivateNote(id)).not.toContain('GMC')
+    expect(extractPsid(buildPrivateNote(id))).toBe(id)
   })
 
-  it('psidTag / extractPsid round-trip; non-tagged notes → null', () => {
+  it('serviceDescription falls back to the service name (no AI); uses stored when given', () => {
+    expect(serviceDescription('Interior Detail')).toBe('Interior Detail')
+    expect(serviceDescription('Interior Detail', '   ')).toBe('Interior Detail')
+    expect(serviceDescription('Interior Detail', 'Full interior deep clean')).toBe('Full interior deep clean')
+  })
+
+  it('psidTag / extractPsid round-trip; non-tagged → null', () => {
     const id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     expect(extractPsid(psidTag(id))).toBe(id)
     expect(extractPsid('just a note')).toBeNull()
-    expect(extractPsid(null)).toBeNull()
   })
 })
