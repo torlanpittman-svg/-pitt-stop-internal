@@ -6,6 +6,7 @@ import type { OrderWithContext, ServiceOrderEvent } from '@/apps/workflow/db'
 import { useIdentity } from '@/app/components/IdentityBar'
 import NavHeader from '@/app/components/NavHeader'
 import CustomerContactModal from '@/app/components/CustomerContactModal'
+import { useVinDecode, type VinDecodeResult } from '@/app/hooks/useVinDecode'
 import { isDealerOrder } from '@/apps/workflow/fees'
 
 // ── Status display config ─────────────────────────────────────────────────────
@@ -361,6 +362,31 @@ function VehicleEditModal({ orderId, onClose, onSaved }: {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const { status: vinStatus, decodeDebounced, sanitize } = useVinDecode()
+  const [vinMsg, setVinMsg] = useState<{ tone: 'ok' | 'warn'; text: string } | null>(null)
+  const [pending, setPending] = useState<{ year: string; make: string; model: string } | null>(null)
+  const formRef = useRef(form); formRef.current = form
+
+  // Decode-on-edit: when the corrected VIN reaches 17 valid chars, decode + populate.
+  // Blank Y/M/M → auto-fill; existing but different → confirm; invalid/failed → warn only.
+  const handleDecode = useCallback((r: VinDecodeResult) => {
+    const cur = formRef.current
+    if (!r.valid) { setVinMsg({ tone: 'warn', text: r.error || 'This VIN could not be validated — check it or enter details manually.' }); return }
+    if (!r.ok) { setVinMsg({ tone: 'warn', text: r.error || "Valid VIN, but vehicle details couldn't be decoded — enter them manually." }); return }
+    const dec = { year: r.year || '', make: r.make || '', model: r.model || '' }
+    const label = [dec.year, dec.make, dec.model].filter(Boolean).join(' ')
+    const allBlank = !cur.year.trim() && !cur.make.trim() && !cur.model.trim()
+    const same = cur.year.trim() === dec.year && cur.make.trim() === dec.make && cur.model.trim() === dec.model
+    if (allBlank) { setForm((f) => ({ ...f, year: dec.year || f.year, make: dec.make || f.make, model: dec.model || f.model })); setVinMsg({ tone: 'ok', text: `VIN ✓ ${label}` }) }
+    else if (!same) { setPending(dec); setVinMsg(null) }
+    else setVinMsg({ tone: 'ok', text: `VIN ✓ ${label}` })
+  }, [])
+
+  const onVinChange = useCallback((raw: string) => {
+    const vin = sanitize(raw)
+    setForm((f) => ({ ...f, vin })); setVinMsg(null); setPending(null)
+    decodeDebounced(vin, handleDecode)
+  }, [sanitize, decodeDebounced, handleDecode])
 
   useEffect(() => {
     fetch(`/api/workflow/orders/${orderId}/vehicle`)
@@ -385,6 +411,7 @@ function VehicleEditModal({ orderId, onClose, onSaved }: {
       if (!res.ok || !d.ok) { setErr(d.error ?? 'Could not save the correction.'); return }
       const msg = d.qb?.action === 'updated' ? 'Vehicle updated · QuickBooks invoice corrected'
         : d.qb?.action === 'needs_review' ? 'Vehicle updated · QuickBooks sync needs review'
+        : d.qb?.action === 'retail_sync_needed' ? 'Vehicle updated · QuickBooks sync needed'
         : (d.changed?.length ? 'Vehicle updated' : 'No changes made')
       onSaved(msg)
     } catch { setErr('Network error — try again.') } finally { setBusy(false) }
@@ -404,7 +431,26 @@ function VehicleEditModal({ orderId, onClose, onSaved }: {
             <VehField label="Year" value={form.year} onChange={(v) => setForm((f) => ({ ...f, year: v }))} numeric />
             <VehField label="Make" value={form.make} onChange={(v) => setForm((f) => ({ ...f, make: v }))} />
             <VehField label="Model" value={form.model} onChange={(v) => setForm((f) => ({ ...f, model: v }))} />
-            <VehField label="VIN" value={form.vin} onChange={(v) => setForm((f) => ({ ...f, vin: v }))} upper />
+            <VehField label="VIN" value={form.vin} onChange={onVinChange} upper />
+            {vinStatus === 'decoding' && <p className="text-gray-500 text-xs">Decoding VIN…</p>}
+            {vinMsg && <p className={`text-xs ${vinMsg.tone === 'ok' ? 'text-green-400' : 'text-amber-400'}`}>{vinMsg.text}</p>}
+
+            {/* VIN decoded to different Y/M/M than what's on file → confirm before overwrite */}
+            {pending && (
+              <div className="rounded-xl bg-gray-800/60 border border-gray-700 p-3">
+                <p className="text-gray-500 text-xs uppercase tracking-widest">VIN decoded as</p>
+                <p className="text-white font-semibold">{[pending.year, pending.make, pending.model].filter(Boolean).join(' ') || '—'}</p>
+                <p className="text-gray-500 text-xs uppercase tracking-widest mt-2">Current vehicle</p>
+                <p className="text-white font-semibold">{[form.year, form.make, form.model].filter(Boolean).join(' ') || '—'}</p>
+                <div className="flex gap-2 mt-3">
+                  <button onClick={() => { setForm((f) => ({ ...f, year: pending.year || f.year, make: pending.make || f.make, model: pending.model || f.model })); setVinMsg({ tone: 'ok', text: 'Using decoded vehicle info' }); setPending(null) }}
+                    className="flex-1 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold active:opacity-80">Use decoded vehicle info</button>
+                  <button onClick={() => { setPending(null); setVinMsg({ tone: 'ok', text: 'Kept current info' }) }}
+                    className="flex-1 py-2.5 rounded-xl border border-gray-700 text-gray-300 text-sm font-semibold active:opacity-70">Keep current info</button>
+                </div>
+              </div>
+            )}
+
             {ctx.isDealer && <VehField label="Stock / tag number" value={form.stockNumber} onChange={(v) => setForm((f) => ({ ...f, stockNumber: v }))} upper />}
             {ctx.qbLinked && <p className="text-gray-500 text-xs">This Job has a QuickBooks invoice — saving will also correct the invoice line description.</p>}
             {err && <p className="text-amber-400 text-sm">{err}</p>}

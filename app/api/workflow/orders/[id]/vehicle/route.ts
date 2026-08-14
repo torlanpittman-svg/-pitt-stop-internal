@@ -10,7 +10,11 @@
  * flagged "needs_review" — it never writes to the wrong invoice.
  */
 import { NextResponse } from 'next/server'
+import { getDb } from '@/platform/db'
+import { eq } from 'drizzle-orm'
 import { getOrderWithContext, updateVehicleFields, logEvent } from '@/apps/workflow/db'
+import { getEstimateRow } from '@/apps/workflow/estimate-db'
+import { jobEstimates } from '@/apps/workflow/schema'
 import { getActor } from '@/apps/workflow/identity'
 import { getScanByServiceOrderId, updateScan, logScanEvent } from '@/apps/dealer-checkin/db'
 import { correctedLineDescription, diffVehicle, qbSyncDecision, type VehicleFields } from '@/apps/dealer-checkin/correction'
@@ -91,6 +95,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
     // Dealer-scan audit (old/new/actor + QB outcome).
     await logScanEvent({ scanId: scan.id, eventType: 'corrected', actor: actor.name, oldValue: diff.old, newValue: diff.new, note: `vehicle correction · qb=${qb.action}` })
+  } else {
+    // Retail Job: if a retail QuickBooks invoice already exists, the vehicle (which lives in
+    // the invoice CustomerMemo) is now stale. Retail QB update isn't built yet — flag
+    // "QuickBooks sync needed" (surfaced in the Invoice Draft) rather than silently diverge.
+    const est = await getEstimateRow(id)
+    if (est?.qbInvoiceId) {
+      await getDb().update(jobEstimates).set({ qbSyncError: 'QuickBooks sync needed — vehicle changed after invoice was created.', updatedAt: new Date() }).where(eq(jobEstimates.id, est.id))
+      qb = { action: 'retail_sync_needed', ok: true, invoiceNumber: est.qbInvoiceNumber }
+    }
   }
 
   // 4) Job audit event — never hard-deletes history.
