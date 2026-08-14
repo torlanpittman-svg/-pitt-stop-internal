@@ -44,6 +44,23 @@ export interface BuildRetailPayloadInput {
   expectedTotalCents: number
 }
 
+/**
+ * PURE send-recipient decision (P-D3.2). The invoice BillEmail is primary; a blank one is
+ * filled from the Pitt Stop customer email; a present-but-different pair is a conflict
+ * (surfaced, never silently overwritten); neither → blocked ("email required").
+ */
+export function decideSendRecipient(billEmail: string | null | undefined, psEmail: string | null | undefined):
+  { ok: boolean; block?: 'email_required' | 'email_conflict'; recipient?: string; needsFill?: boolean } {
+  const bill = (billEmail ?? '').trim()
+  const ps = (psEmail ?? '').trim()
+  if (bill) {
+    if (ps && ps.toLowerCase() !== bill.toLowerCase()) return { ok: false, block: 'email_conflict', recipient: bill }
+    return { ok: true, recipient: bill, needsFill: false }
+  }
+  if (ps) return { ok: true, recipient: ps, needsFill: true }
+  return { ok: false, block: 'email_required' }
+}
+
 export function buildRetailPayload(input: BuildRetailPayloadInput): RetailPayload {
   const lines: RetailBuiltLine[] = input.workServices.map((w) => ({
     itemId: w.itemId, description: (w.description ?? '').trim(), amountCents: Math.round(w.amountCents),

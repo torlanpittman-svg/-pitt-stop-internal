@@ -24,11 +24,11 @@ import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { lineAmountCents } from '@/apps/workflow/estimate'
 import { getBusinessConfig, shopSuppliesLabel } from '@/apps/settings/db'
-import { buildRetailPayload, RetailTotalMismatchError, type RetailWorkService } from './retail-invoice'
+import { buildRetailPayload, decideSendRecipient, RetailTotalMismatchError, type RetailWorkService } from './retail-invoice'
 import { serviceDescription } from './retail-format'
 import { loadRetailItemIndex } from './retail-item-map'
 import { resolveRetailCustomer } from './retail-customer'
-import { resolveRetailItems, createRetailInvoiceInQB, findRetailInvoiceByPsid } from './retail-invoice-write'
+import { resolveRetailItems, createRetailInvoiceInQB, findRetailInvoiceByPsid, getRetailInvoice, fillRetailInvoiceEmail, sendRetailInvoiceInQB } from './retail-invoice-write'
 import { logger } from '@/platform/logger'
 
 const APP = 'quickbooks:retail-invoice-service'
@@ -183,4 +183,82 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
 
 function contentHash(customerId: string, payload: { lines: unknown; totalCents: number }): string {
   return crypto.createHash('sha256').update(JSON.stringify({ customerId, lines: payload.lines, total: payload.totalCents })).digest('hex')
+}
+
+// ── P-D3.2 retail Send (admin-only) ──────────────────────────────────────────
+export type SendBlock = 'no_invoice' | 'not_priced' | 'dealer' | 'total_mismatch' | 'email_required' | 'email_conflict' | 'qb_read_failed' | 'send_failed'
+export interface RetailSendResolution {
+  ok: boolean
+  block?: SendBlock
+  invoiceId?: string | null
+  invoiceNumber?: string | null
+  recipient?: string | null
+  needsFill?: boolean
+  syncToken?: string | null
+  qbTotalCents?: number
+  draftTotalCents?: number
+  emailStatus?: string
+  alreadySent?: boolean
+  error?: string
+}
+
+/**
+ * READ-ONLY pre-send resolution: confirms the linked invoice exists, its TotalAmt still
+ * equals the authoritative draft total, and the recipient email — WITHOUT sending or
+ * mutating anything. Used for the Admin confirmation dialog AND re-checked inside send.
+ */
+export async function resolveRetailSend(orderId: string): Promise<RetailSendResolution> {
+  const est = await getEstimateRow(orderId)
+  if (!est || !est.qbInvoiceId) return { ok: false, block: 'no_invoice' }
+  const order = await getOrderWithContext(orderId)
+  if (!order) return { ok: false, block: 'no_invoice' }
+  if (isDealerOrder(order)) return { ok: false, block: 'dealer' }
+  const [full, cfg] = await Promise.all([getFullEstimate(orderId), getBusinessConfig()])
+  const draft = buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: 'admin' })
+  if (!draft.priced) return { ok: false, block: 'not_priced' }
+
+  const inv = await getRetailInvoice(est.qbInvoiceId).catch(() => null)
+  if (!inv) return { ok: false, block: 'qb_read_failed', invoiceId: est.qbInvoiceId, invoiceNumber: est.qbInvoiceNumber }
+
+  // Total integrity — QB must still equal the authoritative Pitt Stop total.
+  if (inv.totalAmtCents !== draft.totalCents) {
+    return { ok: false, block: 'total_mismatch', invoiceId: inv.invoiceId, invoiceNumber: inv.invoiceNumber, qbTotalCents: inv.totalAmtCents, draftTotalCents: draft.totalCents }
+  }
+
+  // Email resolution: invoice BillEmail → fill from PS email if blank → else block. Conflict
+  // (invoice email present but differs from PS email) is surfaced, never silently overwritten.
+  const contact = await jobContact(orderId, draft.customer ?? '')
+  const common = { invoiceId: inv.invoiceId, invoiceNumber: inv.invoiceNumber, syncToken: inv.syncToken, qbTotalCents: inv.totalAmtCents, draftTotalCents: draft.totalCents, emailStatus: inv.emailStatus, alreadySent: est.qbStatus === 'sent' || inv.emailStatus === 'EmailSent' }
+  const d = decideSendRecipient(inv.billEmail, contact.email)
+  if (!d.ok) return { ok: false, block: d.block, recipient: d.recipient ?? null, ...common }
+  return { ok: true, recipient: d.recipient, needsFill: d.needsFill, ...common }
+}
+
+/** Send the EXACT linked invoice to the customer. Admin-only (enforced at the route).
+ *  Never creates/clones/alters the invoice; retries target the same qb_invoice_id. */
+export async function sendRetailQBInvoice(params: { orderId: string; actor: string | null }): Promise<RetailSendResolution> {
+  const { orderId, actor } = params
+  const db = getDb()
+  const r = await resolveRetailSend(orderId)
+  if (!r.ok) return r   // blocked (no_invoice / total_mismatch / email_required / email_conflict / …)
+
+  try {
+    if (r.needsFill && r.invoiceId && r.syncToken && r.recipient) {
+      await fillRetailInvoiceEmail(r.invoiceId, r.syncToken, r.recipient)   // fills ONLY BillEmail
+    }
+    const sent = await sendRetailInvoiceInQB(r.invoiceId!, r.recipient)
+    await db.update(jobEstimates).set({
+      qbStatus: 'sent', qbSentAt: new Date(), qbSyncToken: sent.syncToken, qbSyncedAt: new Date(), qbSyncError: null, updatedAt: new Date(),
+    }).where(eq(jobEstimates.serviceOrderId, orderId))
+    await logEvent({ serviceOrderId: orderId, eventType: 'invoice_sent', employeeName: actor, note: `#${sent.invoiceNumber} (${r.invoiceId}) → ${r.recipient} · ${sent.emailStatus}` })
+    logger.info(APP, 'sent', { orderId, invoiceId: r.invoiceId, recipient: r.recipient, emailStatus: sent.emailStatus })
+    return { ok: true, invoiceId: r.invoiceId, invoiceNumber: sent.invoiceNumber, recipient: r.recipient, emailStatus: sent.emailStatus }
+  } catch (err) {
+    const msg = safeErr(err)
+    // Preserve the created invoice linkage; record a safe send error; allow retry.
+    await db.update(jobEstimates).set({ qbSyncError: msg, updatedAt: new Date() }).where(eq(jobEstimates.serviceOrderId, orderId))
+    await logEvent({ serviceOrderId: orderId, eventType: 'invoice_send_failed', employeeName: actor, note: `#${r.invoiceNumber} (${r.invoiceId}) → ${r.recipient}: ${msg}` })
+    logger.error(APP, 'send_failed', { orderId, invoiceId: r.invoiceId, error: msg })
+    return { ok: false, block: 'send_failed', error: msg, invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber, recipient: r.recipient }
+  }
 }

@@ -25,8 +25,8 @@ export interface InvoiceDraft {
   // Per-service price breakdown (itemized Jobs). Flat Jobs → empty until "Set prices".
   itemized: boolean
   serviceBreakdown: { title: string; cents: number }[]
-  // Retail QuickBooks link state (P-D3.1). status: none|creating|created|sent|error.
-  qb: { status: string; invoiceNumber: string | null; error: string | null }
+  // Retail QuickBooks link state (P-D3.1/3.2). status: none|creating|created|sent|error.
+  qb: { status: string; invoiceNumber: string | null; error: string | null; sentAt: string | null }
 }
 
 export function buildInvoiceDraft(params: {
@@ -63,8 +63,8 @@ export function buildInvoiceDraft(params: {
     role,
     itemized: !!est && est.priceMode === 'itemized',
     serviceBreakdown: [],
-    qb: est ? { status: est.qbStatus ?? 'none', invoiceNumber: est.qbInvoiceNumber ?? null, error: est.qbSyncError ?? null }
-            : { status: 'none', invoiceNumber: null, error: null },
+    qb: est ? { status: est.qbStatus ?? 'none', invoiceNumber: est.qbInvoiceNumber ?? null, error: est.qbSyncError ?? null, sentAt: est.qbSentAt ? new Date(est.qbSentAt).toISOString() : null }
+            : { status: 'none', invoiceNumber: null, error: null, sentAt: null },
   }
   if (!priced || !full || !est) return base
 

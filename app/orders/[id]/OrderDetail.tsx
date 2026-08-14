@@ -432,9 +432,19 @@ interface InvoiceDraftData {
   totalCents: number; role: string
   itemized: boolean
   serviceBreakdown: { title: string; cents: number }[]
-  qb: { status: string; invoiceNumber: string | null; error: string | null }
+  qb: { status: string; invoiceNumber: string | null; error: string | null; sentAt: string | null }
 }
+interface SendPreview { ok: boolean; block?: string; recipient?: string | null; invoiceNumber?: string | null; draftTotalCents?: number; qbTotalCents?: number; error?: string }
 const money = (c: number) => `$${(c / 100).toFixed(2)}`
+const SEND_BLOCK_MSG: Record<string, string> = {
+  no_invoice: 'No QuickBooks invoice is linked. Create it first.',
+  total_mismatch: 'QuickBooks invoice is out of sync with Pitt Stop. Sync/update it first.',
+  email_required: 'A customer email address is required before sending.',
+  email_conflict: 'The Pitt Stop email and the QuickBooks invoice email differ — review before sending.',
+  qb_read_failed: 'Could not read the linked QuickBooks invoice. Try again.',
+  not_priced: 'Add a Work Price first.',
+  dealer: 'Dealer invoices are handled by Dealer Check-In.',
+}
 
 function ChargeRow({ label, cents, waived, canEdit, busy, onToggle }: {
   label: string; cents: number; waived: boolean; canEdit: boolean; busy: boolean; onToggle: (removed: boolean) => void
@@ -468,12 +478,16 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
   const [taxReasonOpen, setTaxReasonOpen] = useState(false)
   const [taxReason, setTaxReason] = useState('')
   const createReqId = useRef<string>(`${orderId}-${Date.now()}`)
+  const [sendEnabled, setSendEnabled] = useState(false)
+  const [sendPreview, setSendPreview] = useState<SendPreview | null>(null)   // confirmation dialog
+  const [sending, setSending] = useState(false)
+  const [sentTo, setSentTo] = useState<string | null>(null)
 
   useEffect(() => {
     let ok = true
     fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
       .then((r) => r.json())
-      .then((d) => { if (ok) { if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled) } else setErr(d.error ?? 'Could not load the invoice draft.') } })
+      .then((d) => { if (ok) { if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled) } else setErr(d.error ?? 'Could not load the invoice draft.') } })
       .catch(() => { if (ok) setErr('Could not load the invoice draft.') })
       .finally(() => { if (ok) setLoading(false) })
     return () => { ok = false }
@@ -482,8 +496,38 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
   const refetch = useCallback(async () => {
     const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
     const d = await r.json()
-    if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled) }
+    if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled) }
   }, [orderId])
+
+  // Admin Send: preview (read-only) → confirmation dialog → confirmed send. Never creates.
+  const openSend = useCallback(async () => {
+    setErr(null); setSending(true)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/invoice/send-qb`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: false }),
+      })
+      const d = await res.json()
+      const p: SendPreview = d.preview ?? { ok: false, error: d.error }
+      if (!p.ok) { setErr(p.error ?? SEND_BLOCK_MSG[p.block ?? ''] ?? 'Cannot send this invoice.'); return }
+      setSendPreview(p)   // opens confirmation
+    } catch { setErr('Network error — please try again.') }
+    finally { setSending(false) }
+  }, [orderId])
+
+  const confirmSend = useCallback(async () => {
+    setSending(true); setErr(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/invoice/send-qb`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }),
+      })
+      const d = await res.json()
+      if (!res.ok || !d.ok) { setErr(d.error ?? SEND_BLOCK_MSG[d.block ?? ''] ?? 'Send failed.'); return }
+      setSentTo(d.recipient ?? sendPreview?.recipient ?? null)
+      setSendPreview(null)
+      await refetch()
+    } catch { setErr('Network error — please try again.') }
+    finally { setSending(false) }
+  }, [orderId, sendPreview, refetch])
 
   // Break a flat Work Total into editable per-service prices (reuses the Estimate engine's
   // proportional allocation; preserves the Work Total exactly). Fine-tune on the Estimate screen.
@@ -637,11 +681,28 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
                   <span className="text-white font-bold text-lg tabular-nums">{money(draft.totalCents)}</span>
                 </div>
 
-                {/* QuickBooks — Create only (no Send in this phase) */}
-                {draft.qb.status === 'created' ? (
+                {/* QuickBooks — Create (manager+admin) → Send (admin only) */}
+                {draft.qb.status === 'sent' ? (
+                  <div className="mt-4 rounded-xl bg-green-950/40 border border-green-900/60 px-4 py-3">
+                    <p className="text-green-300 text-sm font-semibold">QuickBooks Invoice{draft.qb.invoiceNumber ? ` #${draft.qb.invoiceNumber}` : ''}</p>
+                    <p className="text-gray-300 text-xs mt-0.5">Sent{sentTo ? ` to ${sentTo}` : ''}{draft.qb.sentAt ? ` · ${new Date(draft.qb.sentAt).toLocaleString()}` : ''}</p>
+                    {isAdmin && sendEnabled && (
+                      <button onClick={openSend} disabled={sending}
+                        className="mt-2 text-gray-400 text-xs font-semibold border border-gray-700 rounded-lg px-2.5 py-1 active:opacity-70 disabled:opacity-40">Resend Invoice</button>
+                    )}
+                  </div>
+                ) : draft.qb.status === 'created' ? (
                   <div className="mt-4 rounded-xl bg-green-950/40 border border-green-900/60 px-4 py-3">
                     <p className="text-green-300 text-sm font-semibold">QuickBooks Invoice{draft.qb.invoiceNumber ? ` #${draft.qb.invoiceNumber}` : ''}</p>
                     <p className="text-gray-400 text-xs mt-0.5">Status: Created</p>
+                    {isAdmin && sendEnabled ? (
+                      <button onClick={openSend} disabled={sending}
+                        className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-blue-600 active:opacity-80 disabled:opacity-50">
+                        {sending ? 'Checking…' : 'Send Invoice'}
+                      </button>
+                    ) : (
+                      <p className="text-gray-600 text-xs mt-2">{isAdmin ? 'Sending is turned off.' : 'This invoice has not been sent to the customer.'}</p>
+                    )}
                   </div>
                 ) : qbEnabled ? (
                   <div className="mt-4">
@@ -655,14 +716,29 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
                   <p className="text-gray-600 text-xs mt-4">QuickBooks invoicing is turned off.</p>
                 )}
 
-                <p className="text-gray-600 text-xs mt-4">
-                  {draft.qb.status === 'created'
-                    ? 'This invoice has not been sent to the customer.'
-                    : 'Draft only — no invoice has been created or sent. Every change is recorded.'}
-                </p>
+                {draft.qb.status !== 'created' && draft.qb.status !== 'sent' && (
+                  <p className="text-gray-600 text-xs mt-4">Draft only — no invoice has been created or sent. Every change is recorded.</p>
+                )}
               </>
             )}
           </>
+        )}
+
+        {/* Pre-send confirmation (customer-facing) */}
+        {sendPreview?.ok && (
+          <div className="fixed inset-0 z-[60] flex flex-col justify-end bg-black/70" onClick={() => !sending && setSendPreview(null)}>
+            <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10" onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-white font-bold text-lg mb-3">Send QuickBooks Invoice{sendPreview.invoiceNumber ? ` #${sendPreview.invoiceNumber}` : ''}</h3>
+              <p className="text-gray-400 text-sm">To</p>
+              <p className="text-white text-base font-semibold mb-3">{sendPreview.recipient}</p>
+              <p className="text-gray-400 text-sm">Total</p>
+              <p className="text-white text-2xl font-bold tabular-nums mb-5">{money(sendPreview.draftTotalCents ?? 0)}</p>
+              <div className="flex gap-3">
+                <button onClick={() => setSendPreview(null)} disabled={sending} className="flex-1 py-3.5 rounded-2xl border border-gray-700 text-gray-300 font-semibold active:opacity-70 disabled:opacity-40">Cancel</button>
+                <button onClick={confirmSend} disabled={sending} className="flex-1 py-3.5 rounded-2xl bg-blue-600 text-white font-bold active:opacity-80 disabled:opacity-50">{sending ? 'Sending…' : 'Send Invoice'}</button>
+              </div>
+            </div>
+          </div>
         )}
 
         {err && <p className="text-red-400 text-sm mt-4">{err}</p>}

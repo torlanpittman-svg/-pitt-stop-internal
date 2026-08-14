@@ -1,5 +1,21 @@
 import { describe, it, expect } from 'vitest'
-import { buildRetailPayload, RetailTotalMismatchError } from './retail-invoice'
+import { buildRetailPayload, decideSendRecipient, RetailTotalMismatchError } from './retail-invoice'
+
+describe('decideSendRecipient (P-D3.2 send email resolution, pure)', () => {
+  it('invoice BillEmail present → send to it (no fill)', () => {
+    expect(decideSendRecipient('a@b.com', null)).toEqual({ ok: true, recipient: 'a@b.com', needsFill: false })
+    expect(decideSendRecipient('A@B.com', 'a@b.com')).toEqual({ ok: true, recipient: 'A@B.com', needsFill: false })  // equal (ci)
+  })
+  it('invoice blank + PS email → send to PS, fill the invoice first', () => {
+    expect(decideSendRecipient(null, 'c@d.com')).toEqual({ ok: true, recipient: 'c@d.com', needsFill: true })
+  })
+  it('invoice email differs from PS → CONFLICT (blocked, not overwritten)', () => {
+    expect(decideSendRecipient('inv@x.com', 'ps@y.com')).toEqual({ ok: false, block: 'email_conflict', recipient: 'inv@x.com' })
+  })
+  it('no email anywhere → blocked (email required)', () => {
+    expect(decideSendRecipient(null, null)).toEqual({ ok: false, block: 'email_required' })
+  })
+})
 
 const SIERRA = { year: '2022', make: 'GMC', model: 'Sierra', vin: '1GTV2TEC1234567' }
 const EST = '11111111-2222-3333-4444-555555555555'

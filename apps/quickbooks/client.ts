@@ -18,6 +18,8 @@ interface QBFetchOptions {
   path: string
   body?: unknown
   query?: Record<string, string>
+  /** Extra request headers (e.g. the invoice send endpoint needs an explicit Content-Type). */
+  headers?: Record<string, string>
 }
 
 /**
@@ -38,6 +40,7 @@ export async function qbApiRequest<T = unknown>(opts: QBFetchOptions): Promise<T
         Authorization:  `Bearer ${accessToken}`,
         Accept:         'application/json',
         ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(opts.headers ?? {}),
       },
       ...(opts.body ? { body: JSON.stringify(opts.body) } : {}),
     })

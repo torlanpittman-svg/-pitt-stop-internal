@@ -33,6 +33,9 @@ export const SETTINGS: Record<string, SettingDef> = {
   // P-D3.1 kill-switch for retail QuickBooks invoice CREATE. Default OFF — no retail QB
   // write happens (and the Create button is hidden) until explicitly enabled.
   retail_qb_enabled:       { key: 'retail_qb_enabled',       type: 'bool',   def: false,              env: 'RETAIL_QB_ENABLED' },
+  // P-D3.2 kill-switch for retail QuickBooks invoice SEND (email to customer). Separate from
+  // create; default OFF — the Send button is hidden and no email is sent until enabled.
+  retail_qb_send_enabled:  { key: 'retail_qb_send_enabled',  type: 'bool',   def: false,              env: 'RETAIL_QB_SEND_ENABLED' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
@@ -89,6 +92,11 @@ export async function voiceEnabled(): Promise<boolean> {
 export async function retailQbEnabled(): Promise<boolean> {
   const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'retail_qb_enabled'))
   return resolve(SETTINGS.retail_qb_enabled, rows[0]?.value) as boolean
+}
+/** Retail QuickBooks SEND kill-switch (P-D3.2). Default OFF. */
+export async function retailQbSendEnabled(): Promise<boolean> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'retail_qb_send_enabled'))
+  return resolve(SETTINGS.retail_qb_send_enabled, rows[0]?.value) as boolean
 }
 /** Configurable shop-supplies invoice label. */
 export async function shopSuppliesLabel(): Promise<string> {

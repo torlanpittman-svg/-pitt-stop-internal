@@ -89,6 +89,51 @@ export async function createRetailInvoiceInQB(params: {
   return summarize(res.Invoice)
 }
 
+export interface RetailInvoiceRead {
+  invoiceId: string
+  invoiceNumber: string | null
+  totalAmtCents: number
+  billEmail: string | null
+  emailStatus: string
+  syncToken: string
+  customerId: string | null
+}
+/** Read the linked invoice (for pre-send total-integrity + email checks). */
+export async function getRetailInvoice(invoiceId: string): Promise<RetailInvoiceRead | null> {
+  const res = await queryQBO<{ Invoice?: Array<{ Id: string; DocNumber?: string; TotalAmt?: number; SyncToken: string; EmailStatus?: string; BillEmail?: { Address?: string }; CustomerRef?: { value?: string } }> }>(
+    `SELECT * FROM Invoice WHERE Id = '${qboEscape(invoiceId)}'`,
+  )
+  const inv = res.Invoice?.[0]
+  if (!inv) return null
+  return {
+    invoiceId: inv.Id, invoiceNumber: inv.DocNumber ?? null, totalAmtCents: cents(inv.TotalAmt ?? 0),
+    billEmail: inv.BillEmail?.Address ?? null, emailStatus: inv.EmailStatus ?? 'NotSet',
+    syncToken: inv.SyncToken, customerId: inv.CustomerRef?.value ?? null,
+  }
+}
+
+/** Fill ONLY the BillEmail on the linked invoice (sparse update; nothing else changes). */
+export async function fillRetailInvoiceEmail(invoiceId: string, syncToken: string, email: string): Promise<void> {
+  await qbApiRequest({ method: 'POST', path: '/invoice', body: { Id: invoiceId, SyncToken: syncToken, sparse: true, BillEmail: { Address: email } } })
+  logger.info(APP, 'retail_invoice.email_filled', { invoiceId })
+}
+
+/**
+ * Email the EXISTING invoice via the QBO send endpoint — POST /invoice/{id}/send?sendTo=…
+ * (empty body, application/octet-stream). Sends ONLY this invoice; never creates/clones/
+ * alters it. QBO sets EmailStatus=EmailSent. Returns the refreshed status.
+ */
+export async function sendRetailInvoiceInQB(invoiceId: string, sendTo?: string | null): Promise<{ invoiceId: string; invoiceNumber: string | null; emailStatus: string; syncToken: string; billEmail: string | null }> {
+  const res = await qbApiRequest<{ Invoice: { Id: string; DocNumber?: string; SyncToken: string; EmailStatus?: string; BillEmail?: { Address?: string } } }>({
+    method: 'POST',
+    path: `/invoice/${invoiceId}/send`,
+    query: sendTo && sendTo.trim() ? { sendTo: sendTo.trim() } : undefined,
+    headers: { 'Content-Type': 'application/octet-stream' },
+  })
+  logger.info(APP, 'retail_invoice.sent', { invoiceId, emailStatus: res.Invoice.EmailStatus })
+  return { invoiceId: res.Invoice.Id, invoiceNumber: res.Invoice.DocNumber ?? null, emailStatus: res.Invoice.EmailStatus ?? 'EmailSent', syncToken: res.Invoice.SyncToken, billEmail: res.Invoice.BillEmail?.Address ?? null }
+}
+
 /**
  * Adoption: find an already-created retail invoice for this estimate by scanning the
  * customer's recent invoices' PrivateNote for the PSID tag. Crash-safe idempotency — if a
