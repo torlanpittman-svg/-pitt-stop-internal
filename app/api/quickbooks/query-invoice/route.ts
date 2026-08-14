@@ -38,6 +38,12 @@ export async function GET(req: Request) {
     if (id) {
       const res = await queryQBO<{ Invoice?: any[] }>(`SELECT * FROM Invoice WHERE Id = '${qboEscape(id)}'`)
       const inv = res.Invoice?.[0]
+      // ?raw=1 returns the full raw QB invoice (read-only) so we can inspect PrivateNote /
+      // CustomerMemo / CustomField / TxnTaxDetail / per-line TaxCodeRef — fields the summary
+      // intentionally drops. Still a single SELECT, no writes.
+      if (url.searchParams.get('raw') === '1') {
+        return NextResponse.json({ ok: !!inv, found: !!inv, raw: inv ?? null })
+      }
       return NextResponse.json({ ok: !!inv, found: !!inv, invoice: inv ? summarize(inv) : null })
     }
 

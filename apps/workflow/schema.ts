@@ -152,11 +152,28 @@ export const jobEstimates = pgTable(
     sentAt:                 timestamp('sent_at', { withTimezone: true }),
     decidedAt:              timestamp('decided_at', { withTimezone: true }),
     convertedAt:            timestamp('converted_at', { withTimezone: true }),
+    // P-D3.0 retail QuickBooks linkage (additive; all nullable). Populated only when a
+    // manager creates a retail QB invoice from the Invoice Draft (P-D3.3+). Until then
+    // qb_status='none' and this Job has no QB invoice. These fields are the idempotency
+    // anchor: once qb_invoice_id is set, Create can never make a second invoice.
+    // NOTE: dealer QuickBooks invoicing does NOT use these (dealer state lives on
+    // dealer_scans.qb_*) — retail and dealer stay isolated.
+    qbInvoiceId:            varchar('qb_invoice_id', { length: 100 }),      // QBO Invoice.Id
+    qbInvoiceNumber:        varchar('qb_invoice_number', { length: 100 }),  // QBO DocNumber
+    qbSyncToken:            varchar('qb_sync_token', { length: 50 }),       // for safe read-modify-write
+    qbStatus:               varchar('qb_status', { length: 20 }).notNull().default('none'), // none|creating|created|sent|error
+    qbContentHash:          varchar('qb_content_hash', { length: 64 }),     // draft fingerprint → detect drift for Sync
+    qbSyncedAt:             timestamp('qb_synced_at', { withTimezone: true }),
+    qbSentAt:               timestamp('qb_sent_at', { withTimezone: true }),
+    qbSyncError:            text('qb_sync_error'),
+    qbLastRequestId:        varchar('qb_last_request_id', { length: 80 }),  // client idempotency correlation
     createdBy:              varchar('created_by', { length: 200 }),
     updatedBy:              varchar('updated_by', { length: 200 }),
     createdAt:              timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt:              timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
+  // NOTE: a partial UNIQUE index on qb_invoice_id (one QB invoice ↔ one estimate) is
+  // created in migration 0019 — enforced in the DB, not modeled here.
   (t) => [unique('job_estimates_order_uniq').on(t.serviceOrderId)],
 )
 
