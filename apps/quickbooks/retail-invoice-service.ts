@@ -112,7 +112,9 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
         const l = s.lines.find((x) => !x.generated); if (!l) return null
         const m = index.match(s.title)
         if (!m.usable) fallbacks.push(`${s.title}→Labor`)
-        return { itemId: m.usable ? m.itemRef! : items.labor, description: serviceDescription(s.title), amountCents: lineAmountCents(l.priceCents, l.qty) }
+        // Description: managed canonical qb_description (from the matched catalog row) →
+        // else the service title / typed custom text. Never AI-generated.
+        return { itemId: m.usable ? m.itemRef! : items.labor, description: serviceDescription(s.title, m.description), amountCents: lineAmountCents(l.priceCents, l.qty) }
       })
       .filter((x): x is RetailWorkService => !!x)
     // Safety net: an itemized Job with no priced service lines → one generic Labor line.

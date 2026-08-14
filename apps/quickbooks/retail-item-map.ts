@@ -17,7 +17,7 @@ import { queryQBO } from './client'
 
 const norm = (s?: string | null) => (s ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
 
-export interface ItemMatch { itemRef: string | null; itemName: string; usable: boolean; via?: string; reason?: string }
+export interface ItemMatch { itemRef: string | null; itemName: string; usable: boolean; description: string | null; via?: string; reason?: string }
 export interface RetailItemIndex { match(title: string): ItemMatch }
 
 interface LiveItem { id: string; name: string }
@@ -55,21 +55,25 @@ export async function loadRetailItemIndex(): Promise<RetailItemIndex> {
   return {
     match(title: string): ItemMatch {
       const c = catByKey.get(norm(title))
-      if (!c) return { itemRef: null, itemName: 'Labor', usable: false, reason: 'no catalog match → Labor' }
+      if (!c) return { itemRef: null, itemName: 'Labor', usable: false, description: null, reason: 'no catalog match → Labor' }
+      const description = c.qbDescription ?? null   // managed canonical description (Phase 1b)
+      // qb_sync_enabled=false = deliberately NOT part of the standard retail mapping (e.g.
+      // Floor Mats) → Labor, even though the catalog row exists.
+      if (c.qbSyncEnabled === false) return { itemRef: null, itemName: 'Labor', usable: false, description, reason: 'mapping disabled → Labor' }
       // 1) validated catalog ref
       if (c.qbItemRef && liveById.has(String(c.qbItemRef))) {
         const it = liveById.get(String(c.qbItemRef))!
-        return { itemRef: it.id, itemName: it.name, usable: true, via: 'catalog-ref' }
+        return { itemRef: it.id, itemName: it.name, usable: true, description, via: 'catalog-ref' }
       }
       // 2) exact live name
       const byName = liveByName.get(norm(c.name))
-      if (byName) return { itemRef: byName.id, itemName: byName.name, usable: true, via: 'live-name' }
+      if (byName) return { itemRef: byName.id, itemName: byName.name, usable: true, description, via: 'live-name' }
       // 3) alias → live item
       for (const a of aliasesOf.get(c.id) ?? []) {
         const hit = liveByName.get(norm(a))
-        if (hit) return { itemRef: hit.id, itemName: hit.name, usable: true, via: 'live-alias' }
+        if (hit) return { itemRef: hit.id, itemName: hit.name, usable: true, description, via: 'live-alias' }
       }
-      return { itemRef: null, itemName: 'Labor', usable: false, reason: `catalog "${c.name}" has no live QB item → Labor` }
+      return { itemRef: null, itemName: 'Labor', usable: false, description, reason: `catalog "${c.name}" has no live QB item → Labor` }
     },
   }
 }

@@ -33,6 +33,7 @@ export const serviceCatalog = pgTable(
     qbItemRef:         varchar('qb_item_ref', { length: 40 }),            // existing QB Item Id, or null
     qbItemStatus:      varchar('qb_item_status', { length: 30 }).notNull().default('existing'), // existing | new_create_at_golive | mapping_review
     qbSyncEnabled:     boolean('qb_sync_enabled').notNull().default(true),
+    qbDescription:     text('qb_description'),                              // Phase 1b: managed canonical customer-facing description (null → service name)
     autoleapMapStatus: varchar('autoleap_map_status', { length: 40 }).notNull().default('unmapped_pending_api'),
     reviewFlag:        boolean('review_flag').notNull().default(false),
     notes:             text('notes'),
