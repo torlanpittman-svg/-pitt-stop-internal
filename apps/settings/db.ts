@@ -28,6 +28,11 @@ export const SETTINGS: Record<string, SettingDef> = {
   payment_charge_bps:      { key: 'payment_charge_bps',      type: 'int',    def: 300,                env: 'PAYMENT_CHARGE_BPS' },
   payment_charge_label:    { key: 'payment_charge_label',    type: 'string', def: 'Card Payment',     env: 'PAYMENT_CHARGE_LABEL' },
   payment_charge_basis:    { key: 'payment_charge_basis',    type: 'string', def: 'work_plus_supplies', env: 'PAYMENT_CHARGE_BASIS' }, // work_only | work_plus_supplies | grand_pretax
+  // Shop-supplies line label on the QuickBooks invoice (configurable, matches historical).
+  shop_supplies_label:     { key: 'shop_supplies_label',     type: 'string', def: 'Shop supplies',    env: 'SHOP_SUPPLIES_LABEL' },
+  // P-D3.1 kill-switch for retail QuickBooks invoice CREATE. Default OFF — no retail QB
+  // write happens (and the Create button is hidden) until explicitly enabled.
+  retail_qb_enabled:       { key: 'retail_qb_enabled',       type: 'bool',   def: false,              env: 'RETAIL_QB_ENABLED' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
@@ -79,6 +84,16 @@ export async function nlEnabled(): Promise<boolean> {
 export async function voiceEnabled(): Promise<boolean> {
   const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'qe_voice_enabled'))
   return resolve(SETTINGS.qe_voice_enabled, rows[0]?.value) as boolean
+}
+/** Retail QuickBooks invoicing kill-switch (P-D3.1). Default OFF. */
+export async function retailQbEnabled(): Promise<boolean> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'retail_qb_enabled'))
+  return resolve(SETTINGS.retail_qb_enabled, rows[0]?.value) as boolean
+}
+/** Configurable shop-supplies invoice label. */
+export async function shopSuppliesLabel(): Promise<string> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'shop_supplies_label'))
+  return resolve(SETTINGS.shop_supplies_label, rows[0]?.value) as string
 }
 
 export type SettingView = { key: string; value: unknown; type: string; category: string | null; label: string | null; description: string | null }

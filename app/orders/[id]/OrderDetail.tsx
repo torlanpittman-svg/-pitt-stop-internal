@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import type { OrderWithContext, ServiceOrderEvent } from '@/apps/workflow/db'
 import { useIdentity } from '@/app/components/IdentityBar'
@@ -430,6 +430,7 @@ interface InvoiceDraftData {
   paymentCharge: { cents: number; waived: boolean; label: string }
   tax: { cents: number; applicable: boolean; needsReview: boolean; exempt: boolean }
   totalCents: number; role: string
+  qb: { status: string; invoiceNumber: string | null; error: string | null }
 }
 const money = (c: number) => `$${(c / 100).toFixed(2)}`
 
@@ -457,21 +458,46 @@ function ChargeRow({ label, cents, waived, canEdit, busy, onToggle }: {
 
 function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () => void }) {
   const [draft, setDraft] = useState<InvoiceDraftData | null>(null)
+  const [qbEnabled, setQbEnabled] = useState(false)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [creating, setCreating] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [taxReasonOpen, setTaxReasonOpen] = useState(false)
   const [taxReason, setTaxReason] = useState('')
+  const createReqId = useRef<string>(`${orderId}-${Date.now()}`)
 
   useEffect(() => {
     let ok = true
     fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
       .then((r) => r.json())
-      .then((d) => { if (ok) { if (d.draft) setDraft(d.draft); else setErr(d.error ?? 'Could not load the invoice draft.') } })
+      .then((d) => { if (ok) { if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled) } else setErr(d.error ?? 'Could not load the invoice draft.') } })
       .catch(() => { if (ok) setErr('Could not load the invoice draft.') })
       .finally(() => { if (ok) setLoading(false) })
     return () => { ok = false }
   }, [orderId])
+
+  const refetch = useCallback(async () => {
+    const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
+    const d = await r.json()
+    if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled) }
+  }, [orderId])
+
+  // Create the QuickBooks invoice (idempotent server-side; a stable requestId dedupes taps).
+  const createQb = useCallback(async () => {
+    if (creating) return
+    setCreating(true); setErr(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/invoice/create-qb`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId: createReqId.current }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) setErr(data.error ?? 'Could not create the QuickBooks invoice.')
+      await refetch()
+    } catch { setErr('Network error — please try again.') }
+    finally { setCreating(false) }
+  }, [orderId, creating, refetch])
 
   const override = useCallback(async (field: 'shop_supplies' | 'payment' | 'tax_exempt', removed: boolean, reason?: string) => {
     setBusy(true); setErr(null)
@@ -573,7 +599,30 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
                   <p className="text-white font-bold text-base">Total</p>
                   <span className="text-white font-bold text-lg tabular-nums">{money(draft.totalCents)}</span>
                 </div>
-                <p className="text-gray-600 text-xs mt-4">Draft only — no invoice has been created or sent. Every change is recorded.</p>
+
+                {/* QuickBooks — Create only (no Send in this phase) */}
+                {draft.qb.status === 'created' ? (
+                  <div className="mt-4 rounded-xl bg-green-950/40 border border-green-900/60 px-4 py-3">
+                    <p className="text-green-300 text-sm font-semibold">QuickBooks Invoice{draft.qb.invoiceNumber ? ` #${draft.qb.invoiceNumber}` : ''}</p>
+                    <p className="text-gray-400 text-xs mt-0.5">Status: Created</p>
+                  </div>
+                ) : qbEnabled ? (
+                  <div className="mt-4">
+                    <button onClick={createQb} disabled={creating || busy}
+                      className="w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
+                      {creating ? 'Creating…' : draft.qb.status === 'error' ? 'Retry — Create QuickBooks Invoice' : 'Create QuickBooks Invoice'}
+                    </button>
+                    {draft.qb.status === 'error' && draft.qb.error && <p className="text-amber-400 text-xs mt-2">Last attempt: {draft.qb.error}</p>}
+                  </div>
+                ) : (
+                  <p className="text-gray-600 text-xs mt-4">QuickBooks invoicing is turned off.</p>
+                )}
+
+                <p className="text-gray-600 text-xs mt-4">
+                  {draft.qb.status === 'created'
+                    ? 'This invoice has not been sent to the customer.'
+                    : 'Draft only — no invoice has been created or sent. Every change is recorded.'}
+                </p>
               </>
             )}
           </>

@@ -22,6 +22,8 @@ export interface InvoiceDraft {
   tax: { cents: number; applicable: boolean; needsReview: boolean; exempt: boolean }
   totalCents: number
   role: string
+  // Retail QuickBooks link state (P-D3.1). status: none|creating|created|sent|error.
+  qb: { status: string; invoiceNumber: string | null; error: string | null }
 }
 
 export function buildInvoiceDraft(params: {
@@ -56,6 +58,8 @@ export function buildInvoiceDraft(params: {
     tax: { cents: 0, applicable: false, needsReview: false, exempt: false },
     totalCents: 0,
     role,
+    qb: est ? { status: est.qbStatus ?? 'none', invoiceNumber: est.qbInvoiceNumber ?? null, error: est.qbSyncError ?? null }
+            : { status: 'none', invoiceNumber: null, error: null },
   }
   if (!priced || !full || !est) return base
 

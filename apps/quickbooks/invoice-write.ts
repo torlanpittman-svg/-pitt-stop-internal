@@ -127,7 +127,7 @@ function summarize(inv: RawInvoice): WrittenInvoice {
  * sequence by taking the highest recent numeric DocNumber and adding 1. Returns
  * null if no numbered invoice can be found (then QB's own numbering applies).
  */
-async function nextInvoiceDocNumber(): Promise<string | null> {
+export async function nextInvoiceDocNumber(): Promise<string | null> {
   try {
     const res = await queryQBO<{ Invoice?: Array<{ DocNumber?: string }> }>(
       `SELECT DocNumber, MetaData FROM Invoice ORDERBY MetaData.CreateTime DESC MAXRESULTS 50`,
