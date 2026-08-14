@@ -58,6 +58,7 @@ export const config = {
     // read-only diagnostics (expose customer email / memo / invoice data)
     '/api/quickbooks/query-customers',
     '/api/quickbooks/query-invoice',
+    '/api/quickbooks/query-items',
     // manual write / setup tools (owner-run; not part of any automated flow)
     '/api/quickbooks/selftest-invoice',
     '/api/quickbooks/set-invoice-number',
