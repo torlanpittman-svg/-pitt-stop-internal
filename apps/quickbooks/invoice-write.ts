@@ -150,12 +150,16 @@ export async function createDealerInvoice(params: {
   itemId:      string
   line:        DealerLineInput
   salesTermId?: string | null
+  /** Configured dealer billing email → Invoice.BillEmail (when available). Additive:
+   *  when absent the body is byte-for-byte what it was before this change. */
+  billEmail?:  string | null
 }): Promise<WrittenInvoice> {
   const body: Record<string, unknown> = {
     CustomerRef: { value: params.customerId },
     Line:        [buildSalesLine(params.itemId, params.line)],
   }
   if (params.salesTermId) body.SalesTermRef = { value: params.salesTermId }
+  if (params.billEmail && params.billEmail.trim()) body.BillEmail = { Address: params.billEmail.trim() }
 
   // Company uses custom transaction numbers → assign the next number ourselves,
   // otherwise the invoice is created with a blank DocNumber (looks "missing").
@@ -180,15 +184,21 @@ export async function appendDealerLine(params: {
   invoiceId: string
   itemId:    string
   line:      DealerLineInput
+  /** Backfill Invoice.BillEmail ONLY when the existing invoice has none (never overwrites). */
+  billEmail?: string | null
 }): Promise<WrittenInvoice> {
   const fetched = await qbApiRequest<{ Invoice: RawInvoice }>({ path: `/invoice/${params.invoiceId}` })
   const inv = fetched.Invoice
   const nextLines = [...(inv.Line ?? []), buildSalesLine(params.itemId, params.line)]
 
+  const nextBody: Record<string, unknown> = { ...inv, Line: nextLines, sparse: false }
+  const hasEmail = !!(inv as { BillEmail?: { Address?: string } }).BillEmail?.Address
+  if (!hasEmail && params.billEmail && params.billEmail.trim()) nextBody.BillEmail = { Address: params.billEmail.trim() }
+
   const res = await qbApiRequest<{ Invoice: RawInvoice }>({
     method: 'POST',
     path:   '/invoice',
-    body:   { ...inv, Line: nextLines, sparse: false },
+    body:   nextBody,
   })
   logger.info(APP, 'invoice.line_appended', {
     id: res.Invoice.Id, docNumber: res.Invoice.DocNumber, lines: res.Invoice.Line?.length,

@@ -14,6 +14,7 @@ import { logger } from '@/platform/logger'
 import { listDealerships } from '@/apps/vehicle-entry/db'
 import { findOrCreateVehicle, createServiceOrder, findActiveOrderByVin } from '@/apps/workflow/db'
 import { findAppendableInvoice } from '@/apps/quickbooks/invoices'
+import { reconcileCustomerEmail } from '@/apps/quickbooks/customers'
 import {
   resolveDealerDetailItem,
   resolveDueOnReceiptTermId,
@@ -405,6 +406,19 @@ export async function checkInDealerVehicle(input: CheckInInput): Promise<CheckIn
       serviceDate: new Date().toISOString().slice(0, 10),
     }
 
+    // Dealer billing email: ensure the QB customer carries the CONFIGURED billing email
+    // (fill only when blank, never overwrite a different one) and set it on the invoice.
+    // Non-fatal + additive — pricing/numbering/item/tax/queue behavior are unchanged; when
+    // no billing email is configured (e.g. Purdy), billEmail stays null and BillEmail blank.
+    let dealerBillEmail: string | null = null
+    try {
+      const rec = await reconcileCustomerEmail(dealership.qbCustomerId, dealer.billingEmail ?? null)
+      dealerBillEmail = rec.billEmail
+      if (rec.conflict) await logScanEvent({ scanId: scan.id, eventType: 'email_conflict', note: `QB customer email differs from configured ${dealer.billingEmail}` })
+    } catch (err) {
+      logger.warn(APP, 'dealer_email_reconcile_failed', { scanId: scan.id, error: String(err) })
+    }
+
     // ── 6. Write to QuickBooks (queue on failure — never lose the scan) ───
     const action: 'created' | 'appended' = appendable ? 'appended' : 'created'
     let invoiceResult: { invoiceId: string; invoiceNumber: string | null; lineCount: number } | null = null
@@ -413,10 +427,10 @@ export async function checkInDealerVehicle(input: CheckInInput): Promise<CheckIn
     const qbStart = Date.now()
     try {
       if (appendable) {
-        invoiceResult = await appendDealerLine({ invoiceId: appendable.id, itemId, line })
+        invoiceResult = await appendDealerLine({ invoiceId: appendable.id, itemId, line, billEmail: dealerBillEmail })
         await logScanEvent({ scanId: scan.id, eventType: 'qb_synced', newValue: { invoiceId: invoiceResult.invoiceId, action, lineCount: invoiceResult.lineCount } })
       } else {
-        invoiceResult = await createDealerInvoice({ customerId: dealership.qbCustomerId, itemId, salesTermId: termId, line })
+        invoiceResult = await createDealerInvoice({ customerId: dealership.qbCustomerId, itemId, salesTermId: termId, line, billEmail: dealerBillEmail })
         await logScanEvent({ scanId: scan.id, eventType: 'invoice_created', newValue: { invoiceId: invoiceResult.invoiceId, number: invoiceResult.invoiceNumber } })
         await logScanEvent({ scanId: scan.id, eventType: 'qb_synced', newValue: { invoiceId: invoiceResult.invoiceId, action, lineCount: invoiceResult.lineCount } })
       }
