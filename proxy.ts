@@ -46,5 +46,14 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: '/admin/:path*',
+  // Same admin Basic-Auth gate (ADMIN_PASSWORD) that protects /admin now also protects the
+  // read-only QuickBooks diagnostic query routes — they can expose customer email / memo /
+  // invoice data and must be admin-only. Reuses the existing model; no second auth system,
+  // no change to the routes' query behavior. ?raw=1 is the same path → automatically gated.
+  // (The QB OAuth callback lives under /api/auth/quickbooks/* and is intentionally NOT here.)
+  matcher: [
+    '/admin/:path*',
+    '/api/quickbooks/query-customers',
+    '/api/quickbooks/query-invoice',
+  ],
 }
