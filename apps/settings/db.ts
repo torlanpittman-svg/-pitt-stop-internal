@@ -36,6 +36,10 @@ export const SETTINGS: Record<string, SettingDef> = {
   // P-D3.2 kill-switch for retail QuickBooks invoice SEND (email to customer). Separate from
   // create; default OFF — the Send button is hidden and no email is sent until enabled.
   retail_qb_send_enabled:  { key: 'retail_qb_send_enabled',  type: 'bool',   def: false,              env: 'RETAIL_QB_SEND_ENABLED' },
+  // Phase A: post-Finish Completion Summary / billing handoff screen (manager/admin, retail).
+  // Default OFF — Finish Job keeps its current redirect until enabled. This flag only controls
+  // whether the summary appears; it performs NO QuickBooks write and does NOT gate completion.
+  completion_invoice_enabled: { key: 'completion_invoice_enabled', type: 'bool', def: false,          env: 'COMPLETION_INVOICE_ENABLED' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
@@ -97,6 +101,11 @@ export async function retailQbEnabled(): Promise<boolean> {
 export async function retailQbSendEnabled(): Promise<boolean> {
   const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'retail_qb_send_enabled'))
   return resolve(SETTINGS.retail_qb_send_enabled, rows[0]?.value) as boolean
+}
+/** Completion Summary / billing-handoff screen kill-switch (Phase A). Default OFF. */
+export async function completionInvoiceEnabled(): Promise<boolean> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'completion_invoice_enabled'))
+  return resolve(SETTINGS.completion_invoice_enabled, rows[0]?.value) as boolean
 }
 /** Configurable shop-supplies invoice label. */
 export async function shopSuppliesLabel(): Promise<string> {

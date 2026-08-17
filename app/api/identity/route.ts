@@ -13,6 +13,7 @@ import {
 } from '@/apps/workflow/identity'
 import { completionEnabled } from '@/apps/workflow/completion'
 import { estimateEnabled } from '@/apps/workflow/estimate'
+import { completionInvoiceEnabled } from '@/apps/settings/db'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -32,6 +33,7 @@ export async function GET(req: Request) {
     minutes: elevationMinutes(),
     completionEnabled: completionEnabled(),
     estimateEnabled: estimateEnabled(),
+    completionInvoiceEnabled: await completionInvoiceEnabled(),
   })
 }
 

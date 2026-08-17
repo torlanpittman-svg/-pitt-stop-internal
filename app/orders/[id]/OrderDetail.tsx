@@ -546,6 +546,24 @@ const SEND_BLOCK_MSG: Record<string, string> = {
   dealer: 'Dealer invoices are handled by Dealer Check-In.',
 }
 
+// Contact row for the Completion Summary — shows a value or "Missing" with an Add button
+// that opens the shared customer edit path (updates in place; never creates a duplicate).
+function ContactRow({ label, value, onAdd }: { label: string; value: string | null; onAdd: () => void }) {
+  return (
+    <div className="flex items-center justify-between py-2.5 border-b border-gray-800">
+      <div className="min-w-0">
+        <p className="text-gray-500 text-xs uppercase tracking-widest">{label}</p>
+        {value ? <p className="text-white text-sm mt-0.5 truncate">{value}</p>
+               : <p className="text-amber-400 text-sm mt-0.5">Missing</p>}
+      </div>
+      {!value && (
+        <button onClick={onAdd}
+          className="text-xs font-semibold px-3 py-1.5 rounded-lg text-blue-400 border border-blue-900/60 active:opacity-70 shrink-0">Add</button>
+      )}
+    </div>
+  )
+}
+
 function ChargeRow({ label, cents, waived, canEdit, busy, onToggle }: {
   label: string; cents: number; waived: boolean; canEdit: boolean; busy: boolean; onToggle: (removed: boolean) => void
 }) {
@@ -847,6 +865,128 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
   )
 }
 
+// ── Phase A: post-Finish Completion Summary / billing handoff ─────────────────
+// Appears AFTER completion has already committed (the Job is Ready and counted in Daily
+// Production). READ-ONLY in Phase A: shows the authoritative total (Invoice Draft read
+// model), customer contact, and invoice state. It performs NO QuickBooks write and NO
+// Send — Create/Sync/Send arrive in Phases B–D. Rendered only for manager/admin on retail
+// Jobs (the parent guards this). "Done" always returns to the Work Board; nothing here can
+// undo completion.
+function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
+  orderId: string; customerName: string; vehicleName: string; onDone: () => void
+}) {
+  const [draft, setDraft] = useState<InvoiceDraftData | null>(null)
+  const [contact, setContact] = useState<{ phone: string | null; email: string | null } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [showInvoice, setShowInvoice] = useState(false)
+  const [editingContact, setEditingContact] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
+
+  const loadContact = useCallback(async () => {
+    const r = await fetch(`/api/workflow/orders/${orderId}/contact`, { cache: 'no-store' })
+    const d = await r.json().catch(() => null)
+    if (d?.ok) setContact({ phone: d.phone ?? null, email: d.email ?? null })
+  }, [orderId])
+
+  useEffect(() => {
+    let ok = true
+    Promise.all([
+      fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
+      fetch(`/api/workflow/orders/${orderId}/contact`, { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
+    ]).then(([inv, con]) => {
+      if (!ok) return
+      if (inv?.draft) setDraft(inv.draft)
+      if (con?.ok) setContact({ phone: con.phone ?? null, email: con.email ?? null })
+    }).finally(() => { if (ok) setLoading(false) })
+    return () => { ok = false }
+  }, [orderId])
+
+  // Invoice-state line — read directly from the Invoice Draft's qb link state (NO second
+  // billing-status system). Phase A surfaces the state only; the actions (Create/Sync/Send/
+  // Resend) are added in Phases B–D. "Review Invoice" opens the existing Invoice Draft modal.
+  const qb = draft?.qb
+  const syncNeeded = !!qb?.error && /sync needed/i.test(qb.error)
+  const invoiceState =
+    !draft || !draft.priced ? { label: 'No invoice yet — set a Work Price to bill this Job', tone: 'muted' as const }
+    : qb?.status === 'sent'    ? { label: 'Invoice sent to customer', tone: 'good' as const }
+    : syncNeeded               ? { label: `QuickBooks Invoice${qb?.invoiceNumber ? ` #${qb.invoiceNumber}` : ''} · sync needed`, tone: 'warn' as const }
+    : qb?.status === 'created' ? { label: `QuickBooks Invoice${qb?.invoiceNumber ? ` #${qb.invoiceNumber}` : ''}`, tone: 'good' as const }
+    : qb?.status === 'error'   ? { label: 'Invoice not created — last attempt failed', tone: 'warn' as const }
+    :                            { label: 'Invoice not created', tone: 'muted' as const }
+  const toneClass = invoiceState.tone === 'good' ? 'border-green-900/60 bg-green-950/30 text-green-300'
+    : invoiceState.tone === 'warn' ? 'border-amber-900/60 bg-amber-950/30 text-amber-300'
+    : 'border-gray-800 bg-gray-800/40 text-gray-400'
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
+      <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10 max-h-[92vh] overflow-y-auto">
+        {/* Finished banner — completion is ALREADY committed before this screen opens */}
+        <div className="text-center mb-5">
+          <div className="w-14 h-14 rounded-full bg-green-600/20 border border-green-700 flex items-center justify-center mx-auto mb-3">
+            <span className="text-green-400 text-2xl">✓</span>
+          </div>
+          <h2 className="text-white font-bold text-xl">Job finished</h2>
+          <p className="text-green-400 text-sm mt-0.5">Ready for pickup</p>
+        </div>
+
+        {loading ? (
+          <p className="text-gray-500 text-sm py-8 text-center">Loading…</p>
+        ) : (
+          <>
+            {/* Who / what */}
+            <div className="mb-4">
+              <p className="text-white text-base font-semibold">{draft?.customer || customerName}</p>
+              <p className="text-gray-400 text-sm">{draft?.vehicle || vehicleName}</p>
+            </div>
+
+            {/* Total — authoritative Invoice Draft read model (no recalculation here) */}
+            {draft?.priced ? (
+              <div className="flex items-center justify-between rounded-xl bg-gray-800/60 px-4 py-3.5 mb-4">
+                <p className="text-white font-bold text-base">Total</p>
+                <span className="text-white font-bold text-lg tabular-nums">{money(draft.totalCents)}</span>
+              </div>
+            ) : (
+              <p className="text-gray-400 text-sm bg-gray-800/60 rounded-xl px-4 py-3.5 mb-4">
+                No Work Price set — add pricing in the Invoice Draft to bill this Job.
+              </p>
+            )}
+
+            {/* Contact — reuses the existing customer edit path (updates in place, never
+                creates a duplicate customer). Phone is informational until SMS ships. */}
+            <div className="mb-4">
+              <ContactRow label="Email" value={contact?.email ?? null} onAdd={() => setEditingContact(true)} />
+              <ContactRow label="Phone" value={contact?.phone ?? null} onAdd={() => setEditingContact(true)} />
+            </div>
+
+            {/* Invoice state — read-only in Phase A */}
+            <div className="mb-6">
+              <p className="text-gray-500 text-xs uppercase tracking-widest mb-1.5">Invoice</p>
+              <div className={`rounded-xl border px-4 py-3 text-sm ${toneClass}`}>{invoiceState.label}</div>
+              <button onClick={() => setShowInvoice(true)}
+                className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80">
+                Review Invoice
+              </button>
+            </div>
+
+            {toast && <p className="text-green-400 text-sm mb-3">{toast}</p>}
+
+            <button onClick={onDone}
+              className="w-full text-white font-bold text-lg py-4 rounded-2xl bg-gray-700 active:bg-gray-600">
+              Done
+            </button>
+          </>
+        )}
+      </div>
+
+      {showInvoice && <InvoiceDraftModal orderId={orderId} onClose={() => setShowInvoice(false)} />}
+      {editingContact && (
+        <CustomerEditModal orderId={orderId} onClose={() => setEditingContact(false)}
+          onSaved={async (msg) => { setEditingContact(false); setToast(msg); await loadContact(); setTimeout(() => setToast(null), 5000) }} />
+      )}
+    </div>
+  )
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithContext }) {
@@ -871,6 +1011,7 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
   const [vehToast,    setVehToast]    = useState<string | null>(null)
   const [showInvoice, setShowInvoice] = useState(false)   // Invoice Draft (manager/admin)
   const [showContact, setShowContact] = useState(false)   // customer contact popup (all staff)
+  const [summaryOpen, setSummaryOpen] = useState(false)   // Phase A: post-Finish billing handoff
   const identity = useIdentity()
   const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
 
@@ -998,13 +1139,19 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
         return
       }
       if (!res.ok) { setCompleteMsg(d.error ?? 'Could not mark Ready.'); return }
-      // Success: the Job is Ready (completed_at stamped, counted once). Close the
-      // modal and return to the Work Board — the now-Ready Job leaves the default
-      // Active view and appears under Ready. (Do NOT setOrder the bare API row.)
+      // Success: the Job is Ready (completed_at stamped, counted once in Daily Production).
+      // Completion is now FINAL and independent of anything below. Phase A: for manager/admin
+      // on a retail Job (flag on), open the Completion Summary / billing handoff instead of
+      // redirecting; everyone else keeps the straight return to the Work Board. (Do NOT
+      // setOrder the bare API row.)
       setCompleting(false)
-      router.push('/work-board')
+      if (identity.completionInvoiceEnabled && isManager && !isDealerOrder(order)) {
+        setSummaryOpen(true)
+      } else {
+        router.push('/work-board')
+      }
     } catch { setCompleteMsg('Network error — try again.') } finally { setCompleteBusy(false) }
-  }, [order.id, router])
+  }, [order, router, identity.completionInvoiceEnabled, isManager])
 
   // Manager correction: reopen a Ready Job (sensitive → reason + PIN step-up).
   const submitReopen = useCallback(async (reason: string, pin: string) => {
@@ -1254,6 +1401,17 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
       {/* Invoice Draft (manager/admin) */}
       {showInvoice && (
         <InvoiceDraftModal orderId={order.id} onClose={() => setShowInvoice(false)} />
+      )}
+
+      {/* Phase A: post-Finish Completion Summary / billing handoff (manager/admin, retail).
+          Completion is already committed when this opens; Done returns to the Work Board. */}
+      {summaryOpen && (
+        <CompletionSummary
+          orderId={order.id}
+          customerName={title}
+          vehicleName={vehicleName}
+          onDone={() => { setSummaryOpen(false); router.push('/work-board') }}
+        />
       )}
 
       {/* Edit Vehicle (manager correction) */}
