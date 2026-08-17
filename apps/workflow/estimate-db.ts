@@ -333,6 +333,47 @@ export async function promoteTextServices(estimateId: string, orderId: string): 
   return n
 }
 
+/**
+ * Remove a service from a Job, keeping the unified structures in sync (manager/admin only —
+ * enforced at the route). Removes it from service_orders.services AND the matching
+ * job_services row (its job_line_items cascade), then recomputes: itemized Jobs drop that
+ * line's price and the remaining lines determine the new Work Total; flat (explicit_pretax)
+ * Jobs keep their manager-chosen total. If a retail QB invoice is linked, flags
+ * "QuickBooks sync needed" (never silently diverges). Audited with before/after + impact.
+ */
+export async function removeServiceFromJob(orderId: string, serviceName: string, actor: string | null): Promise<{ removed: boolean; services: string[]; pricingImpactCents: number | null; qbSyncNeeded: boolean }> {
+  const db = getDb()
+  const norm = (s: string) => s.trim().toLowerCase()
+  const target = norm(serviceName)
+  const [cur] = await db.select({ services: serviceOrders.services }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
+  const existing = cur?.services ?? []
+  const next = existing.filter((s) => norm(s) !== target)
+  if (next.length === existing.length) return { removed: false, services: existing, pricingImpactCents: null, qbSyncNeeded: false }
+
+  await db.update(serviceOrders).set({ services: next, updatedAt: new Date() }).where(eq(serviceOrders.id, orderId))
+
+  let pricingImpactCents: number | null = null
+  let qbSyncNeeded = false
+  const est = await getEstimateRow(orderId)
+  if (est) {
+    const svcs = await db.select().from(jobServices).where(and(eq(jobServices.jobEstimateId, est.id), ne(jobServices.source, 'system')))
+    for (const s of svcs.filter((x) => norm(x.title) === target)) {
+      const lines = await db.select().from(jobLineItems).where(eq(jobLineItems.jobServiceId, s.id))
+      const priced = lines.filter((l) => !l.generated).reduce((sum, l) => sum + lineAmountCents(l.priceCents, l.qty), 0)
+      if (priced > 0) pricingImpactCents = (pricingImpactCents ?? 0) + priced
+      await db.delete(jobServices).where(eq(jobServices.id, s.id))   // job_line_items cascade
+    }
+    await recomputeEstimate(est.id)   // itemized → remaining lines set the total; flat → unchanged
+    if (est.qbInvoiceId) {
+      await db.update(jobEstimates).set({ qbSyncError: 'QuickBooks sync needed — a service was removed after the invoice was created.', updatedAt: new Date() }).where(eq(jobEstimates.id, est.id))
+      qbSyncNeeded = true
+    }
+  }
+
+  await logJobEvent(orderId, 'service_removed', actor, JSON.stringify({ removed: serviceName, before: existing, after: next, pricingImpactCents, qbSyncNeeded }))
+  return { removed: true, services: next, pricingImpactCents, qbSyncNeeded }
+}
+
 export async function addService(estimateId: string, title: string): Promise<JobServiceRow> {
   const [row] = await getDb().insert(jobServices).values({ jobEstimateId: estimateId, title: title.trim(), source: 'manual' }).returning()
   return row

@@ -6,6 +6,7 @@ import type { OrderWithContext, ServiceOrderEvent } from '@/apps/workflow/db'
 import { useIdentity } from '@/app/components/IdentityBar'
 import NavHeader from '@/app/components/NavHeader'
 import CustomerContactModal from '@/app/components/CustomerContactModal'
+import SwipeRow from '@/app/components/SwipeRow'
 import { useVinDecode, type VinDecodeResult } from '@/app/hooks/useVinDecode'
 import { isDealerOrder } from '@/apps/workflow/fees'
 
@@ -880,6 +881,20 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
     } catch { setAddError('Network error — try again.') } finally { setAddBusy(false) }
   }, [order.id, activeTech, reload])
 
+  // Remove a service (manager/admin; swipe-left → Remove). Keeps services/estimate/pricing/
+  // completion in sync server-side; retail-invoiced Jobs get flagged "QuickBooks sync needed".
+  const removeService = useCallback(async (name: string) => {
+    setError(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${order.id}/services`, {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ service: name }),
+      })
+      const d = await res.json()
+      if (!res.ok || !d.ok) { setError(d.error ?? 'Could not remove the service.'); return }
+      await reload()
+    } catch { setError('Network error — try again.') }
+  }, [order.id, reload])
+
   const doTransition = useCallback(async (action: ActionConfig, employeeName: string | null) => {
     setPending(action.newStatus)
     setError(null)
@@ -1015,13 +1030,17 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
           <div className="space-y-2">
             {services.map((s, i) => {
               const on = acked.has(s)
-              return (
-                <button key={i} onClick={() => toggleAck(s)}
+              const inner = (
+                <button onClick={() => toggleAck(s)}
                   className={`w-full flex items-center gap-3 rounded-2xl border px-4 py-3.5 text-left ${on ? 'bg-green-600/15 border-green-600' : 'bg-gray-900 border-gray-800 active:bg-gray-800'}`}>
                   <span className={`w-6 h-6 rounded-md flex items-center justify-center text-sm shrink-0 ${on ? 'bg-green-600 text-white' : 'border border-gray-600 text-transparent'}`}>✓</span>
                   <span className="text-white text-base">{s}</span>
                 </button>
               )
+              // Manager/admin on a retail Job → swipe-left to remove. Employees & dealer Jobs keep the plain checkoff.
+              return (isManager && !isDealerOrder(order))
+                ? <SwipeRow key={i} onRemove={() => removeService(s)}>{inner}</SwipeRow>
+                : <div key={i}>{inner}</div>
             })}
           </div>
         ) : (

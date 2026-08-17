@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback } from 'react'
 import NavHeader from '@/app/components/NavHeader'
+import SwipeRow from '@/app/components/SwipeRow'
 
 /**
  * Simplified mobile Estimate — "what are we doing, and what are we charging?".
@@ -39,38 +40,8 @@ function PriceInput({ cents, onCommit, busy, big }: { cents: number | null; onCo
   )
 }
 
-// ── Swipe-left row: drag left to reveal Remove; deliberate tap required ────────────
-function SwipeRow({ children, onRemove, busy }: { children: React.ReactNode; onRemove: () => void; busy: boolean }) {
-  const [dx, setDx] = useState(0)
-  const start = useRef<number | null>(null)
-  const open = dx <= -44
-  const onStart = (x: number) => { start.current = x }
-  const onMove = (x: number) => { if (start.current != null) setDx(Math.max(-96, Math.min(0, x - start.current))) }
-  const onEnd = () => { start.current = null; setDx((d) => (d <= -44 ? -88 : 0)) }
-  return (
-    <div className="relative overflow-hidden rounded-xl group">
-      {/* Red Remove revealed underneath */}
-      <div className="absolute inset-y-0 right-0 flex items-stretch">
-        <button onClick={onRemove} disabled={busy} aria-label="Remove service"
-          className="px-5 bg-red-600 text-white text-sm font-semibold active:bg-red-700 disabled:opacity-50">Remove</button>
-      </div>
-      {/* Foreground */}
-      <div
-        className="relative flex items-center gap-3 bg-gray-900 border border-gray-800 px-4 py-3.5 touch-pan-y"
-        style={{ transform: `translateX(${dx}px)`, transition: start.current == null ? 'transform .18s ease' : 'none' }}
-        onClick={() => { if (open) setDx(0) }}
-        onTouchStart={(e) => onStart(e.touches[0].clientX)}
-        onTouchMove={(e) => onMove(e.touches[0].clientX)}
-        onTouchEnd={onEnd}
-      >
-        {children}
-        {/* Desktop / keyboard fallback: subtle, appears on hover or focus — no permanent icon */}
-        <button onClick={onRemove} disabled={busy}
-          className="hidden md:block md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 text-gray-500 hover:text-red-400 text-xs ml-1 transition-opacity">Remove</button>
-      </div>
-    </div>
-  )
-}
+// Foreground card style for Estimate service rows (shared SwipeRow provides the swipe).
+const ROW_CONTENT = 'flex items-center gap-3 bg-gray-900 border border-gray-800 px-4 py-3.5'
 
 export default function EstimateBuilder({ header, initialView }: { header: Header; initialView: View }) {
   const [view, setView] = useState<View>(initialView)
@@ -107,7 +78,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
         {/* Services */}
         <div className="space-y-2">
           {services.map((s) => (
-            <SwipeRow key={s.id} busy={busy} onRemove={() => post({ action: 'remove_service', serviceId: s.id })}>
+            <SwipeRow key={s.id} busy={busy} contentClassName={ROW_CONTENT} onRemove={() => post({ action: 'remove_service', serviceId: s.id })}>
               <div className="flex-1 min-w-0">
                 <p className="font-semibold truncate">{s.title}</p>
                 {!isFlat && s.suggestedCents != null && s.priceCents !== s.suggestedCents && (

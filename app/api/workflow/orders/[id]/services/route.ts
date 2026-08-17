@@ -6,12 +6,45 @@
  * NO QuickBooks / AutoLeap writes, no status/timing changes.
  */
 import { NextResponse } from 'next/server'
-import { addServiceToOrder } from '@/apps/workflow/db'
+import { addServiceToOrder, getOrderWithContext } from '@/apps/workflow/db'
 import { getActor } from '@/apps/workflow/identity'
-import { getOrCreateEstimate, promoteTextServices, recomputeEstimate } from '@/apps/workflow/estimate-db'
+import { isDealerOrder } from '@/apps/workflow/fees'
+import { getOrCreateEstimate, promoteTextServices, recomputeEstimate, removeServiceFromJob } from '@/apps/workflow/estimate-db'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
+
+/**
+ * DELETE /api/workflow/orders/[id]/services  { service: string }
+ * Remove a service (manager/admin only). Keeps service_orders.services + job_services +
+ * pricing + completion in sync. Dealer Jobs are out of scope (blocked). No QB write —
+ * a linked retail invoice is flagged "QuickBooks sync needed".
+ */
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params
+    const actor = getActor(req.headers.get('cookie'))
+    if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) {
+      return NextResponse.json({ ok: false, error: 'Only a manager or admin can remove a service.' }, { status: 403 })
+    }
+    const body = (await req.json().catch(() => ({}))) as { service?: string }
+    const service = (body.service ?? '').trim()
+    if (!service) return NextResponse.json({ ok: false, error: 'Which service?' }, { status: 400 })
+
+    const order = await getOrderWithContext(id)
+    if (!order) return NextResponse.json({ ok: false, error: 'Job not found' }, { status: 404 })
+    if (isDealerOrder(order)) {
+      return NextResponse.json({ ok: false, error: 'Dealer service handling is separate — not removable here.' }, { status: 400 })
+    }
+
+    const result = await removeServiceFromJob(id, service, actor.name)
+    if (!result.removed) return NextResponse.json({ ok: true, order, changed: false })
+    const updated = await getOrderWithContext(id)
+    return NextResponse.json({ ok: true, order: updated, changed: true, pricingImpactCents: result.pricingImpactCents, qbSyncNeeded: result.qbSyncNeeded })
+  } catch (err) {
+    return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })
+  }
+}
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
