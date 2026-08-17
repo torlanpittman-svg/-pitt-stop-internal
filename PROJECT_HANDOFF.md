@@ -106,9 +106,11 @@ must stay isolated. Do not alter Dealer Check-In behavior.
 
 ## 8. Feature flags (settings registry `apps/settings/db.ts`, DB `app_settings` → env → default)
 
-Verified in DB on 2026-08-17:
-- `retail_qb_enabled = false` (retail QB CREATE)
-- `retail_qb_send_enabled = false` (retail QB SEND/email)
+Verified in production DB on 2026-08-17:
+- `completion_invoice_enabled = true` — **ON** (Phase A Completion Summary; enabled after the
+  live mobile walkthrough passed; see §11).
+- `retail_qb_enabled = false` (retail QB CREATE) — must stay OFF until Phase B.
+- `retail_qb_send_enabled = false` (retail QB SEND/email) — must stay OFF until Phase D.
 - `payment_charge_enabled = true`, `shop_supplies_enabled = true`
 - `COMPLETION_FLOW_ENABLED`, `ESTIMATE_LAYER_ENABLED`, `IDENTITY_ENABLED` are env-based.
 
@@ -134,9 +136,30 @@ Verified in DB on 2026-08-17:
     Mini Detail canonical = "Hand wash exterior, wheels, tires, wheel well, windows, mirrors.
     Vacuum and wipe down."
 
-## 11. Next feature (NOT yet approved / NOT implemented)
+## 11. Finish Job → Review Invoice → Send — phased rollout
 
-**Finish Job → Review Invoice → offer to send to customer by email and text.** Design must
-layer on top of §6 completion (never block it), reuse the Invoice Draft (§3) and retail QB
-Create/Send (§4), respect dealer isolation (§5) and idempotency (§4). Text/SMS has no infra
-today (§9) — that is an open decision. See the session plan for the proposed architecture.
+Approved phased plan. **Finish Job → Completion Summary → Review Invoice → (later)
+Create/Sync/Send.** SMS/text is deferred to its own phase (no infra today, §9). Each phase
+ships separately and behind its own flag; completion must NEVER depend on billing.
+
+**Phase A — SHIPPED & live-verified (2026-08-17). `completion_invoice_enabled = true` (ON).**
+- After Finish Job commits (Job Ready, counted once in Daily Production), manager/admin on a
+  retail Job see a READ-ONLY Completion Summary instead of the immediate Work Board redirect:
+  finished banner, customer/vehicle, authoritative Total (Invoice Draft read model), contact
+  (email/phone with Add → existing customer edit path, no duplicate customer), invoice state,
+  Review Invoice (opens existing Invoice Draft), Done.
+- Employees and dealer Jobs keep the straight redirect (no summary). NO QuickBooks write, NO
+  Send, NO Sync. Reuses `GET /invoice`, `GET /contact`, `POST /customer`.
+- Files: `apps/settings/db.ts` (flag + reader), `app/api/identity/route.ts` +
+  `app/components/IdentityBar.tsx` (expose flag), `app/orders/[id]/OrderDetail.tsx`
+  (`CompletionSummary` + `ContactRow`). Commit `c6abd88` (code) — flag enabled directly in prod.
+- Live walkthrough at 390×844 passed 31/31 UI + 29/29 DB checks: total match, contact Add
+  (no dup customer), Review Invoice has no Create/Send controls, employee/dealer bypass,
+  and failure-safety (aborting the invoice/contact reads still leaves the Job completed with
+  Done available).
+
+**Phase B (next, NOT started):** enable/reuse retail QB **Create** from the summary
+(`retail_qb_enabled`). **Phase C:** safe retail QB **Update/Sync** for stale linked invoices.
+**Phase D:** retail **Email Send** (manager+admin) via `retail_qb_send_enabled`. **Phase E:**
+SMS/text (verify QB exposes a reliable customer-facing shareable link first). Do not combine
+phases; retail QB Create/Send stay OFF until their phase.
