@@ -471,6 +471,57 @@ function VehicleEditModal({ orderId, onClose, onSaved }: {
 // authoritative Job estimate. Read-only totals; the only writes are the Remove/Restore
 // charge toggles (server-enforced: shop/payment = manager+admin, tax exempt = admin+reason).
 // NO QuickBooks — this never creates or sends an invoice.
+// ── Edit Customer (manager correction of name/phone/email) ────────────────────
+function CustomerEditModal({ orderId, onClose, onSaved }: { orderId: string; onClose: () => void; onSaved: (msg: string) => void }) {
+  const [form, setForm] = useState({ name: '', phone: '', email: '' })
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch(`/api/workflow/orders/${orderId}/contact`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => { if (d.ok) setForm({ name: d.customer ?? '', phone: d.phone ?? '', email: d.email ?? '' }) })
+      .catch(() => setErr('Could not load customer info.'))
+      .finally(() => setLoading(false))
+  }, [orderId])
+
+  const save = async () => {
+    setBusy(true); setErr(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/customer`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
+      })
+      const d = await res.json()
+      if (!res.ok || !d.ok) { setErr(d.error ?? 'Could not save.'); return }
+      onSaved(d.changed?.length ? (d.qbSyncNeeded ? 'Customer updated · QuickBooks sync needed' : 'Customer updated') : 'No changes made')
+    } catch { setErr('Network error — try again.') } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
+      <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-white font-bold text-xl">Edit Customer</h2>
+          <button onClick={onClose} className="text-gray-500 text-sm">Cancel</button>
+        </div>
+        {loading ? (
+          <div className="flex justify-center py-10"><div className="w-8 h-8 border-2 border-gray-700 border-t-blue-500 rounded-full animate-spin" /></div>
+        ) : (
+          <div className="space-y-4">
+            <VehField label="Name" value={form.name} onChange={(v) => setForm((f) => ({ ...f, name: v }))} />
+            <VehField label="Phone" value={form.phone} onChange={(v) => setForm((f) => ({ ...f, phone: v }))} />
+            <VehField label="Email" value={form.email} onChange={(v) => setForm((f) => ({ ...f, email: v }))} />
+            {err && <p className="text-amber-400 text-sm">{err}</p>}
+            <button onClick={save} disabled={busy}
+              className="w-full h-14 rounded-2xl bg-green-600 active:bg-green-700 text-white text-lg font-bold disabled:opacity-40">{busy ? 'Saving…' : 'Save'}</button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 interface InvoiceDraftData {
   priced: boolean; isDealer: boolean
   customer: string | null; vehicle: string; services: string[]
@@ -816,6 +867,7 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
   const [reopenMsg,   setReopenMsg]   = useState<string | null>(null)
   const [acked,       setAcked]       = useState<Set<string>>(new Set())  // to-do checkoffs
   const [editingVehicle, setEditingVehicle] = useState(false)
+  const [editingCustomer, setEditingCustomer] = useState(false)
   const [vehToast,    setVehToast]    = useState<string | null>(null)
   const [showInvoice, setShowInvoice] = useState(false)   // Invoice Draft (manager/admin)
   const [showContact, setShowContact] = useState(false)   // customer contact popup (all staff)
@@ -995,8 +1047,10 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
               {vehicleName}{vehicle.color ? ` · ${vehicle.color}` : ''}
             </p>
             {isManager && (
-              <button onClick={() => setEditingVehicle(true)}
-                className="text-blue-400 text-sm font-semibold mt-1 active:opacity-70">Edit Vehicle</button>
+              <div className="flex items-center gap-4 mt-1">
+                <button onClick={() => setEditingVehicle(true)} className="text-blue-400 text-sm font-semibold active:opacity-70">Edit Vehicle</button>
+                {!isDealerOrder(order) && <button onClick={() => setEditingCustomer(true)} className="text-blue-400 text-sm font-semibold active:opacity-70">Edit Customer</button>}
+              </div>
             )}
           </div>
           <span className={`flex-none font-bold text-base mt-1 ${simpleStatus.color}`}>
@@ -1208,6 +1262,15 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
           orderId={order.id}
           onClose={() => setEditingVehicle(false)}
           onSaved={async (msg) => { setEditingVehicle(false); setVehToast(msg); await reload(); setTimeout(() => setVehToast(null), 6000) }}
+        />
+      )}
+
+      {/* Edit Customer (manager correction of name/phone/email) */}
+      {editingCustomer && (
+        <CustomerEditModal
+          orderId={order.id}
+          onClose={() => setEditingCustomer(false)}
+          onSaved={async (msg) => { setEditingCustomer(false); setVehToast(msg); await reload(); setTimeout(() => setVehToast(null), 6000) }}
         />
       )}
 

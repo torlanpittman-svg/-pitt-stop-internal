@@ -333,6 +333,16 @@ export async function promoteTextServices(estimateId: string, orderId: string): 
   return n
 }
 
+/** If a retail QB invoice is linked to this Job, flag "QuickBooks sync needed" (surfaced in
+ *  the Invoice Draft). Used after edits that affect the invoice; retail QB update isn't built
+ *  yet, so this prevents Pitt Stop and QuickBooks silently diverging. Returns true if flagged. */
+export async function flagQbSyncNeededIfInvoiced(orderId: string, reason: string): Promise<boolean> {
+  const est = await getEstimateRow(orderId)
+  if (!est?.qbInvoiceId) return false
+  await getDb().update(jobEstimates).set({ qbSyncError: `QuickBooks sync needed — ${reason}.`, updatedAt: new Date() }).where(eq(jobEstimates.id, est.id))
+  return true
+}
+
 /**
  * Remove a service from a Job, keeping the unified structures in sync (manager/admin only —
  * enforced at the route). Removes it from service_orders.services AND the matching

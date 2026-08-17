@@ -10,7 +10,7 @@ import {
   getOrCreateEstimate, getEstimateRow, getFullEstimate, promoteTextServices, recomputeEstimate,
   addService, updateService, removeService, addLine, updateLine, removeLine,
   setTaxRate, setStatus, setApproval, convertEstimate, type LineInput,
-  prepareEstimateView, getEstimateView, setServicePrice, setWorkTotal, itemizeEstimate,
+  prepareEstimateView, getEstimateView, setServicePrice, setWorkTotal, itemizeEstimate, flagQbSyncNeededIfInvoiced,
 } from '@/apps/workflow/estimate-db'
 import type { ApprovalState, EstimateStatus } from '@/apps/workflow/estimate'
 
@@ -59,15 +59,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       case 'set_service_price': {
         const eid = await estimateId()
         await setServicePrice(eid, String(body.serviceId), Math.max(0, Math.round(Number(body.cents) || 0)), actor)
+        await flagQbSyncNeededIfInvoiced(id, 'a price changed')
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
       case 'set_work_total': {
         const eid = await estimateId()
         await setWorkTotal(eid, Math.max(0, Math.round(Number(body.cents) || 0)), actor)
+        await flagQbSyncNeededIfInvoiced(id, 'the Work Total changed')
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
       case 'itemize': {
         await itemizeEstimate(await estimateId(), actor)
+        await flagQbSyncNeededIfInvoiced(id, 'pricing changed')
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
       case 'add_service': {
