@@ -358,7 +358,7 @@ function VehicleEditModal({ orderId, onClose, onSaved }: {
   onClose: () => void
   onSaved: (message: string) => void
 }) {
-  const [form, setForm] = useState({ year: '', make: '', model: '', vin: '', stockNumber: '' })
+  const [form, setForm] = useState({ year: '', make: '', model: '', color: '', vin: '', stockNumber: '' })
   const [ctx, setCtx] = useState({ isDealer: false, qbLinked: false })
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -393,7 +393,7 @@ function VehicleEditModal({ orderId, onClose, onSaved }: {
     fetch(`/api/workflow/orders/${orderId}/vehicle`)
       .then((r) => r.json())
       .then((d) => {
-        setForm({ year: d.year ?? '', make: d.make ?? '', model: d.model ?? '', vin: d.vin ?? '', stockNumber: d.stockNumber ?? '' })
+        setForm({ year: d.year ?? '', make: d.make ?? '', model: d.model ?? '', color: d.color ?? '', vin: d.vin ?? '', stockNumber: d.stockNumber ?? '' })
         setCtx({ isDealer: !!d.isDealer, qbLinked: !!d.qbLinked })
       })
       .catch(() => setErr('Could not load vehicle info.'))
@@ -432,6 +432,10 @@ function VehicleEditModal({ orderId, onClose, onSaved }: {
             <VehField label="Year" value={form.year} onChange={(v) => setForm((f) => ({ ...f, year: v }))} numeric />
             <VehField label="Make" value={form.make} onChange={(v) => setForm((f) => ({ ...f, make: v }))} />
             <VehField label="Model" value={form.model} onChange={(v) => setForm((f) => ({ ...f, model: v }))} />
+            {/* Color — RETAIL only (optional; helps tell apart same Y/M/M vehicles). VIN decode
+                never fills/overwrites it — the manager enters it manually. Dealer color comes
+                from the tag/scan and is not editable here. */}
+            {!ctx.isDealer && <VehField label="Color" value={form.color} onChange={(v) => setForm((f) => ({ ...f, color: v }))} />}
             <VehField label="VIN" value={form.vin} onChange={onVinChange} upper />
             {vinStatus === 'decoding' && <p className="text-gray-500 text-xs">Decoding VIN…</p>}
             {vinMsg && <p className={`text-xs ${vinMsg.tone === 'ok' ? 'text-green-400' : 'text-amber-400'}`}>{vinMsg.text}</p>}

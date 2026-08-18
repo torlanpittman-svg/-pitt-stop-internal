@@ -34,6 +34,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const scan = await getScanByServiceOrderId(id)
   return NextResponse.json({
     year: order.vehicle.year, make: order.vehicle.make, model: order.vehicle.model, vin: order.vehicle.vin,
+    color: order.vehicle.color,
     stockNumber: scan?.stockNumber ?? null,
     isDealer: !!scan,
     qbLinked: !!(scan?.qbLineId && scan?.qbInvoiceNumber && scan?.qbSyncStatus === 'synced'),
@@ -58,13 +59,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     stockNumber: scan ? clean(body.stockNumber) : null,   // stock only applies to dealer Jobs
   }
 
+  // Color is a RETAIL-only editable field (dealer color comes from the tag/scan and is left
+  // untouched here). It is NOT part of VehicleFields/diffVehicle because it is not in the QB
+  // CustomerMemo/line payload — so a color change must never flag QuickBooks sync-needed.
+  const colorChanged = !scan && (body as { color?: string }).color !== undefined && clean((body as { color?: string }).color) !== (order.vehicle.color ?? null)
   const diff = diffVehicle(oldF, newF)
-  if (diff.changed.length === 0) {
+  if (diff.changed.length === 0 && !colorChanged) {
     return NextResponse.json({ ok: true, order, qb: { action: 'no_change' }, changed: [] })
   }
 
-  // 1) Canonical vehicle — instantly updates the Work Board card + Job detail.
-  await updateVehicleFields(order.vehicle.id, { year: newF.year, make: newF.make, model: newF.model, vin: newF.vin })
+  // 1) Canonical vehicle — instantly updates the Work Board card + Job detail. Retail color is
+  // applied in the same in-place update; dealer Jobs never get a color write from this modal.
+  await updateVehicleFields(order.vehicle.id, {
+    year: newF.year, make: newF.make, model: newF.model, vin: newF.vin,
+    ...(colorChanged ? { color: clean((body as { color?: string }).color) } : {}),
+  })
 
   // 2) Dealer scan (if any) + 3) QuickBooks line, using exact identifiers only.
   let qb: { action: string; ok: boolean; reason?: string; invoiceNumber?: string | null } = { action: 'not_linked', ok: true }
@@ -99,16 +108,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // Retail Job: if a retail QuickBooks invoice already exists, the vehicle (which lives in
     // the invoice CustomerMemo) is now stale. Retail QB update isn't built yet — flag
     // "QuickBooks sync needed" (surfaced in the Invoice Draft) rather than silently diverge.
+    // Only a QB-payload field (Y/M/M/VIN) makes the invoice stale — a color-only change does
+    // NOT (color is not in the CustomerMemo), so it must not flag retail sync-needed.
     const est = await getEstimateRow(id)
-    if (est?.qbInvoiceId) {
+    if (est?.qbInvoiceId && diff.changed.length > 0) {
       await getDb().update(jobEstimates).set({ qbSyncError: 'QuickBooks sync needed — vehicle changed after invoice was created.', updatedAt: new Date() }).where(eq(jobEstimates.id, est.id))
       qb = { action: 'retail_sync_needed', ok: true, invoiceNumber: est.qbInvoiceNumber }
     }
   }
 
-  // 4) Job audit event — never hard-deletes history.
-  await logEvent({ serviceOrderId: id, eventType: 'vehicle_corrected', employeeName: actor.name, note: JSON.stringify({ changed: diff.changed, old: diff.old, new: diff.new, qb: qb.action }) })
+  // 4) Job audit event — never hard-deletes history. Color is tracked separately from the
+  // dealer diff (it is retail-only + not in the QB payload).
+  const changedAll = [...diff.changed, ...(colorChanged ? ['color'] : [])]
+  const colorNote = colorChanged ? { color: { old: order.vehicle.color ?? null, new: clean((body as { color?: string }).color) } } : {}
+  await logEvent({ serviceOrderId: id, eventType: 'vehicle_corrected', employeeName: actor.name, note: JSON.stringify({ changed: changedAll, old: diff.old, new: diff.new, ...colorNote, qb: qb.action }) })
 
   const updated = await getOrderWithContext(id)
-  return NextResponse.json({ ok: true, order: updated, qb, changed: diff.changed })
+  return NextResponse.json({ ok: true, order: updated, qb, changed: changedAll })
 }
