@@ -7,6 +7,7 @@ import {
   serviceOrders,
   serviceOrderAssignments,
   serviceOrderEvents,
+  jobEstimates,
 } from './schema'
 import { partitionServices } from './services'
 
@@ -424,6 +425,48 @@ export async function transitionOrder(params: {
     })
   }
 
+  return { ok: true, order: updated }
+}
+
+/**
+ * Manager/admin: REMOVE a mistaken/duplicate Job from the Work Board (soft cancel). Sets
+ * status='cancelled' + cancelledAt so it drops from listActiveOrders immediately. SOFT only —
+ * customer, vehicle, estimate, services, completion history and any QuickBooks linkage are all
+ * left intact and recoverable. RETAIL + ACTIVE only: refuses dealer Jobs and any Ready/
+ * Delivered/Cancelled Job (server-enforced, not just hidden in the UI). Never touches
+ * completed_at. Writes a 'removed' audit event (actor, prior status, QB-invoice note).
+ */
+const REMOVABLE_STATUSES = ['arrived', 'in_progress', 'paused', 'drying', 'qc_ready']
+export async function removeOrder(params: { orderId: string; actor: string | null }): Promise<{ ok: boolean; error?: string; order?: ServiceOrderRow }> {
+  const db = getDb()
+  const [order] = await db.select().from(serviceOrders).where(eq(serviceOrders.id, params.orderId)).limit(1)
+  if (!order) return { ok: false, error: 'Job not found' }
+  // Dealer isolation — dealer Jobs are managed in Dealer Check-In, never removed from here.
+  const src = (order.source ?? '').toLowerCase(), typ = (order.serviceType ?? '').toLowerCase()
+  if (src === 'dealer' || src === 'dealer_checkin' || typ.startsWith('dealer')) {
+    return { ok: false, error: 'Dealer Jobs are managed in Dealer Check-In.' }
+  }
+  // Active only — a Ready/Delivered/Cancelled Job cannot be swipe-removed (production-safe).
+  if (!REMOVABLE_STATUSES.includes(order.status)) {
+    return { ok: false, error: `Only an active Job can be removed (this Job is ${order.status}).` }
+  }
+
+  const now = new Date()
+  // Stop any active tech assignments (same as a normal cancel transition).
+  await db.update(serviceOrderAssignments).set({ stoppedAt: now })
+    .where(and(eq(serviceOrderAssignments.serviceOrderId, params.orderId), isNull(serviceOrderAssignments.stoppedAt)))
+  const [updated] = await db.update(serviceOrders)
+    .set({ status: 'cancelled', cancelledAt: now, updatedAt: now })   // never touches completed_at
+    .where(eq(serviceOrders.id, params.orderId)).returning()
+
+  // QB linkage is LEFT INTACT — record it in the audit note (we never void/delete the invoice).
+  const [est] = await db.select({ qbInvoiceNumber: jobEstimates.qbInvoiceNumber })
+    .from(jobEstimates).where(eq(jobEstimates.serviceOrderId, params.orderId)).limit(1)
+  const qbNote = est?.qbInvoiceNumber ? ` · QuickBooks Invoice #${est.qbInvoiceNumber} left intact` : ''
+  await logEvent({
+    serviceOrderId: params.orderId, eventType: 'removed', employeeName: params.actor,
+    oldStatus: order.status, newStatus: 'cancelled', note: `Removed from Work Board${qbNote}`,
+  })
   return { ok: true, order: updated }
 }
 

@@ -66,6 +66,13 @@ export default function WorkBoardClient({
   }, [highlightId])
 
   const visible = filterOrders(orders, tab)
+  const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
+  // Swipe-to-remove is offered only to manager/admin on the Active tab (retail-only gate is in
+  // the card). Optimistically drop the removed Job so the card disappears immediately.
+  const handleRemoved = useCallback((orderId: string) => {
+    setOrders((prev) => prev.filter((o) => o.id !== orderId))
+    void refresh()
+  }, [refresh])
 
   const counts = {
     active: orders.filter(o => ACTIVE_WORK_STATUSES.has(o.status)).length,
@@ -163,6 +170,8 @@ export default function WorkBoardClient({
               key={order.id}
               order={order}
               highlighted={order.id === highlightId}
+              removable={isManager && tab === 'active'}
+              onRemoved={handleRemoved}
             />
           ))
         )}
