@@ -106,13 +106,13 @@ must stay isolated. Do not alter Dealer Check-In behavior.
 
 ## 8. Feature flags (settings registry `apps/settings/db.ts`, DB `app_settings` → env → default)
 
-Verified in production DB on 2026-08-17:
-- `completion_invoice_enabled = true` — **ON** (Phase A Completion Summary; enabled after the
-  live mobile walkthrough passed; see §11).
-- `retail_qb_enabled = false` (retail QB CREATE) — must stay OFF until Phase B.
-- `retail_qb_send_enabled = false` (retail QB SEND/email) — must stay OFF until Phase D.
+Verified in production DB on 2026-08-18:
+- `completion_invoice_enabled = true` — **ON** (Phase A Completion Summary; see §11).
+- `retail_qb_enabled = true` — **ON** (Phase B retail QB CREATE; enabled after the controlled
+  live QB verification passed; see §11). Managers/admins can now create retail QB invoices.
+- `retail_qb_send_enabled = false` (retail QB SEND/email) — **must stay OFF until Phase D**.
 - `payment_charge_enabled = true`, `shop_supplies_enabled = true`
-- `COMPLETION_FLOW_ENABLED`, `ESTIMATE_LAYER_ENABLED`, `IDENTITY_ENABLED` are env-based.
+- `COMPLETION_FLOW_ENABLED`, `ESTIMATE_LAYER_ENABLED`, `IDENTITY_ENABLED` are env-based (all ON in prod).
 
 ## 9. Messaging infrastructure — CURRENT STATE
 
@@ -158,8 +158,28 @@ ships separately and behind its own flag; completion must NEVER depend on billin
   and failure-safety (aborting the invoice/contact reads still leaves the Job completed with
   Done available).
 
-**Phase B (next, NOT started):** enable/reuse retail QB **Create** from the summary
-(`retail_qb_enabled`). **Phase C:** safe retail QB **Update/Sync** for stale linked invoices.
-**Phase D:** retail **Email Send** (manager+admin) via `retail_qb_send_enabled`. **Phase E:**
-SMS/text (verify QB exposes a reliable customer-facing shareable link first). Do not combine
-phases; retail QB Create/Send stay OFF until their phase.
+**Phase B — SHIPPED & live-verified (2026-08-18). `retail_qb_enabled = true` (ON).**
+- From the Completion Summary, manager/admin on a priced retail Job can **Create** the retail
+  QB invoice via the EXISTING idempotent `POST /invoice/create-qb` (no new writer/pricing).
+  Summary invoice states: unpriced → "Invoice needs pricing" + Edit Estimate (existing
+  simplified Estimate); not created → Review Invoice + Create; error → Retry (same path);
+  created → "QuickBooks Invoice #… Created" (no Create offered again, no Send); sync-needed →
+  shown read-only (fix is Phase C — never a second invoice).
+- Create never blocks completion; Done always available; failure keeps the Job completed and
+  the production date/`completedAt` unchanged.
+- File: `app/orders/[id]/OrderDetail.tsx` (`CompletionSummary` Create integration). Commit
+  `919a52a`. Flag enabled directly in prod after verification.
+- Controlled live QB test (realm 123146329198289) passed 15/15 UI + 32/33 DB/QB checks (the
+  one non-pass was a test-assertion wording issue; dealer Create is correctly refused with no
+  invoice). Verified in the ACTUAL QB invoice: 3 work lines mapped to Product/Service items
+  8/6/69 with canonical `qb_description` and exact amounts ($400/$100/$150), 2 fee lines (Shop
+  supplies $19.50, Card Payment $20.09), CustomerMemo=vehicle, PrivateNote=PSID-only,
+  BillEmail=customer email, TotalAmt=$689.59 exactly, tax $0, EmailStatus=NotSet (not sent).
+  Idempotency proven: double-tap / retry / lost-local-link (PSID adoption) all re-link the
+  SAME invoice — customer had exactly ONE invoice. Employee Create → 403; unpriced → blocked.
+
+**Phase C (next, NOT started):** safe retail QB **Update/Sync** for stale linked invoices
+(the "sync needed" state). **Phase D:** retail **Email Send** (manager+admin) via
+`retail_qb_send_enabled` (still OFF; no Send UI is exposed yet). **Phase E:** SMS/text (verify
+QB exposes a reliable customer-facing shareable link first). Do not combine phases;
+`retail_qb_send_enabled` stays OFF until Phase D.
