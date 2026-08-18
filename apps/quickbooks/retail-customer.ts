@@ -107,6 +107,23 @@ async function qbGetCustomer(id: string): Promise<QbCust | null> {
   return res.Customer?.[0] ? mapCust(res.Customer[0]) : null
 }
 
+/**
+ * READ-ONLY customer identity resolution for Sync (Phase C). Resolves which EXISTING QB
+ * customer the current contact maps to — directory-cache → QB email → QB name — but NEVER
+ * creates, renames, merges, or caches. Returns null when no confident match exists (which
+ * Sync treats as an identity change → needs_review, never an auto-create). Used to guarantee
+ * a Pitt Stop edit can't silently move an existing invoice onto a different QB customer.
+ */
+export async function resolveRetailCustomerIdentity(c: RetailContact): Promise<{ qbCustomerId: string | null; matchedBy: ResolvedCustomer['matchedBy'] | 'none' }> {
+  const dir = await findDirectoryCustomer(c)
+  if (dir?.quickbooksCustomerId) return { qbCustomerId: dir.quickbooksCustomerId, matchedBy: 'directory-cache' }
+  const psEmail = c.email?.trim() || null
+  if (normEmail(psEmail)) { const cust = await qbFindByEmail(normEmail(psEmail)); if (cust) return { qbCustomerId: cust.id, matchedBy: 'qb-email' } }
+  const byName = await qbFindByName(c.name.trim())
+  if (byName) return { qbCustomerId: byName.id, matchedBy: 'qb-name' }
+  return { qbCustomerId: null, matchedBy: 'none' }
+}
+
 export async function resolveRetailCustomer(c: RetailContact): Promise<ResolvedCustomer> {
   const psEmail = c.email?.trim() || null
   const dir = await findDirectoryCustomer(c)

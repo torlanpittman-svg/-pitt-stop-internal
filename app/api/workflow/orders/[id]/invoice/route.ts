@@ -8,7 +8,7 @@ import { getOrderWithContext } from '@/apps/workflow/db'
 import { getFullEstimate } from '@/apps/workflow/estimate-db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { getActor } from '@/apps/workflow/identity'
-import { getBusinessConfig, retailQbEnabled, retailQbSendEnabled } from '@/apps/settings/db'
+import { getBusinessConfig, retailQbEnabled, retailQbSendEnabled, retailQbSyncEnabled } from '@/apps/settings/db'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -21,6 +21,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   }
   const order = await getOrderWithContext(id)
   if (!order) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
-  const [full, cfg, qbEnabled, qbSendEnabled] = await Promise.all([getFullEstimate(id), getBusinessConfig(), retailQbEnabled(), retailQbSendEnabled()])
-  return NextResponse.json({ ok: true, qbEnabled, qbSendEnabled, draft: buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: actor.role }) })
+  const [full, cfg, qbEnabled, qbSendEnabled, qbSyncEnabled] = await Promise.all([getFullEstimate(id), getBusinessConfig(), retailQbEnabled(), retailQbSendEnabled(), retailQbSyncEnabled()])
+  return NextResponse.json({ ok: true, qbEnabled, qbSendEnabled, qbSyncEnabled, draft: buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: actor.role }) })
 }

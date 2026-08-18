@@ -88,4 +88,25 @@ describe('buildInvoiceDraft', () => {
     const review = buildInvoiceDraft({ order: order(), full: full({ needsTaxReview: true }), ...P })
     expect(review.tax.applicable).toBe(true)
   })
+
+  // Phase C: invoice-id-first qb state derivation (linked / syncNeeded / needsReview).
+  describe('qb link state', () => {
+    const qb = (est: Record<string, unknown>) => buildInvoiceDraft({ order: order(), full: full(est), ...P }).qb
+    it('not linked when no qb_invoice_id', () => {
+      const s = qb({ qbStatus: 'none', qbInvoiceId: null })
+      expect(s.linked).toBe(false); expect(s.syncNeeded).toBe(false); expect(s.needsReview).toBe(false)
+    })
+    it('linked + current when created with no error', () => {
+      const s = qb({ qbStatus: 'created', qbInvoiceId: '23501', qbInvoiceNumber: '100841', qbSyncError: null })
+      expect(s.linked).toBe(true); expect(s.status).toBe('created'); expect(s.syncNeeded).toBe(false); expect(s.needsReview).toBe(false)
+    })
+    it('syncNeeded from the "sync needed" error convention', () => {
+      const s = qb({ qbStatus: 'created', qbInvoiceId: '23501', qbSyncError: 'QuickBooks sync needed — a price changed.' })
+      expect(s.linked).toBe(true); expect(s.syncNeeded).toBe(true); expect(s.needsReview).toBe(false)
+    })
+    it('needsReview takes precedence over syncNeeded', () => {
+      const s = qb({ qbStatus: 'created', qbInvoiceId: '23501', qbSyncError: 'Needs review — Customer no longer matches this invoice' })
+      expect(s.needsReview).toBe(true); expect(s.syncNeeded).toBe(false)
+    })
+  })
 })

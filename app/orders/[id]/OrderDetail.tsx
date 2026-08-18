@@ -532,7 +532,7 @@ interface InvoiceDraftData {
   totalCents: number; role: string
   itemized: boolean
   serviceBreakdown: { title: string; cents: number }[]
-  qb: { status: string; invoiceNumber: string | null; error: string | null; sentAt: string | null }
+  qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sentAt: string | null }
 }
 interface SendPreview { ok: boolean; block?: string; recipient?: string | null; invoiceNumber?: string | null; draftTotalCents?: number; qbTotalCents?: number; error?: string }
 const money = (c: number) => `$${(c / 100).toFixed(2)}`
@@ -544,6 +544,16 @@ const SEND_BLOCK_MSG: Record<string, string> = {
   qb_read_failed: 'Could not read the linked QuickBooks invoice. Try again.',
   not_priced: 'Add a Work Price first.',
   dealer: 'Dealer invoices are handled by Dealer Check-In.',
+}
+const SYNC_BLOCK_MSG: Record<string, string> = {
+  customer_mismatch: 'The customer no longer matches this invoice — review before syncing.',
+  identity_mismatch: 'This invoice could not be verified in QuickBooks — needs review.',
+  invoice_missing: 'This invoice no longer exists in QuickBooks — needs review.',
+  not_priced: 'Add pricing before syncing.',
+  total_mismatch: 'Totals did not match after syncing — please try again.',
+  syncing: 'A sync is already in progress.',
+  dealer: 'Dealer invoices are handled by Dealer Check-In.',
+  sync_failed: 'Could not sync the QuickBooks invoice.',
 }
 
 // Contact row for the Completion Summary — shows a value or "Missing" with an Add button
@@ -600,12 +610,16 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
   const [sendPreview, setSendPreview] = useState<SendPreview | null>(null)   // confirmation dialog
   const [sending, setSending] = useState(false)
   const [sentTo, setSentTo] = useState<string | null>(null)
+  const [syncEnabled, setSyncEnabled] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [syncMsg, setSyncMsg] = useState<string | null>(null)
+  const [confirmSentSync, setConfirmSentSync] = useState(false)   // two-tap confirm for a sent invoice
 
   useEffect(() => {
     let ok = true
     fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
       .then((r) => r.json())
-      .then((d) => { if (ok) { if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled) } else setErr(d.error ?? 'Could not load the invoice draft.') } })
+      .then((d) => { if (ok) { if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled); setSyncEnabled(!!d.qbSyncEnabled) } else setErr(d.error ?? 'Could not load the invoice draft.') } })
       .catch(() => { if (ok) setErr('Could not load the invoice draft.') })
       .finally(() => { if (ok) setLoading(false) })
     return () => { ok = false }
@@ -614,8 +628,27 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
   const refetch = useCallback(async () => {
     const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
     const d = await r.json()
-    if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled) }
+    if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled); setSyncEnabled(!!d.qbSyncEnabled) }
   }, [orderId])
+
+  // Sync (UPDATE) the linked invoice from the current draft. Two-tap confirm for a sent invoice
+  // (first tap → confirm_required → inline warning; second tap → confirmSent). Never resends.
+  const syncQb = useCallback(async () => {
+    if (syncing) return
+    setSyncing(true); setSyncMsg(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/invoice/sync-qb`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true, confirmSent: confirmSentSync }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (d.block === 'confirm_required') { setConfirmSentSync(true); setSyncMsg('This invoice was already sent — tap Sync again to update it (it will not be resent).') }
+      else if (!res.ok || !d.ok) { setSyncMsg(d.error ?? SYNC_BLOCK_MSG[d.block ?? ''] ?? 'Could not sync the invoice.'); setConfirmSentSync(false) }
+      else { setConfirmSentSync(false); setSyncMsg(d.noop ? 'Already up to date' : 'QuickBooks invoice updated') }
+      await refetch()
+    } catch { setSyncMsg('Network error — please try again.') }
+    finally { setSyncing(false) }
+  }, [orderId, syncing, confirmSentSync, refetch])
 
   // Admin Send: preview (read-only) → confirmation dialog → confirmed send. Never creates.
   const openSend = useCallback(async () => {
@@ -799,27 +832,39 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
                   <span className="text-white font-bold text-lg tabular-nums">{money(draft.totalCents)}</span>
                 </div>
 
-                {/* QuickBooks — Create (manager+admin) → Send (admin only) */}
-                {draft.qb.status === 'sent' ? (
-                  <div className="mt-4 rounded-xl bg-green-950/40 border border-green-900/60 px-4 py-3">
-                    <p className="text-green-300 text-sm font-semibold">QuickBooks Invoice{draft.qb.invoiceNumber ? ` #${draft.qb.invoiceNumber}` : ''}</p>
-                    <p className="text-gray-300 text-xs mt-0.5">Sent{sentTo ? ` to ${sentTo}` : ''}{draft.qb.sentAt ? ` · ${new Date(draft.qb.sentAt).toLocaleString()}` : ''}</p>
-                    {isAdmin && sendEnabled && (
-                      <button onClick={openSend} disabled={sending}
-                        className="mt-2 text-gray-400 text-xs font-semibold border border-gray-700 rounded-lg px-2.5 py-1 active:opacity-70 disabled:opacity-40">Resend Invoice</button>
-                    )}
-                  </div>
-                ) : draft.qb.status === 'created' ? (
-                  <div className="mt-4 rounded-xl bg-green-950/40 border border-green-900/60 px-4 py-3">
-                    <p className="text-green-300 text-sm font-semibold">QuickBooks Invoice{draft.qb.invoiceNumber ? ` #${draft.qb.invoiceNumber}` : ''}</p>
-                    <p className="text-gray-400 text-xs mt-0.5">Status: Created</p>
-                    {isAdmin && sendEnabled ? (
-                      <button onClick={openSend} disabled={sending}
-                        className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-blue-600 active:opacity-80 disabled:opacity-50">
-                        {sending ? 'Checking…' : 'Send Invoice'}
+                {/* QuickBooks — INVOICE-ID-FIRST. Linked → Sync/Send (never Create). */}
+                {draft.qb.linked ? (
+                  <div className={`mt-4 rounded-xl border px-4 py-3 ${draft.qb.needsReview || draft.qb.syncNeeded || (draft.qb.status === 'error') ? 'border-amber-900/60 bg-amber-950/30' : 'border-green-900/60 bg-green-950/40'}`}>
+                    <p className={`text-sm font-semibold ${draft.qb.needsReview || draft.qb.syncNeeded || draft.qb.status === 'error' ? 'text-amber-300' : 'text-green-300'}`}>QuickBooks Invoice{draft.qb.invoiceNumber ? ` #${draft.qb.invoiceNumber}` : ''}</p>
+                    <p className="text-gray-400 text-xs mt-0.5">
+                      {draft.qb.needsReview ? 'Needs review'
+                        : draft.qb.status === 'error' ? 'Sync failed'
+                        : draft.qb.syncNeeded ? (draft.qb.status === 'sent' ? 'Sent · Sync needed' : 'Sync needed')
+                        : draft.qb.status === 'sent' ? `Sent${sentTo ? ` to ${sentTo}` : ''}${draft.qb.sentAt ? ` · ${new Date(draft.qb.sentAt).toLocaleString()}` : ''}`
+                        : 'Current'}
+                    </p>
+                    {draft.qb.needsReview && draft.qb.error && <p className="text-amber-400/80 text-xs mt-1">{draft.qb.error}</p>}
+
+                    {/* Sync (manager + admin) — offered when stale/failed, never on needs-review. */}
+                    {(draft.qb.syncNeeded || draft.qb.status === 'error') && !draft.qb.needsReview && syncEnabled && (
+                      <button onClick={syncQb} disabled={syncing || busy}
+                        className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
+                        {syncing ? 'Syncing…' : draft.qb.status === 'error' ? 'Retry Sync' : 'Sync QuickBooks'}
                       </button>
-                    ) : (
-                      <p className="text-gray-600 text-xs mt-2">{isAdmin ? 'Sending is turned off.' : 'This invoice has not been sent to the customer.'}</p>
+                    )}
+                    {syncMsg && <p className="text-amber-400 text-xs mt-2">{syncMsg}</p>}
+
+                    {/* Send (admin only) — unchanged; only when the invoice is settled (not stale). */}
+                    {isAdmin && sendEnabled && !draft.qb.syncNeeded && draft.qb.status !== 'error' && !draft.qb.needsReview && (
+                      draft.qb.status === 'sent' ? (
+                        <button onClick={openSend} disabled={sending}
+                          className="mt-2 text-gray-400 text-xs font-semibold border border-gray-700 rounded-lg px-2.5 py-1 active:opacity-70 disabled:opacity-40">Resend Invoice</button>
+                      ) : (
+                        <button onClick={openSend} disabled={sending}
+                          className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-blue-600 active:opacity-80 disabled:opacity-50">
+                          {sending ? 'Checking…' : 'Send Invoice'}
+                        </button>
+                      )
                     )}
                   </div>
                 ) : qbEnabled ? (
@@ -834,7 +879,7 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
                   <p className="text-gray-600 text-xs mt-4">QuickBooks invoicing is turned off.</p>
                 )}
 
-                {draft.qb.status !== 'created' && draft.qb.status !== 'sent' && (
+                {!draft.qb.linked && (
                   <p className="text-gray-600 text-xs mt-4">Draft only — no invoice has been created or sent. Every change is recorded.</p>
                 )}
               </>
@@ -879,12 +924,16 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   const router = useRouter()
   const [draft, setDraft] = useState<InvoiceDraftData | null>(null)
   const [qbEnabled, setQbEnabled] = useState(false)
+  const [syncEnabled, setSyncEnabled] = useState(false)
   const [contact, setContact] = useState<{ phone: string | null; email: string | null } | null>(null)
   const [loading, setLoading] = useState(true)
   const [showInvoice, setShowInvoice] = useState(false)
   const [editingContact, setEditingContact] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createErr, setCreateErr] = useState<string | null>(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncErr, setSyncErr] = useState<string | null>(null)
+  const [confirmSentOpen, setConfirmSentOpen] = useState(false)  // sync an already-sent invoice
   const [toast, setToast] = useState<string | null>(null)
   // Stable per-mount requestId (generated once on first Create) so double-taps / browser
   // retries dedupe on the server.
@@ -899,7 +948,7 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   const loadDraft = useCallback(async () => {
     const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
     const d = await r.json().catch(() => null)
-    if (d?.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled) }
+    if (d?.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSyncEnabled(!!d.qbSyncEnabled) }
   }, [orderId])
 
   useEffect(() => {
@@ -909,7 +958,7 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
       fetch(`/api/workflow/orders/${orderId}/contact`, { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
     ]).then(([inv, con]) => {
       if (!ok) return
-      if (inv?.draft) { setDraft(inv.draft); setQbEnabled(!!inv.qbEnabled) }
+      if (inv?.draft) { setDraft(inv.draft); setQbEnabled(!!inv.qbEnabled); setSyncEnabled(!!inv.qbSyncEnabled) }
       if (con?.ok) setContact({ phone: con.phone ?? null, email: con.email ?? null })
     }).finally(() => { if (ok) setLoading(false) })
     return () => { ok = false }
@@ -936,13 +985,34 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
     finally { setCreating(false) }
   }, [orderId, creating, loadDraft])
 
-  // Invoice state read directly from the Invoice Draft's qb link state (NO second billing-
-  // status system). "sync needed" (qb_sync_error) is surfaced but its fix is Phase C.
+  // Sync (UPDATE) the EXISTING linked invoice via the idempotent sync endpoint. Never creates a
+  // second invoice. An already-sent invoice returns confirm_required → we open a confirm sheet.
+  const syncInvoice = useCallback(async (confirmSent = false) => {
+    if (syncing) return
+    setSyncing(true); setSyncErr(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/invoice/sync-qb`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true, confirmSent }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (d.block === 'confirm_required') { setConfirmSentOpen(true) }
+      else if (!res.ok || !d.ok) { setSyncErr(d.error ?? SYNC_BLOCK_MSG[d.block ?? ''] ?? 'Could not sync the invoice.') ; setConfirmSentOpen(false) }
+      else { setToast(d.noop ? 'QuickBooks already up to date' : 'QuickBooks invoice updated'); setTimeout(() => setToast(null), 5000); setConfirmSentOpen(false) }
+      await loadDraft()
+    } catch { setSyncErr('Network error — please try again.') }
+    finally { setSyncing(false) }
+  }, [orderId, syncing, loadDraft])
+
+  // Invoice state — INVOICE-ID-FIRST. Once a QB invoice is linked we never offer Create again;
+  // the action is Sync / Retry Sync / (needs review). All flags come from the Invoice Draft.
   const qb = draft?.qb
   const priced = !!draft?.priced
-  const created = qb?.status === 'created' || qb?.status === 'sent'
-  const hasError = qb?.status === 'error'
-  const syncNeeded = !!qb?.error && /sync needed/i.test(qb.error)
+  const linked = !!qb?.linked
+  const isSent = qb?.status === 'sent'
+  const needsReview = !!qb?.needsReview
+  const syncNeeded = !!qb?.syncNeeded
+  const syncFailed = linked && qb?.status === 'error'
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
@@ -985,13 +1055,43 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
               <ContactRow label="Phone" value={contact?.phone ?? null} onAdd={() => setEditingContact(true)} />
             </div>
 
-            {/* Invoice — state + actions. Create uses the existing idempotent endpoint. */}
+            {/* Invoice — INVOICE-ID-FIRST. Linked → Sync/Review (never Create). Not linked →
+                Create (or Edit Estimate when unpriced). All via existing idempotent endpoints. */}
             <div className="mb-6">
               <p className="text-gray-500 text-xs uppercase tracking-widest mb-1.5">Invoice</p>
 
-              {!priced ? (
-                /* Unpriced → never create a $0/malformed invoice. Send them to the existing
-                   simplified Estimate to add pricing (no new pricing editor). */
+              {linked ? (
+                /* A QB invoice exists → show its number + state; the only write is Sync. */
+                <>
+                  {(() => {
+                    const box = needsReview ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: 'Needs review' }
+                      : syncFailed ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: 'Sync failed' }
+                      : syncNeeded ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: isSent ? 'Sent · Sync needed' : 'Sync needed' }
+                      : isSent ? { tone: 'border-green-900/60 bg-green-950/30', head: 'text-green-300', label: 'Sent' }
+                      : { tone: 'border-green-900/60 bg-green-950/30', head: 'text-green-300', label: 'Current' }
+                    return (
+                      <div className={`rounded-xl border px-4 py-3 ${box.tone}`}>
+                        <p className={`text-sm font-semibold ${box.head}`}>QuickBooks Invoice{qb?.invoiceNumber ? ` #${qb.invoiceNumber}` : ''}</p>
+                        <p className="text-gray-400 text-xs mt-0.5">{box.label}</p>
+                        {needsReview && qb?.error && <p className="text-amber-400/80 text-xs mt-1">{qb.error}</p>}
+                      </div>
+                    )
+                  })()}
+                  <button onClick={() => setShowInvoice(true)}
+                    className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80">
+                    Review Invoice
+                  </button>
+                  {/* Sync offered only when stale/failed and not a review-blocked state. */}
+                  {(syncNeeded || syncFailed) && !needsReview && syncEnabled && (
+                    <button onClick={() => syncInvoice(false)} disabled={syncing}
+                      className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
+                      {syncing ? 'Syncing…' : syncFailed ? 'Retry Sync' : 'Sync QuickBooks'}
+                    </button>
+                  )}
+                  {syncErr && <p className="text-amber-400 text-sm mt-2">{syncErr}</p>}
+                </>
+              ) : !priced ? (
+                /* Not linked + unpriced → never create a $0/malformed invoice; go to Estimate. */
                 <>
                   <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 text-amber-300 px-4 py-3 text-sm">Invoice needs pricing</div>
                   <button onClick={() => router.push(`/orders/${orderId}/estimate`)}
@@ -999,37 +1099,10 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
                     Edit Estimate
                   </button>
                 </>
-              ) : created ? (
-                /* Already linked → never offer Create again (idempotency at the UI layer too). */
-                <>
-                  <div className="rounded-xl border border-green-900/60 bg-green-950/30 px-4 py-3">
-                    <p className="text-green-300 text-sm font-semibold">QuickBooks Invoice{qb?.invoiceNumber ? ` #${qb.invoiceNumber}` : ''}</p>
-                    <p className="text-gray-400 text-xs mt-0.5">{qb?.status === 'sent' ? 'Sent' : 'Created'}</p>
-                  </div>
-                  <button onClick={() => setShowInvoice(true)}
-                    className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80">
-                    Review Invoice
-                  </button>
-                </>
-              ) : syncNeeded ? (
-                /* Linked but Pitt Stop changed → surface it; the fix (Update/Sync) is Phase C.
-                   Do NOT create a second invoice as a workaround. */
-                <>
-                  <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 px-4 py-3">
-                    <p className="text-amber-300 text-sm font-semibold">QuickBooks Invoice{qb?.invoiceNumber ? ` #${qb.invoiceNumber}` : ''}</p>
-                    <p className="text-amber-400/80 text-xs mt-0.5">Sync needed</p>
-                  </div>
-                  <button onClick={() => setShowInvoice(true)}
-                    className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80">
-                    Review Invoice
-                  </button>
-                </>
               ) : (
-                /* Priced, not yet created → Review + Create (or Retry after an error). */
+                /* Not linked + priced → Review + Create (Phase B). */
                 <>
-                  <div className={`rounded-xl border px-4 py-3 text-sm ${hasError ? 'border-amber-900/60 bg-amber-950/30 text-amber-300' : 'border-gray-800 bg-gray-800/40 text-gray-400'}`}>
-                    {hasError ? 'Could not create QuickBooks invoice' : 'Not created'}
-                  </div>
+                  <div className="rounded-xl border border-gray-800 bg-gray-800/40 text-gray-400 px-4 py-3 text-sm">Not created</div>
                   <button onClick={() => setShowInvoice(true)}
                     className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80">
                     Review Invoice
@@ -1037,13 +1110,12 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
                   {qbEnabled ? (
                     <button onClick={createInvoice} disabled={creating}
                       className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
-                      {creating ? 'Creating…' : hasError ? 'Retry — Create QuickBooks Invoice' : 'Create QuickBooks Invoice'}
+                      {creating ? 'Creating…' : 'Create QuickBooks Invoice'}
                     </button>
                   ) : (
                     <p className="text-gray-600 text-xs mt-3">QuickBooks invoicing is turned off.</p>
                   )}
                   {createErr && <p className="text-amber-400 text-sm mt-2">{createErr}</p>}
-                  {hasError && qb?.error && !createErr && <p className="text-amber-400 text-xs mt-2">Last attempt: {qb.error}</p>}
                 </>
               )}
             </div>
@@ -1057,6 +1129,22 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
           </>
         )}
       </div>
+
+      {/* Sync an already-sent invoice — explicit confirm (never resends; Send stays OFF). */}
+      {confirmSentOpen && (
+        <div className="fixed inset-0 z-[60] flex flex-col justify-end bg-black/70" onClick={() => !syncing && setConfirmSentOpen(false)}>
+          <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white font-bold text-lg mb-2">Update a sent invoice?</h3>
+            <p className="text-gray-400 text-sm mb-5">
+              This invoice was already emailed to the customer. Syncing will change the invoice in QuickBooks; it will <b>not</b> resend it, so the customer may hold an older copy.
+            </p>
+            <div className="flex gap-3">
+              <button onClick={() => setConfirmSentOpen(false)} disabled={syncing} className="flex-1 py-3.5 rounded-2xl border border-gray-700 text-gray-300 font-semibold active:opacity-70 disabled:opacity-40">Cancel</button>
+              <button onClick={() => syncInvoice(true)} disabled={syncing} className="flex-1 py-3.5 rounded-2xl bg-amber-600 text-white font-bold active:opacity-80 disabled:opacity-50">{syncing ? 'Syncing…' : 'Sync anyway'}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showInvoice && <InvoiceDraftModal orderId={orderId} onClose={() => { setShowInvoice(false); loadDraft() }} />}
       {editingContact && (

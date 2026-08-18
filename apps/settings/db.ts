@@ -40,6 +40,10 @@ export const SETTINGS: Record<string, SettingDef> = {
   // Default OFF — Finish Job keeps its current redirect until enabled. This flag only controls
   // whether the summary appears; it performs NO QuickBooks write and does NOT gate completion.
   completion_invoice_enabled: { key: 'completion_invoice_enabled', type: 'bool', def: false,          env: 'COMPLETION_INVOICE_ENABLED' },
+  // Phase C: retail QuickBooks invoice UPDATE/SYNC (push Pitt Stop changes onto the SAME linked
+  // invoice). Default OFF. Requires retail_qb_enabled=true as a prerequisite. Independent
+  // kill-switch from Create and Send — Sync never sends.
+  retail_qb_sync_enabled:  { key: 'retail_qb_sync_enabled',  type: 'bool',   def: false,              env: 'RETAIL_QB_SYNC_ENABLED' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
@@ -106,6 +110,11 @@ export async function retailQbSendEnabled(): Promise<boolean> {
 export async function completionInvoiceEnabled(): Promise<boolean> {
   const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'completion_invoice_enabled'))
   return resolve(SETTINGS.completion_invoice_enabled, rows[0]?.value) as boolean
+}
+/** Retail QuickBooks UPDATE/SYNC kill-switch (Phase C). Default OFF. Requires retail_qb_enabled. */
+export async function retailQbSyncEnabled(): Promise<boolean> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'retail_qb_sync_enabled'))
+  return resolve(SETTINGS.retail_qb_sync_enabled, rows[0]?.value) as boolean
 }
 /** Configurable shop-supplies invoice label. */
 export async function shopSuppliesLabel(): Promise<string> {

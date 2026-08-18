@@ -18,17 +18,18 @@ import { and, eq, isNull, inArray, desc } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { jobEstimates } from '@/apps/workflow/schema'
 import { quickEntryJobs } from '@/apps/quick-entry/schema'
-import { getOrderWithContext, logEvent } from '@/apps/workflow/db'
-import { getEstimateRow, getFullEstimate, itemizeEstimate } from '@/apps/workflow/estimate-db'
-import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
+import { getOrderWithContext, logEvent, type OrderWithContext } from '@/apps/workflow/db'
+import { getEstimateRow, getFullEstimate, itemizeEstimate, type FullEstimate } from '@/apps/workflow/estimate-db'
+import { buildInvoiceDraft, type InvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { lineAmountCents } from '@/apps/workflow/estimate'
 import { getBusinessConfig, shopSuppliesLabel } from '@/apps/settings/db'
-import { buildRetailPayload, decideSendRecipient, RetailTotalMismatchError, type RetailWorkService } from './retail-invoice'
-import { serviceDescription } from './retail-format'
+import { buildRetailPayload, decideSendRecipient, RetailTotalMismatchError, type RetailWorkService, type RetailPayload } from './retail-invoice'
+import { serviceDescription, extractPsid } from './retail-format'
 import { loadRetailItemIndex } from './retail-item-map'
-import { resolveRetailCustomer } from './retail-customer'
-import { resolveRetailItems, createRetailInvoiceInQB, findRetailInvoiceByPsid, getRetailInvoice, fillRetailInvoiceEmail, sendRetailInvoiceInQB } from './retail-invoice-write'
+import { resolveRetailCustomer, resolveRetailCustomerIdentity } from './retail-customer'
+import { resolveRetailItems, createRetailInvoiceInQB, findRetailInvoiceByPsid, getRetailInvoice, getRetailInvoiceRaw, updateRetailInvoiceInQB, fillRetailInvoiceEmail, sendRetailInvoiceInQB } from './retail-invoice-write'
+import { QBApiError } from './errors'
 import { logger } from '@/platform/logger'
 
 const APP = 'quickbooks:retail-invoice-service'
@@ -51,6 +52,45 @@ async function jobContact(orderId: string, fallbackName: string) {
   const [row] = await getDb().select({ name: quickEntryJobs.customerName, email: quickEntryJobs.customerEmail, phone: quickEntryJobs.customerPhone })
     .from(quickEntryJobs).where(eq(quickEntryJobs.serviceOrderId, orderId)).orderBy(desc(quickEntryJobs.createdAt)).limit(1)
   return { name: (row?.name || fallbackName || 'Customer').trim(), email: row?.email ?? null, phone: row?.phone ?? null }
+}
+
+/**
+ * Build the retail QB payload (work lines + fee lines + memo + PSID) from the AUTHORITATIVE
+ * Invoice Draft. Shared by CREATE and SYNC so both produce byte-identical structure and the
+ * same Σlines === draft total invariant (buildRetailPayload throws on mismatch). Pure of QB
+ * customer resolution — the caller owns the CustomerRef. One QB line per real service using
+ * the mapped Product/Service (catalog qb_item_ref) or the generic Labor fallback; Description
+ * is the managed canonical qb_description (never AI-generated).
+ */
+async function buildRetailWorkPayload(params: {
+  estimateId: string; order: OrderWithContext; full: FullEstimate | null; draft: InvoiceDraft
+}): Promise<{ payload: RetailPayload; fallbacks: string[] }> {
+  const { estimateId, order, full, draft } = params
+  const items = await resolveRetailItems()
+  const index = await loadRetailItemIndex()
+  const userServices = (full?.services ?? []).filter((s) => s.source !== 'system')
+  const fallbacks: string[] = []
+  let workServices: RetailWorkService[] = userServices
+    .map((s) => {
+      const l = s.lines.find((x) => !x.generated); if (!l) return null
+      const m = index.match(s.title)
+      if (!m.usable) fallbacks.push(`${s.title}→Labor`)
+      return { itemId: m.usable ? m.itemRef! : items.labor, description: serviceDescription(s.title, m.description), amountCents: lineAmountCents(l.priceCents, l.qty) }
+    })
+    .filter((x): x is RetailWorkService => !!x)
+  // Safety net: an itemized Job with no priced service lines → one generic Labor line.
+  if (workServices.length === 0) {
+    workServices = [{ itemId: items.labor, description: (draft.services ?? []).join(', ') || 'Detailing services', amountCents: draft.workPriceCents }]
+  }
+  const v = order.vehicle
+  const vehicle = { year: v.year, make: v.make, model: v.model, vin: v.vin, licensePlate: v.licensePlate }
+  const payload = buildRetailPayload({
+    estimateId, vehicle, workServices, feesItemId: items.fees,
+    shopSuppliesCents: draft.shopSupplies.cents, paymentChargeCents: draft.paymentCharge.cents,
+    paymentLabel: draft.paymentCharge.label, shopSuppliesLabel: await shopSuppliesLabel(),
+    expectedTotalCents: draft.totalCents,
+  })
+  return { payload, fallbacks }
 }
 
 export async function createRetailQBInvoice(params: { orderId: string; actor: string | null; requestId?: string | null }): Promise<CreateRetailResult> {
@@ -101,36 +141,9 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
       draftNow = buildInvoiceDraft({ order, full: fullNow, paymentLabel: cfg.paymentLabel, role: 'admin' })
     }
 
-    // One line per actual service, each with its resolved QB Product/Service item
-    // (catalog qb_item_ref when confidently mapped, else generic "Labor" fallback).
-    const items = await resolveRetailItems()
-    const index = await loadRetailItemIndex()
-    const userServices = (fullNow?.services ?? []).filter((s) => s.source !== 'system')
-    const fallbacks: string[] = []
-    let workServices: RetailWorkService[] = userServices
-      .map((s) => {
-        const l = s.lines.find((x) => !x.generated); if (!l) return null
-        const m = index.match(s.title)
-        if (!m.usable) fallbacks.push(`${s.title}→Labor`)
-        // Description: managed canonical qb_description (from the matched catalog row) →
-        // else the service title / typed custom text. Never AI-generated.
-        return { itemId: m.usable ? m.itemRef! : items.labor, description: serviceDescription(s.title, m.description), amountCents: lineAmountCents(l.priceCents, l.qty) }
-      })
-      .filter((x): x is RetailWorkService => !!x)
-    // Safety net: an itemized Job with no priced service lines → one generic Labor line.
-    if (workServices.length === 0) {
-      workServices = [{ itemId: items.labor, description: (draftNow.services ?? []).join(', ') || 'Detailing services', amountCents: draftNow.workPriceCents }]
-    }
-
-    const v = order.vehicle
-    const vehicle = { year: v.year, make: v.make, model: v.model, vin: v.vin, licensePlate: v.licensePlate }
-    // Pure builder — throws RetailTotalMismatchError if Σlines != draft total (invariant).
-    const payload = buildRetailPayload({
-      estimateId: est0.id, vehicle, workServices, feesItemId: items.fees,
-      shopSuppliesCents: draftNow.shopSupplies.cents, paymentChargeCents: draftNow.paymentCharge.cents,
-      paymentLabel: draftNow.paymentCharge.label, shopSuppliesLabel: await shopSuppliesLabel(),
-      expectedTotalCents: draftNow.totalCents,
-    })
+    // One line per actual service (mapped Product/Service or Labor fallback) + fee lines.
+    // Shared with Sync so both build identical structure and enforce Σlines == draft total.
+    const { payload, fallbacks } = await buildRetailWorkPayload({ estimateId: est0.id, order, full: fullNow, draft: draftNow })
     const draft2 = draftNow
 
     // Resolve + cache the QB customer (with email reconciliation policy).
@@ -262,5 +275,160 @@ export async function sendRetailQBInvoice(params: { orderId: string; actor: stri
     await logEvent({ serviceOrderId: orderId, eventType: 'invoice_send_failed', employeeName: actor, note: `#${r.invoiceNumber} (${r.invoiceId}) → ${r.recipient}: ${msg}` })
     logger.error(APP, 'send_failed', { orderId, invoiceId: r.invoiceId, error: msg })
     return { ok: false, block: 'send_failed', error: msg, invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber, recipient: r.recipient }
+  }
+}
+
+// ── P-D3.3 retail SYNC (Phase C) — UPDATE the linked invoice in place ─────────
+export type SyncBlock =
+  | 'no_invoice' | 'dealer' | 'not_priced' | 'invoice_missing' | 'identity_mismatch'
+  | 'customer_mismatch' | 'confirm_required' | 'syncing' | 'total_mismatch' | 'sync_failed'
+export interface RetailSyncResolution {
+  ok: boolean
+  block?: SyncBlock
+  needsReview?: boolean
+  invoiceId?: string | null
+  invoiceNumber?: string | null
+  alreadySent?: boolean
+  noop?: boolean
+  qbTotalCents?: number
+  draftTotalCents?: number
+  reviewReason?: string
+  error?: string
+}
+
+class NeedsReviewError extends Error {
+  constructor(public block: SyncBlock, message: string) { super(message); this.name = 'NeedsReviewError' }
+}
+
+/**
+ * READ-ONLY pre-sync resolution. Confirms: a linked invoice exists; it's readable in QB; its
+ * PSID identity matches (never sync a foreign/wrong invoice); the current customer still
+ * resolves to the SAME QB customer (no auto-repoint); and whether it was already emailed. No
+ * writes, no itemization. Powers the confirm dialog and is re-checked inside sync.
+ */
+export async function resolveRetailSync(orderId: string): Promise<RetailSyncResolution> {
+  const est = await getEstimateRow(orderId)
+  if (!est || !est.qbInvoiceId) return { ok: false, block: 'no_invoice' }
+  const order = await getOrderWithContext(orderId)
+  if (!order) return { ok: false, block: 'no_invoice' }
+  if (isDealerOrder(order)) return { ok: false, block: 'dealer' }
+  const [full, cfg] = await Promise.all([getFullEstimate(orderId), getBusinessConfig()])
+  const draft = buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: 'admin' })
+  const common = { invoiceId: est.qbInvoiceId, invoiceNumber: est.qbInvoiceNumber, draftTotalCents: draft.totalCents }
+  if (!draft.priced) return { ok: false, block: 'not_priced', ...common }
+
+  const raw = await getRetailInvoiceRaw(est.qbInvoiceId).catch(() => null)
+  if (!raw) return { ok: false, block: 'invoice_missing', needsReview: true, reviewReason: 'Invoice missing in QuickBooks', ...common }
+  if (String(raw.Id) !== String(est.qbInvoiceId) || extractPsid(raw.PrivateNote) !== est.id)
+    return { ok: false, block: 'identity_mismatch', needsReview: true, reviewReason: 'Invoice identity / PSID does not match', ...common }
+
+  const contact = await jobContact(orderId, draft.customer ?? '')
+  const ident = await resolveRetailCustomerIdentity({ name: contact.name, email: contact.email, phone: contact.phone })
+  if (!ident.qbCustomerId || String(ident.qbCustomerId) !== String(raw.CustomerRef?.value ?? ''))
+    return { ok: false, block: 'customer_mismatch', needsReview: true, reviewReason: 'Customer no longer matches this invoice — review before syncing', ...common }
+
+  const qbTotalCents = Math.round((raw.TotalAmt ?? 0) * 100)
+  const alreadySent = est.qbStatus === 'sent' || raw.EmailStatus === 'EmailSent'
+  return { ok: true, alreadySent, qbTotalCents, ...common }
+}
+
+/**
+ * Sync the linked invoice IN PLACE from the current Invoice Draft (Phase C). Manager/admin
+ * (route-enforced). Reuses the exact Create payload builder + total invariant. Never creates a
+ * second invoice, never sends, never repoints/renames/creates a QB customer. Idempotent: a
+ * no-op when nothing changed; a stale SyncToken (409) re-fetches, re-verifies PSID, retries.
+ */
+export async function syncRetailQBInvoice(params: { orderId: string; actor: string | null; confirmSent?: boolean }): Promise<RetailSyncResolution> {
+  const { orderId, actor } = params
+  const db = getDb()
+
+  const pre = await resolveRetailSync(orderId)
+  if (!pre.ok) {
+    if (pre.needsReview) {
+      await db.update(jobEstimates).set({ qbSyncError: `Needs review — ${pre.reviewReason}`, updatedAt: new Date() }).where(eq(jobEstimates.serviceOrderId, orderId)).catch(() => {})
+      await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_sync_review', employeeName: actor, note: `${pre.block}: ${pre.reviewReason}` }).catch(() => {})
+    }
+    return pre
+  }
+  // Already-sent invoices require an explicit confirm before we change what the customer got.
+  if (pre.alreadySent && !params.confirmSent) return { ...pre, ok: false, block: 'confirm_required', alreadySent: true }
+
+  const est0 = await getEstimateRow(orderId)
+  if (!est0 || !est0.qbInvoiceId) return { ok: false, block: 'no_invoice' }
+  const wasSent = !!pre.alreadySent
+  const restore = wasSent ? 'sent' : 'created'
+
+  // Lock: one syncer at a time; only from a settled state (blocks double-tap / concurrent).
+  const locked = await db.update(jobEstimates)
+    .set({ qbStatus: 'syncing', updatedAt: new Date() })
+    .where(and(eq(jobEstimates.id, est0.id), inArray(jobEstimates.qbStatus, ['created', 'sent', 'error'])))
+    .returning({ id: jobEstimates.id })
+  if (locked.length === 0) return { ok: false, block: 'syncing', invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, error: 'A sync is already in progress for this Job.' }
+
+  const markError = async (evt: 'qb_invoice_sync_failed' | 'qb_invoice_sync_review', msg: string, status: string) => {
+    await db.update(jobEstimates).set({ qbStatus: status, qbSyncError: msg, updatedAt: new Date() }).where(eq(jobEstimates.id, est0.id))
+    await logEvent({ serviceOrderId: orderId, eventType: evt, employeeName: actor, note: msg }).catch(() => {})
+  }
+
+  try {
+    const order = await getOrderWithContext(orderId)
+    if (!order) throw new Error('Job not found')
+    const cfg = await getBusinessConfig()
+    let fullNow = await getFullEstimate(orderId)
+    let draftNow = buildInvoiceDraft({ order, full: fullNow, paymentLabel: cfg.paymentLabel, role: 'admin' })
+    // Flat Jobs → itemize (reuses Create's exact-penny allocation; preserves the Work Total).
+    if (est0.priceMode === 'explicit_pretax') {
+      await itemizeEstimate(est0.id, actor)
+      fullNow = await getFullEstimate(orderId)
+      draftNow = buildInvoiceDraft({ order, full: fullNow, paymentLabel: cfg.paymentLabel, role: 'admin' })
+    }
+    const { payload } = await buildRetailWorkPayload({ estimateId: est0.id, order, full: fullNow, draft: draftNow })
+    const contact = await jobContact(orderId, draftNow.customer ?? '')
+
+    // Fetch → verify PSID identity → update. Re-fetch inside so a retry uses a fresh SyncToken.
+    const attempt = async () => {
+      const raw = await getRetailInvoiceRaw(est0.qbInvoiceId!)
+      if (!raw) throw new NeedsReviewError('invoice_missing', 'Invoice missing in QuickBooks')
+      if (String(raw.Id) !== String(est0.qbInvoiceId) || extractPsid(raw.PrivateNote) !== est0.id) throw new NeedsReviewError('identity_mismatch', 'Invoice identity / PSID mismatch')
+      const customerId = String(raw.CustomerRef?.value ?? '')
+      const newHash = contentHash(customerId, payload)
+      const qbTotal = Math.round((raw.TotalAmt ?? 0) * 100)
+      // No-op: content identical AND QB total already equals the draft → clear the flag only.
+      if (newHash === est0.qbContentHash && qbTotal === draftNow.totalCents) {
+        return { noop: true as const, written: { invoiceId: raw.Id, invoiceNumber: raw.DocNumber ?? null, syncToken: raw.SyncToken, totalAmtCents: qbTotal, lineCount: 0 }, newHash }
+      }
+      const billEmail = contact.email && contact.email.trim() ? contact.email.trim() : (raw.BillEmail?.Address ?? null)
+      const written = await updateRetailInvoiceInQB({ current: raw, lines: payload.lines, privateNote: payload.privateNote, customerMemo: payload.customerMemo, billEmail })
+      return { noop: false as const, written, newHash }
+    }
+
+    let res
+    try { res = await attempt() }
+    catch (e) { if (e instanceof QBApiError && e.status === 409) res = await attempt(); else throw e }
+
+    // Post-write invariant: QB TotalAmt must equal the authoritative draft total exactly.
+    if (!res.noop && res.written.totalAmtCents !== draftNow.totalCents) {
+      const msg = `QuickBooks TotalAmt ${res.written.totalAmtCents}¢ != Pitt Stop total ${draftNow.totalCents}¢`
+      await markError('qb_invoice_sync_failed', msg, 'error')
+      return { ok: false, block: 'total_mismatch', invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, qbTotalCents: res.written.totalAmtCents, draftTotalCents: draftNow.totalCents, error: msg }
+    }
+
+    await db.update(jobEstimates).set({
+      qbSyncToken: res.written.syncToken, qbContentHash: res.newHash, qbStatus: restore,
+      qbSyncedAt: new Date(), qbSyncError: null, updatedAt: new Date(),
+    }).where(eq(jobEstimates.id, est0.id))
+    await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_synced', employeeName: actor, note: `#${est0.qbInvoiceNumber} (${est0.qbInvoiceId}) ${res.noop ? 'no-op (already current)' : `updated · total $${(draftNow.totalCents / 100).toFixed(2)}`}${wasSent ? ' · after send' : ''}` })
+    if (wasSent && !res.noop) await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_synced_after_send', employeeName: actor, note: `#${est0.qbInvoiceNumber} updated after it was emailed — customer may hold an older copy` }).catch(() => {})
+    logger.info(APP, 'synced', { orderId, invoiceId: est0.qbInvoiceId, noop: res.noop, wasSent })
+    return { ok: true, invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, alreadySent: wasSent, noop: res.noop, draftTotalCents: draftNow.totalCents }
+  } catch (err) {
+    if (err instanceof NeedsReviewError) {
+      await markError('qb_invoice_sync_review', `Needs review — ${err.message}`, restore)
+      return { ok: false, block: err.block, needsReview: true, reviewReason: err.message, invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber }
+    }
+    const msg = err instanceof RetailTotalMismatchError ? err.message : safeErr(err)
+    await markError('qb_invoice_sync_failed', msg, 'error')
+    logger.error(APP, 'sync_failed', { orderId, error: msg })
+    return { ok: false, block: 'sync_failed', error: msg, invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber }
   }
 }

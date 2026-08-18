@@ -112,6 +112,42 @@ export async function getRetailInvoice(invoiceId: string): Promise<RetailInvoice
   }
 }
 
+/** The full raw QB invoice (for Sync: PSID identity check + full-object read-modify-write). */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+export interface RawQBInvoice { Id: string; DocNumber?: string; SyncToken: string; TotalAmt?: number; EmailStatus?: string; PrivateNote?: string; CustomerRef?: { value?: string }; BillEmail?: { Address?: string }; Line?: any[]; [k: string]: any }
+export async function getRetailInvoiceRaw(invoiceId: string): Promise<RawQBInvoice | null> {
+  const res = await queryQBO<{ Invoice?: RawQBInvoice[] }>(`SELECT * FROM Invoice WHERE Id = '${qboEscape(invoiceId)}'`)
+  return res.Invoice?.[0] ?? null
+}
+
+/**
+ * UPDATE the linked retail invoice IN PLACE (Phase C Sync). Full read-modify-write: keeps the
+ * fetched invoice (CustomerRef, DocNumber, …) and replaces ONLY the Pitt-Stop-owned fields —
+ * Line[], CustomerMemo, BillEmail, PrivateNote — with the current SyncToken. Never changes the
+ * customer, never creates, never sends. Same non-taxable lines as create, so QB TotalAmt stays
+ * exactly the Pitt Stop total. Mirrors the dealer writer's full-object POST pattern.
+ */
+export async function updateRetailInvoiceInQB(params: {
+  current: RawQBInvoice
+  lines: RetailWriteLine[]
+  privateNote: string
+  customerMemo?: string | null
+  billEmail?: string | null
+}): Promise<WrittenRetailInvoice> {
+  const body: Record<string, unknown> = {
+    ...params.current,
+    Line: params.lines.map(buildLine),
+    PrivateNote: params.privateNote,
+    sparse: false,
+  }
+  if (params.customerMemo && params.customerMemo.trim()) body.CustomerMemo = { value: params.customerMemo.trim() }
+  else delete body.CustomerMemo
+  if (params.billEmail && params.billEmail.trim()) body.BillEmail = { Address: params.billEmail.trim() }
+  const res = await qbApiRequest<{ Invoice: Parameters<typeof summarize>[0] }>({ method: 'POST', path: '/invoice', body })
+  logger.info(APP, 'retail_invoice.updated', { id: res.Invoice.Id, docNumber: res.Invoice.DocNumber })
+  return summarize(res.Invoice)
+}
+
 /** Fill ONLY the BillEmail on the linked invoice (sparse update; nothing else changes). */
 export async function fillRetailInvoiceEmail(invoiceId: string, syncToken: string, email: string): Promise<void> {
   await qbApiRequest({ method: 'POST', path: '/invoice', body: { Id: invoiceId, SyncToken: syncToken, sparse: true, BillEmail: { Address: email } } })

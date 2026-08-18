@@ -11,7 +11,7 @@
  */
 import { NextResponse } from 'next/server'
 import { getOrderWithContext, logEvent } from '@/apps/workflow/db'
-import { getEstimateRow, getFullEstimate, setEstimateWaiver, recomputeEstimate } from '@/apps/workflow/estimate-db'
+import { getEstimateRow, getFullEstimate, setEstimateWaiver, recomputeEstimate, flagQbSyncNeededIfInvoiced } from '@/apps/workflow/estimate-db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { getActor } from '@/apps/workflow/identity'
@@ -61,6 +61,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   await setEstimateWaiver(est.id, field, removed)
   await recomputeEstimate(est.id)
+  // If a retail QB invoice is already linked, this charge change makes it stale → flag Sync.
+  const qbSyncNeeded = await flagQbSyncNeededIfInvoiced(id, 'a charge changed')
 
   const labelFor: Record<Field, string> = { shop_supplies: 'Shop supplies', payment: 'Payment charge', tax_exempt: 'Tax exemption' }
   await logEvent({
@@ -69,7 +71,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     employeeName: actor.name,
     note: JSON.stringify({
       field: labelFor[field], key: field, action: removed ? 'removed' : 'restored',
-      old: oldValue, new: removed, actorRole: actor.role, ...(field === 'tax_exempt' && removed ? { reason } : {}),
+      old: oldValue, new: removed, actorRole: actor.role, qbSyncNeeded, ...(field === 'tax_exempt' && removed ? { reason } : {}),
     }),
   })
 

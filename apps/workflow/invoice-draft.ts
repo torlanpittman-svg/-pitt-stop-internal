@@ -25,8 +25,27 @@ export interface InvoiceDraft {
   // Per-service price breakdown (itemized Jobs). Flat Jobs → empty until "Set prices".
   itemized: boolean
   serviceBreakdown: { title: string; cents: number }[]
-  // Retail QuickBooks link state (P-D3.1/3.2). status: none|creating|created|sent|error.
-  qb: { status: string; invoiceNumber: string | null; error: string | null; sentAt: string | null }
+  // Retail QuickBooks link state (P-D3.1/3.2/3.3). status: none|creating|created|sent|error|syncing.
+  // `linked` = a QB invoice exists (invoice-id-first UI). `syncNeeded`/`needsReview` derive from
+  // the qb_sync_error convention so the UI never parses raw error text.
+  qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sentAt: string | null }
+}
+
+// Derive the retail QB link state for the read model. `linked` is invoice-id-first (a QB
+// invoice exists → the UI never offers Create). syncNeeded/needsReview come from the
+// qb_sync_error text convention set by flagQbSyncNeededIfInvoiced / the Sync service.
+function buildQbState(est: FullEstimate['estimate'] | null | undefined): InvoiceDraft['qb'] {
+  if (!est) return { status: 'none', linked: false, invoiceNumber: null, error: null, syncNeeded: false, needsReview: false, sentAt: null }
+  const error = est.qbSyncError ?? null
+  const needsReview = !!error && /^needs review/i.test(error)
+  const syncNeeded = !!error && /sync needed/i.test(error) && !needsReview
+  return {
+    status: est.qbStatus ?? 'none',
+    linked: !!est.qbInvoiceId,
+    invoiceNumber: est.qbInvoiceNumber ?? null,
+    error, syncNeeded, needsReview,
+    sentAt: est.qbSentAt ? new Date(est.qbSentAt).toISOString() : null,
+  }
 }
 
 export function buildInvoiceDraft(params: {
@@ -63,8 +82,7 @@ export function buildInvoiceDraft(params: {
     role,
     itemized: !!est && est.priceMode === 'itemized',
     serviceBreakdown: [],
-    qb: est ? { status: est.qbStatus ?? 'none', invoiceNumber: est.qbInvoiceNumber ?? null, error: est.qbSyncError ?? null, sentAt: est.qbSentAt ? new Date(est.qbSentAt).toISOString() : null }
-            : { status: 'none', invoiceNumber: null, error: null, sentAt: null },
+    qb: buildQbState(est),
   }
   if (!priced || !full || !est) return base
 
