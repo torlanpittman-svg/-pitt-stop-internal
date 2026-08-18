@@ -234,8 +234,33 @@ ships separately and behind its own flag; completion must NEVER depend on billin
   send `EmailStatus=EmailSent`, `qb_status=sent` (survives refresh); retry/lost-response never
   re-email; employee 403; dealer refused; completed_at unchanged; resend-recommended after a
   post-send edit; Resend requires an explicit confirm sheet.
-- **To go live:** set `retail_qb_send_enabled=true` (owner decision — it emails real customers).
+- **Live in production:** `retail_qb_send_enabled=true` enabled by the owner on 2026-08-18 after
+  the controlled test — retail Send by email is now available to manager/admin.
 
 **Phase E (next, NOT started):** SMS/text — verify QuickBooks exposes a reliable customer-facing
 shareable invoice/payment link first; then a short Pitt Stop message + that link, behind its own
 flag. New provider infra (e.g., Twilio) required (none today, §9). Do not combine phases.
+
+## 12. Work Board — remove a mistaken Job (swipe-to-remove) — SHIPPED (2026-08-18)
+
+Manager/admin can remove a mistaken/duplicate Job from the Work Board via swipe-left → red
+**Remove** → tap → confirmation sheet → **Confirm**. A swipe alone never removes anything (reuses
+the shared `SwipeRow`, same gesture as Phase-2 service removal). This is DISTINCT from Phase-2
+(which removes one service *inside* a Job) — this removes the whole Job/vehicle *card*.
+
+- **"Remove" = SOFT cancel**, never a hard delete: `service_orders.status='cancelled'` +
+  `cancelledAt` (drops from `listActiveOrders`). Customer, vehicle, estimate, services, completion
+  history and any QuickBooks linkage are all **preserved and recoverable**; the QB invoice is
+  **never** voided/deleted (the confirm sheet warns it stays in QuickBooks). `completed_at` is
+  never touched.
+- **RETAIL + ACTIVE + manager/admin only**, enforced server-side (not just hidden): dealer Jobs
+  and Ready/Delivered/Cancelled Jobs are refused; employees → 403. Dealer Check-In untouched.
+- Recovery: soft-cancel row is retained (DB-recoverable). No Removed/Restore UI this phase; the
+  confirm sheet is the accident guard.
+- Files: `apps/workflow/db.ts` (`removeOrder()` + `'removed'` audit event with prior status &
+  QB-invoice-left-intact note), `app/api/workflow/orders/[id]/remove/route.ts` (new; manager/admin),
+  `app/work-board/VehicleCard.tsx` (SwipeRow + confirm sheet + QB warning),
+  `app/work-board/WorkBoardClient.tsx` (gate + optimistic removal). Commit `50eef4b`. **No migration.**
+- Verified: 17/17 API guards + 8/8 mobile UI (390×840) — soft cancel preserves records &
+  `completed_at`; Ready/dealer/employee refused; QB linkage preserved; swipe-alone doesn't remove;
+  Cancel keeps it; Confirm removes it.
