@@ -153,7 +153,7 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
     // (3) PSID adoption — never duplicate a create that already succeeded in QB.
     const adopted = await findRetailInvoiceByPsid(customer.qbCustomerId, est0.id)
     if (adopted) {
-      const hash = contentHash(customer.qbCustomerId, payload)
+      const hash = contentHash(customer.qbCustomerId, payload, customer.billEmail)
       await db.update(jobEstimates).set({
         qbInvoiceId: adopted.invoiceId, qbInvoiceNumber: adopted.invoiceNumber, qbSyncToken: adopted.syncToken,
         qbStatus: 'created', qbContentHash: hash, qbSyncedAt: new Date(), qbSyncError: null, updatedAt: new Date(),
@@ -177,7 +177,7 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
       return { ok: false, status: 'error', invoiceId: inv.invoiceId, invoiceNumber: inv.invoiceNumber, error: msg }
     }
 
-    const hash = contentHash(customer.qbCustomerId, payload)
+    const hash = contentHash(customer.qbCustomerId, payload, customer.billEmail)
     await db.update(jobEstimates).set({
       qbInvoiceId: inv.invoiceId, qbInvoiceNumber: inv.invoiceNumber, qbSyncToken: inv.syncToken,
       qbStatus: 'created', qbContentHash: hash, qbSyncedAt: new Date(), qbLastRequestId: requestId,
@@ -196,8 +196,12 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
   }
 }
 
-function contentHash(customerId: string, payload: { lines: unknown; totalCents: number }): string {
-  return crypto.createHash('sha256').update(JSON.stringify({ customerId, lines: payload.lines, total: payload.totalCents })).digest('hex')
+// Drift fingerprint — MUST cover every field Sync can push, so a vehicle-only (CustomerMemo)
+// or email-only (BillEmail) change is detected and not skipped as a no-op.
+function contentHash(customerId: string, payload: { lines: unknown; totalCents: number; customerMemo?: string }, billEmail?: string | null): string {
+  return crypto.createHash('sha256')
+    .update(JSON.stringify({ customerId, lines: payload.lines, total: payload.totalCents, memo: payload.customerMemo ?? '', email: (billEmail ?? '').trim().toLowerCase() }))
+    .digest('hex')
 }
 
 // ── P-D3.2 retail Send (admin-only) ──────────────────────────────────────────
@@ -391,13 +395,13 @@ export async function syncRetailQBInvoice(params: { orderId: string; actor: stri
       if (!raw) throw new NeedsReviewError('invoice_missing', 'Invoice missing in QuickBooks')
       if (String(raw.Id) !== String(est0.qbInvoiceId) || extractPsid(raw.PrivateNote) !== est0.id) throw new NeedsReviewError('identity_mismatch', 'Invoice identity / PSID mismatch')
       const customerId = String(raw.CustomerRef?.value ?? '')
-      const newHash = contentHash(customerId, payload)
+      const billEmail = contact.email && contact.email.trim() ? contact.email.trim() : (raw.BillEmail?.Address ?? null)
+      const newHash = contentHash(customerId, payload, billEmail)
       const qbTotal = Math.round((raw.TotalAmt ?? 0) * 100)
-      // No-op: content identical AND QB total already equals the draft → clear the flag only.
+      // No-op: content identical (lines+total+memo+email) AND QB total equals the draft.
       if (newHash === est0.qbContentHash && qbTotal === draftNow.totalCents) {
         return { noop: true as const, written: { invoiceId: raw.Id, invoiceNumber: raw.DocNumber ?? null, syncToken: raw.SyncToken, totalAmtCents: qbTotal, lineCount: 0 }, newHash }
       }
-      const billEmail = contact.email && contact.email.trim() ? contact.email.trim() : (raw.BillEmail?.Address ?? null)
       const written = await updateRetailInvoiceInQB({ current: raw, lines: payload.lines, privateNote: payload.privateNote, customerMemo: payload.customerMemo, billEmail })
       return { noop: false as const, written, newHash }
     }
