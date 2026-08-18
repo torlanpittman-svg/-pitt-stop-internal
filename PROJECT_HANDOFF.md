@@ -113,7 +113,9 @@ Verified in production DB on 2026-08-18:
 - `retail_qb_sync_enabled = true` — **ON** (Phase C retail QB UPDATE/SYNC; enabled after the
   controlled live QB verification passed; see §11). Requires `retail_qb_enabled`. Managers/
   admins can push Job changes onto the SAME linked invoice.
-- `retail_qb_send_enabled = false` (retail QB SEND/email) — **must stay OFF until Phase D**.
+- `retail_qb_send_enabled = false` — **OFF**. Phase D (retail email Send) is built + live-
+  verified but ships **dark**; enabling it emails real customers, so it awaits an explicit
+  owner go-live decision (see §11). Send is manager+admin, requires `retail_qb_enabled`.
 - `payment_charge_enabled = true`, `shop_supplies_enabled = true`
 - `COMPLETION_FLOW_ENABLED`, `ESTIMATE_LAYER_ENABLED`, `IDENTITY_ENABLED` are env-based (all ON in prod).
 - Create/Sync/Send are three INDEPENDENT kill-switches (`retail_qb_enabled` / `retail_qb_sync_enabled`
@@ -208,8 +210,32 @@ ships separately and behind its own flag; completion must NEVER depend on billin
   nothing was emailed. (One bug found+fixed during verification: the drift fingerprint originally
   excluded CustomerMemo/BillEmail, so vehicle/email-only edits no-op'd — `dc9f0da`.)
 
-**Phase D (next, NOT started):** retail **Email Send** (manager+admin per the approved
-decision) via `retail_qb_send_enabled` (still OFF; no Send UI exposed yet); decide whether a
-Sync after a Send should prompt re-send. **Phase E:** SMS/text (verify QB exposes a reliable
-customer-facing shareable link first). Do not combine phases; `retail_qb_send_enabled` stays OFF
-until Phase D.
+**Phase D — SHIPPED DARK & live-verified (2026-08-18). `retail_qb_send_enabled` = OFF (awaits owner go-live).**
+- From the Completion Summary + Invoice Draft (shared invoice-id-first state; no duplicate
+  logic), **manager+admin** can **Send** the linked invoice by email via `POST /invoice/send-qb`
+  — QuickBooks does the emailing (no second email system). Reuses `decideSendRecipient`.
+- Hardened pre-send (all re-checked server-side at confirm=true): PSID + invoice-id identity,
+  same-customer (read-only resolver), NOT needs_review, NOT sync-needed (same-total edits like
+  vehicle/email/description block Send — Sync first), and QB TotalAmt == draft total. Confirm
+  sheet shows customer/recipient/#/total.
+- Duplicate-email safe: button disabled while sending + compare-and-set `qb_status='sending'`
+  lock + **EmailStatus reconciliation** — an already-`EmailSent` invoice (or a lost response)
+  is *adopted* as sent WITHOUT re-emailing; only `resend:true` (explicit Resend + confirm)
+  re-emails. `sent → edited → synced` surfaces "Resend recommended" (qbSyncError convention;
+  **no migration**); never auto-resends.
+- Persisted: `qbStatus='sent'`, `qbSentAt`; recipient re-derived from BillEmail. Audit:
+  `invoice_sent` / `invoice_resend` / `invoice_send_failed` / `invoice_send_reconciled`.
+  Employees → 403; dealer refused; `completed_at`/production untouched.
+- Files: `apps/quickbooks/retail-invoice-service.ts`, `apps/workflow/invoice-draft.ts`,
+  `app/api/workflow/orders/[id]/invoice/send-qb/route.ts`, `app/orders/[id]/OrderDetail.tsx`.
+  Commit `120c5e3`. **No migration.**
+- Controlled live test (one email to an owner-approved address, flag re-enabled then restored
+  to OFF): 24/24 API + 5/5 mobile UI checks — Send blocked while sync-needed → Sync → live
+  send `EmailStatus=EmailSent`, `qb_status=sent` (survives refresh); retry/lost-response never
+  re-email; employee 403; dealer refused; completed_at unchanged; resend-recommended after a
+  post-send edit; Resend requires an explicit confirm sheet.
+- **To go live:** set `retail_qb_send_enabled=true` (owner decision — it emails real customers).
+
+**Phase E (next, NOT started):** SMS/text — verify QuickBooks exposes a reliable customer-facing
+shareable invoice/payment link first; then a short Pitt Stop message + that link, behind its own
+flag. New provider infra (e.g., Twilio) required (none today, §9). Do not combine phases.
