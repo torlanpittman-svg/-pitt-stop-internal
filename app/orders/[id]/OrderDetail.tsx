@@ -865,27 +865,41 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
   )
 }
 
-// ── Phase A: post-Finish Completion Summary / billing handoff ─────────────────
+// ── Post-Finish Completion Summary / billing handoff (Phase A + B) ────────────
 // Appears AFTER completion has already committed (the Job is Ready and counted in Daily
-// Production). READ-ONLY in Phase A: shows the authoritative total (Invoice Draft read
-// model), customer contact, and invoice state. It performs NO QuickBooks write and NO
-// Send — Create/Sync/Send arrive in Phases B–D. Rendered only for manager/admin on retail
-// Jobs (the parent guards this). "Done" always returns to the Work Board; nothing here can
-// undo completion.
+// Production). Shows the authoritative total (Invoice Draft read model), customer contact,
+// and invoice state. Phase B: manager/admin can CREATE the retail QuickBooks invoice from
+// here via the EXISTING create-qb endpoint (idempotent; no new writer). NO Send (Phase D)
+// and NO Sync (Phase C). Rendered only for manager/admin on retail Jobs (the parent guards
+// this). "Done" always returns to the Work Board; nothing here can undo completion — Create
+// is never required to finish a Job and its failure never blocks Done.
 function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   orderId: string; customerName: string; vehicleName: string; onDone: () => void
 }) {
+  const router = useRouter()
   const [draft, setDraft] = useState<InvoiceDraftData | null>(null)
+  const [qbEnabled, setQbEnabled] = useState(false)
   const [contact, setContact] = useState<{ phone: string | null; email: string | null } | null>(null)
   const [loading, setLoading] = useState(true)
   const [showInvoice, setShowInvoice] = useState(false)
   const [editingContact, setEditingContact] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createErr, setCreateErr] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  // Stable per-mount requestId (generated once on first Create) so double-taps / browser
+  // retries dedupe on the server.
+  const createReqId = useRef<string | null>(null)
 
   const loadContact = useCallback(async () => {
     const r = await fetch(`/api/workflow/orders/${orderId}/contact`, { cache: 'no-store' })
     const d = await r.json().catch(() => null)
     if (d?.ok) setContact({ phone: d.phone ?? null, email: d.email ?? null })
+  }, [orderId])
+
+  const loadDraft = useCallback(async () => {
+    const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
+    const d = await r.json().catch(() => null)
+    if (d?.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled) }
   }, [orderId])
 
   useEffect(() => {
@@ -895,27 +909,40 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
       fetch(`/api/workflow/orders/${orderId}/contact`, { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
     ]).then(([inv, con]) => {
       if (!ok) return
-      if (inv?.draft) setDraft(inv.draft)
+      if (inv?.draft) { setDraft(inv.draft); setQbEnabled(!!inv.qbEnabled) }
       if (con?.ok) setContact({ phone: con.phone ?? null, email: con.email ?? null })
     }).finally(() => { if (ok) setLoading(false) })
     return () => { ok = false }
   }, [orderId])
 
-  // Invoice-state line — read directly from the Invoice Draft's qb link state (NO second
-  // billing-status system). Phase A surfaces the state only; the actions (Create/Sync/Send/
-  // Resend) are added in Phases B–D. "Review Invoice" opens the existing Invoice Draft modal.
+  // Create the retail QuickBooks invoice via the EXISTING idempotent endpoint. Never a second
+  // writer; all duplicate/total protections live server-side. On failure the Job stays
+  // completed, Done stays available, and Retry reuses the same request path (PSID adoption
+  // recovers a QB-created/local-write-lost invoice).
+  const createInvoice = useCallback(async () => {
+    if (creating) return
+    if (!createReqId.current) createReqId.current = `${orderId}-${Date.now()}`
+    setCreating(true); setCreateErr(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/invoice/create-qb`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId: createReqId.current }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok || !d.ok) { setCreateErr(d.error ?? 'Could not create the QuickBooks invoice.') }
+      else { setToast('QuickBooks invoice created'); setTimeout(() => setToast(null), 5000) }
+      await loadDraft()
+    } catch { setCreateErr('Network error — please try again.') }
+    finally { setCreating(false) }
+  }, [orderId, creating, loadDraft])
+
+  // Invoice state read directly from the Invoice Draft's qb link state (NO second billing-
+  // status system). "sync needed" (qb_sync_error) is surfaced but its fix is Phase C.
   const qb = draft?.qb
+  const priced = !!draft?.priced
+  const created = qb?.status === 'created' || qb?.status === 'sent'
+  const hasError = qb?.status === 'error'
   const syncNeeded = !!qb?.error && /sync needed/i.test(qb.error)
-  const invoiceState =
-    !draft || !draft.priced ? { label: 'No invoice yet — set a Work Price to bill this Job', tone: 'muted' as const }
-    : qb?.status === 'sent'    ? { label: 'Invoice sent to customer', tone: 'good' as const }
-    : syncNeeded               ? { label: `QuickBooks Invoice${qb?.invoiceNumber ? ` #${qb.invoiceNumber}` : ''} · sync needed`, tone: 'warn' as const }
-    : qb?.status === 'created' ? { label: `QuickBooks Invoice${qb?.invoiceNumber ? ` #${qb.invoiceNumber}` : ''}`, tone: 'good' as const }
-    : qb?.status === 'error'   ? { label: 'Invoice not created — last attempt failed', tone: 'warn' as const }
-    :                            { label: 'Invoice not created', tone: 'muted' as const }
-  const toneClass = invoiceState.tone === 'good' ? 'border-green-900/60 bg-green-950/30 text-green-300'
-    : invoiceState.tone === 'warn' ? 'border-amber-900/60 bg-amber-950/30 text-amber-300'
-    : 'border-gray-800 bg-gray-800/40 text-gray-400'
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
@@ -947,7 +974,7 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
               </div>
             ) : (
               <p className="text-gray-400 text-sm bg-gray-800/60 rounded-xl px-4 py-3.5 mb-4">
-                No Work Price set — add pricing in the Invoice Draft to bill this Job.
+                No Work Price set yet — add pricing before this Job can be invoiced.
               </p>
             )}
 
@@ -958,14 +985,67 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
               <ContactRow label="Phone" value={contact?.phone ?? null} onAdd={() => setEditingContact(true)} />
             </div>
 
-            {/* Invoice state — read-only in Phase A */}
+            {/* Invoice — state + actions. Create uses the existing idempotent endpoint. */}
             <div className="mb-6">
               <p className="text-gray-500 text-xs uppercase tracking-widest mb-1.5">Invoice</p>
-              <div className={`rounded-xl border px-4 py-3 text-sm ${toneClass}`}>{invoiceState.label}</div>
-              <button onClick={() => setShowInvoice(true)}
-                className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80">
-                Review Invoice
-              </button>
+
+              {!priced ? (
+                /* Unpriced → never create a $0/malformed invoice. Send them to the existing
+                   simplified Estimate to add pricing (no new pricing editor). */
+                <>
+                  <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 text-amber-300 px-4 py-3 text-sm">Invoice needs pricing</div>
+                  <button onClick={() => router.push(`/orders/${orderId}/estimate`)}
+                    className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80">
+                    Edit Estimate
+                  </button>
+                </>
+              ) : created ? (
+                /* Already linked → never offer Create again (idempotency at the UI layer too). */
+                <>
+                  <div className="rounded-xl border border-green-900/60 bg-green-950/30 px-4 py-3">
+                    <p className="text-green-300 text-sm font-semibold">QuickBooks Invoice{qb?.invoiceNumber ? ` #${qb.invoiceNumber}` : ''}</p>
+                    <p className="text-gray-400 text-xs mt-0.5">{qb?.status === 'sent' ? 'Sent' : 'Created'}</p>
+                  </div>
+                  <button onClick={() => setShowInvoice(true)}
+                    className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80">
+                    Review Invoice
+                  </button>
+                </>
+              ) : syncNeeded ? (
+                /* Linked but Pitt Stop changed → surface it; the fix (Update/Sync) is Phase C.
+                   Do NOT create a second invoice as a workaround. */
+                <>
+                  <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 px-4 py-3">
+                    <p className="text-amber-300 text-sm font-semibold">QuickBooks Invoice{qb?.invoiceNumber ? ` #${qb.invoiceNumber}` : ''}</p>
+                    <p className="text-amber-400/80 text-xs mt-0.5">Sync needed</p>
+                  </div>
+                  <button onClick={() => setShowInvoice(true)}
+                    className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80">
+                    Review Invoice
+                  </button>
+                </>
+              ) : (
+                /* Priced, not yet created → Review + Create (or Retry after an error). */
+                <>
+                  <div className={`rounded-xl border px-4 py-3 text-sm ${hasError ? 'border-amber-900/60 bg-amber-950/30 text-amber-300' : 'border-gray-800 bg-gray-800/40 text-gray-400'}`}>
+                    {hasError ? 'Could not create QuickBooks invoice' : 'Not created'}
+                  </div>
+                  <button onClick={() => setShowInvoice(true)}
+                    className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80">
+                    Review Invoice
+                  </button>
+                  {qbEnabled ? (
+                    <button onClick={createInvoice} disabled={creating}
+                      className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
+                      {creating ? 'Creating…' : hasError ? 'Retry — Create QuickBooks Invoice' : 'Create QuickBooks Invoice'}
+                    </button>
+                  ) : (
+                    <p className="text-gray-600 text-xs mt-3">QuickBooks invoicing is turned off.</p>
+                  )}
+                  {createErr && <p className="text-amber-400 text-sm mt-2">{createErr}</p>}
+                  {hasError && qb?.error && !createErr && <p className="text-amber-400 text-xs mt-2">Last attempt: {qb.error}</p>}
+                </>
+              )}
             </div>
 
             {toast && <p className="text-green-400 text-sm mb-3">{toast}</p>}
@@ -978,7 +1058,7 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
         )}
       </div>
 
-      {showInvoice && <InvoiceDraftModal orderId={orderId} onClose={() => setShowInvoice(false)} />}
+      {showInvoice && <InvoiceDraftModal orderId={orderId} onClose={() => { setShowInvoice(false); loadDraft() }} />}
       {editingContact && (
         <CustomerEditModal orderId={orderId} onClose={() => setEditingContact(false)}
           onSaved={async (msg) => { setEditingContact(false); setToast(msg); await loadContact(); setTimeout(() => setToast(null), 5000) }} />
