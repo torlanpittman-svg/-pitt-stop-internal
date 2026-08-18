@@ -108,11 +108,16 @@ must stay isolated. Do not alter Dealer Check-In behavior.
 
 Verified in production DB on 2026-08-18:
 - `completion_invoice_enabled = true` — **ON** (Phase A Completion Summary; see §11).
-- `retail_qb_enabled = true` — **ON** (Phase B retail QB CREATE; enabled after the controlled
-  live QB verification passed; see §11). Managers/admins can now create retail QB invoices.
+- `retail_qb_enabled = true` — **ON** (Phase B retail QB CREATE; see §11). Managers/admins can
+  create retail QB invoices.
+- `retail_qb_sync_enabled = true` — **ON** (Phase C retail QB UPDATE/SYNC; enabled after the
+  controlled live QB verification passed; see §11). Requires `retail_qb_enabled`. Managers/
+  admins can push Job changes onto the SAME linked invoice.
 - `retail_qb_send_enabled = false` (retail QB SEND/email) — **must stay OFF until Phase D**.
 - `payment_charge_enabled = true`, `shop_supplies_enabled = true`
 - `COMPLETION_FLOW_ENABLED`, `ESTIMATE_LAYER_ENABLED`, `IDENTITY_ENABLED` are env-based (all ON in prod).
+- Create/Sync/Send are three INDEPENDENT kill-switches (`retail_qb_enabled` / `retail_qb_sync_enabled`
+  / `retail_qb_send_enabled`).
 
 ## 9. Messaging infrastructure — CURRENT STATE
 
@@ -178,8 +183,33 @@ ships separately and behind its own flag; completion must NEVER depend on billin
   Idempotency proven: double-tap / retry / lost-local-link (PSID adoption) all re-link the
   SAME invoice — customer had exactly ONE invoice. Employee Create → 403; unpriced → blocked.
 
-**Phase C (next, NOT started):** safe retail QB **Update/Sync** for stale linked invoices
-(the "sync needed" state). **Phase D:** retail **Email Send** (manager+admin) via
-`retail_qb_send_enabled` (still OFF; no Send UI is exposed yet). **Phase E:** SMS/text (verify
-QB exposes a reliable customer-facing shareable link first). Do not combine phases;
-`retail_qb_send_enabled` stays OFF until Phase D.
+**Phase C — SHIPPED & live-verified (2026-08-18). `retail_qb_sync_enabled = true` (ON).**
+- From the Completion Summary / Invoice Draft, manager/admin can **Sync** (UPDATE) the linked
+  invoice in place via `POST /invoice/sync-qb` — reuses the Create payload builder (extracted
+  `buildRetailWorkPayload`; Create behavior preserved) + the exact-total invariant. Never
+  creates a second invoice, never sends, never repoints/renames/creates a QB customer.
+- Safety gates before any write: PSID + invoice-id identity; customer must resolve to the SAME
+  QB CustomerRef via a READ-ONLY resolver (`resolveRetailCustomerIdentity`, no create) else
+  `needs_review`; missing-in-QB → `needs_review` (no recreate); fresh SyncToken read + 409
+  refetch/re-verify/retry; post-write `TotalAmt == draft total`. Idempotent: no-op when nothing
+  changed (drift fingerprint covers lines+total+**CustomerMemo**+**BillEmail**); compare-and-set
+  `syncing` lock; already-sent requires explicit confirm and never resends.
+- UI is invoice-id-first: a linked invoice never offers Create; states are Current / Sync needed
+  / Sync failed (Retry Sync) / Needs review / Sent. `override` route now flags sync-needed on
+  charge changes. Audit: `qb_invoice_synced` / `qb_invoice_sync_failed` / `qb_invoice_sync_review`
+  / `qb_invoice_synced_after_send`.
+- Files: `apps/quickbooks/{retail-invoice-service,retail-invoice-write,retail-customer}.ts`,
+  `apps/workflow/invoice-draft.ts`, `apps/settings/db.ts`, `app/api/workflow/orders/[id]/invoice/{route,override/route,sync-qb/route}.ts`,
+  `app/orders/[id]/OrderDetail.tsx`. Commits `7ca7c90` + fix `dc9f0da`.
+- Controlled live QB test passed 50/50: price/add/remove/fee-waiver/vehicle/email/flat all
+  update the SAME invoice with exact total equality; flat preserves the Work Total; double-sync
+  no-op; customer-mismatch / PSID-mismatch / missing-invoice all → needs_review with NO write and
+  NO recreate; employee → 403; dealer refused; completed_at unchanged; Send stayed OFF and
+  nothing was emailed. (One bug found+fixed during verification: the drift fingerprint originally
+  excluded CustomerMemo/BillEmail, so vehicle/email-only edits no-op'd — `dc9f0da`.)
+
+**Phase D (next, NOT started):** retail **Email Send** (manager+admin per the approved
+decision) via `retail_qb_send_enabled` (still OFF; no Send UI exposed yet); decide whether a
+Sync after a Send should prompt re-send. **Phase E:** SMS/text (verify QB exposes a reliable
+customer-facing shareable link first). Do not combine phases; `retail_qb_send_enabled` stays OFF
+until Phase D.
