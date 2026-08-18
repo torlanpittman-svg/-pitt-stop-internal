@@ -28,7 +28,7 @@ import { buildRetailPayload, decideSendRecipient, RetailTotalMismatchError, type
 import { serviceDescription, extractPsid } from './retail-format'
 import { loadRetailItemIndex } from './retail-item-map'
 import { resolveRetailCustomer, resolveRetailCustomerIdentity } from './retail-customer'
-import { resolveRetailItems, createRetailInvoiceInQB, findRetailInvoiceByPsid, getRetailInvoice, getRetailInvoiceRaw, updateRetailInvoiceInQB, fillRetailInvoiceEmail, sendRetailInvoiceInQB } from './retail-invoice-write'
+import { resolveRetailItems, createRetailInvoiceInQB, findRetailInvoiceByPsid, getRetailInvoiceRaw, updateRetailInvoiceInQB, fillRetailInvoiceEmail, sendRetailInvoiceInQB } from './retail-invoice-write'
 import { QBApiError } from './errors'
 import { logger } from '@/platform/logger'
 
@@ -204,11 +204,15 @@ function contentHash(customerId: string, payload: { lines: unknown; totalCents: 
     .digest('hex')
 }
 
-// ── P-D3.2 retail Send (admin-only) ──────────────────────────────────────────
-export type SendBlock = 'no_invoice' | 'not_priced' | 'dealer' | 'total_mismatch' | 'email_required' | 'email_conflict' | 'qb_read_failed' | 'send_failed'
+// ── P-D3.2 / Phase D retail Send (manager + admin) ────────────────────────────
+export type SendBlock =
+  | 'no_invoice' | 'not_priced' | 'dealer' | 'total_mismatch' | 'email_required' | 'email_conflict'
+  | 'qb_read_failed' | 'invoice_missing' | 'identity_mismatch' | 'customer_mismatch'
+  | 'sync_needed' | 'needs_review' | 'sending' | 'send_failed'
 export interface RetailSendResolution {
   ok: boolean
   block?: SendBlock
+  needsReview?: boolean
   invoiceId?: string | null
   invoiceNumber?: string | null
   recipient?: string | null
@@ -218,13 +222,15 @@ export interface RetailSendResolution {
   draftTotalCents?: number
   emailStatus?: string
   alreadySent?: boolean
+  reconciled?: boolean
   error?: string
 }
 
 /**
- * READ-ONLY pre-send resolution: confirms the linked invoice exists, its TotalAmt still
- * equals the authoritative draft total, and the recipient email — WITHOUT sending or
- * mutating anything. Used for the Admin confirmation dialog AND re-checked inside send.
+ * READ-ONLY pre-send resolution (Phase D hardened). Positively verifies the linked invoice
+ * before we ever email: PSID + invoice-id identity, the customer still resolves to the SAME
+ * QB customer, the Job is not in a needs_review or sync-needed state, and QB TotalAmt equals
+ * the authoritative draft total — plus the recipient email. NO writes. Re-checked inside send.
  */
 export async function resolveRetailSend(orderId: string): Promise<RetailSendResolution> {
   const est = await getEstimateRow(orderId)
@@ -234,32 +240,73 @@ export async function resolveRetailSend(orderId: string): Promise<RetailSendReso
   if (isDealerOrder(order)) return { ok: false, block: 'dealer' }
   const [full, cfg] = await Promise.all([getFullEstimate(orderId), getBusinessConfig()])
   const draft = buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: 'admin' })
-  if (!draft.priced) return { ok: false, block: 'not_priced' }
+  const idBase = { invoiceId: est.qbInvoiceId, invoiceNumber: est.qbInvoiceNumber }
+  if (!draft.priced) return { ok: false, block: 'not_priced', ...idBase }
 
-  const inv = await getRetailInvoice(est.qbInvoiceId).catch(() => null)
-  if (!inv) return { ok: false, block: 'qb_read_failed', invoiceId: est.qbInvoiceId, invoiceNumber: est.qbInvoiceNumber }
+  // A Job in a needs_review / sync-needed state must be resolved BEFORE any email — never
+  // send a stale invoice (same-total edits are caught here, not only by total_mismatch).
+  const err = est.qbSyncError ?? ''
+  if (/^needs review/i.test(err)) return { ok: false, block: 'needs_review', needsReview: true, ...idBase }
+  if (/sync needed/i.test(err)) return { ok: false, block: 'sync_needed', ...idBase }
 
+  const raw = await getRetailInvoiceRaw(est.qbInvoiceId).catch(() => null)
+  if (!raw) return { ok: false, block: 'invoice_missing', needsReview: true, ...idBase }
+  if (String(raw.Id) !== String(est.qbInvoiceId) || extractPsid(raw.PrivateNote) !== est.id)
+    return { ok: false, block: 'identity_mismatch', needsReview: true, ...idBase }
+
+  const contact = await jobContact(orderId, draft.customer ?? '')
+  const ident = await resolveRetailCustomerIdentity({ name: contact.name, email: contact.email, phone: contact.phone })
+  if (!ident.qbCustomerId || String(ident.qbCustomerId) !== String(raw.CustomerRef?.value ?? ''))
+    return { ok: false, block: 'customer_mismatch', needsReview: true, ...idBase }
+
+  const qbTotalCents = Math.round((raw.TotalAmt ?? 0) * 100)
+  const emailStatus = raw.EmailStatus ?? 'NotSet'
+  const common = { ...idBase, syncToken: raw.SyncToken, qbTotalCents, draftTotalCents: draft.totalCents, emailStatus, alreadySent: est.qbStatus === 'sent' || emailStatus === 'EmailSent' }
   // Total integrity — QB must still equal the authoritative Pitt Stop total.
-  if (inv.totalAmtCents !== draft.totalCents) {
-    return { ok: false, block: 'total_mismatch', invoiceId: inv.invoiceId, invoiceNumber: inv.invoiceNumber, qbTotalCents: inv.totalAmtCents, draftTotalCents: draft.totalCents }
-  }
+  if (qbTotalCents !== draft.totalCents) return { ok: false, block: 'total_mismatch', ...common }
 
   // Email resolution: invoice BillEmail → fill from PS email if blank → else block. Conflict
   // (invoice email present but differs from PS email) is surfaced, never silently overwritten.
-  const contact = await jobContact(orderId, draft.customer ?? '')
-  const common = { invoiceId: inv.invoiceId, invoiceNumber: inv.invoiceNumber, syncToken: inv.syncToken, qbTotalCents: inv.totalAmtCents, draftTotalCents: draft.totalCents, emailStatus: inv.emailStatus, alreadySent: est.qbStatus === 'sent' || inv.emailStatus === 'EmailSent' }
-  const d = decideSendRecipient(inv.billEmail, contact.email)
+  const d = decideSendRecipient(raw.BillEmail?.Address ?? null, contact.email)
   if (!d.ok) return { ok: false, block: d.block, recipient: d.recipient ?? null, ...common }
   return { ok: true, recipient: d.recipient, needsFill: d.needsFill, ...common }
 }
 
-/** Send the EXACT linked invoice to the customer. Admin-only (enforced at the route).
- *  Never creates/clones/alters the invoice; retries target the same qb_invoice_id. */
-export async function sendRetailQBInvoice(params: { orderId: string; actor: string | null }): Promise<RetailSendResolution> {
+/**
+ * Send (or Resend) the EXACT linked invoice. Manager/admin (route-enforced). Never creates/
+ * clones/alters the invoice. Duplicate-email safe:
+ *   • already-sent + not an explicit resend → reconcile/adopt the sent state, DO NOT re-email
+ *     (covers a lost response after QB actually sent);
+ *   • compare-and-set qb_status='sending' lock serializes double-taps;
+ *   • only resend=true intentionally emails an already-EmailSent invoice.
+ */
+export async function sendRetailQBInvoice(params: { orderId: string; actor: string | null; resend?: boolean }): Promise<RetailSendResolution> {
   const { orderId, actor } = params
+  const resend = !!params.resend
   const db = getDb()
   const r = await resolveRetailSend(orderId)
-  if (!r.ok) return r   // blocked (no_invoice / total_mismatch / email_required / email_conflict / …)
+  if (!r.ok) return r   // blocked (no_invoice / sync_needed / needs_review / total_mismatch / email_* / …)
+
+  // Already sent and NOT an explicit resend → never email again; adopt the sent state if the
+  // local write was lost after QB had emailed (ambiguous response / refresh).
+  if (r.alreadySent && !resend) {
+    const est = await getEstimateRow(orderId)
+    if (est && est.qbStatus !== 'sent') {
+      await db.update(jobEstimates).set({ qbStatus: 'sent', qbSentAt: est.qbSentAt ?? new Date(), qbSyncError: null, updatedAt: new Date() }).where(eq(jobEstimates.id, est.id))
+      await logEvent({ serviceOrderId: orderId, eventType: 'invoice_send_reconciled', employeeName: actor, note: `#${r.invoiceNumber} (${r.invoiceId}) already EmailSent in QuickBooks — adopted sent state (no re-email)` }).catch(() => {})
+    }
+    return { ok: true, alreadySent: true, reconciled: est?.qbStatus !== 'sent', invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber, recipient: r.recipient, emailStatus: r.emailStatus }
+  }
+
+  // Lock: one sender at a time (blocks double-tap / concurrent). Settled states only.
+  const est0 = await getEstimateRow(orderId)
+  if (!est0 || !est0.qbInvoiceId) return { ok: false, block: 'no_invoice' }
+  const priorStatus = est0.qbStatus === 'sent' ? 'sent' : 'created'
+  const locked = await db.update(jobEstimates)
+    .set({ qbStatus: 'sending', updatedAt: new Date() })
+    .where(and(eq(jobEstimates.id, est0.id), inArray(jobEstimates.qbStatus, ['created', 'sent', 'error'])))
+    .returning({ id: jobEstimates.id })
+  if (locked.length === 0) return { ok: false, block: 'sending', invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber, error: 'A send is already in progress for this Job.' }
 
   try {
     if (r.needsFill && r.invoiceId && r.syncToken && r.recipient) {
@@ -268,14 +315,14 @@ export async function sendRetailQBInvoice(params: { orderId: string; actor: stri
     const sent = await sendRetailInvoiceInQB(r.invoiceId!, r.recipient)
     await db.update(jobEstimates).set({
       qbStatus: 'sent', qbSentAt: new Date(), qbSyncToken: sent.syncToken, qbSyncedAt: new Date(), qbSyncError: null, updatedAt: new Date(),
-    }).where(eq(jobEstimates.serviceOrderId, orderId))
-    await logEvent({ serviceOrderId: orderId, eventType: 'invoice_sent', employeeName: actor, note: `#${sent.invoiceNumber} (${r.invoiceId}) → ${r.recipient} · ${sent.emailStatus}` })
-    logger.info(APP, 'sent', { orderId, invoiceId: r.invoiceId, recipient: r.recipient, emailStatus: sent.emailStatus })
+    }).where(eq(jobEstimates.id, est0.id))
+    await logEvent({ serviceOrderId: orderId, eventType: resend ? 'invoice_resend' : 'invoice_sent', employeeName: actor, note: `#${sent.invoiceNumber} (${r.invoiceId}) → ${r.recipient} · ${sent.emailStatus}${resend ? ' · RESEND' : ''}` })
+    logger.info(APP, resend ? 'resent' : 'sent', { orderId, invoiceId: r.invoiceId, recipient: r.recipient, emailStatus: sent.emailStatus })
     return { ok: true, invoiceId: r.invoiceId, invoiceNumber: sent.invoiceNumber, recipient: r.recipient, emailStatus: sent.emailStatus }
   } catch (err) {
     const msg = safeErr(err)
-    // Preserve the created invoice linkage; record a safe send error; allow retry.
-    await db.update(jobEstimates).set({ qbSyncError: msg, updatedAt: new Date() }).where(eq(jobEstimates.serviceOrderId, orderId))
+    // Preserve the linkage; restore the prior settled status; record a safe error; allow retry.
+    await db.update(jobEstimates).set({ qbStatus: priorStatus, qbSyncError: msg, updatedAt: new Date() }).where(eq(jobEstimates.id, est0.id))
     await logEvent({ serviceOrderId: orderId, eventType: 'invoice_send_failed', employeeName: actor, note: `#${r.invoiceNumber} (${r.invoiceId}) → ${r.recipient}: ${msg}` })
     logger.error(APP, 'send_failed', { orderId, invoiceId: r.invoiceId, error: msg })
     return { ok: false, block: 'send_failed', error: msg, invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber, recipient: r.recipient }
@@ -417,9 +464,12 @@ export async function syncRetailQBInvoice(params: { orderId: string; actor: stri
       return { ok: false, block: 'total_mismatch', invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, qbTotalCents: res.written.totalAmtCents, draftTotalCents: draftNow.totalCents, error: msg }
     }
 
+    // If a SENT invoice actually changed, the customer holds an older copy → flag
+    // "Resend recommended" (invoice-id-first UI shows a Resend action; never auto-resends).
+    const nextError = wasSent && !res.noop ? 'Resend recommended — invoice changed after it was emailed' : null
     await db.update(jobEstimates).set({
       qbSyncToken: res.written.syncToken, qbContentHash: res.newHash, qbStatus: restore,
-      qbSyncedAt: new Date(), qbSyncError: null, updatedAt: new Date(),
+      qbSyncedAt: new Date(), qbSyncError: nextError, updatedAt: new Date(),
     }).where(eq(jobEstimates.id, est0.id))
     await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_synced', employeeName: actor, note: `#${est0.qbInvoiceNumber} (${est0.qbInvoiceId}) ${res.noop ? 'no-op (already current)' : `updated · total $${(draftNow.totalCents / 100).toFixed(2)}`}${wasSent ? ' · after send' : ''}` })
     if (wasSent && !res.noop) await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_synced_after_send', employeeName: actor, note: `#${est0.qbInvoiceNumber} updated after it was emailed — customer may hold an older copy` }).catch(() => {})

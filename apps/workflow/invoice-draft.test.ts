@@ -108,5 +108,17 @@ describe('buildInvoiceDraft', () => {
       const s = qb({ qbStatus: 'created', qbInvoiceId: '23501', qbSyncError: 'Needs review — Customer no longer matches this invoice' })
       expect(s.needsReview).toBe(true); expect(s.syncNeeded).toBe(false)
     })
+    it('sent invoice with no error → sent, not resend-recommended', () => {
+      const s = qb({ qbStatus: 'sent', qbInvoiceId: '23501', qbSyncError: null })
+      expect(s.sent).toBe(true); expect(s.resendRecommended).toBe(false); expect(s.syncNeeded).toBe(false)
+    })
+    it('sent invoice edited → sync needed (not resend yet)', () => {
+      const s = qb({ qbStatus: 'sent', qbInvoiceId: '23501', qbSyncError: 'QuickBooks sync needed — a price changed.' })
+      expect(s.sent).toBe(true); expect(s.syncNeeded).toBe(true); expect(s.resendRecommended).toBe(false)
+    })
+    it('sent invoice synced after edit → resend recommended (not sync-needed)', () => {
+      const s = qb({ qbStatus: 'sent', qbInvoiceId: '23501', qbSyncError: 'Resend recommended — invoice changed after it was emailed' })
+      expect(s.resendRecommended).toBe(true); expect(s.syncNeeded).toBe(false); expect(s.needsReview).toBe(false)
+    })
   })
 })

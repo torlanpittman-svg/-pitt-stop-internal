@@ -532,16 +532,23 @@ interface InvoiceDraftData {
   totalCents: number; role: string
   itemized: boolean
   serviceBreakdown: { title: string; cents: number }[]
-  qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sentAt: string | null }
+  qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sent: boolean; resendRecommended: boolean; sentAt: string | null }
 }
 interface SendPreview { ok: boolean; block?: string; recipient?: string | null; invoiceNumber?: string | null; draftTotalCents?: number; qbTotalCents?: number; error?: string }
 const money = (c: number) => `$${(c / 100).toFixed(2)}`
 const SEND_BLOCK_MSG: Record<string, string> = {
   no_invoice: 'No QuickBooks invoice is linked. Create it first.',
-  total_mismatch: 'QuickBooks invoice is out of sync with Pitt Stop. Sync/update it first.',
+  total_mismatch: 'QuickBooks invoice is out of sync with Pitt Stop. Sync it first.',
+  sync_needed: 'Sync the QuickBooks invoice before sending.',
+  needs_review: 'This invoice needs review before it can be sent.',
+  identity_mismatch: 'This invoice could not be verified in QuickBooks — needs review.',
+  customer_mismatch: 'The customer no longer matches this invoice — review before sending.',
+  invoice_missing: 'This invoice no longer exists in QuickBooks — needs review.',
   email_required: 'A customer email address is required before sending.',
   email_conflict: 'The Pitt Stop email and the QuickBooks invoice email differ — review before sending.',
   qb_read_failed: 'Could not read the linked QuickBooks invoice. Try again.',
+  sending: 'A send is already in progress.',
+  send_failed: 'Could not send the invoice. Try again.',
   not_priced: 'Add a Work Price first.',
   dealer: 'Dealer invoices are handled by Dealer Check-In.',
 }
@@ -610,6 +617,7 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
   const [sendPreview, setSendPreview] = useState<SendPreview | null>(null)   // confirmation dialog
   const [sending, setSending] = useState(false)
   const [sentTo, setSentTo] = useState<string | null>(null)
+  const [resendMode, setResendMode] = useState(false)   // the pending confirm is a deliberate Resend
   const [syncEnabled, setSyncEnabled] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [syncMsg, setSyncMsg] = useState<string | null>(null)
@@ -650,26 +658,27 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
     finally { setSyncing(false) }
   }, [orderId, syncing, confirmSentSync, refetch])
 
-  // Admin Send: preview (read-only) → confirmation dialog → confirmed send. Never creates.
-  const openSend = useCallback(async () => {
-    setErr(null); setSending(true)
+  // Send / Resend (manager + admin): preview (read-only) → confirmation dialog → confirmed
+  // send. Never creates; resend=true only on a deliberate Resend of an already-sent invoice.
+  const openSend = useCallback(async (resend = false) => {
+    setErr(null); setSending(true); setResendMode(resend)
     try {
       const res = await fetch(`/api/workflow/orders/${orderId}/invoice/send-qb`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: false }),
       })
       const d = await res.json()
       const p: SendPreview = d.preview ?? { ok: false, error: d.error }
-      if (!p.ok) { setErr(p.error ?? SEND_BLOCK_MSG[p.block ?? ''] ?? 'Cannot send this invoice.'); return }
+      if (!p.ok) { setErr(p.error ?? SEND_BLOCK_MSG[p.block ?? ''] ?? 'Cannot send this invoice.'); await refetch(); return }
       setSendPreview(p)   // opens confirmation
     } catch { setErr('Network error — please try again.') }
     finally { setSending(false) }
-  }, [orderId])
+  }, [orderId, refetch])
 
   const confirmSend = useCallback(async () => {
     setSending(true); setErr(null)
     try {
       const res = await fetch(`/api/workflow/orders/${orderId}/invoice/send-qb`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true, resend: resendMode }),
       })
       const d = await res.json()
       if (!res.ok || !d.ok) { setErr(d.error ?? SEND_BLOCK_MSG[d.block ?? ''] ?? 'Send failed.'); return }
@@ -678,7 +687,7 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
       await refetch()
     } catch { setErr('Network error — please try again.') }
     finally { setSending(false) }
-  }, [orderId, sendPreview, refetch])
+  }, [orderId, sendPreview, resendMode, refetch])
 
   // Break a flat Work Total into editable per-service prices (reuses the Estimate engine's
   // proportional allocation; preserves the Work Total exactly). Fine-tune on the Estimate screen.
@@ -832,42 +841,50 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
                   <span className="text-white font-bold text-lg tabular-nums">{money(draft.totalCents)}</span>
                 </div>
 
-                {/* QuickBooks — INVOICE-ID-FIRST. Linked → Sync/Send (never Create). */}
-                {draft.qb.linked ? (
-                  <div className={`mt-4 rounded-xl border px-4 py-3 ${draft.qb.needsReview || draft.qb.syncNeeded || (draft.qb.status === 'error') ? 'border-amber-900/60 bg-amber-950/30' : 'border-green-900/60 bg-green-950/40'}`}>
-                    <p className={`text-sm font-semibold ${draft.qb.needsReview || draft.qb.syncNeeded || draft.qb.status === 'error' ? 'text-amber-300' : 'text-green-300'}`}>QuickBooks Invoice{draft.qb.invoiceNumber ? ` #${draft.qb.invoiceNumber}` : ''}</p>
+                {/* QuickBooks — INVOICE-ID-FIRST. Linked → Sync/Send/Resend (never Create). */}
+                {draft.qb.linked ? (() => {
+                  const q = draft.qb
+                  const stale = q.needsReview || q.syncNeeded || q.status === 'error'
+                  const current = !q.syncNeeded && !q.needsReview && q.status !== 'error'  // Send/Resend allowed
+                  return (
+                  <div className={`mt-4 rounded-xl border px-4 py-3 ${stale || q.resendRecommended ? 'border-amber-900/60 bg-amber-950/30' : 'border-green-900/60 bg-green-950/40'}`}>
+                    <p className={`text-sm font-semibold ${stale || q.resendRecommended ? 'text-amber-300' : 'text-green-300'}`}>QuickBooks Invoice{q.invoiceNumber ? ` #${q.invoiceNumber}` : ''}</p>
                     <p className="text-gray-400 text-xs mt-0.5">
-                      {draft.qb.needsReview ? 'Needs review'
-                        : draft.qb.status === 'error' ? 'Sync failed'
-                        : draft.qb.syncNeeded ? (draft.qb.status === 'sent' ? 'Sent · Sync needed' : 'Sync needed')
-                        : draft.qb.status === 'sent' ? `Sent${sentTo ? ` to ${sentTo}` : ''}${draft.qb.sentAt ? ` · ${new Date(draft.qb.sentAt).toLocaleString()}` : ''}`
+                      {q.needsReview ? 'Needs review'
+                        : q.status === 'error' ? 'Sync failed'
+                        : q.syncNeeded ? (q.sent ? 'Sent · Sync needed' : 'Sync needed')
+                        : q.resendRecommended ? 'Updated after last email · Resend recommended'
+                        : q.sent ? `Sent${sentTo ? ` to ${sentTo}` : ''}${q.sentAt ? ` · ${new Date(q.sentAt).toLocaleString()}` : ''}`
                         : 'Current'}
                     </p>
-                    {draft.qb.needsReview && draft.qb.error && <p className="text-amber-400/80 text-xs mt-1">{draft.qb.error}</p>}
+                    {q.needsReview && q.error && <p className="text-amber-400/80 text-xs mt-1">{q.error}</p>}
 
                     {/* Sync (manager + admin) — offered when stale/failed, never on needs-review. */}
-                    {(draft.qb.syncNeeded || draft.qb.status === 'error') && !draft.qb.needsReview && syncEnabled && (
+                    {(q.syncNeeded || q.status === 'error') && !q.needsReview && syncEnabled && (
                       <button onClick={syncQb} disabled={syncing || busy}
                         className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
-                        {syncing ? 'Syncing…' : draft.qb.status === 'error' ? 'Retry Sync' : 'Sync QuickBooks'}
+                        {syncing ? 'Syncing…' : q.status === 'error' ? 'Retry Sync' : 'Sync QuickBooks'}
                       </button>
                     )}
                     {syncMsg && <p className="text-amber-400 text-xs mt-2">{syncMsg}</p>}
 
-                    {/* Send (admin only) — unchanged; only when the invoice is settled (not stale). */}
-                    {isAdmin && sendEnabled && !draft.qb.syncNeeded && draft.qb.status !== 'error' && !draft.qb.needsReview && (
-                      draft.qb.status === 'sent' ? (
-                        <button onClick={openSend} disabled={sending}
-                          className="mt-2 text-gray-400 text-xs font-semibold border border-gray-700 rounded-lg px-2.5 py-1 active:opacity-70 disabled:opacity-40">Resend Invoice</button>
-                      ) : (
-                        <button onClick={openSend} disabled={sending}
-                          className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-blue-600 active:opacity-80 disabled:opacity-50">
-                          {sending ? 'Checking…' : 'Send Invoice'}
-                        </button>
-                      )
+                    {/* Send (manager + admin) — current + unsent only. */}
+                    {current && !q.sent && sendEnabled && (
+                      <button onClick={() => openSend(false)} disabled={sending}
+                        className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
+                        {sending ? 'Checking…' : 'Send Invoice'}
+                      </button>
+                    )}
+                    {/* Resend (manager + admin) — explicit, once already sent + current. */}
+                    {current && q.sent && sendEnabled && (
+                      <button onClick={() => openSend(true)} disabled={sending}
+                        className={`mt-3 w-full font-semibold text-sm py-2.5 rounded-2xl active:opacity-80 disabled:opacity-50 ${q.resendRecommended ? 'bg-amber-600 text-white' : 'border border-gray-700 text-gray-300'}`}>
+                        {sending ? 'Checking…' : 'Resend Invoice'}
+                      </button>
                     )}
                   </div>
-                ) : qbEnabled ? (
+                  )
+                })() : qbEnabled ? (
                   <div className="mt-4">
                     <button onClick={createQb} disabled={creating || busy}
                       className="w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
@@ -891,14 +908,15 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
         {sendPreview?.ok && (
           <div className="fixed inset-0 z-[60] flex flex-col justify-end bg-black/70" onClick={() => !sending && setSendPreview(null)}>
             <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10" onClick={(e) => e.stopPropagation()}>
-              <h3 className="text-white font-bold text-lg mb-3">Send QuickBooks Invoice{sendPreview.invoiceNumber ? ` #${sendPreview.invoiceNumber}` : ''}</h3>
+              <h3 className="text-white font-bold text-lg mb-3">{resendMode ? 'Resend' : 'Send'} QuickBooks Invoice{sendPreview.invoiceNumber ? ` #${sendPreview.invoiceNumber}` : ''}</h3>
+              {draft?.customer && <><p className="text-gray-400 text-sm">Customer</p><p className="text-white text-base font-semibold mb-2">{draft.customer}</p></>}
               <p className="text-gray-400 text-sm">To</p>
               <p className="text-white text-base font-semibold mb-3">{sendPreview.recipient}</p>
               <p className="text-gray-400 text-sm">Total</p>
               <p className="text-white text-2xl font-bold tabular-nums mb-5">{money(sendPreview.draftTotalCents ?? 0)}</p>
               <div className="flex gap-3">
                 <button onClick={() => setSendPreview(null)} disabled={sending} className="flex-1 py-3.5 rounded-2xl border border-gray-700 text-gray-300 font-semibold active:opacity-70 disabled:opacity-40">Cancel</button>
-                <button onClick={confirmSend} disabled={sending} className="flex-1 py-3.5 rounded-2xl bg-blue-600 text-white font-bold active:opacity-80 disabled:opacity-50">{sending ? 'Sending…' : 'Send Invoice'}</button>
+                <button onClick={confirmSend} disabled={sending} className="flex-1 py-3.5 rounded-2xl bg-emerald-600 text-white font-bold active:opacity-80 disabled:opacity-50">{sending ? 'Sending…' : (resendMode ? 'Resend Invoice' : 'Send Invoice')}</button>
               </div>
             </div>
           </div>
@@ -934,6 +952,10 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   const [syncing, setSyncing] = useState(false)
   const [syncErr, setSyncErr] = useState<string | null>(null)
   const [confirmSentOpen, setConfirmSentOpen] = useState(false)  // sync an already-sent invoice
+  const [sendEnabled, setSendEnabled] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [sendErr, setSendErr] = useState<string | null>(null)
+  const [sendPreview, setSendPreview] = useState<{ recipient: string | null; totalCents: number; invoiceNumber: string | null; resend: boolean } | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   // Stable per-mount requestId (generated once on first Create) so double-taps / browser
   // retries dedupe on the server.
@@ -948,7 +970,7 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   const loadDraft = useCallback(async () => {
     const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
     const d = await r.json().catch(() => null)
-    if (d?.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSyncEnabled(!!d.qbSyncEnabled) }
+    if (d?.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSyncEnabled(!!d.qbSyncEnabled); setSendEnabled(!!d.qbSendEnabled) }
   }, [orderId])
 
   useEffect(() => {
@@ -958,11 +980,44 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
       fetch(`/api/workflow/orders/${orderId}/contact`, { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
     ]).then(([inv, con]) => {
       if (!ok) return
-      if (inv?.draft) { setDraft(inv.draft); setQbEnabled(!!inv.qbEnabled); setSyncEnabled(!!inv.qbSyncEnabled) }
+      if (inv?.draft) { setDraft(inv.draft); setQbEnabled(!!inv.qbEnabled); setSyncEnabled(!!inv.qbSyncEnabled); setSendEnabled(!!inv.qbSendEnabled) }
       if (con?.ok) setContact({ phone: con.phone ?? null, email: con.email ?? null })
     }).finally(() => { if (ok) setLoading(false) })
     return () => { ok = false }
   }, [orderId])
+
+  // Send / Resend: read-only preview (server resolves recipient + identity + total + not-stale)
+  // → confirm sheet → confirmed send. resend=true is the only path that re-emails a sent invoice.
+  const openSend = useCallback(async (resend = false) => {
+    if (sending) return
+    setSendErr(null); setSending(true)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/invoice/send-qb`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: false }),
+      })
+      const d = await res.json()
+      const p = d.preview
+      if (!p || !p.ok) { setSendErr(p?.error ?? SEND_BLOCK_MSG[p?.block ?? ''] ?? 'Cannot send this invoice.'); await loadDraft(); return }
+      setSendPreview({ recipient: p.recipient ?? null, totalCents: p.draftTotalCents ?? 0, invoiceNumber: p.invoiceNumber ?? null, resend })
+    } catch { setSendErr('Network error — please try again.') }
+    finally { setSending(false) }
+  }, [orderId, sending, loadDraft])
+
+  const confirmSend = useCallback(async () => {
+    if (!sendPreview || sending) return
+    const resend = sendPreview.resend
+    setSending(true); setSendErr(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/invoice/send-qb`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true, resend }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok || !d.ok) { setSendErr(d.error ?? SEND_BLOCK_MSG[d.block ?? ''] ?? 'Send failed.') }
+      else { setToast(resend ? 'Invoice resent' : (d.reconciled ? 'Invoice was already sent' : 'Invoice sent')); setTimeout(() => setToast(null), 5000) }
+      setSendPreview(null); await loadDraft()
+    } catch { setSendErr('Network error — please try again.') }
+    finally { setSending(false) }
+  }, [orderId, sendPreview, sending, loadDraft])
 
   // Create the retail QuickBooks invoice via the EXISTING idempotent endpoint. Never a second
   // writer; all duplicate/total protections live server-side. On failure the Job stays
@@ -1009,10 +1064,15 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   const qb = draft?.qb
   const priced = !!draft?.priced
   const linked = !!qb?.linked
-  const isSent = qb?.status === 'sent'
+  const isSent = !!qb?.sent
   const needsReview = !!qb?.needsReview
   const syncNeeded = !!qb?.syncNeeded
+  const resendRecommended = !!qb?.resendRecommended
   const syncFailed = linked && qb?.status === 'error'
+  // "current" = linked, not stale, not in review/error → the state where Send is allowed.
+  const current = linked && !syncNeeded && !needsReview && !syncFailed
+  const canSend = current && !isSent && sendEnabled
+  const canResend = current && isSent && sendEnabled
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
@@ -1067,12 +1127,14 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
                     const box = needsReview ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: 'Needs review' }
                       : syncFailed ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: 'Sync failed' }
                       : syncNeeded ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: isSent ? 'Sent · Sync needed' : 'Sync needed' }
+                      : resendRecommended ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: 'Updated after last email · Resend recommended' }
                       : isSent ? { tone: 'border-green-900/60 bg-green-950/30', head: 'text-green-300', label: 'Sent' }
                       : { tone: 'border-green-900/60 bg-green-950/30', head: 'text-green-300', label: 'Current' }
                     return (
                       <div className={`rounded-xl border px-4 py-3 ${box.tone}`}>
                         <p className={`text-sm font-semibold ${box.head}`}>QuickBooks Invoice{qb?.invoiceNumber ? ` #${qb.invoiceNumber}` : ''}</p>
                         <p className="text-gray-400 text-xs mt-0.5">{box.label}</p>
+                        {isSent && contact?.email && !resendRecommended && !syncNeeded && <p className="text-gray-400 text-xs mt-0.5">{contact.email}</p>}
                         {needsReview && qb?.error && <p className="text-amber-400/80 text-xs mt-1">{qb.error}</p>}
                       </div>
                     )
@@ -1089,6 +1151,21 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
                     </button>
                   )}
                   {syncErr && <p className="text-amber-400 text-sm mt-2">{syncErr}</p>}
+                  {/* Send — current + unsent. Blocked while stale/needs-review (no button shown). */}
+                  {canSend && (
+                    <button onClick={() => openSend(false)} disabled={sending}
+                      className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
+                      {sending ? 'Preparing…' : 'Send Invoice'}
+                    </button>
+                  )}
+                  {/* Resend — explicit secondary action once already sent (confirmation required). */}
+                  {canResend && (
+                    <button onClick={() => openSend(true)} disabled={sending}
+                      className={`mt-3 w-full font-semibold text-base py-3.5 rounded-2xl active:opacity-80 disabled:opacity-50 ${resendRecommended ? 'bg-amber-600 text-white' : 'border border-gray-700 text-gray-300'}`}>
+                      {sending ? 'Preparing…' : 'Resend Invoice'}
+                    </button>
+                  )}
+                  {sendErr && <p className="text-amber-400 text-sm mt-2">{sendErr}</p>}
                 </>
               ) : !priced ? (
                 /* Not linked + unpriced → never create a $0/malformed invoice; go to Estimate. */
@@ -1129,6 +1206,25 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
           </>
         )}
       </div>
+
+      {/* Pre-send confirmation (customer-facing email). Deliberate second tap; server re-checks. */}
+      {sendPreview && (
+        <div className="fixed inset-0 z-[60] flex flex-col justify-end bg-black/70" onClick={() => !sending && setSendPreview(null)}>
+          <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white font-bold text-lg mb-3">{sendPreview.resend ? 'Resend' : 'Send'} QuickBooks Invoice{sendPreview.invoiceNumber ? ` #${sendPreview.invoiceNumber}` : ''}</h3>
+            <p className="text-gray-400 text-sm">Customer</p>
+            <p className="text-white text-base font-semibold mb-2">{draft?.customer || customerName}</p>
+            <p className="text-gray-400 text-sm">To</p>
+            <p className="text-white text-base font-semibold mb-2">{sendPreview.recipient}</p>
+            <p className="text-gray-400 text-sm">Total</p>
+            <p className="text-white text-2xl font-bold tabular-nums mb-5">{money(sendPreview.totalCents)}</p>
+            <div className="flex gap-3">
+              <button onClick={() => setSendPreview(null)} disabled={sending} className="flex-1 py-3.5 rounded-2xl border border-gray-700 text-gray-300 font-semibold active:opacity-70 disabled:opacity-40">Cancel</button>
+              <button onClick={confirmSend} disabled={sending} className="flex-1 py-3.5 rounded-2xl bg-emerald-600 text-white font-bold active:opacity-80 disabled:opacity-50">{sending ? 'Sending…' : (sendPreview.resend ? 'Resend Invoice' : 'Send Invoice')}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Sync an already-sent invoice — explicit confirm (never resends; Send stays OFF). */}
       {confirmSentOpen && (

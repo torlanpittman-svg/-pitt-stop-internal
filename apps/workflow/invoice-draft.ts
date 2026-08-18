@@ -28,22 +28,25 @@ export interface InvoiceDraft {
   // Retail QuickBooks link state (P-D3.1/3.2/3.3). status: none|creating|created|sent|error|syncing.
   // `linked` = a QB invoice exists (invoice-id-first UI). `syncNeeded`/`needsReview` derive from
   // the qb_sync_error convention so the UI never parses raw error text.
-  qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sentAt: string | null }
+  qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sent: boolean; resendRecommended: boolean; sentAt: string | null }
 }
 
 // Derive the retail QB link state for the read model. `linked` is invoice-id-first (a QB
 // invoice exists → the UI never offers Create). syncNeeded/needsReview come from the
 // qb_sync_error text convention set by flagQbSyncNeededIfInvoiced / the Sync service.
 function buildQbState(est: FullEstimate['estimate'] | null | undefined): InvoiceDraft['qb'] {
-  if (!est) return { status: 'none', linked: false, invoiceNumber: null, error: null, syncNeeded: false, needsReview: false, sentAt: null }
+  if (!est) return { status: 'none', linked: false, invoiceNumber: null, error: null, syncNeeded: false, needsReview: false, sent: false, resendRecommended: false, sentAt: null }
   const error = est.qbSyncError ?? null
   const needsReview = !!error && /^needs review/i.test(error)
+  const resendRecommended = est.qbStatus === 'sent' && !!error && /resend recommended/i.test(error)
   const syncNeeded = !!error && /sync needed/i.test(error) && !needsReview
   return {
     status: est.qbStatus ?? 'none',
     linked: !!est.qbInvoiceId,
     invoiceNumber: est.qbInvoiceNumber ?? null,
     error, syncNeeded, needsReview,
+    sent: est.qbStatus === 'sent',
+    resendRecommended,
     sentAt: est.qbSentAt ? new Date(est.qbSentAt).toISOString() : null,
   }
 }
