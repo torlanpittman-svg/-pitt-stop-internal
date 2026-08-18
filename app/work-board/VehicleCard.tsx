@@ -37,7 +37,12 @@ export default function VehicleCard({
   const [err, setErr] = useState<string | null>(null)
   const [qbInvoice, setQbInvoice] = useState<string | null>(null)  // linked QB invoice # (warning)
 
-  const vehicleName = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Unknown Vehicle'
+  // Year Make Model, plus the existing authoritative color (helps tell apart same-YMM
+  // vehicles at the shop). Color is appended only when present — no empty separator, no
+  // "Unknown". If YMM is entirely missing, fall back to "Unknown Vehicle" (never a lone color).
+  const ymm = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ')
+  const color = (vehicle.color ?? '').trim()
+  const vehicleName = ymm ? (color ? `${ymm} · ${color}` : ymm) : 'Unknown Vehicle'
   // Card title = retail customer or dealer name; vehicle info goes underneath.
   const title = order.customerName?.trim() || 'Unknown Customer'
   const isDealer = isDealerOrder(order)
