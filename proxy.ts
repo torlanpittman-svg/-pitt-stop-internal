@@ -59,6 +59,7 @@ export const config = {
     '/api/quickbooks/query-customers',
     '/api/quickbooks/query-invoice',
     '/api/quickbooks/query-items',
+    '/api/quickbooks/discover',
     // manual write / setup tools (owner-run; not part of any automated flow)
     '/api/quickbooks/selftest-invoice',
     '/api/quickbooks/set-invoice-number',
