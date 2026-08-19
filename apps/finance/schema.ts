@@ -1,0 +1,155 @@
+/**
+ * CFO Financial OS — Phase 1 foundation schema. Additive-only; no existing table is touched.
+ * Every money value carries source + as-of + confidence so a QuickBooks BOOK balance is never
+ * presented as live cash. Read-only toward QuickBooks; no money movement anywhere.
+ * Aggregated by drizzle/schema.ts.
+ */
+import { pgTable, uuid, text, varchar, integer, boolean, date, timestamp, jsonb, index, unique } from 'drizzle-orm/pg-core'
+
+// One row per real financial account (bank / credit card / loan / LOC / floor plan / clearing).
+export const finAccounts = pgTable(
+  'fin_accounts',
+  {
+    id:             uuid('id').primaryKey().defaultRandom(),
+    name:           varchar('name', { length: 200 }).notNull(),
+    kind:           varchar('kind', { length: 24 }).notNull(),          // bank|credit_card|loan|loc|floor_plan|clearing|reserve|other
+    classification: varchar('classification', { length: 16 }).notNull(),// asset|liability|equity
+    isCash:         boolean('is_cash').notNull().default(false),        // counts toward cash-on-hand (bank only)
+    isLiability:    boolean('is_liability').notNull().default(false),
+    clearingSuspect:boolean('clearing_suspect').notNull().default(false),// unreconciled clearing (Undeposited/Clover)
+    externalSource: varchar('external_source', { length: 20 }).notNull().default('qbo'), // qbo|plaid|manual|document
+    externalId:     varchar('external_id', { length: 64 }),             // QBO Account.Id
+    accountType:    varchar('account_type', { length: 60 }),            // QBO AccountType (raw)
+    accountSubType: varchar('account_sub_type', { length: 60 }),
+    institution:    varchar('institution', { length: 120 }),            // Extraco | American Momentum | Amex … (owner maps)
+    currency:       varchar('currency', { length: 8 }).notNull().default('USD'),
+    active:         boolean('active').notNull().default(true),
+    notes:          text('notes'),
+    createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:      timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('fin_accounts_source_ext_uniq').on(t.externalSource, t.externalId), index('fin_accounts_kind_idx').on(t.kind)],
+)
+
+// Append-only balance history. Freshness = the latest snapshot per account. Never overwritten.
+export const finBalanceSnapshots = pgTable(
+  'fin_balance_snapshots',
+  {
+    id:            uuid('id').primaryKey().defaultRandom(),
+    accountId:     uuid('account_id').notNull().references(() => finAccounts.id, { onDelete: 'cascade' }),
+    balanceCents:  integer('balance_cents').notNull(),
+    availableCents:integer('available_cents'),                          // null unless a live source provides it
+    asOf:          timestamp('as_of', { withTimezone: true }).notNull(),
+    source:        varchar('source', { length: 20 }).notNull(),         // qbo|plaid|manual|document
+    confidence:    varchar('confidence', { length: 20 }).notNull(),     // book|live|estimated|manual_verified
+    capturedAt:    timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
+    raw:           jsonb('raw'),
+  },
+  (t) => [index('fin_bal_account_idx').on(t.accountId), index('fin_bal_asof_idx').on(t.asOf)],
+)
+
+// Debt register — seeded from QBO notes (book, unverified). Statements later set live terms.
+export const finDebts = pgTable(
+  'fin_debts',
+  {
+    id:                 uuid('id').primaryKey().defaultRandom(),
+    name:               varchar('name', { length: 200 }).notNull(),
+    lender:             varchar('lender', { length: 120 }),
+    kind:               varchar('kind', { length: 24 }).notNull().default('term_loan'), // term_loan|loc|floor_plan|credit_card|equipment|private_note
+    externalSource:     varchar('external_source', { length: 20 }).notNull().default('qbo'),
+    externalId:         varchar('external_id', { length: 64 }),          // QBO Account.Id
+    principalCents:     integer('principal_cents'),
+    originalPrincipalCents: integer('original_principal_cents'),
+    aprBps:             integer('apr_bps'),                              // null until a statement is provided
+    paymentCents:       integer('payment_cents'),
+    paymentFrequency:   varchar('payment_frequency', { length: 16 }),
+    nextDue:            date('next_due'),
+    maturity:           date('maturity'),
+    availableCreditCents: integer('available_credit_cents'),
+    collateral:         text('collateral'),
+    source:             varchar('source', { length: 20 }).notNull().default('qbo'),
+    asOf:               timestamp('as_of', { withTimezone: true }).notNull().defaultNow(),
+    confidence:         varchar('confidence', { length: 20 }).notNull().default('book'),
+    verified:           boolean('verified').notNull().default(false),
+    notes:              text('notes'),
+    createdAt:          timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:          timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('fin_debts_source_ext_uniq').on(t.externalSource, t.externalId)],
+)
+
+// Payroll obligation. Manual in Phase 1 (highest-priority "can we make payroll?"); QBO Payroll API later.
+export const finPayroll = pgTable('fin_payroll', {
+  id:                uuid('id').primaryKey().defaultRandom(),
+  nextPayDate:       date('next_pay_date').notNull(),
+  expectedCashCents: integer('expected_cash_cents').notNull(),
+  frequency:         varchar('frequency', { length: 16 }).notNull().default('weekly'),
+  source:            varchar('source', { length: 20 }).notNull().default('manual'), // manual|qbo_payroll
+  confidence:        varchar('confidence', { length: 20 }).notNull().default('manual'),
+  enteredBy:         varchar('entered_by', { length: 200 }),
+  asOf:              timestamp('as_of', { withTimezone: true }).notNull().defaultNow(),
+  notes:             text('notes'),
+})
+
+// Recurring obligation register — Phase 1: MANUAL add only (no discovery, no seeding).
+export const finObligations = pgTable('fin_obligations', {
+  id:              uuid('id').primaryKey().defaultRandom(),
+  vendor:          varchar('vendor', { length: 200 }).notNull(),
+  category:        varchar('category', { length: 60 }),
+  amountCents:     integer('amount_cents'),
+  amountMinCents:  integer('amount_min_cents'),
+  amountMaxCents:  integer('amount_max_cents'),
+  frequency:       varchar('frequency', { length: 16 }),               // weekly|monthly|quarterly|annual|irregular
+  nextDue:         date('next_due'),
+  autopay:         boolean('autopay'),
+  paymentAccountId:uuid('payment_account_id').references(() => finAccounts.id),
+  essential:       boolean('essential'),
+  source:          varchar('source', { length: 20 }).notNull().default('manual'),
+  confidence:      varchar('confidence', { length: 20 }).notNull().default('manual'),
+  status:          varchar('status', { length: 16 }).notNull().default('confirmed'), // proposed|confirmed|paused
+  enteredBy:       varchar('entered_by', { length: 200 }),
+  asOf:            timestamp('as_of', { withTimezone: true }).notNull().defaultNow(),
+  notes:           text('notes'),
+})
+
+// Financial documents — Phase 1: store + metadata only (NO OCR/extraction).
+export const finDocuments = pgTable('fin_documents', {
+  id:           uuid('id').primaryKey().defaultRandom(),
+  type:         varchar('type', { length: 40 }).notNull(),             // loan_statement|bank_statement|lease|insurance|tax|vendor_statement|other
+  blobUrl:      text('blob_url').notNull(),
+  filename:     varchar('filename', { length: 300 }),
+  accountId:    uuid('account_id').references(() => finAccounts.id),
+  debtId:       uuid('debt_id').references(() => finDebts.id),
+  periodStart:  date('period_start'),
+  periodEnd:    date('period_end'),
+  asOf:         date('as_of'),
+  source:       varchar('source', { length: 20 }).notNull().default('manual'),
+  uploadedBy:   varchar('uploaded_by', { length: 200 }),
+  notes:        text('notes'),
+  createdAt:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// One row per ingestion run (QBO read-sync). Holds report summaries + freshness/audit.
+export const finSyncRuns = pgTable('fin_sync_runs', {
+  id:         uuid('id').primaryKey().defaultRandom(),
+  source:     varchar('source', { length: 20 }).notNull().default('qbo'),
+  status:     varchar('status', { length: 16 }).notNull(),             // ok|partial|error
+  startedAt:  timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  summary:    jsonb('summary'),                                        // counts + report figures (book)
+  error:      text('error'),
+  actor:      varchar('actor', { length: 200 }),
+})
+
+// Append-only audit for manual finance edits.
+export const finEvents = pgTable('fin_events', {
+  id:        uuid('id').primaryKey().defaultRandom(),
+  actor:     varchar('actor', { length: 200 }),
+  action:    varchar('action', { length: 60 }).notNull(),
+  entity:    varchar('entity', { length: 40 }),
+  entityId:  varchar('entity_id', { length: 64 }),
+  before:    jsonb('before'),
+  after:     jsonb('after'),
+  source:    varchar('source', { length: 20 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+})

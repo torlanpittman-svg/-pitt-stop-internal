@@ -44,6 +44,9 @@ export const SETTINGS: Record<string, SettingDef> = {
   // invoice). Default OFF. Requires retail_qb_enabled=true as a prerequisite. Independent
   // kill-switch from Create and Send — Sync never sends.
   retail_qb_sync_enabled:  { key: 'retail_qb_sync_enabled',  type: 'bool',   def: false,              env: 'RETAIL_QB_SYNC_ENABLED' },
+  // CFO Financial Command Center (Phase 1). Default OFF — /admin/finance ships dark. Read-only
+  // toward QuickBooks; admin-only; no money movement.
+  finance_enabled:         { key: 'finance_enabled',         type: 'bool',   def: false,              env: 'FINANCE_ENABLED' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
@@ -115,6 +118,11 @@ export async function completionInvoiceEnabled(): Promise<boolean> {
 export async function retailQbSyncEnabled(): Promise<boolean> {
   const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'retail_qb_sync_enabled'))
   return resolve(SETTINGS.retail_qb_sync_enabled, rows[0]?.value) as boolean
+}
+/** CFO Financial Command Center kill-switch (Phase 1). Default OFF. */
+export async function financeEnabled(): Promise<boolean> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'finance_enabled'))
+  return resolve(SETTINGS.finance_enabled, rows[0]?.value) as boolean
 }
 /** Configurable shop-supplies invoice label. */
 export async function shopSuppliesLabel(): Promise<string> {
