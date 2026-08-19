@@ -48,7 +48,15 @@ const reportTotals = (rep: any): Record<string, number> => {
   return m
 }
 const pick = (m: Record<string, number>, ...keys: string[]) => {
-  for (const kk of keys) { const hit = Object.keys(m).find((k) => k.toLowerCase().includes(kk.toLowerCase())); if (hit) return m[hit] }
+  const rows = Object.keys(m)
+  for (const kk of keys) {
+    // Prefer an exact (case-insensitive) label; fall back to a substring match. This avoids
+    // "Total Liabilities" accidentally matching "TOTAL LIABILITIES AND EQUITY".
+    const exact = rows.find((k) => k.toLowerCase() === kk.toLowerCase())
+    if (exact) return m[exact]
+    const sub = rows.find((k) => k.toLowerCase().includes(kk.toLowerCase()) && !k.toLowerCase().includes('and equity'))
+    if (sub) return m[sub]
+  }
   return null
 }
 const ymd = (d: Date) => d.toISOString().slice(0, 10)
