@@ -17,8 +17,23 @@ const safe = async <T,>(fn: () => Promise<T>): Promise<{ ok: boolean; data?: T; 
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10)
 
-export async function GET() {
+export async function GET(req: Request) {
   const now = new Date()
+
+  // Read-only account-ledger investigation: ?tx=<accountId>&months=N → GeneralLedger rows for
+  // that account (age / accumulation / whether balances are stale). SELECT/report GET only.
+  const url = new URL(req.url)
+  const txAccount = url.searchParams.get('tx')
+  if (txAccount) {
+    const months = Math.min(60, Math.max(1, parseInt(url.searchParams.get('months') ?? '24', 10) || 24))
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months, 1))
+    const gl = await safe(() => qbApiRequest<any>({ path: '/reports/GeneralLedger', query: {
+      start_date: ymd(start), end_date: ymd(now), account: txAccount,
+      columns: 'tx_date,txn_type,name,memo,subt_nat_amount,rbal_nat_amount',
+    } }))
+    return NextResponse.json({ ok: gl.ok, account: txAccount, months, generalLedger: gl.ok ? gl.data : { error: gl.error } })
+  }
+
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
   const lastMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1))
   const lastMonthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0))
