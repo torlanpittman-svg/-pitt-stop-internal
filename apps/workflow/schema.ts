@@ -4,6 +4,7 @@ import {
   text,
   boolean,
   timestamp,
+  date,
   jsonb,
   varchar,
   integer,
@@ -78,6 +79,10 @@ export const serviceOrders = pgTable(
     startedAt:   timestamp('started_at',   { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }), // true completion (Ready); count-once
     completedBy:  varchar('completed_by', { length: 200 }),
+    // Daily Production day override (manager correction). A bare shop-calendar date; when set,
+    // the Job counts/shows on THIS day instead of the day derived from completed_at — WITHOUT
+    // touching completed_at (the truthful "when Finish Job was submitted"). null = use completed_at.
+    productionDateOverride: date('production_date_override'),
     completionChecklist: jsonb('completion_checklist').$type<Record<string, unknown>>(),
     qcRequired:  boolean('qc_required').notNull().default(false),
     deliveredAt: timestamp('delivered_at', { withTimezone: true }),

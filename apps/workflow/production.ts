@@ -22,6 +22,20 @@ export interface ProductionJob {
   /** Authoritative total: retail = job_estimate total_cents (when priced); dealer = rate.
    *  null = not priced yet (render as "—", never $0). */
   priceCents: number | null
+  /** True when this Job's production day was manually moved (override set) off its completed_at day. */
+  overridden: boolean
+}
+
+/**
+ * Effective Production Date (shop calendar day, 'YYYY-MM-DD'): the manual override when set,
+ * otherwise the day completed_at falls on in the shop timezone. NEVER changes completed_at.
+ * Returns null for a Job that isn't completed and has no override.
+ */
+export function effectiveProductionDate(override: string | null | undefined, completedAt: Date | string | null | undefined, tz: string = shopTimezone()): string | null {
+  if (override) return override
+  if (!completedAt) return null
+  const d = completedAt instanceof Date ? completedAt : new Date(completedAt)
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(d)
 }
 export interface DailyProduction {
   date: string
@@ -42,6 +56,7 @@ export async function dailyProduction(date: string, tz: string = shopTimezone())
       services:    serviceOrders.services,
       completedAt: serviceOrders.completedAt,
       completedBy: serviceOrders.completedBy,
+      overrideDate: serviceOrders.productionDateOverride,
       orderSource: serviceOrders.source,
       year:        vehicles.year,
       make:        vehicles.make,
@@ -58,7 +73,8 @@ export async function dailyProduction(date: string, tz: string = shopTimezone())
     .leftJoin(dealerScans, eq(dealerScans.serviceOrderId, serviceOrders.id))
     .where(and(
       isNotNull(serviceOrders.completedAt),
-      sql`(${serviceOrders.completedAt} AT TIME ZONE ${tz})::date = ${date}::date`,
+      // Effective Production Date = override when set, else the shop-day of completed_at.
+      sql`COALESCE(${serviceOrders.productionDateOverride}, (${serviceOrders.completedAt} AT TIME ZONE ${tz})::date) = ${date}::date`,
     ))
     .orderBy(desc(serviceOrders.completedAt))
 
@@ -79,6 +95,7 @@ export async function dailyProduction(date: string, tz: string = shopTimezone())
       completedBy: r.completedBy,
       source:      isDealer ? 'dealer' as const : 'retail' as const,
       priceCents,
+      overridden:  !!r.overrideDate,
     }
   })
 

@@ -1255,6 +1255,70 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   )
 }
 
+// ── Production Date section (manager/admin) — Change/Reset the Daily Production day ──────
+// Moves a completed Job to a chosen shop-calendar day via production_date_override; never
+// touches completed_at, status, or QuickBooks. Retail + dealer. Self-hides when not completed.
+function ProductionDateSection({ orderId, onChanged }: { orderId: string; onChanged: () => void }) {
+  const [state, setState] = useState<{ completed: boolean; effective: string | null; override: string | null; completedDay: string | null; today: string } | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [pick, setPick] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    const r = await fetch(`/api/workflow/orders/${orderId}/production-date`, { cache: 'no-store' })
+    const d = await r.json().catch(() => null)
+    if (d?.ok) setState(d)
+  }, [orderId])
+  useEffect(() => { load() }, [load])
+
+  const save = useCallback(async (date: string | null) => {
+    if (busy) return
+    setBusy(true); setErr(null); setMsg(null)
+    try {
+      const r = await fetch(`/api/workflow/orders/${orderId}/production-date`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date }),
+      })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok || !d.ok) { setErr(d.error ?? 'Could not update the production date.'); return }
+      setEditing(false); setMsg(date ? 'Production date updated' : 'Reset to completed date'); setTimeout(() => setMsg(null), 5000)
+      await load(); onChanged()
+    } catch { setErr('Network error — please try again.') } finally { setBusy(false) }
+  }, [orderId, busy, load, onChanged])
+
+  if (!state?.completed) return null
+  const fmt = (d: string | null) => d ? new Date(`${d}T00:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+  return (
+    <div className="mb-4">
+      <h3 className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-2">Production date</h3>
+      <div className="rounded-2xl bg-gray-900 border border-gray-800 px-4 py-3">
+        <p className="text-white font-semibold">{fmt(state.effective)}</p>
+        {state.override
+          ? <p className="text-amber-400/80 text-xs mt-0.5">Overridden · completed {fmt(state.completedDay)}</p>
+          : <p className="text-gray-600 text-xs mt-0.5">From completion time · completed_at unchanged</p>}
+        {!editing ? (
+          <div className="flex gap-4 mt-3">
+            <button onClick={() => { setPick(state.effective ?? state.today); setEditing(true); setErr(null); setMsg(null) }} className="text-blue-400 text-sm font-semibold active:opacity-70">Change</button>
+            {state.override && <button onClick={() => save(null)} disabled={busy} className="text-gray-400 text-sm font-semibold active:opacity-70 disabled:opacity-40">Reset to completed date</button>}
+          </div>
+        ) : (
+          <div className="mt-3">
+            <input type="date" value={pick} max={state.today} onChange={(e) => setPick(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base" />
+            {err && <p className="text-amber-400 text-sm mt-2">{err}</p>}
+            <div className="flex gap-2 mt-3">
+              <button onClick={() => { setEditing(false); setErr(null) }} disabled={busy} className="flex-1 py-2.5 rounded-xl border border-gray-700 text-gray-300 text-sm font-semibold active:opacity-70 disabled:opacity-40">Cancel</button>
+              <button onClick={() => save(pick || null)} disabled={busy || !pick} className="flex-1 py-2.5 rounded-xl bg-green-600 text-white text-sm font-bold active:opacity-80 disabled:opacity-40">{busy ? 'Saving…' : 'Save'}</button>
+            </div>
+          </div>
+        )}
+        {msg && <p className="text-green-400 text-sm mt-2">{msg}</p>}
+      </div>
+    </div>
+  )
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithContext }) {
@@ -1580,6 +1644,10 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
             className="w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80 mb-4">
             Invoice Draft
           </button>
+
+          {/* Production Date — move a completed Job to a different Daily Production day
+              (override; never changes completed_at). Self-hides for non-completed Jobs. */}
+          {order.completedAt && <ProductionDateSection orderId={order.id} onChanged={reload} />}
 
           {/* reopen a Ready Job that wasn't truly finished (reason + PIN) */}
           {order.status === 'ready' && (

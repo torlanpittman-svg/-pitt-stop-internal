@@ -10,6 +10,8 @@ import {
   jobEstimates,
 } from './schema'
 import { partitionServices } from './services'
+import { effectiveProductionDate, shopToday } from './production'
+import { shopTimezone } from './completion'
 
 export type EmployeeRow             = typeof employees.$inferSelect
 export type LocationRow             = typeof locations.$inferSelect
@@ -468,6 +470,36 @@ export async function removeOrder(params: { orderId: string; actor: string | nul
     oldStatus: order.status, newStatus: 'cancelled', note: `Removed from Work Board${qbNote}`,
   })
   return { ok: true, order: updated }
+}
+
+/**
+ * Change Production Date (manager/admin): set or clear `production_date_override` so a completed
+ * Job counts/shows on a chosen shop-calendar day, WITHOUT touching completed_at or the completion
+ * event. Retail + dealer both supported (read only by dailyProduction; never touches dealer_scans
+ * or QuickBooks). date=null → return to the completed_at-derived day. Rejects a non-completed Job
+ * and a future date. Audited as `production_date_corrected` (append-only).
+ */
+export async function setProductionDateOverride(params: { orderId: string; date: string | null; actor: string | null }): Promise<{ ok: boolean; error?: string; previousEffective?: string | null; newEffective?: string | null }> {
+  const db = getDb()
+  const tz = shopTimezone()
+  const [order] = await db.select().from(serviceOrders).where(eq(serviceOrders.id, params.orderId)).limit(1)
+  if (!order) return { ok: false, error: 'Job not found' }
+  if (!order.completedAt) return { ok: false, error: 'Only a completed Job has a production date.' }
+  const date = params.date
+  if (date !== null) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: 'Invalid date.' }
+    if (date > shopToday(tz)) return { ok: false, error: 'Production date cannot be in the future.' }
+  }
+  const previousEffective = effectiveProductionDate(order.productionDateOverride, order.completedAt, tz)
+  const newEffective = effectiveProductionDate(date, order.completedAt, tz)
+  if (previousEffective === newEffective) return { ok: true, previousEffective, newEffective }  // no-op, no event
+
+  await db.update(serviceOrders).set({ productionDateOverride: date, updatedAt: new Date() }).where(eq(serviceOrders.id, params.orderId))
+  await logEvent({
+    serviceOrderId: params.orderId, eventType: 'production_date_corrected', employeeName: params.actor,
+    note: JSON.stringify({ previousEffective, newProductionDate: date ?? 'reset', newEffective, completedAt: (order.completedAt as Date).toISOString() }),
+  })
+  return { ok: true, previousEffective, newEffective }
 }
 
 /**
