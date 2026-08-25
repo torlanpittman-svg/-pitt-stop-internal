@@ -141,6 +141,44 @@ export const finSyncRuns = pgTable('fin_sync_runs', {
   actor:      varchar('actor', { length: 200 }),
 })
 
+// One row per Plaid connection (Item). Access token stored ENCRYPTED (AES-256-GCM) — never
+// plaintext, never client-side. Read-only scope; no money-movement capability.
+export const finPlaidItems = pgTable('fin_plaid_items', {
+  id:              uuid('id').primaryKey().defaultRandom(),
+  itemId:          varchar('item_id', { length: 100 }).notNull().unique(),
+  institutionId:   varchar('institution_id', { length: 64 }),
+  institutionName: varchar('institution_name', { length: 200 }),
+  environment:     varchar('environment', { length: 20 }).notNull(),        // sandbox | production
+  accessTokenEnc:  text('access_token_enc').notNull(),                       // v1:<iv>:<tag>:<ct>
+  status:          varchar('status', { length: 20 }).notNull().default('active'), // active | error | disconnected
+  lastError:       text('last_error'),
+  connectedBy:     varchar('connected_by', { length: 200 }),
+  createdAt:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:       timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// Plaid-discovered accounts under an Item. Unmapped + untrusted until the admin verifies which
+// fin_account (e.g. QBO *2649) each corresponds to. Balances are read-only from the institution.
+export const finPlaidAccounts = pgTable('fin_plaid_accounts', {
+  id:                   uuid('id').primaryKey().defaultRandom(),
+  itemId:               uuid('item_id').notNull().references(() => finPlaidItems.id, { onDelete: 'cascade' }),
+  plaidAccountId:       varchar('plaid_account_id', { length: 100 }).notNull().unique(),
+  name:                 varchar('name', { length: 200 }),
+  officialName:         varchar('official_name', { length: 200 }),
+  mask:                 varchar('mask', { length: 20 }),
+  type:                 varchar('type', { length: 40 }),
+  subtype:              varchar('subtype', { length: 40 }),
+  currentBalanceCents:  integer('current_balance_cents'),
+  availableBalanceCents:integer('available_balance_cents'),
+  currency:             varchar('currency', { length: 8 }),
+  balanceAsOf:          timestamp('balance_as_of', { withTimezone: true }),
+  mappedAccountId:      uuid('mapped_account_id').references(() => finAccounts.id), // verified link to a fin_account
+  mappingVerified:      boolean('mapping_verified').notNull().default(false),
+  raw:                  jsonb('raw'),
+  createdAt:            timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:            timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
 // Append-only audit for manual finance edits.
 export const finEvents = pgTable('fin_events', {
   id:        uuid('id').primaryKey().defaultRandom(),

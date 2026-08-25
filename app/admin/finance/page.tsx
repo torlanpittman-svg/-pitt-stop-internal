@@ -7,8 +7,10 @@
  */
 import { revalidatePath } from 'next/cache'
 import { financeEnabled } from '@/apps/settings/db'
-import { getAccounts, getDebts, getLatestPayroll, getObligations, getDocuments, getLatestSyncRun, getDataGaps, setNextPayroll, addObligation, addDocumentMeta } from '@/apps/finance/db'
+import { getAccounts, getDebts, getLatestPayroll, getObligations, getDocuments, getLatestSyncRun, getDataGaps, setNextPayroll, addObligation, addDocumentMeta, getPlaidConnections, verifyPlaidMapping, refreshPlaidBalances } from '@/apps/finance/db'
+import { plaidDiagnostics } from '@/apps/finance/plaid'
 import { freshnessLabel } from '@/apps/finance/sources'
+import PlaidLinkButton from './PlaidLinkButton'
 
 export const dynamic = 'force-dynamic'
 
@@ -58,6 +60,18 @@ async function obligationAction(fd: FormData) {
   }
   revalidatePath('/admin/finance')
 }
+async function verifyMappingAction(fd: FormData) {
+  'use server'
+  const plaidAccountId = String(fd.get('plaidAccountId') ?? '')
+  const finAccountId = String(fd.get('finAccountId') ?? '')
+  if (plaidAccountId && finAccountId) await verifyPlaidMapping({ plaidAccountId, finAccountId, actor: 'admin' })
+  revalidatePath('/admin/finance')
+}
+async function refreshPlaidAction() {
+  'use server'
+  await refreshPlaidBalances('admin')
+  revalidatePath('/admin/finance')
+}
 async function documentAction(fd: FormData) {
   'use server'
   // Phase 1: capture metadata only (no public file storage — secure storage is Phase 2).
@@ -78,9 +92,10 @@ const input = 'bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm t
 const card = 'rounded-2xl bg-gray-900 border border-gray-800 p-5'
 
 export default async function FinancePage() {
-  const [enabled, accounts, debts, payroll, obligations, documents, run, gaps] = await Promise.all([
-    financeEnabled(), getAccounts(), getDebts(), getLatestPayroll(), getObligations(), getDocuments(), getLatestSyncRun(), getDataGaps(),
+  const [enabled, accounts, debts, payroll, obligations, documents, run, gaps, connections] = await Promise.all([
+    financeEnabled(), getAccounts(), getDebts(), getLatestPayroll(), getObligations(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(),
   ])
+  const plaid = plaidDiagnostics()
   const s = (run?.summary ?? {}) as any
   const cash = accounts.filter((a) => a.kind === 'bank')
   const cards = accounts.filter((a) => a.kind === 'credit_card')
@@ -152,6 +167,57 @@ export default async function FinancePage() {
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* Bank Connections (live, read-only via Plaid) */}
+      <div className={`${card} mb-6`}>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-white font-bold text-lg">Bank Connections <span className="text-gray-600 text-sm font-normal">(Plaid · read-only · no money movement)</span></h2>
+          {connections.length > 0 && <form action={refreshPlaidAction}><button className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300">Refresh balances</button></form>}
+        </div>
+        {!plaid.clientId || !plaid.secret ? (
+          <p className="text-amber-400 text-sm mb-3">Plaid not configured yet (PLAID_CLIENT_ID / PLAID_SECRET). Set them in the environment to enable connecting.</p>
+        ) : <p className="text-gray-500 text-xs mb-3">Environment: <b>{plaid.env}</b>{plaid.redirectUri ? ` · redirect ${plaid.redirectUri}` : ' · no redirect_uri set (required for OAuth/production)'}</p>}
+
+        <div className="mb-4"><PlaidLinkButton /></div>
+
+        {connections.length === 0 ? (
+          <p className="text-gray-500 text-sm">No banks connected yet. The first target is <b>American Momentum → *2649 (operating)</b>.</p>
+        ) : connections.map(({ item, accounts: pas }) => (
+          <div key={item.id} className="mb-4 rounded-xl border border-gray-800 p-4">
+            <p className="text-white font-semibold text-sm">{item.institutionName ?? 'Institution'} <span className="text-gray-600 font-normal">· {item.environment} · {item.status}{item.lastError ? ` · ${item.lastError}` : ''}</span></p>
+            <table className="w-full text-sm mt-2"><tbody>
+              {pas.map((a) => (
+                <tr key={a.id} className="border-b border-gray-800 align-top">
+                  <td className="py-2">
+                    <p className="text-gray-200">{a.name}{a.mask ? ` ····${a.mask}` : ''}</p>
+                    <p className="text-gray-600 text-xs">{a.type}{a.subtype ? `/${a.subtype}` : ''} · {a.currency ?? 'USD'} · as of {a.balanceAsOf ? freshnessLabel(a.balanceAsOf) : '—'}</p>
+                  </td>
+                  <td className="py-2 text-right">
+                    <p className="text-white tabular-nums">Current {money(a.currentBalanceCents)}</p>
+                    <p className="text-gray-400 tabular-nums text-xs">Available {money(a.availableBalanceCents)}</p>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full border bg-green-950/40 text-green-300 border-green-900/60">live · institution</span>
+                  </td>
+                  <td className="py-2 pl-4 text-right w-64">
+                    {a.mappingVerified
+                      ? <span className="text-green-400 text-xs">✓ Verified → mapped account</span>
+                      : (
+                        <form action={verifyMappingAction} className="flex items-center gap-1 justify-end">
+                          <input type="hidden" name="plaidAccountId" value={a.plaidAccountId} />
+                          <select name="finAccountId" className={input} defaultValue="">
+                            <option value="" disabled>Verify this is…</option>
+                            {accounts.filter((f) => f.kind === 'bank' || f.kind === 'credit_card').map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                          </select>
+                          <button className="bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-lg">Verify</button>
+                        </form>
+                      )}
+                  </td>
+                </tr>
+              ))}
+            </tbody></table>
+            <p className="text-gray-600 text-xs mt-2">A discovered account is untrusted until you verify which QuickBooks account (e.g. *2649) it is. Verifying writes a <b>live</b> balance snapshot to that account.</p>
+          </div>
+        ))}
       </div>
 
       {/* Clearing / needs reconciliation */}

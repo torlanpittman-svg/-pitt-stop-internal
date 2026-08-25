@@ -60,8 +60,8 @@ export const config = {
     '/api/quickbooks/query-invoice',
     '/api/quickbooks/query-items',
     '/api/quickbooks/discover',
-    // CFO read-only QuickBooks ingestion (admin-only; never writes to QuickBooks)
-    '/api/admin/finance/sync',
+    // CFO finance APIs (admin-only; read-only QuickBooks + read-only Plaid; never move money)
+    '/api/admin/finance/:path*',
     // manual write / setup tools (owner-run; not part of any automated flow)
     '/api/quickbooks/selftest-invoice',
     '/api/quickbooks/set-invoice-number',
