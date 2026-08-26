@@ -26,6 +26,19 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })
     }
   }
+  // Guarded diagnostic: confirms which DB + how many Plaid items production actually sees.
+  if (new URL(req.url).searchParams.get('diag') === '1') {
+    const { getDb } = await import('@/platform/db')
+    const { finPlaidItems, finPlaidAccounts, finTransactions } = await import('@/apps/finance/schema')
+    const { sql } = await import('drizzle-orm')
+    const db = getDb()
+    const [items] = await db.select({ n: sql<number>`count(*)::int` }).from(finPlaidItems)
+    const [active] = await db.select({ n: sql<number>`count(*)::int` }).from(finPlaidItems).where(sql`status='active'`)
+    const [accts] = await db.select({ n: sql<number>`count(*)::int` }).from(finPlaidAccounts)
+    const [txs] = await db.select({ n: sql<number>`count(*)::int` }).from(finTransactions)
+    const host = (process.env.DATABASE_URL ?? '').replace(/^.*@/, '').replace(/\/.*$/, '')
+    return NextResponse.json({ ok: true, diag: { dbHost: host, plaidItems: items.n, activeItems: active.n, plaidAccounts: accts.n, transactions: txs.n } })
+  }
   try {
     const balances = await refreshPlaidBalances('cron')
     const transactions = await ingestTransactions('cron')
