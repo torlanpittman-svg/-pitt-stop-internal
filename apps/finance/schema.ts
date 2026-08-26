@@ -24,6 +24,9 @@ export const finAccounts = pgTable(
     institution:    varchar('institution', { length: 120 }),            // Extraco | American Momentum | Amex … (owner maps)
     currency:       varchar('currency', { length: 8 }).notNull().default('USD'),
     active:         boolean('active').notNull().default(true),
+    // Lifecycle: active participates in the CFO; ignored = kept for history but never counted
+    // as Pitt Stop cash / Safe-to-Spend / obligations; closed = account no longer exists.
+    status:         varchar('status', { length: 16 }).notNull().default('active'), // active|ignored|closed
     notes:          text('notes'),
     createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt:      timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -174,6 +177,10 @@ export const finPlaidAccounts = pgTable('fin_plaid_accounts', {
   balanceAsOf:          timestamp('balance_as_of', { withTimezone: true }),
   mappedAccountId:      uuid('mapped_account_id').references(() => finAccounts.id), // verified link to a fin_account
   mappingVerified:      boolean('mapping_verified').notNull().default(false),
+  // Connector-layer lifecycle. Plaid may force sibling accounts to stay on the Item; 'ignored'
+  // keeps them connected upstream but excluded from every CFO calc/view. 'closed' = gone.
+  status:               varchar('status', { length: 16 }).notNull().default('active'), // active|ignored|closed
+  entityNote:           varchar('entity_note', { length: 120 }), // e.g. "holding company", "personal" — preserves entity boundary
   raw:                  jsonb('raw'),
   createdAt:            timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt:            timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

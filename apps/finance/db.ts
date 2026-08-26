@@ -3,32 +3,93 @@
  * only writes are to fin_* tables (manual payroll / obligation / document metadata), each
  * audited in fin_events. Every money figure returned carries source + as-of + confidence.
  */
-import { desc, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { finAccounts, finBalanceSnapshots, finDebts, finPayroll, finObligations, finDocuments, finSyncRuns, finEvents, finPlaidItems, finPlaidAccounts } from './schema'
-import { money, type MoneyValue } from './sources'
+import { money, isStale, type MoneyValue } from './sources'
 import { encrypt } from '@/apps/quickbooks/crypto'
 import { getItemInstitution, getAccountBalances, plaidEnv, type PlaidAccountBalance } from './plaid'
 
+export interface LiveBalance { currentCents: number | null; availableCents: number | null; asOf: string; mask: string | null; institution: string | null; stale: boolean }
 export interface AccountView {
   id: string; name: string; kind: string; institution: string | null; clearingSuspect: boolean
-  accountType: string | null; balance: MoneyValue | null
+  accountType: string | null; status: string; isCash: boolean
+  balance: MoneyValue | null            // QuickBooks BOOK figure — never presented as live cash
+  live: LiveBalance | null              // verified Plaid live balance mapped to this account (if any)
 }
 
-/** Accounts (cash / card / clearing) with their latest BOOK balance snapshot. */
-export async function getAccounts(): Promise<AccountView[]> {
+/**
+ * Accounts with BOOK balance (QuickBooks) AND, where a verified Plaid mapping exists, the LIVE
+ * institution balance — shown side by side, never substituted. Excludes ignored/closed accounts
+ * by default so a stale/nonexistent account (e.g. Savings *3241) never counts as cash.
+ */
+export async function getAccounts(opts: { includeInactive?: boolean } = {}): Promise<AccountView[]> {
   const db = getDb()
   const accts = await db.select().from(finAccounts).orderBy(finAccounts.kind, finAccounts.name)
   const out: AccountView[] = []
   for (const a of accts) {
-    const [snap] = await db.select().from(finBalanceSnapshots).where(eq(finBalanceSnapshots.accountId, a.id)).orderBy(desc(finBalanceSnapshots.asOf)).limit(1)
+    if (!opts.includeInactive && a.status !== 'active') continue
+    // BOOK snapshot only (source=qbo) — live 'plaid' snapshots must not masquerade as book.
+    const [snap] = await db.select().from(finBalanceSnapshots)
+      .where(and(eq(finBalanceSnapshots.accountId, a.id), eq(finBalanceSnapshots.source, 'qbo')))
+      .orderBy(desc(finBalanceSnapshots.asOf)).limit(1)
+    // LIVE from a verified, active Plaid mapping.
+    const [pa] = await db.select().from(finPlaidAccounts)
+      .where(and(eq(finPlaidAccounts.mappedAccountId, a.id), eq(finPlaidAccounts.mappingVerified, true), eq(finPlaidAccounts.status, 'active')))
+      .limit(1)
     out.push({
       id: a.id, name: a.name, kind: a.kind, institution: a.institution, clearingSuspect: a.clearingSuspect,
-      accountType: a.accountType,
+      accountType: a.accountType, status: a.status, isCash: a.isCash,
       balance: snap ? money(snap.balanceCents, snap.source as any, snap.asOf, snap.confidence as any) : null,
+      live: pa ? {
+        currentCents: pa.currentBalanceCents, availableCents: pa.availableBalanceCents,
+        asOf: (pa.balanceAsOf ?? new Date()).toISOString(), mask: pa.mask, institution: null,
+        stale: isStale(pa.balanceAsOf),
+      } : null,
     })
   }
   return out
+}
+
+/** The verified live operating-cash foundation for Safe-to-Spend (American Momentum *2649). */
+export interface OperatingCash { finAccountId: string; name: string; mask: string | null; currentCents: number | null; availableCents: number | null; asOf: string; stale: boolean }
+export async function getOperatingCash(): Promise<OperatingCash | null> {
+  const db = getDb()
+  // The operating account is the verified Plaid mapping onto the fin_account marked as the
+  // Pitt Stop Detail operating checking (isCash bank, external_id qbo:31 / name *2649).
+  const rows = await db.select({ pa: finPlaidAccounts, fa: finAccounts })
+    .from(finPlaidAccounts)
+    .innerJoin(finAccounts, eq(finPlaidAccounts.mappedAccountId, finAccounts.id))
+    .where(and(eq(finPlaidAccounts.mappingVerified, true), eq(finPlaidAccounts.status, 'active'), eq(finAccounts.status, 'active')))
+  const op = rows.find((r) => /2649/.test(r.fa.name) || /2649/.test(r.pa.mask ?? ''))
+  if (!op) return null
+  return {
+    finAccountId: op.fa.id, name: op.fa.name, mask: op.pa.mask,
+    currentCents: op.pa.currentBalanceCents, availableCents: op.pa.availableBalanceCents,
+    asOf: (op.pa.balanceAsOf ?? new Date()).toISOString(), stale: isStale(op.pa.balanceAsOf),
+  }
+}
+
+/** Mark a Plaid-discovered account active | ignored | closed (connector layer). Audited. */
+export async function setPlaidAccountStatus(params: { plaidAccountId: string; status: 'active' | 'ignored' | 'closed'; entityNote?: string | null; actor: string | null }): Promise<{ ok: boolean; error?: string }> {
+  const db = getDb()
+  const [pa] = await db.select().from(finPlaidAccounts).where(eq(finPlaidAccounts.plaidAccountId, params.plaidAccountId)).limit(1)
+  if (!pa) return { ok: false, error: 'Plaid account not found' }
+  const set: Record<string, unknown> = { status: params.status, updatedAt: new Date() }
+  if (params.entityNote !== undefined) set.entityNote = params.entityNote
+  await db.update(finPlaidAccounts).set(set).where(eq(finPlaidAccounts.id, pa.id))
+  await db.insert(finEvents).values({ actor: params.actor, action: 'plaid_account_status', entity: 'fin_plaid_accounts', entityId: pa.plaidAccountId, before: { status: pa.status } as any, after: { status: params.status, entityNote: params.entityNote ?? pa.entityNote } as any, source: 'manual' })
+  return { ok: true }
+}
+
+/** Mark a fin_account active | ignored | closed. Keeps history; removes it from cash + views. Audited. */
+export async function setAccountStatus(params: { finAccountId: string; status: 'active' | 'ignored' | 'closed'; actor: string | null }): Promise<{ ok: boolean; error?: string }> {
+  const db = getDb()
+  const [fa] = await db.select().from(finAccounts).where(eq(finAccounts.id, params.finAccountId)).limit(1)
+  if (!fa) return { ok: false, error: 'Account not found' }
+  await db.update(finAccounts).set({ status: params.status, active: params.status === 'active', updatedAt: new Date() }).where(eq(finAccounts.id, fa.id))
+  await db.insert(finEvents).values({ actor: params.actor, action: 'account_status', entity: 'fin_accounts', entityId: fa.id, before: { status: fa.status } as any, after: { status: params.status } as any, source: 'manual' })
+  return { ok: true }
 }
 
 export async function getDebts() {
@@ -186,13 +247,14 @@ export async function getDataGaps(): Promise<DataGap[]> {
   const db = getDb()
   const gaps: DataGap[] = []
 
-  // No live bank/card source connected → cash is book-only.
-  const [{ liveCount }] = await db.select({ liveCount: sql<number>`count(*)::int` }).from(finBalanceSnapshots).where(eq(finBalanceSnapshots.confidence, 'live'))
-  if (Number(liveCount) === 0) {
-    gaps.push({ key: 'extraco_live', label: 'Live Extraco bank balance not connected', severity: 'high' })
-    gaps.push({ key: 'amb_live', label: 'Live American Momentum bank balance not connected', severity: 'high' })
-    gaps.push({ key: 'amex_live', label: 'Live American Express data (balance / due / min) not connected', severity: 'high' })
-  }
+  // Live source coverage — per account, based on VERIFIED, active Plaid mappings (not a blanket flag).
+  const verified = await db.select({ mask: finPlaidAccounts.mask, name: finPlaidAccounts.name, type: finPlaidAccounts.type })
+    .from(finPlaidAccounts)
+    .where(and(eq(finPlaidAccounts.mappingVerified, true), eq(finPlaidAccounts.status, 'active')))
+  const hasMask = (m: RegExp) => verified.some((v) => m.test(v.mask ?? '') || m.test(v.name ?? ''))
+  if (!hasMask(/2649/)) gaps.push({ key: 'amb_live', label: 'American Momentum *2649 operating balance not verified-live', severity: 'high' })
+  if (!hasMask(/5600/)) gaps.push({ key: 'extraco_live', label: 'Extraco *5600 (Auto Sales) balance not verified-live', severity: 'medium' })
+  if (!verified.some((v) => v.type === 'credit')) gaps.push({ key: 'amex_live', label: 'American Express card mapping not verified (mask 5008 vs QBO “6-31007” — confirm)', severity: 'medium' })
   // Next payroll missing → cannot answer "can we make payroll?".
   const payroll = await getLatestPayroll()
   if (!payroll) gaps.push({ key: 'payroll', label: 'Next payroll amount / date not entered', severity: 'high' })

@@ -7,7 +7,7 @@
  */
 import { revalidatePath } from 'next/cache'
 import { financeEnabled } from '@/apps/settings/db'
-import { getAccounts, getDebts, getLatestPayroll, getObligations, getDocuments, getLatestSyncRun, getDataGaps, setNextPayroll, addObligation, addDocumentMeta, getPlaidConnections, verifyPlaidMapping, refreshPlaidBalances } from '@/apps/finance/db'
+import { getAccounts, getDebts, getLatestPayroll, getObligations, getDocuments, getLatestSyncRun, getDataGaps, setNextPayroll, addObligation, addDocumentMeta, getPlaidConnections, verifyPlaidMapping, refreshPlaidBalances, getOperatingCash, setPlaidAccountStatus, setAccountStatus } from '@/apps/finance/db'
 import { plaidDiagnostics } from '@/apps/finance/plaid'
 import { freshnessLabel } from '@/apps/finance/sources'
 import PlaidLinkButton from './PlaidLinkButton'
@@ -72,6 +72,21 @@ async function refreshPlaidAction() {
   await refreshPlaidBalances('admin')
   revalidatePath('/admin/finance')
 }
+async function plaidStatusAction(fd: FormData) {
+  'use server'
+  const plaidAccountId = String(fd.get('plaidAccountId') ?? '')
+  const status = String(fd.get('status') ?? '') as 'active' | 'ignored' | 'closed'
+  const entityNote = String(fd.get('entityNote') ?? '') || undefined
+  if (plaidAccountId && ['active', 'ignored', 'closed'].includes(status)) await setPlaidAccountStatus({ plaidAccountId, status, entityNote, actor: 'admin' })
+  revalidatePath('/admin/finance')
+}
+async function accountStatusAction(fd: FormData) {
+  'use server'
+  const finAccountId = String(fd.get('finAccountId') ?? '')
+  const status = String(fd.get('status') ?? '') as 'active' | 'ignored' | 'closed'
+  if (finAccountId && ['active', 'ignored', 'closed'].includes(status)) await setAccountStatus({ finAccountId, status, actor: 'admin' })
+  revalidatePath('/admin/finance')
+}
 async function documentAction(fd: FormData) {
   'use server'
   // Phase 1: capture metadata only (no public file storage — secure storage is Phase 2).
@@ -92,15 +107,19 @@ const input = 'bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm t
 const card = 'rounded-2xl bg-gray-900 border border-gray-800 p-5'
 
 export default async function FinancePage() {
-  const [enabled, accounts, debts, payroll, obligations, documents, run, gaps, connections] = await Promise.all([
-    financeEnabled(), getAccounts(), getDebts(), getLatestPayroll(), getObligations(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(),
+  const [enabled, accounts, allAccounts, debts, payroll, obligations, documents, run, gaps, connections, operating] = await Promise.all([
+    financeEnabled(), getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getObligations(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getOperatingCash(),
   ])
   const plaid = plaidDiagnostics()
   const s = (run?.summary ?? {}) as any
-  const cash = accounts.filter((a) => a.kind === 'bank')
+  const cash = accounts.filter((a) => a.kind === 'bank' && !a.clearingSuspect)
   const cards = accounts.filter((a) => a.kind === 'credit_card')
   const clearing = accounts.filter((a) => a.clearingSuspect)
+  const inactiveAccounts = allAccounts.filter((a) => a.status !== 'active')
   const bankBookTotal = cash.reduce((t, a) => t + (a.balance?.cents ?? 0), 0)
+  // Live operating available (verified *2649) is the trustworthy spendable-cash foundation.
+  const opAvail = operating?.availableCents ?? null
+  const opCurrent = operating?.currentCents ?? null
 
   return (
     <main className="min-h-screen bg-gray-950 text-gray-200 px-8 py-8 max-w-6xl mx-auto">
@@ -111,29 +130,29 @@ export default async function FinancePage() {
       <p className="text-gray-500 text-sm mb-1">QuickBooks <b>book</b> data · last synced {run ? freshnessLabel(run.startedAt) : 'never'} · read-only · admin-only</p>
       {!enabled && <p className="text-amber-400 text-xs mb-4">⚠ finance_enabled is OFF — shipped dark; not linked anywhere. Admin preview only.</p>}
 
-      {/* Honesty banner: no live cash */}
-      <div className="rounded-2xl border border-amber-900/60 bg-amber-950/20 px-5 py-3 mb-6">
-        <p className="text-amber-300 text-sm"><b>No live bank/card data is connected.</b> Balances below are QuickBooks book figures — not verified live cash. <b>Safe-to-Spend and the 13-week forecast are unavailable</b> until live cash (Phase 2) and obligations (Phase 3) are connected.</p>
+      {/* Honesty banner: live cash IS connected; Safe-to-Spend still needs reserves + obligations */}
+      <div className="rounded-2xl border border-green-900/50 bg-green-950/15 px-5 py-3 mb-6">
+        <p className="text-green-300 text-sm"><b>Live bank/card data is connected (Plaid, read-only).</b> Live institution balances are shown beside QuickBooks book — never substituted. <b>Safe-to-Spend is not yet fully trustworthy</b>: it needs verified payroll, dated obligations, and a chosen reserve policy (all still unset). Live cash below is real; the forecast is not built yet.</p>
       </div>
 
       <div className="grid grid-cols-3 gap-4 mb-6">
-        {/* Safe to Spend — intentionally unavailable */}
+        {/* Operating available (live *2649) — the Safe-to-Spend foundation */}
+        <div className={card}>
+          <p className="text-gray-500 text-xs uppercase tracking-widest">Operating available (live)</p>
+          <p className="text-2xl font-bold text-white mt-1">{money(opAvail)} {operating && <span className="align-middle"><Badge confidence="live" asOf={operating.asOf} /></span>}</p>
+          <p className="text-gray-600 text-xs mt-1">{operating ? <>American Momentum *{operating.mask} · available now. Current {money(opCurrent)}.</> : 'No verified operating account.'}</p>
+        </div>
+        {/* Safe to Spend — foundation known, reserves/obligations pending */}
         <div className={card}>
           <p className="text-gray-500 text-xs uppercase tracking-widest">Safe to Spend</p>
-          <p className="text-2xl font-bold text-gray-600 mt-1">Unavailable</p>
-          <p className="text-gray-600 text-xs mt-1">Needs verified live bank balance + committed obligations.</p>
+          <p className="text-2xl font-bold text-amber-400 mt-1">Not yet trustworthy</p>
+          <p className="text-gray-600 text-xs mt-1">Foundation = live operating available. Missing: payroll, dated obligations, reserves. Shown once inputs exist.</p>
         </div>
-        {/* Cash (book) */}
+        {/* Bank cash (book) — reference only */}
         <div className={card}>
           <p className="text-gray-500 text-xs uppercase tracking-widest">Bank cash (book)</p>
-          <p className="text-2xl font-bold text-white mt-1">{money(bankBookTotal)} <span className="align-middle"><Badge confidence="book" /></span></p>
-          <p className="text-gray-600 text-xs mt-1">QuickBooks book · not live cash.</p>
-        </div>
-        {/* 13-week forecast — unavailable */}
-        <div className={card}>
-          <p className="text-gray-500 text-xs uppercase tracking-widest">13-week forecast</p>
-          <p className="text-2xl font-bold text-gray-600 mt-1">Unavailable</p>
-          <p className="text-gray-600 text-xs mt-1">Arrives after Phases 2–6.</p>
+          <p className="text-2xl font-bold text-gray-300 mt-1">{money(bankBookTotal)} <span className="align-middle"><Badge confidence="book" /></span></p>
+          <p className="text-gray-600 text-xs mt-1">QuickBooks book · reference, not spendable cash.</p>
         </div>
       </div>
 
@@ -152,21 +171,46 @@ export default async function FinancePage() {
         )}
       </div>
 
-      {/* Cash & Accounts */}
+      {/* Cash & Accounts — live beside book, never substituted */}
       <div className={`${card} mb-6`}>
-        <h2 className="text-white font-bold text-lg mb-3">Cash &amp; Accounts <span className="text-gray-600 text-sm font-normal">(book — not live)</span></h2>
+        <h2 className="text-white font-bold text-lg mb-3">Cash &amp; Accounts <span className="text-gray-600 text-sm font-normal">(live institution cash · book for reference)</span></h2>
         <table className="w-full text-sm">
+          <thead>
+            <tr className="text-gray-600 text-xs uppercase tracking-wider">
+              <th className="text-left font-normal py-1">Account</th>
+              <th className="text-right font-normal py-1">Live current</th>
+              <th className="text-right font-normal py-1">Live available</th>
+              <th className="text-right font-normal py-1 pl-4">Book</th>
+              <th className="py-1"></th>
+            </tr>
+          </thead>
           <tbody>
             {[...cash, ...cards].map((a) => (
               <tr key={a.id} className="border-b border-gray-800">
-                <td className="py-2 text-gray-300">{a.name}{a.institution ? ` · ${a.institution}` : ''}</td>
-                <td className="py-2 text-gray-600">{a.kind === 'credit_card' ? 'Credit card' : 'Bank'}</td>
-                <td className="py-2 text-right tabular-nums text-white">{money(a.balance?.cents)}</td>
-                <td className="py-2 pl-3 text-right">{a.balance && <Badge confidence={a.balance.confidence} asOf={a.balance.asOf} />}</td>
+                <td className="py-2 text-gray-300">{a.name}{a.live?.mask ? ` ····${a.live.mask}` : ''}<span className="text-gray-600"> · {a.kind === 'credit_card' ? 'Credit card' : 'Bank'}</span></td>
+                <td className="py-2 text-right tabular-nums text-white">{a.live ? money(a.live.currentCents) : <span className="text-gray-700">—</span>}</td>
+                <td className="py-2 text-right tabular-nums text-green-300">{a.live ? money(a.live.availableCents) : <span className="text-gray-700">—</span>}</td>
+                <td className="py-2 pl-4 text-right tabular-nums text-gray-500">{money(a.balance?.cents)}</td>
+                <td className="py-2 pl-3 text-right">{a.live ? <Badge confidence="live" asOf={a.live.asOf} /> : <Badge confidence="book" />}</td>
               </tr>
             ))}
           </tbody>
         </table>
+        <p className="text-gray-600 text-xs mt-2">Live = Plaid institution balance (spendable). Book = QuickBooks (reference; often diverges). Auto-sales *5600 is real cash but is <b>not</b> operating Safe-to-Spend.</p>
+        {inactiveAccounts.length > 0 && (
+          <div className="mt-4 pt-3 border-t border-gray-800">
+            <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Closed / ignored — excluded from cash &amp; calculations</p>
+            {inactiveAccounts.map((a) => (
+              <div key={a.id} className="flex items-center justify-between text-sm py-1">
+                <span className="text-gray-500 line-through">{a.name}</span>
+                <span className="flex items-center gap-3">
+                  <span className="text-[11px] px-2 py-0.5 rounded-full border bg-gray-800 text-gray-400 border-gray-700">{a.status}</span>
+                  <form action={accountStatusAction}><input type="hidden" name="finAccountId" value={a.id} /><input type="hidden" name="status" value="active" /><button className="text-xs text-gray-500 underline">re-activate</button></form>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Bank Connections (live, read-only via Plaid) */}
@@ -187,35 +231,46 @@ export default async function FinancePage() {
           <div key={item.id} className="mb-4 rounded-xl border border-gray-800 p-4">
             <p className="text-white font-semibold text-sm">{item.institutionName ?? 'Institution'} <span className="text-gray-600 font-normal">· {item.environment} · {item.status}{item.lastError ? ` · ${item.lastError}` : ''}</span></p>
             <table className="w-full text-sm mt-2"><tbody>
-              {pas.map((a) => (
-                <tr key={a.id} className="border-b border-gray-800 align-top">
+              {pas.map((a) => {
+                const ignored = a.status !== 'active'
+                return (
+                <tr key={a.id} className={`border-b border-gray-800 align-top ${ignored ? 'opacity-45' : ''}`}>
                   <td className="py-2">
-                    <p className="text-gray-200">{a.name}{a.mask ? ` ····${a.mask}` : ''}</p>
+                    <p className="text-gray-200">{a.name}{a.mask ? ` ····${a.mask}` : ''}
+                      {ignored && <span className="ml-2 text-[11px] px-2 py-0.5 rounded-full border bg-gray-800 text-gray-400 border-gray-700">{a.status}</span>}
+                      {a.entityNote && <span className="ml-2 text-[11px] px-2 py-0.5 rounded-full border bg-purple-950/40 text-purple-300 border-purple-900/60">{a.entityNote}</span>}
+                    </p>
                     <p className="text-gray-600 text-xs">{a.type}{a.subtype ? `/${a.subtype}` : ''} · {a.currency ?? 'USD'} · as of {a.balanceAsOf ? freshnessLabel(a.balanceAsOf) : '—'}</p>
                   </td>
                   <td className="py-2 text-right">
                     <p className="text-white tabular-nums">Current {money(a.currentBalanceCents)}</p>
                     <p className="text-gray-400 tabular-nums text-xs">Available {money(a.availableBalanceCents)}</p>
-                    <span className="text-[11px] px-2 py-0.5 rounded-full border bg-green-950/40 text-green-300 border-green-900/60">live · institution</span>
+                    {!ignored && <span className="text-[11px] px-2 py-0.5 rounded-full border bg-green-950/40 text-green-300 border-green-900/60">live · institution</span>}
                   </td>
-                  <td className="py-2 pl-4 text-right w-64">
-                    {a.mappingVerified
-                      ? <span className="text-green-400 text-xs">✓ Verified → mapped account</span>
-                      : (
-                        <form action={verifyMappingAction} className="flex items-center gap-1 justify-end">
-                          <input type="hidden" name="plaidAccountId" value={a.plaidAccountId} />
-                          <select name="finAccountId" className={input} defaultValue="">
-                            <option value="" disabled>Verify this is…</option>
-                            {accounts.filter((f) => f.kind === 'bank' || f.kind === 'credit_card').map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-                          </select>
-                          <button className="bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-lg">Verify</button>
-                        </form>
-                      )}
+                  <td className="py-2 pl-4 text-right w-72">
+                    {ignored ? (
+                      <form action={plaidStatusAction}><input type="hidden" name="plaidAccountId" value={a.plaidAccountId} /><input type="hidden" name="status" value="active" /><button className="text-xs text-gray-400 underline">un-ignore</button></form>
+                    ) : (<>
+                      {a.mappingVerified
+                        ? <span className="text-green-400 text-xs">✓ Verified → mapped account</span>
+                        : (
+                          <form action={verifyMappingAction} className="flex items-center gap-1 justify-end">
+                            <input type="hidden" name="plaidAccountId" value={a.plaidAccountId} />
+                            <select name="finAccountId" className={input} defaultValue="">
+                              <option value="" disabled>Verify this is…</option>
+                              {accounts.filter((f) => f.kind === 'bank' || f.kind === 'credit_card').map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                            </select>
+                            <button className="bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-lg">Verify</button>
+                          </form>
+                        )}
+                      <form action={plaidStatusAction} className="mt-1"><input type="hidden" name="plaidAccountId" value={a.plaidAccountId} /><input type="hidden" name="status" value="ignored" /><button className="text-[11px] text-gray-600 underline">exclude from CFO</button></form>
+                    </>)}
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody></table>
-            <p className="text-gray-600 text-xs mt-2">A discovered account is untrusted until you verify which QuickBooks account (e.g. *2649) it is. Verifying writes a <b>live</b> balance snapshot to that account.</p>
+            <p className="text-gray-600 text-xs mt-2">A discovered account is untrusted until you verify which QuickBooks account (e.g. *2649) it is. Verifying writes a <b>live</b> balance snapshot to that account. “Exclude from CFO” keeps an account connected upstream but out of all cash/Safe-to-Spend math.</p>
           </div>
         ))}
       </div>
