@@ -115,8 +115,8 @@ export async function projectCashLow(horizonDays = 14): Promise<CashProjection> 
     points.push({ date: e.due, label: e.label, category: e.category, priority: e.priority, deltaCents: -e.cents, balanceCents: bal })
     if (start != null && (low == null || bal < low)) { low = bal; lowDate = e.due }
     if (start != null && bal < 0 && !overdraftDate) { overdraftDate = e.due; overdraftCause = e.label }
-    // First payroll event: record whether cash covered it at that moment.
-    if (e.category === 'payroll' && payrollCovered == null && /payroll —/i.test(e.label)) {
+    // First employee-payroll event (category 'payroll', not 'payroll_tax'): did cash cover it?
+    if (e.category === 'payroll' && payrollCovered == null) {
       payrollDate = e.due; payrollBalanceAfter = bal; payrollCovered = bal >= 0
     }
   }

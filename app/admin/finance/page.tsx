@@ -121,7 +121,7 @@ const card = 'rounded-2xl bg-gray-900 border border-gray-800 p-5'
 
 export default async function FinancePage() {
   const [enabled, accounts, allAccounts, debts, payroll, documents, run, gaps, connections, operating, recentTx, txSummary, s2s, projection, oblByStatus, reserves, autoSales] = await Promise.all([
-    financeEnabled(), getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getOperatingCash(), getRecentTransactions(30), getClassificationSummary(120), computeSafeToSpend(14), projectCashLow(14), getObligationsByStatus(), getReservePolicy(), getAutoSalesLiquidity(),
+    financeEnabled(), getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getOperatingCash(), getRecentTransactions(30), getClassificationSummary(120), computeSafeToSpend(21), projectCashLow(21), getObligationsByStatus(), getReservePolicy(), getAutoSalesLiquidity(),
   ])
   const plaid = plaidDiagnostics()
   const s = (run?.summary ?? {}) as any
