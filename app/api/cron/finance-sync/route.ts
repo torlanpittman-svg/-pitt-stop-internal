@@ -12,6 +12,7 @@
 import { NextResponse } from 'next/server'
 import { refreshPlaidBalances } from '@/apps/finance/db'
 import { ingestTransactions } from '@/apps/finance/transactions'
+import { discoverObligations } from '@/apps/finance/obligations-discovery'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
@@ -42,8 +43,9 @@ export async function GET(req: Request) {
   try {
     const balances = await refreshPlaidBalances('cron')
     const transactions = await ingestTransactions('cron')
-    logger.info('cron:finance-sync', 'synced', { balances, transactions })
-    return NextResponse.json({ ok: true, balances, transactions })
+    const obligations = await discoverObligations('cron')
+    logger.info('cron:finance-sync', 'synced', { balances, transactions, obligations })
+    return NextResponse.json({ ok: true, balances, transactions, obligations })
   } catch (err) {
     logger.error('cron:finance-sync', 'failed', { error: String(err) })
     return NextResponse.json({ ok: false, error: String(err) }, { status: 500 })

@@ -7,9 +7,12 @@
  */
 import { revalidatePath } from 'next/cache'
 import { financeEnabled } from '@/apps/settings/db'
-import { getAccounts, getDebts, getLatestPayroll, getObligations, getDocuments, getLatestSyncRun, getDataGaps, setNextPayroll, addObligation, addDocumentMeta, getPlaidConnections, verifyPlaidMapping, refreshPlaidBalances, getOperatingCash, setPlaidAccountStatus, setAccountStatus } from '@/apps/finance/db'
+import { getAccounts, getDebts, getLatestPayroll, getDocuments, getLatestSyncRun, getDataGaps, setNextPayroll, addDocumentMeta, getPlaidConnections, verifyPlaidMapping, refreshPlaidBalances, getOperatingCash, setPlaidAccountStatus, setAccountStatus } from '@/apps/finance/db'
 import { plaidDiagnostics } from '@/apps/finance/plaid'
 import { ingestTransactions, getRecentTransactions, getClassificationSummary } from '@/apps/finance/transactions'
+import { discoverObligations, getObligationsByStatus, setObligationStatus } from '@/apps/finance/obligations-discovery'
+import { computeSafeToSpend, projectCashLow } from '@/apps/finance/safe-to-spend'
+import { getReservePolicy } from '@/apps/settings/db'
 import { freshnessLabel } from '@/apps/finance/sources'
 import PlaidLinkButton from './PlaidLinkButton'
 
@@ -46,21 +49,6 @@ async function payrollAction(fd: FormData) {
   }
   revalidatePath('/admin/finance')
 }
-async function obligationAction(fd: FormData) {
-  'use server'
-  const vendor = String(fd.get('vendor') ?? '').trim()
-  if (vendor) {
-    const amtRaw = String(fd.get('amount') ?? '')
-    await addObligation({
-      vendor, category: String(fd.get('category') ?? '') || undefined,
-      amountCents: amtRaw ? Math.round(parseFloat(amtRaw) * 100) : undefined,
-      frequency: String(fd.get('frequency') ?? '') || undefined,
-      nextDue: /^\d{4}-\d{2}-\d{2}$/.test(String(fd.get('nextDue') ?? '')) ? String(fd.get('nextDue')) : undefined,
-      essential: fd.get('essential') === 'on', notes: String(fd.get('notes') ?? '') || undefined,
-    }, 'admin')
-  }
-  revalidatePath('/admin/finance')
-}
 async function verifyMappingAction(fd: FormData) {
   'use server'
   const plaidAccountId = String(fd.get('plaidAccountId') ?? '')
@@ -78,6 +66,23 @@ async function syncTransactionsAction() {
   const { refreshPlaidBalances } = await import('@/apps/finance/db')
   await refreshPlaidBalances('admin')
   await ingestTransactions('admin')
+  await discoverObligations('admin')
+  revalidatePath('/admin/finance')
+}
+async function obligationStatusAction(fd: FormData) {
+  'use server'
+  const id = String(fd.get('id') ?? ''); const status = String(fd.get('status') ?? '') as 'confirmed' | 'ignored' | 'proposed'
+  if (id && ['confirmed', 'ignored', 'proposed', 'paused'].includes(status)) await setObligationStatus(id, status as any, 'admin')
+  revalidatePath('/admin/finance')
+}
+async function reservesAction(fd: FormData) {
+  'use server'
+  const { updateSetting } = await import('@/apps/settings/db')
+  const toCents = (v: string) => Math.round((parseFloat(v) || 0) * 100)
+  await updateSetting('payroll_reserve_cents', toCents(String(fd.get('payroll') ?? '0')), 'admin')
+  await updateSetting('tax_reserve_cents', toCents(String(fd.get('tax') ?? '0')), 'admin')
+  await updateSetting('min_operating_buffer_cents', toCents(String(fd.get('buffer') ?? '0')), 'admin')
+  await updateSetting('reserves_configured', true, 'admin')
   revalidatePath('/admin/finance')
 }
 async function plaidStatusAction(fd: FormData) {
@@ -115,8 +120,8 @@ const input = 'bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm t
 const card = 'rounded-2xl bg-gray-900 border border-gray-800 p-5'
 
 export default async function FinancePage() {
-  const [enabled, accounts, allAccounts, debts, payroll, obligations, documents, run, gaps, connections, operating, recentTx, txSummary] = await Promise.all([
-    financeEnabled(), getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getObligations(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getOperatingCash(), getRecentTransactions(30), getClassificationSummary(120),
+  const [enabled, accounts, allAccounts, debts, payroll, documents, run, gaps, connections, operating, recentTx, txSummary, s2s, projection, oblByStatus, reserves] = await Promise.all([
+    financeEnabled(), getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getOperatingCash(), getRecentTransactions(30), getClassificationSummary(120), computeSafeToSpend(14), projectCashLow(14), getObligationsByStatus(), getReservePolicy(),
   ])
   const plaid = plaidDiagnostics()
   const s = (run?.summary ?? {}) as any
@@ -150,11 +155,11 @@ export default async function FinancePage() {
           <p className="text-2xl font-bold text-white mt-1">{money(opAvail)} {operating && <span className="align-middle"><Badge confidence="live" asOf={operating.asOf} /></span>}</p>
           <p className="text-gray-600 text-xs mt-1">{operating ? <>American Momentum *{operating.mask} · available now. Current {money(opCurrent)}.</> : 'No verified operating account.'}</p>
         </div>
-        {/* Safe to Spend — foundation known, reserves/obligations pending */}
+        {/* Safe to Spend — computed foundation, honestly flagged */}
         <div className={card}>
-          <p className="text-gray-500 text-xs uppercase tracking-widest">Safe to Spend</p>
-          <p className="text-2xl font-bold text-amber-400 mt-1">Not yet trustworthy</p>
-          <p className="text-gray-600 text-xs mt-1">Foundation = live operating available. Missing: payroll, dated obligations, reserves. Shown once inputs exist.</p>
+          <p className="text-gray-500 text-xs uppercase tracking-widest">Safe to Spend {s2s.trustworthy ? '' : '(provisional)'}</p>
+          <p className={`text-2xl font-bold mt-1 ${s2s.trustworthy ? 'text-white' : 'text-amber-400'}`}>{money(s2s.safeToSpendCents)}</p>
+          <p className="text-gray-600 text-xs mt-1">{s2s.trustworthy ? 'Available − committed − reserves.' : `Provisional: ${s2s.disclosures.length} input(s) unconfirmed. Available ${money(s2s.availableCents)} − deductions ${money(s2s.deductions.reduce((t, x) => t + x.cents, 0))}.`}</p>
         </div>
         {/* Bank cash (book) — reference only */}
         <div className={card}>
@@ -387,30 +392,98 @@ export default async function FinancePage() {
         <p className="text-gray-600 text-xs mt-1">QuickBooks employees on file: {s.employeesCount ?? '—'}</p>
       </div>
 
-      {/* Obligations (manual add only) */}
+      {/* Safe-to-Spend detail + near-term overdraft projection */}
       <div className={`${card} mb-6`}>
-        <h2 className="text-white font-bold text-lg mb-1">Recurring obligations <span className="text-gray-600 text-sm font-normal">(manual add only — automated discovery is Phase 3)</span></h2>
-        {obligations.length === 0 ? <p className="text-gray-500 text-sm mb-3">None yet. Nothing is seeded from guesses.</p> : (
+        <h2 className="text-white font-bold text-lg mb-1">Safe-to-Spend &amp; near-term cash <span className="text-gray-600 text-sm font-normal">(operating *2649 · {projection.horizonDays}-day horizon)</span></h2>
+        {s2s.disclosures.length > 0 && (
+          <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 mb-3">
+            {s2s.disclosures.map((dsc, i) => <p key={i} className="text-amber-300/90 text-xs">⚠ {dsc}</p>)}
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-6">
+          <div>
+            <table className="w-full text-sm">
+              <tbody>
+                <tr className="border-b border-gray-800"><td className="py-1.5 text-gray-300">Operating available (live)</td><td className="py-1.5 text-right tabular-nums text-white">{money(s2s.availableCents)}</td></tr>
+                {s2s.deductions.map((d, i) => (
+                  <tr key={i} className="border-b border-gray-800/60"><td className="py-1.5 text-gray-400">− {d.label}{d.due ? ` (due ${d.due})` : ''} <span className="text-gray-600 text-xs">{d.confidence}</span></td><td className="py-1.5 text-right tabular-nums text-red-300">{money(d.cents)}</td></tr>
+                ))}
+                <tr><td className="py-2 text-gray-200 font-semibold">Safe-to-Spend {s2s.trustworthy ? '' : '(provisional)'}</td><td className={`py-2 text-right tabular-nums font-bold ${s2s.trustworthy ? 'text-white' : 'text-amber-400'}`}>{money(s2s.safeToSpendCents)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">Projected low point</p>
+            {projection.startCents == null ? <p className="text-gray-500 text-sm">No verified operating balance.</p> : projection.points.length === 0 ? (
+              <p className="text-gray-500 text-sm">No confirmed dated obligations yet — confirm payroll/rent below to project the low point and overdraft risk.</p>
+            ) : (<>
+              <p className={`text-lg font-bold ${projection.overdraftRisk ? 'text-red-400' : 'text-white'}`}>{money(projection.lowCents)} <span className="text-gray-500 text-xs font-normal">on {projection.lowDate}</span></p>
+              {projection.overdraftRisk && <p className="text-red-400 text-xs">⚠ Projected to go negative — overdraft risk before new deposits.</p>}
+              <table className="w-full text-xs mt-2"><tbody>
+                {projection.points.map((p, i) => (
+                  <tr key={i}><td className="py-0.5 text-gray-500">{p.date}</td><td className="py-0.5 text-gray-400">{p.label}</td><td className="py-0.5 text-right tabular-nums text-red-300">{money(p.deltaCents)}</td><td className="py-0.5 text-right tabular-nums text-gray-300">{money(p.balanceCents)}</td></tr>
+                ))}
+              </tbody></table>
+            </>)}
+          </div>
+        </div>
+      </div>
+
+      {/* Reserve policy */}
+      <div className={`${card} mb-6`}>
+        <h2 className="text-white font-bold text-lg mb-1">Reserve policy <span className="text-gray-600 text-sm font-normal">{reserves.configured ? '(configured)' : '(UNCONFIGURED — $0 assumed, not a decision that none are needed)'}</span></h2>
+        <p className="text-gray-500 text-xs mb-3">Until set, Safe-to-Spend can’t be fully trusted. Later the CFO will recommend targets from cash-flow history.</p>
+        <form action={reservesAction} className="flex flex-wrap items-end gap-2">
+          <label className="text-xs text-gray-500">Payroll reserve ($)<br /><input name="payroll" type="number" step="0.01" defaultValue={(reserves.payrollReserveCents / 100) || ''} className={input} /></label>
+          <label className="text-xs text-gray-500">Tax reserve ($)<br /><input name="tax" type="number" step="0.01" defaultValue={(reserves.taxReserveCents / 100) || ''} className={input} /></label>
+          <label className="text-xs text-gray-500">Min operating buffer ($)<br /><input name="buffer" type="number" step="0.01" defaultValue={(reserves.minBufferCents / 100) || ''} className={input} /></label>
+          <button className="bg-green-600 text-white text-sm font-semibold px-4 py-2 rounded-lg">Save reserve policy</button>
+        </form>
+      </div>
+
+      {/* Recurring obligations — discovered proposals + confirmed */}
+      <div className={`${card} mb-6`}>
+        <h2 className="text-white font-bold text-lg mb-1">Recurring obligations <span className="text-gray-600 text-sm font-normal">(auto-discovered from *2649 · Confirm / Ignore)</span></h2>
+        <p className="text-gray-500 text-xs mb-3">Proposals are evidence-backed and <b>never</b> authoritative until you confirm. Critical (payroll/rent/debt) drive Safe-to-Spend + the projection.</p>
+        {oblByStatus.confirmed.length > 0 && (
           <table className="w-full text-sm mb-3"><tbody>
-            {obligations.map((o) => (
+            {oblByStatus.confirmed.map((o) => (
               <tr key={o.id} className="border-b border-gray-800">
-                <td className="py-1.5 text-gray-300">{o.vendor}</td><td className="py-1.5 text-gray-600">{o.category ?? '—'}</td>
-                <td className="py-1.5 text-gray-600">{o.frequency ?? '—'}</td><td className="py-1.5 text-right tabular-nums">{money(o.amountCents)}</td>
-                <td className="py-1.5 pl-3 text-right"><Badge confidence="manual" asOf={String(o.asOf)} /></td>
-                <td className="py-1.5 pl-2 text-gray-600 text-xs">by {o.enteredBy}</td>
+                <td className="py-1.5 text-gray-200">{o.critical && <span className="text-amber-400">★ </span>}{o.vendor}</td>
+                <td className="py-1.5 text-gray-600">{o.category ?? '—'} · {o.frequency ?? '—'}</td>
+                <td className="py-1.5 text-right tabular-nums text-white">{money(o.amountCents)}</td>
+                <td className="py-1.5 pl-2 text-green-400 text-xs">✓ confirmed</td>
+                <td className="py-1.5 pl-2 text-right"><form action={obligationStatusAction}><input type="hidden" name="id" value={o.id} /><input type="hidden" name="status" value="ignored" /><button className="text-gray-600 text-xs underline">ignore</button></form></td>
               </tr>
             ))}
           </tbody></table>
         )}
-        <form action={obligationAction} className="flex flex-wrap items-end gap-2">
-          <label className="text-xs text-gray-500">Vendor<br /><input name="vendor" className={input} required /></label>
-          <label className="text-xs text-gray-500">Category<br /><input name="category" className={input} /></label>
-          <label className="text-xs text-gray-500">Amount ($)<br /><input name="amount" type="number" step="0.01" className={input} /></label>
-          <label className="text-xs text-gray-500">Frequency<br /><input name="frequency" placeholder="monthly" className={input} /></label>
-          <label className="text-xs text-gray-500">Next due<br /><input name="nextDue" type="date" className={input} /></label>
-          <label className="text-xs text-gray-500 flex items-center gap-1"><input name="essential" type="checkbox" /> essential</label>
-          <button className="bg-green-600 text-white text-sm font-semibold px-4 py-2 rounded-lg">Add obligation</button>
-        </form>
+        <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">Proposed ({oblByStatus.proposed.length})</p>
+        <table className="w-full text-sm"><tbody>
+          {oblByStatus.proposed.slice(0, 30).map((o) => {
+            const ev = (o.evidence ?? {}) as any
+            return (
+              <tr key={o.id} className="border-b border-gray-800/60 align-top">
+                <td className="py-1.5 text-gray-300">{o.critical && <span className="text-amber-400">★ </span>}{o.vendor}
+                  <span className="block text-gray-600 text-xs">{o.occurrences}× · {o.frequency} · avg {money(o.avgAmountCents)} · range {money(o.amountMinCents)}–{money(o.amountMaxCents)} · last {o.lastSeen}</span>
+                </td>
+                <td className="py-1.5 text-gray-600 text-xs">{o.category}</td>
+                <td className="py-1.5 text-right tabular-nums text-gray-300">{money(o.amountCents)}</td>
+                <td className="py-1.5 pl-2 text-right whitespace-nowrap">
+                  <form action={obligationStatusAction} className="inline"><input type="hidden" name="id" value={o.id} /><input type="hidden" name="status" value="confirmed" /><button className="bg-green-700 text-white text-xs px-2 py-1 rounded">Confirm</button></form>
+                  <form action={obligationStatusAction} className="inline ml-1"><input type="hidden" name="id" value={o.id} /><input type="hidden" name="status" value="ignored" /><button className="text-gray-500 text-xs underline">ignore</button></form>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody></table>
+        {oblByStatus.proposed.length === 0 && <p className="text-gray-500 text-sm">No proposals yet — run <b>Sync now</b> to discover recurring streams.</p>}
+      </div>
+
+      {/* Why book ≠ bank */}
+      <div className={`${card} mb-6 border-amber-900/40`}>
+        <h2 className="text-amber-300 font-bold text-lg mb-1">Why QuickBooks book ≠ bank</h2>
+        <p className="text-gray-400 text-sm">QuickBooks book *2649 shows <b>{money(cash.find((a) => /2649/.test(a.name))?.balance?.cents)}</b> but the live bank available is <b>{money(operating?.availableCents)}</b>. Evidence so far: QBO carries <b>{money(clearing.reduce((t, a) => t + (a.balance?.cents ?? 0), 0))}</b> stuck in Undeposited Funds + Clover clearing (income recorded but never reconciled/deposited), and the QBO P&amp;L shows only a few thousand dollars of activity with template categories (Landscaping / Pest Control) — i.e. <b>real operations, payroll and purchases are largely not booked in QuickBooks</b>. The bank (Plaid) is the source of truth for cash; QuickBooks needs reconciliation. The CFO will keep itemizing the specific unreconciled entries.</p>
       </div>
 
       {/* Documents (metadata only in Phase 1) */}

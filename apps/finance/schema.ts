@@ -109,10 +109,18 @@ export const finObligations = pgTable('fin_obligations', {
   essential:       boolean('essential'),
   source:          varchar('source', { length: 20 }).notNull().default('manual'),
   confidence:      varchar('confidence', { length: 20 }).notNull().default('manual'),
-  status:          varchar('status', { length: 16 }).notNull().default('confirmed'), // proposed|confirmed|paused
+  status:          varchar('status', { length: 16 }).notNull().default('confirmed'), // proposed|confirmed|paused|ignored
   enteredBy:       varchar('entered_by', { length: 200 }),
   asOf:            timestamp('as_of', { withTimezone: true }).notNull().defaultNow(),
   notes:           text('notes'),
+  // Discovery (evidence-backed proposals). discoveryKey dedupes a stream across re-runs.
+  discoveryKey:    varchar('discovery_key', { length: 140 }),
+  evidence:        jsonb('evidence'),
+  occurrences:     integer('occurrences'),
+  lastSeen:        date('last_seen'),
+  avgAmountCents:  integer('avg_amount_cents'),
+  dayOfWeek:       integer('day_of_week'),
+  critical:        boolean('critical').notNull().default(false), // payroll / rent / debt service
 })
 
 // Financial documents — Phase 1: store + metadata only (NO OCR/extraction).

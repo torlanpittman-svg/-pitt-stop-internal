@@ -72,9 +72,10 @@ export function classifyTxn(t: PlaidTxn): Classification {
   if (out && (pfcP === 'BANK_FEES' || rx(name, /\b(overdraft|nsf|service charge|monthly fee|wire fee|maintenance fee|returned item|analysis charge)\b/)))
     return { txnClass: 'fee', isExpense: true, isCashMovement: false, confidence: pfcP === 'BANK_FEES' ? 'rule' : 'heuristic', evidence: pfcP === 'BANK_FEES' ? pfcP : 'name~fee' }
 
-  // 9) Check (paper) — usually a vendor/expense payment; kept as its own channel.
-  if (out && (checkNo || (channel === 'other' && rx(name, /\b(check|chk|cheque|draft)\b/))))
-    return { txnClass: 'check', isExpense: true, isCashMovement: false, confidence: 'heuristic', evidence: checkNo ? `check #${checkNo}` : 'name~check' }
+  // 9) Check (paper) — vendor/payroll payment cleared as a check. "\bcheck\b" won't match the
+  // "checking" of a transfer (already caught above). "in clearings" is this bank's cleared-check note.
+  if (out && (checkNo || rx(name, /\bcheck\b|\bchk\b|\bcheque\b|in clearings|e-?check\b/)))
+    return { txnClass: 'check', isExpense: true, isCashMovement: false, confidence: checkNo ? 'rule' : 'heuristic', evidence: checkNo ? `check #${checkNo}` : (rx(name, /in clearings/) ? 'name~check in clearings' : 'name~check') }
 
   // 10) Inventory / parts (best-effort supplier match).
   if (out && rx(name, /\b(napa|autozone|o'?reilly|advance auto|worldpac|keystone|lkq|parts authority|3m|chemical guys|detail supply|meguiar|autogeek|carquest)\b/))

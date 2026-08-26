@@ -47,6 +47,12 @@ export const SETTINGS: Record<string, SettingDef> = {
   // CFO Financial Command Center (Phase 1). Default OFF — /admin/finance ships dark. Read-only
   // toward QuickBooks; admin-only; no money movement.
   finance_enabled:         { key: 'finance_enabled',         type: 'bool',   def: false,              env: 'FINANCE_ENABLED' },
+  // CFO reserve policy — intentionally UNCONFIGURED at $0 until the owner sets a real policy.
+  // reserves_configured stays false so Safe-to-Spend discloses that the buffer is not yet trustworthy.
+  reserves_configured:        { key: 'reserves_configured',        type: 'bool', def: false, env: 'RESERVES_CONFIGURED' },
+  payroll_reserve_cents:      { key: 'payroll_reserve_cents',      type: 'int',  def: 0,     env: 'PAYROLL_RESERVE_CENTS' },
+  tax_reserve_cents:          { key: 'tax_reserve_cents',          type: 'int',  def: 0,     env: 'TAX_RESERVE_CENTS' },
+  min_operating_buffer_cents: { key: 'min_operating_buffer_cents', type: 'int',  def: 0,     env: 'MIN_OPERATING_BUFFER_CENTS' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
@@ -124,6 +130,17 @@ export async function financeEnabled(): Promise<boolean> {
   const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'finance_enabled'))
   return resolve(SETTINGS.finance_enabled, rows[0]?.value) as boolean
 }
+/** CFO reserve policy. `configured` is false until the owner sets a real policy — Safe-to-Spend
+ *  discloses that until then. All amounts default to $0 (not an assertion that $0 is correct). */
+export interface ReservePolicy { configured: boolean; payrollReserveCents: number; taxReserveCents: number; minBufferCents: number; totalCents: number }
+export async function getReservePolicy(): Promise<ReservePolicy> {
+  const rows = await getDb().select().from(appSettings)
+  const map = new Map(rows.map((r) => [r.key, r.value]))
+  const g = (k: keyof typeof SETTINGS) => resolve(SETTINGS[k], map.get(k))
+  const payroll = g('payroll_reserve_cents') as number, tax = g('tax_reserve_cents') as number, buf = g('min_operating_buffer_cents') as number
+  return { configured: g('reserves_configured') as boolean, payrollReserveCents: payroll, taxReserveCents: tax, minBufferCents: buf, totalCents: payroll + tax + buf }
+}
+
 /** Configurable shop-supplies invoice label. */
 export async function shopSuppliesLabel(): Promise<string> {
   const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'shop_supplies_label'))
