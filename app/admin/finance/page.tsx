@@ -9,6 +9,7 @@ import { revalidatePath } from 'next/cache'
 import { financeEnabled } from '@/apps/settings/db'
 import { getAccounts, getDebts, getLatestPayroll, getObligations, getDocuments, getLatestSyncRun, getDataGaps, setNextPayroll, addObligation, addDocumentMeta, getPlaidConnections, verifyPlaidMapping, refreshPlaidBalances, getOperatingCash, setPlaidAccountStatus, setAccountStatus } from '@/apps/finance/db'
 import { plaidDiagnostics } from '@/apps/finance/plaid'
+import { ingestTransactions, getRecentTransactions, getClassificationSummary } from '@/apps/finance/transactions'
 import { freshnessLabel } from '@/apps/finance/sources'
 import PlaidLinkButton from './PlaidLinkButton'
 
@@ -72,6 +73,13 @@ async function refreshPlaidAction() {
   await refreshPlaidBalances('admin')
   revalidatePath('/admin/finance')
 }
+async function syncTransactionsAction() {
+  'use server'
+  const { refreshPlaidBalances } = await import('@/apps/finance/db')
+  await refreshPlaidBalances('admin')
+  await ingestTransactions('admin')
+  revalidatePath('/admin/finance')
+}
 async function plaidStatusAction(fd: FormData) {
   'use server'
   const plaidAccountId = String(fd.get('plaidAccountId') ?? '')
@@ -107,8 +115,8 @@ const input = 'bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm t
 const card = 'rounded-2xl bg-gray-900 border border-gray-800 p-5'
 
 export default async function FinancePage() {
-  const [enabled, accounts, allAccounts, debts, payroll, obligations, documents, run, gaps, connections, operating] = await Promise.all([
-    financeEnabled(), getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getObligations(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getOperatingCash(),
+  const [enabled, accounts, allAccounts, debts, payroll, obligations, documents, run, gaps, connections, operating, recentTx, txSummary] = await Promise.all([
+    financeEnabled(), getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getObligations(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getOperatingCash(), getRecentTransactions(30), getClassificationSummary(120),
   ])
   const plaid = plaidDiagnostics()
   const s = (run?.summary ?? {}) as any
@@ -273,6 +281,42 @@ export default async function FinancePage() {
             <p className="text-gray-600 text-xs mt-2">A discovered account is untrusted until you verify which QuickBooks account (e.g. *2649) it is. Verifying writes a <b>live</b> balance snapshot to that account. “Exclude from CFO” keeps an account connected upstream but out of all cash/Safe-to-Spend math.</p>
           </div>
         ))}
+      </div>
+
+      {/* Transactions (live, classified) */}
+      <div className={`${card} mb-6`}>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-white font-bold text-lg">Transactions <span className="text-gray-600 text-sm font-normal">(Plaid · classified for cash integrity)</span></h2>
+          <form action={syncTransactionsAction}><button className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300">Sync now</button></form>
+        </div>
+        <p className="text-gray-500 text-xs mb-3">Transfers, card payments, debt payments and payroll are flagged as <b>cash movement, not expenses</b> — so a transfer or an Amex payment is never double-counted as spend. Classification is advisory (evidence-backed); it never rewrites a balance.</p>
+        {txSummary.total === 0 ? (
+          <p className="text-gray-500 text-sm">No transactions ingested yet. Click <b>Sync now</b> (or the daily cron will populate them).</p>
+        ) : (<>
+          <div className="flex flex-wrap gap-2 mb-4">
+            {txSummary.rows.map((r) => (
+              <div key={r.txnClass} className="rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-1.5">
+                <span className="text-gray-300 text-xs font-medium">{r.txnClass}</span>
+                <span className="text-gray-600 text-xs"> · {r.n}</span>
+                {r.outCents > 0 && <span className="text-red-300/80 text-xs tabular-nums"> · out {money(r.outCents)}</span>}
+                {r.inCents > 0 && <span className="text-green-300/80 text-xs tabular-nums"> · in {money(r.inCents)}</span>}
+              </div>
+            ))}
+          </div>
+          <p className="text-gray-600 text-xs mb-2">Last {txSummary.total} transactions · {txSummary.pending} pending · window since {txSummary.since}</p>
+          <table className="w-full text-sm">
+            <tbody>
+              {recentTx.map((t) => (
+                <tr key={t.id} className="border-b border-gray-800/60">
+                  <td className="py-1.5 text-gray-500 text-xs whitespace-nowrap">{t.txnDate}{t.pending && <span className="ml-1 text-amber-500">pending</span>}</td>
+                  <td className="py-1.5 text-gray-300">{(t.merchantName || t.name || '').slice(0, 48)}</td>
+                  <td className="py-1.5"><span className="text-[11px] px-2 py-0.5 rounded-full border bg-gray-800 text-gray-400 border-gray-700">{t.txnClass}</span></td>
+                  <td className="py-1.5 text-right tabular-nums text-gray-300">{t.direction === 'out' ? '-' : '+'}{money(Math.abs(t.amountCents))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>)}
       </div>
 
       {/* Clearing / needs reconciliation */}

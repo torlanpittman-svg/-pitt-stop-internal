@@ -84,6 +84,40 @@ export interface PlaidAccountBalance {
 }
 const toCents = (n: number | null | undefined) => (n == null ? null : Math.round(n * 100))
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+export interface PlaidTxn {
+  transaction_id: string
+  account_id: string
+  pending_transaction_id: string | null
+  amount: number
+  iso_currency_code: string | null
+  date: string
+  authorized_date: string | null
+  pending: boolean
+  name: string | null
+  merchant_name: string | null
+  payment_channel: string | null
+  personal_finance_category: { primary?: string; detailed?: string; confidence_level?: string } | null
+  category: string[] | null
+  payment_meta?: any
+  transaction_type?: string | null
+  [k: string]: any
+}
+export interface TxnSyncPage { added: PlaidTxn[]; modified: PlaidTxn[]; removed: { transaction_id: string }[]; nextCursor: string | null; hasMore: boolean }
+
+/** One page of Plaid /transactions/sync. Read-only. Cursor drives incremental, exactly-once sync;
+ *  Plaid returns pending → posted transitions as modified rows (same account, new transaction_id
+ *  with pending_transaction_id linking back). */
+export async function transactionsSync(accessToken: string, cursor: string | null): Promise<TxnSyncPage> {
+  const r = await call<any>('/transactions/sync', {
+    access_token: accessToken,
+    ...(cursor ? { cursor } : {}),
+    count: 500,
+    options: { include_personal_finance_category: true },
+  })
+  return { added: r.added ?? [], modified: r.modified ?? [], removed: r.removed ?? [], nextCursor: r.next_cursor ?? null, hasMore: Boolean(r.has_more) }
+}
+
 /** Read-only real-time balances for every account on the Item. */
 export async function getAccountBalances(accessToken: string): Promise<PlaidAccountBalance[]> {
   const r = await call<{ accounts: any[] }>('/accounts/balance/get', { access_token: accessToken })

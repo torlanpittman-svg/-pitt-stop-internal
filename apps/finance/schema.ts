@@ -156,6 +156,8 @@ export const finPlaidItems = pgTable('fin_plaid_items', {
   status:          varchar('status', { length: 20 }).notNull().default('active'), // active | error | disconnected
   lastError:       text('last_error'),
   connectedBy:     varchar('connected_by', { length: 200 }),
+  transactionsCursor:   text('transactions_cursor'),                                  // Plaid /transactions/sync cursor
+  transactionsSyncedAt: timestamp('transactions_synced_at', { withTimezone: true }),
   createdAt:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt:       timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
@@ -185,6 +187,42 @@ export const finPlaidAccounts = pgTable('fin_plaid_accounts', {
   createdAt:            timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt:            timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
+
+// Normalized Plaid transactions for connected Pitt Stop accounts. Plaid `amount` sign convention:
+// POSITIVE = money OUT of the account, NEGATIVE = money IN. Classification is advisory (evidence +
+// confidence) — it never silently rewrites cash; Safe-to-Spend uses the bank's own available balance.
+export const finTransactions = pgTable('fin_transactions', {
+  id:                       uuid('id').primaryKey().defaultRandom(),
+  plaidItemId:              uuid('plaid_item_id').notNull().references(() => finPlaidItems.id, { onDelete: 'cascade' }),
+  plaidAccountRef:          uuid('plaid_account_ref').references(() => finPlaidAccounts.id, { onDelete: 'set null' }),
+  finAccountId:             uuid('fin_account_id').references(() => finAccounts.id, { onDelete: 'set null' }),
+  plaidTransactionId:       varchar('plaid_transaction_id', { length: 100 }).notNull().unique(),
+  plaidAccountId:           varchar('plaid_account_id', { length: 100 }).notNull(),
+  pendingPlaidTransactionId:varchar('pending_plaid_transaction_id', { length: 100 }),
+  amountCents:              integer('amount_cents').notNull(),   // + = out of account, - = in
+  direction:                varchar('direction', { length: 8 }).notNull(), // out | in
+  isoCurrency:              varchar('iso_currency', { length: 8 }),
+  txnDate:                  date('txn_date').notNull(),
+  authorizedDate:           date('authorized_date'),
+  pending:                  boolean('pending').notNull().default(false),
+  name:                     text('name'),
+  merchantName:             text('merchant_name'),
+  paymentChannel:           varchar('payment_channel', { length: 24 }),
+  pfcPrimary:               varchar('pfc_primary', { length: 48 }),
+  pfcDetailed:              varchar('pfc_detailed', { length: 96 }),
+  pfcConfidence:            varchar('pfc_confidence', { length: 24 }),
+  categoryLegacy:           jsonb('category_legacy'),
+  txnClass:                 varchar('txn_class', { length: 24 }).notNull().default('unclassified'),
+  isExpense:                boolean('is_expense').notNull().default(false),
+  isCashMovement:           boolean('is_cash_movement').notNull().default(false),
+  classConfidence:          varchar('class_confidence', { length: 12 }).notNull().default('rule'),
+  classEvidence:            text('class_evidence'),
+  removed:                  boolean('removed').notNull().default(false),
+  raw:                      jsonb('raw'),
+  asOf:                     timestamp('as_of', { withTimezone: true }).notNull().defaultNow(),
+  createdAt:                timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:                timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index('fin_tx_finacct_idx').on(t.finAccountId), index('fin_tx_date_idx').on(t.txnDate), index('fin_tx_class_idx').on(t.txnClass)])
 
 // Append-only audit for manual finance edits.
 export const finEvents = pgTable('fin_events', {

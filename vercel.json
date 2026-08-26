@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/drain-dealer-queue",
       "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/finance-sync",
+      "schedule": "0 9 * * *"
     }
   ]
 }
