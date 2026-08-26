@@ -15,7 +15,10 @@ export function proxy(request: NextRequest) {
       const credentials = atob(authHeader.slice(6))
       const colonIdx = credentials.indexOf(':')
       const password = credentials.slice(colonIdx + 1)
-      if (password === adminPassword) {
+      // Trim both sides: env values pasted into hosting dashboards commonly pick up a
+      // trailing newline/space, which would otherwise silently reject the correct password.
+      // Username is intentionally ignored (password-only gate).
+      if (password.trim() === adminPassword.trim()) {
         return NextResponse.next()
       }
     } catch {
