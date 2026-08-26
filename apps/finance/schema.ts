@@ -238,6 +238,28 @@ export const finTransactions = pgTable('fin_transactions', {
   updatedAt:                timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index('fin_tx_finacct_idx').on(t.finAccountId), index('fin_tx_date_idx').on(t.txnDate), index('fin_tx_class_idx').on(t.txnClass)])
 
+// Money EXPECTED to arrive before it lands in Plaid, with a confidence level. NEVER added to strict
+// Safe-to-Spend — only to the forecast/scenario layer. Derived rows are regenerated; manual rows persist.
+export const finExpectedInflows = pgTable('fin_expected_inflows', {
+  id:              uuid('id').primaryKey().defaultRandom(),
+  source:          varchar('source', { length: 24 }).notNull(),        // dealer_weekly|card_baseline|retail_job|manual
+  label:           varchar('label', { length: 200 }).notNull(),
+  amountCents:     integer('amount_cents').notNull(),
+  expectedDate:    date('expected_date').notNull(),
+  confidence:      varchar('confidence', { length: 16 }).notNull(),     // high|probable|pipeline
+  reliabilityBps:  integer('reliability_bps'),
+  refType:         varchar('ref_type', { length: 24 }),                 // service_order|qb_invoice|dealer|pattern
+  refId:           varchar('ref_id', { length: 100 }),
+  evidence:        jsonb('evidence'),
+  status:          varchar('status', { length: 16 }).notNull().default('projected'), // projected|confirmed|received|dismissed
+  derived:         boolean('derived').notNull().default(true),
+  dedupeKey:       varchar('dedupe_key', { length: 160 }),
+  enteredBy:       varchar('entered_by', { length: 200 }),
+  notes:           text('notes'),
+  createdAt:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:       timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index('fin_expected_inflows_date_idx').on(t.expectedDate)])
+
 // Append-only audit for manual finance edits.
 export const finEvents = pgTable('fin_events', {
   id:        uuid('id').primaryKey().defaultRandom(),

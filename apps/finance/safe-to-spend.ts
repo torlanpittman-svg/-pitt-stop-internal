@@ -14,10 +14,10 @@
  * cash on their issue date (Friday) even before the bank clears them. Expected inflows are shown but
  * NOT counted as spendable. Read-only; no money movement.
  */
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { getOperatingCash } from './db'
-import { finObligations } from './schema'
+import { finObligations, finExpectedInflows } from './schema'
 import { getReservePolicy } from '@/apps/settings/db'
 
 const iso = (d: Date) => d.toISOString().slice(0, 10)
@@ -77,11 +77,11 @@ export async function computeSafeToSpend(horizonDays = 14): Promise<SafeToSpend>
   const afterPlanned = core == null ? null : core - plannedCents
 
   const disclosures: string[] = []
+  disclosures.push('This is STRICT Safe-to-Spend: verified bank cash minus confirmed obligations only. Expected customer/dealer inflows are modeled separately below and are NOT counted here until they land.')
   if (!reserves.configured) disclosures.push('Reserve policy is UNCONFIGURED ($0 assumed) — no payroll/tax/operating buffer is protected yet.')
-  if (!critical.some((c) => /payroll/i.test(c.label))) disclosures.push('No employee payroll falls within the horizon window (check dates).')
+  if ((core ?? 0) < 0) disclosures.push('A negative strict number means committed obligations exceed CURRENT verified cash — NOT that payroll cannot be met. See the expected-inflow forecast for whether incoming cash covers it.')
   if (op?.stale) disclosures.push('Operating balance is stale (>24h) — run a sync for a current figure.')
   if (!op) disclosures.push('No verified operating account.')
-  disclosures.push('Expected customer/dealer inflows are shown separately and are NOT counted as spendable until they actually land.')
 
   const trustworthy = Boolean(reserves.configured && op && !op.stale && critical.length > 0)
   return {
@@ -124,5 +124,58 @@ export async function projectCashLow(horizonDays = 14): Promise<CashProjection> 
     startCents: start, horizonDays, points,
     lowCents: low, lowDate, overdraftRisk: low != null && low < 0, overdraftDate, overdraftCause,
     payrollCovered, payrollDate, payrollBalanceAfter,
+  }
+}
+
+// ── Forecast layer: "are we EXPECTED to meet upcoming obligations?" (adds inflows by confidence) ──
+export type Scenario = 'verified_only' | 'high_confidence' | 'all_probable'
+export interface ScenarioResult { scenario: Scenario; lowCents: number | null; lowDate: string | null; overdraftRisk: boolean; firstPayrollCovered: boolean | null; firstPayrollDate: string | null; firstPayrollBalance: number | null; endingCents: number | null }
+export interface Forecast {
+  startCents: number | null; horizonDays: number
+  scenarios: ScenarioResult[]
+  timeline: { date: string; label: string; kind: 'out' | 'in'; confidence?: string; deltaCents: number; balHigh: number }[]
+  criticalBeforeInflowCents: number; expectedHighCents: number; expectedProbableCents: number
+}
+
+/** Merge dated obligations (out) + expected inflows (in) and run three inflow scenarios. Inflows are
+ *  filtered by confidence per scenario; strict Safe-to-Spend is unaffected. */
+export async function forecastWithInflows(horizonDays = 21): Promise<Forecast> {
+  const db = getDb()
+  const op = await getOperatingCash()
+  const start = op?.availableCents ?? null
+  const now = new Date(); const endD = iso(new Date(Date.now() + horizonDays * 86400_000))
+  const outs = (await upcomingEvents(horizonDays)).map((e) => ({ date: e.due, label: e.label, kind: 'out' as const, cents: -e.cents, confidence: undefined as string | undefined, priority: e.priority }))
+  const inflows = await db.select().from(finExpectedInflows)
+    .where(and(sql`${finExpectedInflows.status} <> 'dismissed'`, sql`${finExpectedInflows.expectedDate} <= ${endD}`))
+  const ins = inflows.map((r) => ({ date: r.expectedDate, label: r.label, kind: 'in' as const, cents: r.amountCents, confidence: r.confidence as string, priority: undefined }))
+
+  const confAllowed: Record<Scenario, Set<string>> = {
+    verified_only: new Set(),
+    high_confidence: new Set(['high']),
+    all_probable: new Set(['high', 'probable']),
+  }
+  const runScenario = (scn: Scenario): ScenarioResult => {
+    const events = [...outs, ...ins.filter((i) => confAllowed[scn].has(i.confidence))].sort((a, b) => a.date.localeCompare(b.date))
+    let bal = start ?? 0, low = start, lowDate = start != null ? iso(now) : null
+    let fpCov: boolean | null = null, fpDate: string | null = null, fpBal: number | null = null
+    for (const e of events) {
+      bal += e.cents
+      if (start != null && (low == null || bal < low)) { low = bal; lowDate = e.date }
+      if (e.kind === 'out' && (e as any).priority && fpCov == null && /Payroll —/i.test(e.label)) { fpCov = bal >= 0; fpDate = e.date; fpBal = bal }
+    }
+    return { scenario: scn, lowCents: low, lowDate, overdraftRisk: low != null && low < 0, firstPayrollCovered: fpCov, firstPayrollDate: fpDate, firstPayrollBalance: fpBal, endingCents: bal }
+  }
+  // Timeline uses the high-confidence running balance for display.
+  const merged = [...outs, ...ins.filter((i) => confAllowed.high_confidence.has(i.confidence))].sort((a, b) => a.date.localeCompare(b.date))
+  let bh = start ?? 0
+  const timeline = merged.map((e) => { bh += e.cents; return { date: e.date, label: e.label, kind: e.kind, confidence: e.confidence, deltaCents: e.cents, balHigh: bh } })
+
+  return {
+    startCents: start, horizonDays,
+    scenarios: [runScenario('verified_only'), runScenario('high_confidence'), runScenario('all_probable')],
+    timeline,
+    criticalBeforeInflowCents: outs.filter((o) => o.priority === 'critical').reduce((t, o) => t - o.cents, 0),
+    expectedHighCents: ins.filter((i) => i.confidence === 'high').reduce((t, i) => t + i.cents, 0),
+    expectedProbableCents: ins.filter((i) => i.confidence === 'probable').reduce((t, i) => t + i.cents, 0),
   }
 }

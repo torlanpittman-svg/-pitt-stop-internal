@@ -11,7 +11,8 @@ import { getAccounts, getDebts, getLatestPayroll, getDocuments, getLatestSyncRun
 import { plaidDiagnostics } from '@/apps/finance/plaid'
 import { ingestTransactions, getRecentTransactions, getClassificationSummary } from '@/apps/finance/transactions'
 import { discoverObligations, getObligationsByStatus, setObligationStatus } from '@/apps/finance/obligations-discovery'
-import { computeSafeToSpend, projectCashLow } from '@/apps/finance/safe-to-spend'
+import { computeSafeToSpend, projectCashLow, forecastWithInflows } from '@/apps/finance/safe-to-spend'
+import { getExpectedInflows, getPipelineContext, addManualInflow, dismissInflow, deriveExpectedInflows } from '@/apps/finance/expected-inflows'
 import { getReservePolicy } from '@/apps/settings/db'
 import { freshnessLabel } from '@/apps/finance/sources'
 import PlaidLinkButton from './PlaidLinkButton'
@@ -75,6 +76,28 @@ async function obligationStatusAction(fd: FormData) {
   if (id && ['confirmed', 'ignored', 'proposed', 'paused'].includes(status)) await setObligationStatus(id, status as any, 'admin')
   revalidatePath('/admin/finance')
 }
+async function inflowAddAction(fd: FormData) {
+  'use server'
+  const label = String(fd.get('label') ?? '').trim()
+  const amt = Math.round(parseFloat(String(fd.get('amount') ?? '')) * 100)
+  const date = String(fd.get('expectedDate') ?? '')
+  const confidence = String(fd.get('confidence') ?? 'probable') as 'high' | 'probable' | 'pipeline'
+  if (label && Number.isFinite(amt) && amt > 0 && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    await addManualInflow({ label, amountCents: amt, expectedDate: date, confidence }, 'admin')
+  }
+  revalidatePath('/admin/finance')
+}
+async function inflowDismissAction(fd: FormData) {
+  'use server'
+  const id = String(fd.get('id') ?? '')
+  if (id) await dismissInflow(id, 'admin')
+  revalidatePath('/admin/finance')
+}
+async function deriveInflowsAction() {
+  'use server'
+  await deriveExpectedInflows('admin', 21)
+  revalidatePath('/admin/finance')
+}
 async function reservesAction(fd: FormData) {
   'use server'
   const { updateSetting } = await import('@/apps/settings/db')
@@ -123,6 +146,7 @@ export default async function FinancePage() {
   const [enabled, accounts, allAccounts, debts, payroll, documents, run, gaps, connections, operating, recentTx, txSummary, s2s, projection, oblByStatus, reserves, autoSales] = await Promise.all([
     financeEnabled(), getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getOperatingCash(), getRecentTransactions(30), getClassificationSummary(120), computeSafeToSpend(21), projectCashLow(21), getObligationsByStatus(), getReservePolicy(), getAutoSalesLiquidity(),
   ])
+  const [forecast, expectedInflows, pipeline] = await Promise.all([forecastWithInflows(21), getExpectedInflows(21), getPipelineContext()])
   const plaid = plaidDiagnostics()
   const s = (run?.summary ?? {}) as any
   const cash = accounts.filter((a) => a.kind === 'bank' && !a.clearingSuspect)
@@ -392,9 +416,10 @@ export default async function FinancePage() {
         <p className="text-gray-600 text-xs mt-1">QuickBooks employees on file: {s.employeesCount ?? '—'}</p>
       </div>
 
-      {/* HOW MUCH CAN I SPEND TODAY — full calculation + projection */}
+      {/* STRICT: how much can I spend today from VERIFIED cash */}
       <div className={`${card} mb-6`}>
-        <h2 className="text-white font-bold text-lg mb-1">How much can I spend today? <span className="text-gray-600 text-sm font-normal">(operating *2649 · {projection.horizonDays}-day horizon)</span></h2>
+        <h2 className="text-white font-bold text-lg mb-1">How much can I spend today? <span className="text-gray-600 text-sm font-normal">(STRICT · verified cash only · operating *2649 · {projection.horizonDays}d)</span></h2>
+        <p className="text-gray-500 text-xs mb-2">Verified bank cash − confirmed obligations. Expected customer/dealer money is <b>not</b> counted here — see the forecast below.</p>
         {s2s.disclosures.length > 0 && (
           <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 mb-3">
             {s2s.disclosures.map((dsc, i) => <p key={i} className="text-amber-300/90 text-xs">⚠ {dsc}</p>)}
@@ -429,8 +454,8 @@ export default async function FinancePage() {
               <p className={`text-sm ${projection.overdraftRisk ? 'text-red-400' : 'text-gray-300'}`}>Projected low <b>{money(projection.lowCents)}</b> on {projection.lowDate}
                 {projection.overdraftRisk && <> — ⚠ overdraft risk on {projection.overdraftDate} ({projection.overdraftCause})</>}</p>
               {projection.payrollDate && (
-                <p className={`text-sm ${projection.payrollCovered ? 'text-green-400' : 'text-red-400'}`}>
-                  {projection.payrollCovered ? '✓' : '✗'} First payroll {projection.payrollDate}: projected balance {money(projection.payrollBalanceAfter)}{projection.payrollCovered ? ' — can be covered' : ' — SHORT'}
+                <p className={`text-sm ${projection.payrollCovered ? 'text-green-400' : 'text-amber-400'}`}>
+                  First payroll {projection.payrollDate}: from <b>verified cash alone</b>, projected {money(projection.payrollBalanceAfter)}{projection.payrollCovered ? ' — covered' : ' — not covered by current verified cash alone (expected inflows below may cover it)'}
                 </p>
               )}
               <table className="w-full text-xs mt-2"><tbody>
@@ -447,6 +472,58 @@ export default async function FinancePage() {
             </>)}
           </div>
         </div>
+      </div>
+
+      {/* FORECAST: are we EXPECTED to meet obligations? (expected inflows by confidence) */}
+      <div className={`${card} mb-6 border-green-900/40`}>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-white font-bold text-lg">Are we expected to meet obligations? <span className="text-gray-600 text-sm font-normal">(FORECAST · adds expected inflows by confidence)</span></h2>
+          <form action={deriveInflowsAction}><button className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300">Re-derive inflows</button></form>
+        </div>
+        <p className="text-gray-500 text-xs mb-3">Expected inflows are modeled here <b>only</b> — they never inflate strict Safe-to-Spend. Scenarios layer inflows by confidence so you see risk vs reality.</p>
+        {/* Scenario cards */}
+        <div className="grid grid-cols-3 gap-4 mb-4">
+          {forecast.scenarios.map((s) => {
+            const label = s.scenario === 'verified_only' ? 'Verified cash only' : s.scenario === 'high_confidence' ? '+ High-confidence inflows' : '+ All probable inflows'
+            return (
+              <div key={s.scenario} className={`rounded-xl border p-3 ${s.overdraftRisk ? 'border-red-900/50 bg-red-950/15' : 'border-green-900/50 bg-green-950/10'}`}>
+                <p className="text-gray-400 text-xs font-medium">{label}</p>
+                <p className={`text-lg font-bold mt-1 ${s.overdraftRisk ? 'text-red-400' : 'text-green-300'}`}>Low {money(s.lowCents)}</p>
+                <p className="text-gray-600 text-[11px]">on {s.lowDate} · ending {money(s.endingCents)}</p>
+                {s.firstPayrollDate && (
+                  <p className={`text-[11px] mt-1 ${s.firstPayrollCovered ? 'text-green-400' : 'text-red-400'}`}>
+                    {s.firstPayrollCovered ? '✓' : '✗'} Payroll {s.firstPayrollDate}: {money(s.firstPayrollBalance)}
+                  </p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+        <p className="text-gray-500 text-xs mb-2">
+          Critical obligations (21d): <b className="text-red-300">{money(-forecast.criticalBeforeInflowCents)}</b> ·
+          High-confidence expected in: <b className="text-green-300">{money(forecast.expectedHighCents)}</b> ·
+          Probable: <b className="text-green-300/80">{money(forecast.expectedProbableCents)}</b>
+        </p>
+        {/* Expected inflow list */}
+        <table className="w-full text-sm mb-3"><tbody>
+          {expectedInflows.slice(0, 14).map((inf) => (
+            <tr key={inf.id} className="border-b border-gray-800/50">
+              <td className="py-1 text-gray-500 text-xs whitespace-nowrap">{inf.expectedDate}</td>
+              <td className="py-1 text-gray-300">{inf.label}</td>
+              <td className="py-1"><span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${inf.confidence === 'high' ? 'bg-green-950/40 text-green-300 border-green-900/60' : inf.confidence === 'probable' ? 'bg-amber-950/40 text-amber-300 border-amber-900/60' : 'bg-gray-800 text-gray-400 border-gray-700'}`}>{inf.confidence}</span>{!inf.derived && <span className="text-gray-600 text-[10px] ml-1">manual</span>}</td>
+              <td className="py-1 text-right tabular-nums text-green-300">+{money(inf.amountCents)}</td>
+              <td className="py-1 pl-2 text-right">{!inf.derived && <form action={inflowDismissAction}><input type="hidden" name="id" value={inf.id} /><button className="text-gray-600 text-[11px] underline">dismiss</button></form>}</td>
+            </tr>
+          ))}
+        </tbody></table>
+        <p className="text-gray-600 text-xs mb-2">Pipeline context (real work, amounts not always priced on the order): <b>{pipeline.dealerThisWeek}</b> dealer jobs this week · <b>{pipeline.readyRetail}</b> retail ready for pickup · <b>{pipeline.activeDealer}</b> active dealer jobs. Add specific known jobs (e.g. a ceramic coating) as manual inflows:</p>
+        <form action={inflowAddAction} className="flex flex-wrap items-end gap-2">
+          <label className="text-xs text-gray-500">What<br /><input name="label" placeholder="Ceramic coating — J. Smith" className={input} required /></label>
+          <label className="text-xs text-gray-500">Amount ($)<br /><input name="amount" type="number" step="0.01" className={input} required /></label>
+          <label className="text-xs text-gray-500">Expected date<br /><input name="expectedDate" type="date" className={input} required /></label>
+          <label className="text-xs text-gray-500">Confidence<br /><select name="confidence" className={input} defaultValue="probable"><option value="high">high</option><option value="probable">probable</option><option value="pipeline">pipeline</option></select></label>
+          <button className="bg-green-600 text-white text-sm font-semibold px-4 py-2 rounded-lg">Add expected inflow</button>
+        </form>
       </div>
 
       {/* Auto-Sales liquidity (*5600) — separate; encumbrance-aware */}
