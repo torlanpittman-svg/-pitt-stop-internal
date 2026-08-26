@@ -56,15 +56,17 @@ export async function discoverObligations(actor: string | null): Promise<Discove
     const nextDue = new Date(new Date(lastSeen + 'T00:00:00Z').getTime() + periodDays * 86400_000).toISOString().slice(0, 10)
     const classes = new Set(sorted.map((t) => t.txnClass))
     const vendor = (sorted.find((t) => t.merchantName)?.merchantName) ?? key
-    // Category + criticality from the observed classes / name.
-    let category = 'other', critical = false
-    if (classes.has('debt_payment')) { category = 'debt'; critical = true }
-    else if (/rent|4183|holding/i.test(key)) { category = 'rent'; critical = true }
-    else if (classes.has('payroll') || /payroll|check in clearings/i.test(key)) { category = 'payroll'; critical = true }
-    else if (classes.has('card_payment')) category = 'card_payment'
-    else if (/insur/i.test(key)) category = 'insurance'
-    else if (/water|electric|city of|utilit|internet|wirestar|comcast|at&t|verizon/i.test(key)) category = 'utilities'
-    else if (/google|adobe|intuit|autoleap|software|saas|subscription|prime/i.test(key)) category = 'software'
+    // Category + priority from the observed classes / name.
+    // Payroll and owner_draw are OWNER-CONFIRMED seeds — never auto-propose them (would double-count).
+    if (classes.has('payroll') || classes.has('owner_draw') || /payroll|owner draw|to checking xx?0169/i.test(key)) continue
+    let category = 'other', critical = false, priority: 'critical' | 'contractual' | 'planned' = 'contractual'
+    if (classes.has('debt_payment')) { category = 'debt'; critical = true; priority = 'critical' }
+    else if (/rent|4183|holding/i.test(key)) { category = 'rent'; critical = true; priority = 'contractual' }
+    else if (classes.has('card_payment')) { category = 'card_payment'; priority = 'contractual' }
+    else if (/insur|premium finance/i.test(key)) { category = 'insurance'; priority = 'contractual' }
+    else if (/water|electric|city of|utilit|internet|wirestar|comcast|at&t|verizon/i.test(key)) { category = 'utilities'; priority = 'contractual' }
+    else if (/google|adobe|intuit|autoleap|software|saas|subscription|prime/i.test(key)) { category = 'software'; priority = 'planned' }
+    else priority = 'contractual'
 
     const discoveryKey = `op:${key}`.slice(0, 140)
     const evidence = { key, occurrences: ts.length, medianGapDays: medGap, freq, avg, amountMin, amountMax, modalDow, lastSeen, classes: [...classes], sample: sorted.slice(-3).map((t) => ({ date: t.txnDate, amt: t.amountCents, name: (t.merchantName || t.name || '').slice(0, 40) })) }
@@ -72,7 +74,7 @@ export async function discoverObligations(actor: string | null): Promise<Discove
     const [existing] = await db.select().from(finObligations).where(eq(finObligations.discoveryKey, discoveryKey)).limit(1)
     const common = {
       vendor: String(vendor).slice(0, 200), category, amountCents: avg, amountMinCents: amountMin, amountMaxCents: amountMax,
-      frequency: freq, nextDue, essential: critical, avgAmountCents: avg, occurrences: ts.length, lastSeen, dayOfWeek: modalDow, critical,
+      frequency: freq, nextDue, essential: critical, avgAmountCents: avg, occurrences: ts.length, lastSeen, dayOfWeek: modalDow, critical, priority,
       evidence: evidence as any, source: 'discovery', confidence: 'estimated', asOf: new Date(),
     }
     if (existing) {

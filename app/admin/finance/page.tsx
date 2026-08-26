@@ -7,7 +7,7 @@
  */
 import { revalidatePath } from 'next/cache'
 import { financeEnabled } from '@/apps/settings/db'
-import { getAccounts, getDebts, getLatestPayroll, getDocuments, getLatestSyncRun, getDataGaps, setNextPayroll, addDocumentMeta, getPlaidConnections, verifyPlaidMapping, refreshPlaidBalances, getOperatingCash, setPlaidAccountStatus, setAccountStatus } from '@/apps/finance/db'
+import { getAccounts, getDebts, getLatestPayroll, getDocuments, getLatestSyncRun, getDataGaps, setNextPayroll, addDocumentMeta, getPlaidConnections, verifyPlaidMapping, refreshPlaidBalances, getOperatingCash, getAutoSalesLiquidity, setPlaidAccountStatus, setAccountStatus } from '@/apps/finance/db'
 import { plaidDiagnostics } from '@/apps/finance/plaid'
 import { ingestTransactions, getRecentTransactions, getClassificationSummary } from '@/apps/finance/transactions'
 import { discoverObligations, getObligationsByStatus, setObligationStatus } from '@/apps/finance/obligations-discovery'
@@ -120,8 +120,8 @@ const input = 'bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm t
 const card = 'rounded-2xl bg-gray-900 border border-gray-800 p-5'
 
 export default async function FinancePage() {
-  const [enabled, accounts, allAccounts, debts, payroll, documents, run, gaps, connections, operating, recentTx, txSummary, s2s, projection, oblByStatus, reserves] = await Promise.all([
-    financeEnabled(), getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getOperatingCash(), getRecentTransactions(30), getClassificationSummary(120), computeSafeToSpend(14), projectCashLow(14), getObligationsByStatus(), getReservePolicy(),
+  const [enabled, accounts, allAccounts, debts, payroll, documents, run, gaps, connections, operating, recentTx, txSummary, s2s, projection, oblByStatus, reserves, autoSales] = await Promise.all([
+    financeEnabled(), getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getOperatingCash(), getRecentTransactions(30), getClassificationSummary(120), computeSafeToSpend(14), projectCashLow(14), getObligationsByStatus(), getReservePolicy(), getAutoSalesLiquidity(),
   ])
   const plaid = plaidDiagnostics()
   const s = (run?.summary ?? {}) as any
@@ -155,11 +155,11 @@ export default async function FinancePage() {
           <p className="text-2xl font-bold text-white mt-1">{money(opAvail)} {operating && <span className="align-middle"><Badge confidence="live" asOf={operating.asOf} /></span>}</p>
           <p className="text-gray-600 text-xs mt-1">{operating ? <>American Momentum *{operating.mask} · available now. Current {money(opCurrent)}.</> : 'No verified operating account.'}</p>
         </div>
-        {/* Safe to Spend — computed foundation, honestly flagged */}
+        {/* Safe to Spend — core (after critical+contractual+reserves), honestly flagged */}
         <div className={card}>
-          <p className="text-gray-500 text-xs uppercase tracking-widest">Safe to Spend {s2s.trustworthy ? '' : '(provisional)'}</p>
-          <p className={`text-2xl font-bold mt-1 ${s2s.trustworthy ? 'text-white' : 'text-amber-400'}`}>{money(s2s.safeToSpendCents)}</p>
-          <p className="text-gray-600 text-xs mt-1">{s2s.trustworthy ? 'Available − committed − reserves.' : `Provisional: ${s2s.disclosures.length} input(s) unconfirmed. Available ${money(s2s.availableCents)} − deductions ${money(s2s.deductions.reduce((t, x) => t + x.cents, 0))}.`}</p>
+          <p className="text-gray-500 text-xs uppercase tracking-widest">Core Safe-to-Spend {s2s.trustworthy ? '' : '(provisional)'}</p>
+          <p className={`text-2xl font-bold mt-1 ${(s2s.coreSafeToSpendCents ?? 0) < 0 ? 'text-red-400' : s2s.trustworthy ? 'text-white' : 'text-amber-400'}`}>{money(s2s.coreSafeToSpendCents)}</p>
+          <p className="text-gray-600 text-xs mt-1">After payroll, taxes, rent, debt &amp; reserves (next {s2s.horizonDays}d). After Darryl draw: <b>{money(s2s.afterPlannedCents)}</b>.</p>
         </div>
         {/* Bank cash (book) — reference only */}
         <div className={card}>
@@ -392,9 +392,9 @@ export default async function FinancePage() {
         <p className="text-gray-600 text-xs mt-1">QuickBooks employees on file: {s.employeesCount ?? '—'}</p>
       </div>
 
-      {/* Safe-to-Spend detail + near-term overdraft projection */}
+      {/* HOW MUCH CAN I SPEND TODAY — full calculation + projection */}
       <div className={`${card} mb-6`}>
-        <h2 className="text-white font-bold text-lg mb-1">Safe-to-Spend &amp; near-term cash <span className="text-gray-600 text-sm font-normal">(operating *2649 · {projection.horizonDays}-day horizon)</span></h2>
+        <h2 className="text-white font-bold text-lg mb-1">How much can I spend today? <span className="text-gray-600 text-sm font-normal">(operating *2649 · {projection.horizonDays}-day horizon)</span></h2>
         {s2s.disclosures.length > 0 && (
           <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 mb-3">
             {s2s.disclosures.map((dsc, i) => <p key={i} className="text-amber-300/90 text-xs">⚠ {dsc}</p>)}
@@ -404,29 +404,60 @@ export default async function FinancePage() {
           <div>
             <table className="w-full text-sm">
               <tbody>
-                <tr className="border-b border-gray-800"><td className="py-1.5 text-gray-300">Operating available (live)</td><td className="py-1.5 text-right tabular-nums text-white">{money(s2s.availableCents)}</td></tr>
-                {s2s.deductions.map((d, i) => (
-                  <tr key={i} className="border-b border-gray-800/60"><td className="py-1.5 text-gray-400">− {d.label}{d.due ? ` (due ${d.due})` : ''} <span className="text-gray-600 text-xs">{d.confidence}</span></td><td className="py-1.5 text-right tabular-nums text-red-300">{money(d.cents)}</td></tr>
+                <tr className="border-b border-gray-700"><td className="py-1.5 text-gray-200 font-medium">Operating available (live)</td><td className="py-1.5 text-right tabular-nums text-white">{money(s2s.availableCents)}</td></tr>
+                {s2s.critical.length > 0 && <tr><td colSpan={2} className="pt-2 text-gray-500 text-[11px] uppercase tracking-widest">Critical (non-discretionary)</td></tr>}
+                {s2s.critical.map((d, i) => (
+                  <tr key={'c' + i} className="border-b border-gray-800/50"><td className="py-1 text-gray-400">− {d.label} <span className="text-gray-600 text-xs">due {d.due}</span></td><td className="py-1 text-right tabular-nums text-red-300">{money(d.cents)}</td></tr>
                 ))}
-                <tr><td className="py-2 text-gray-200 font-semibold">Safe-to-Spend {s2s.trustworthy ? '' : '(provisional)'}</td><td className={`py-2 text-right tabular-nums font-bold ${s2s.trustworthy ? 'text-white' : 'text-amber-400'}`}>{money(s2s.safeToSpendCents)}</td></tr>
+                {s2s.contractual.length > 0 && <tr><td colSpan={2} className="pt-2 text-gray-500 text-[11px] uppercase tracking-widest">Contractual</td></tr>}
+                {s2s.contractual.map((d, i) => (
+                  <tr key={'k' + i} className="border-b border-gray-800/50"><td className="py-1 text-gray-400">− {d.label} <span className="text-gray-600 text-xs">due {d.due}</span></td><td className="py-1 text-right tabular-nums text-red-300">{money(d.cents)}</td></tr>
+                ))}
+                <tr className="border-b border-gray-800/50"><td className="py-1 text-gray-400">− Reserves {reserves.configured ? '' : '(unconfigured)'}</td><td className="py-1 text-right tabular-nums text-red-300">{money(s2s.reservesCents)}</td></tr>
+                <tr className="border-t border-gray-700"><td className="py-2 text-gray-100 font-bold">Core Safe-to-Spend</td><td className={`py-2 text-right tabular-nums font-bold ${(s2s.coreSafeToSpendCents ?? 0) < 0 ? 'text-red-400' : 'text-white'}`}>{money(s2s.coreSafeToSpendCents)}</td></tr>
+                {s2s.planned.map((d, i) => (
+                  <tr key={'p' + i}><td className="py-1 text-gray-500">− {d.label} <span className="text-gray-600 text-xs">planned · deferrable · due {d.due}</span></td><td className="py-1 text-right tabular-nums text-gray-400">{money(d.cents)}</td></tr>
+                ))}
+                <tr className="border-t border-gray-800"><td className="py-2 text-gray-300 font-semibold">After planned owner draw</td><td className={`py-2 text-right tabular-nums font-semibold ${(s2s.afterPlannedCents ?? 0) < 0 ? 'text-red-400' : 'text-gray-200'}`}>{money(s2s.afterPlannedCents)}</td></tr>
               </tbody>
             </table>
           </div>
           <div>
-            <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">Projected low point</p>
-            {projection.startCents == null ? <p className="text-gray-500 text-sm">No verified operating balance.</p> : projection.points.length === 0 ? (
-              <p className="text-gray-500 text-sm">No confirmed dated obligations yet — confirm payroll/rent below to project the low point and overdraft risk.</p>
-            ) : (<>
-              <p className={`text-lg font-bold ${projection.overdraftRisk ? 'text-red-400' : 'text-white'}`}>{money(projection.lowCents)} <span className="text-gray-500 text-xs font-normal">on {projection.lowDate}</span></p>
-              {projection.overdraftRisk && <p className="text-red-400 text-xs">⚠ Projected to go negative — overdraft risk before new deposits.</p>}
+            <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">Near-term projection</p>
+            {projection.startCents == null ? <p className="text-gray-500 text-sm">No verified operating balance.</p> : (<>
+              <p className="text-sm text-gray-300">Start available <b className="text-white">{money(projection.startCents)}</b></p>
+              <p className={`text-sm ${projection.overdraftRisk ? 'text-red-400' : 'text-gray-300'}`}>Projected low <b>{money(projection.lowCents)}</b> on {projection.lowDate}
+                {projection.overdraftRisk && <> — ⚠ overdraft risk on {projection.overdraftDate} ({projection.overdraftCause})</>}</p>
+              {projection.payrollDate && (
+                <p className={`text-sm ${projection.payrollCovered ? 'text-green-400' : 'text-red-400'}`}>
+                  {projection.payrollCovered ? '✓' : '✗'} First payroll {projection.payrollDate}: projected balance {money(projection.payrollBalanceAfter)}{projection.payrollCovered ? ' — can be covered' : ' — SHORT'}
+                </p>
+              )}
               <table className="w-full text-xs mt-2"><tbody>
                 {projection.points.map((p, i) => (
-                  <tr key={i}><td className="py-0.5 text-gray-500">{p.date}</td><td className="py-0.5 text-gray-400">{p.label}</td><td className="py-0.5 text-right tabular-nums text-red-300">{money(p.deltaCents)}</td><td className="py-0.5 text-right tabular-nums text-gray-300">{money(p.balanceCents)}</td></tr>
+                  <tr key={i} className={p.balanceCents < 0 ? 'text-red-300' : ''}>
+                    <td className="py-0.5 text-gray-500">{p.date}</td>
+                    <td className="py-0.5 text-gray-400">{p.priority === 'planned' ? '○' : '●'} {p.label.slice(0, 26)}</td>
+                    <td className="py-0.5 text-right tabular-nums text-red-300/80">{money(p.deltaCents)}</td>
+                    <td className={`py-0.5 text-right tabular-nums ${p.balanceCents < 0 ? 'text-red-400 font-semibold' : 'text-gray-300'}`}>{money(p.balanceCents)}</td>
+                  </tr>
                 ))}
               </tbody></table>
+              <p className="text-gray-600 text-[11px] mt-1">● committed · ○ planned/deferrable. Projection applies only dated obligations — no assumed new deposits.</p>
             </>)}
           </div>
         </div>
+      </div>
+
+      {/* Auto-Sales liquidity (*5600) — separate; encumbrance-aware */}
+      <div className={`${card} mb-6 border-blue-900/40`}>
+        <h2 className="text-white font-bold text-lg mb-1">Auto-Sales liquidity <span className="text-gray-600 text-sm font-normal">(Extraco *5600 · separate from operating)</span></h2>
+        <div className="grid grid-cols-3 gap-4">
+          <div><p className="text-gray-500 text-xs uppercase tracking-widest">Bank cash</p><p className="text-xl font-bold text-white mt-1">{money(autoSales.bankAvailableCents)}</p></div>
+          <div><p className="text-gray-500 text-xs uppercase tracking-widest">Known encumbrance</p><p className="text-xl font-bold text-gray-400 mt-1">{autoSales.encumbranceKnown ? money(autoSales.knownEncumbranceCents) : '—'}</p></div>
+          <div><p className="text-gray-500 text-xs uppercase tracking-widest">Unencumbered</p><p className="text-xl font-bold text-amber-400 mt-1">{autoSales.unencumberedCents == null ? 'Unknown' : money(autoSales.unencumberedCents)}</p></div>
+        </div>
+        <p className="text-amber-300/80 text-xs mt-2">⚠ {autoSales.note} Do NOT treat this as available operating cash; transfers *5600↔*2649 are inter-account liquidity, not income/expense.</p>
       </div>
 
       {/* Reserve policy */}

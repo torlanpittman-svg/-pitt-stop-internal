@@ -120,7 +120,13 @@ export const finObligations = pgTable('fin_obligations', {
   lastSeen:        date('last_seen'),
   avgAmountCents:  integer('avg_amount_cents'),
   dayOfWeek:       integer('day_of_week'),
-  critical:        boolean('critical').notNull().default(false), // payroll / rent / debt service
+  dayOfMonth:      integer('day_of_month'),                       // monthly due-day (rent/fed-tax = 15)
+  critical:        boolean('critical').notNull().default(false),  // payroll / rent / debt service
+  // Priority tier for Safe-to-Spend decision support.
+  priority:        varchar('priority', { length: 16 }).notNull().default('contractual'), // critical|contractual|planned
+  // True = reduces economically-available cash on the issue/due date even before the bank clears it
+  // (e.g. paper payroll checks issued Friday).
+  committedOnIssue: boolean('committed_on_issue').notNull().default(false),
 })
 
 // Financial documents — Phase 1: store + metadata only (NO OCR/extraction).

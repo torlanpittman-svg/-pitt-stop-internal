@@ -18,11 +18,17 @@ import { transactionsSync, type PlaidTxn } from './plaid'
 
 export type TxnClass =
   | 'expense' | 'deposit' | 'transfer' | 'card_payment' | 'debt_payment'
-  | 'check' | 'payroll' | 'refund' | 'inventory' | 'settlement' | 'fee' | 'other'
+  | 'check' | 'payroll' | 'owner_draw' | 'refund' | 'inventory' | 'settlement' | 'fee' | 'other'
 
 export interface Classification { txnClass: TxnClass; isExpense: boolean; isCashMovement: boolean; confidence: 'rule' | 'heuristic'; evidence: string }
 
 const rx = (s: string, re: RegExp) => re.test(s)
+
+// Confirmed weekly net paycheck amounts (cents) from QuickBooks Payroll (owner-verified 2026-08-26):
+// Torlan 1572.45, Anthony 1006.12, Darryl 461.75. Paper checks clear as "Check(C## Inclearings)"
+// which Plaid mislabels TRANSFER_OUT — we identify them by these exact amounts.
+const PAYROLL_NET_CENTS = new Set([157245, 100612, 46175])
+const OWNER_DRAW_CENTS = 100000 // Darryl's $1,000/wk owner distribution → *0169 (personal)
 
 /**
  * Rule-based classifier. Priority order matters: liability/transfer movements are caught before the
@@ -36,6 +42,18 @@ export function classifyTxn(t: PlaidTxn): Classification {
   const pfcD = (t.personal_finance_category?.detailed ?? '').toUpperCase()
   const channel = (t.payment_channel ?? '').toLowerCase()
   const checkNo = t.payment_meta?.check_number ?? null
+  const amt = Math.abs(Math.round(t.amount * 100))
+  const isCheck = Boolean(checkNo) || rx(name, /check\(|\bcheck\b|\bchk\b|\bcheque\b|clearing|e-?check\b/)
+  const toPersonal = rx(name, /0169|to checking xx?0169/) // Darryl's personal account
+
+  // 0a) Owner distribution — Darryl's recurring $1,000 to *0169 (equity cash-out, NOT payroll/expense).
+  if (out && amt === OWNER_DRAW_CENTS && (toPersonal || rx(name, /to checking/)))
+    return { txnClass: 'owner_draw', isExpense: false, isCashMovement: true, confidence: toPersonal ? 'rule' : 'heuristic', evidence: 'to *0169 $1,000 owner draw' }
+
+  // 0b) Employee payroll — paper checks matching a confirmed net amount (Plaid mislabels these
+  // TRANSFER_OUT, so catch them first). Critical committed obligation; not an operating expense line.
+  if (out && isCheck && PAYROLL_NET_CENTS.has(amt))
+    return { txnClass: 'payroll', isExpense: false, isCashMovement: true, confidence: 'rule', evidence: `payroll net check $${(amt / 100).toFixed(2)}` }
 
   // 1) Bank → credit-card payment (NOT an expense; the card charges are the expenses).
   if (out && (pfcD === 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT' ||
@@ -50,6 +68,12 @@ export function classifyTxn(t: PlaidTxn): Classification {
   // 3) Debt / loan payment (non-card) — committed, tracked as debt service not opex.
   if (out && (pfcP === 'LOAN_PAYMENTS' || rx(name, /\b(loan|note pmt|floor ?plan|nmac|ally financial|term loan|sba|principal|installment|lien)\b/)))
     return { txnClass: 'debt_payment', isExpense: false, isCashMovement: true, confidence: pfcP === 'LOAN_PAYMENTS' ? 'rule' : 'heuristic', evidence: pfcP === 'LOAN_PAYMENTS' ? pfcP : 'name~loan' }
+
+  // 3b) Cleared paper check (vendor/other). Runs BEFORE transfer because this bank clears checks as
+  // "Check(C## Inclearings)" which Plaid mislabels TRANSFER_OUT. A true "From Checking XX→XX" transfer
+  // has no "check("/"clearing"/check-number and is caught by rule 4. Non-payroll checks are expenses.
+  if (out && isCheck && !rx(name, /from checking|to checking/))
+    return { txnClass: 'check', isExpense: true, isCashMovement: false, confidence: checkNo ? 'rule' : 'heuristic', evidence: checkNo ? `check #${checkNo}` : 'name~check/clearing' }
 
   // 4) Internal / account transfer (cash moves, not an expense; avoid double count across accounts).
   if (pfcP === 'TRANSFER_IN' || pfcP === 'TRANSFER_OUT' ||
@@ -71,11 +95,6 @@ export function classifyTxn(t: PlaidTxn): Classification {
   // 8) Bank fee.
   if (out && (pfcP === 'BANK_FEES' || rx(name, /\b(overdraft|nsf|service charge|monthly fee|wire fee|maintenance fee|returned item|analysis charge)\b/)))
     return { txnClass: 'fee', isExpense: true, isCashMovement: false, confidence: pfcP === 'BANK_FEES' ? 'rule' : 'heuristic', evidence: pfcP === 'BANK_FEES' ? pfcP : 'name~fee' }
-
-  // 9) Check (paper) — vendor/payroll payment cleared as a check. "\bcheck\b" won't match the
-  // "checking" of a transfer (already caught above). "in clearings" is this bank's cleared-check note.
-  if (out && (checkNo || rx(name, /\bcheck\b|\bchk\b|\bcheque\b|in clearings|e-?check\b/)))
-    return { txnClass: 'check', isExpense: true, isCashMovement: false, confidence: checkNo ? 'rule' : 'heuristic', evidence: checkNo ? `check #${checkNo}` : (rx(name, /in clearings/) ? 'name~check in clearings' : 'name~check') }
 
   // 10) Inventory / parts (best-effort supplier match).
   if (out && rx(name, /\b(napa|autozone|o'?reilly|advance auto|worldpac|keystone|lkq|parts authority|3m|chemical guys|detail supply|meguiar|autogeek|carquest)\b/))
