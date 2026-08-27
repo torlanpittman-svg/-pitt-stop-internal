@@ -53,6 +53,11 @@ export const SETTINGS: Record<string, SettingDef> = {
   payroll_reserve_cents:      { key: 'payroll_reserve_cents',      type: 'int',  def: 0,     env: 'PAYROLL_RESERVE_CENTS' },
   tax_reserve_cents:          { key: 'tax_reserve_cents',          type: 'int',  def: 0,     env: 'TAX_RESERVE_CENTS' },
   min_operating_buffer_cents: { key: 'min_operating_buffer_cents', type: 'int',  def: 0,     env: 'MIN_OPERATING_BUFFER_CENTS' },
+  // Auto-Sales Vehicle Financial System (B0). Default OFF — /admin/auto-sales ships dark; admin-only;
+  // no money movement. Cutover: from this date, go-forward vehicle-level capture is expected complete;
+  // anything earlier may be historically incomplete (kept clearly separated).
+  auto_sales_enabled:         { key: 'auto_sales_enabled',         type: 'bool',   def: false,        env: 'AUTO_SALES_ENABLED' },
+  auto_sales_cutover_date:    { key: 'auto_sales_cutover_date',    type: 'string', def: '2026-08-27', env: 'AUTO_SALES_CUTOVER_DATE' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
@@ -129,6 +134,14 @@ export async function retailQbSyncEnabled(): Promise<boolean> {
 export async function financeEnabled(): Promise<boolean> {
   const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'finance_enabled'))
   return resolve(SETTINGS.finance_enabled, rows[0]?.value) as boolean
+}
+export async function autoSalesEnabled(): Promise<boolean> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'auto_sales_enabled'))
+  return resolve(SETTINGS.auto_sales_enabled, rows[0]?.value) as boolean
+}
+export async function autoSalesCutoverDate(): Promise<string> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'auto_sales_cutover_date'))
+  return resolve(SETTINGS.auto_sales_cutover_date, rows[0]?.value) as string
 }
 /** CFO reserve policy. `configured` is false until the owner sets a real policy — Safe-to-Spend
  *  discloses that until then. All amounts default to $0 (not an assertion that $0 is correct). */
