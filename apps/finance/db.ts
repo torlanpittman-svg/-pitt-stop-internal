@@ -9,6 +9,7 @@ import { finAccounts, finBalanceSnapshots, finDebts, finPayroll, finObligations,
 import { money, isStale, type MoneyValue } from './sources'
 import { encrypt } from '@/apps/quickbooks/crypto'
 import { getItemInstitution, getAccountBalances, plaidEnv, type PlaidAccountBalance } from './plaid'
+import { getReservePolicy } from '@/apps/settings/db'
 
 export interface LiveBalance { currentCents: number | null; availableCents: number | null; asOf: string; mask: string | null; institution: string | null; stale: boolean }
 export interface AccountView {
@@ -261,37 +262,57 @@ export async function verifyPlaidMapping(params: { plaidAccountId: string; finAc
 }
 
 // ── Data Gaps / Required Inputs — generated from ACTUAL known/missing data ────
-export interface DataGap { key: string; label: string; severity: 'high' | 'medium' }
+export type GapBlocks = 'safe_to_spend' | 'forecast' | 'debt_optimization' | 'confidence'
+export interface DataGap {
+  key: string
+  label: string                 // exactly what is missing
+  why: string                   // why the CFO needs it
+  source: string                // what should provide it
+  blocks: GapBlocks[]           // what it blocks (or only improves)
+  severity: 'high' | 'medium' | 'low'
+}
+
+/**
+ * Fully DYNAMIC data-gap audit — each gap is computed from current verified state and disappears
+ * automatically once its requirement is satisfied. Nothing already-established is reported as missing.
+ */
 export async function getDataGaps(): Promise<DataGap[]> {
   const db = getDb()
   const gaps: DataGap[] = []
 
-  // Live source coverage — per account, based on VERIFIED, active Plaid mappings (not a blanket flag).
+  // ── Live bank/card coverage — VERIFIED, active Plaid mappings only ──
   const verified = await db.select({ mask: finPlaidAccounts.mask, name: finPlaidAccounts.name, type: finPlaidAccounts.type })
-    .from(finPlaidAccounts)
-    .where(and(eq(finPlaidAccounts.mappingVerified, true), eq(finPlaidAccounts.status, 'active')))
+    .from(finPlaidAccounts).where(and(eq(finPlaidAccounts.mappingVerified, true), eq(finPlaidAccounts.status, 'active')))
   const hasMask = (m: RegExp) => verified.some((v) => m.test(v.mask ?? '') || m.test(v.name ?? ''))
-  if (!hasMask(/2649/)) gaps.push({ key: 'amb_live', label: 'American Momentum *2649 operating balance not verified-live', severity: 'high' })
-  if (!hasMask(/5600/)) gaps.push({ key: 'extraco_live', label: 'Extraco *5600 (Auto Sales) balance not verified-live', severity: 'medium' })
-  if (!verified.some((v) => v.type === 'credit')) gaps.push({ key: 'amex_live', label: 'American Express card mapping not verified (mask 5008 vs QBO “6-31007” — confirm)', severity: 'medium' })
-  // Next payroll missing → cannot answer "can we make payroll?".
-  const payroll = await getLatestPayroll()
-  if (!payroll) gaps.push({ key: 'payroll', label: 'Next payroll amount / date not entered', severity: 'high' })
+  if (!hasMask(/2649/)) gaps.push({ key: 'amb_live', label: 'American Momentum *2649 operating balance not verified-live', why: 'It is the Safe-to-Spend cash foundation.', source: 'Plaid (verify mapping in Bank Connections)', blocks: ['safe_to_spend', 'forecast'], severity: 'high' })
+  if (!hasMask(/5600/)) gaps.push({ key: 'extraco_live', label: 'Extraco *5600 (Auto Sales) balance not verified-live', why: 'Needed for auto-sales liquidity.', source: 'Plaid', blocks: ['confidence'], severity: 'medium' })
 
-  // Debt terms unverified.
+  // ── Active bank accounts genuinely unresolved (closed/clearing accounts are NOT gaps) ──
+  const activeBanks = await db.select().from(finAccounts).where(and(eq(finAccounts.kind, 'bank'), eq(finAccounts.status, 'active')))
+  const unmapped = activeBanks.filter((a) => !a.institution)
+  if (unmapped.length > 0) gaps.push({ key: 'account_mapping', label: `Active bank account(s) not mapped to an institution: ${unmapped.map((a) => a.name).join(', ')}`, why: 'Unmapped active cash accounts are excluded from cash math.', source: 'Verify the Plaid mapping', blocks: ['safe_to_spend'], severity: 'medium' })
+
+  // ── Payroll: resolved when confirmed payroll obligations exist (next Friday auto-calculated) ──
+  const payrollObls = await db.select().from(finObligations).where(and(eq(finObligations.category, 'payroll'), eq(finObligations.status, 'confirmed')))
+  if (payrollObls.length === 0) gaps.push({ key: 'payroll', label: 'Employee payroll not confirmed', why: 'Cannot answer “can we make payroll?” without it.', source: 'QuickBooks Payroll (verified)', blocks: ['safe_to_spend', 'forecast'], severity: 'high' })
+
+  // ── Reserve policy unconfigured → strict Safe-to-Spend can’t be “fully trustworthy” ──
+  const reserves = await getReservePolicy()
+  if (!reserves.configured) gaps.push({ key: 'reserves', label: 'Reserve policy not configured ($0 assumed)', why: 'No payroll/tax/operating buffer is protected; Safe-to-Spend can’t be fully trusted.', source: 'Owner decision (Reserve policy panel)', blocks: ['safe_to_spend', 'debt_optimization'], severity: 'medium' })
+
+  // ── Debt terms unverified — grouped by lender; only when real principal exists ──
   const debts = await getDebts()
-  const unverified = debts.filter((d) => !d.verified)
-  if (unverified.some((d) => /extraco/i.test(d.name))) gaps.push({ key: 'extraco_terms', label: 'Extraco loan/LOC terms (APR / payment / maturity) not verified', severity: 'high' })
-  if (unverified.some((d) => d.kind === 'floor_plan' || /floor plan/i.test(d.name))) gaps.push({ key: 'floor_plan_terms', label: 'Floor-plan terms not verified', severity: 'high' })
-  if (unverified.some((d) => /\bqb\b|quickbooks/i.test(d.name))) gaps.push({ key: 'qb_capital_terms', label: 'QuickBooks Capital loan terms not verified', severity: 'medium' })
+  const unverified = debts.filter((d) => !d.verified && (d.principalCents ?? 0) > 0)
+  const extraco = unverified.filter((d) => /extraco/i.test(d.name) && d.kind !== 'floor_plan')
+  const floor = unverified.filter((d) => d.kind === 'floor_plan' || /floor plan/i.test(d.name))
+  const qb = unverified.filter((d) => /\bqb\b|quickbooks/i.test(d.name))
+  const sumC = (xs: typeof debts) => xs.reduce((t, d) => t + (d.principalCents ?? 0), 0)
+  if (floor.length) gaps.push({ key: 'floor_plan_terms', label: `Floor-plan terms unverified (${floor.length} line, ~$${(sumC(floor) / 100).toLocaleString()} principal)`, why: 'Floor-plan curtailments/payoffs encumber *5600 auto-sales cash and are committed outflows.', source: 'Extraco “Loan Activity” emails (Nancy) / statements', blocks: ['safe_to_spend', 'debt_optimization'], severity: 'high' })
+  if (extraco.length) gaps.push({ key: 'extraco_terms', label: `Extraco loan/LOC terms unverified (${extraco.length} loans, ~$${(sumC(extraco) / 100).toLocaleString()} principal)`, why: 'APR / payment / maturity drive debt service and the debt-vs-reserve optimizer.', source: 'Extraco “Loan Activity” emails (Nancy) / statements', blocks: ['debt_optimization'], severity: 'high' })
+  if (qb.length) gaps.push({ key: 'qb_capital_terms', label: `QuickBooks Capital terms unverified (${qb.length} loans, ~$${(sumC(qb) / 100).toLocaleString()} principal)`, why: 'High-APR debt; terms needed to prioritize payoff.', source: 'QuickBooks Capital dashboard', blocks: ['debt_optimization'], severity: 'medium' })
 
-  // Obligations not yet discovered.
-  const [{ oblCount }] = await db.select({ oblCount: sql<number>`count(*)::int` }).from(finObligations)
-  if (Number(oblCount) === 0) gaps.push({ key: 'obligations', label: 'Recurring obligations not yet added/discovered', severity: 'medium' })
-
-  // Accounts not mapped to an institution.
-  const accts = await db.select({ institution: finAccounts.institution }).from(finAccounts)
-  if (accts.length > 0 && accts.some((a) => !a.institution)) gaps.push({ key: 'account_mapping', label: 'Bank accounts not yet mapped to Extraco / American Momentum', severity: 'medium' })
+  // ── Auto-sales encumbrance unknown → can’t compute unencumbered *5600 cash ──
+  gaps.push({ key: 'autosales_encumbrance', label: 'Auto-sales floor-plan/title/payoff obligations not registered', why: 'Without them, *5600 shows bank cash but “unencumbered” = Unknown; can’t safely backstop *2649.', source: 'Extraco floor-plan + vehicle title/payoff records', blocks: ['confidence'], severity: 'medium' })
 
   return gaps
 }

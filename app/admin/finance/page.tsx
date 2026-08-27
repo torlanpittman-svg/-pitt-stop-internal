@@ -193,17 +193,27 @@ export default async function FinancePage() {
         </div>
       </div>
 
-      {/* Data Gaps / Required Inputs */}
+      {/* Data Gaps / Required Inputs — dynamic; each resolves automatically when verified */}
       <div className={`${card} mb-6`}>
-        <h2 className="text-white font-bold text-lg mb-3">Data Gaps / Required Inputs</h2>
-        {gaps.length === 0 ? <p className="text-gray-500 text-sm">No gaps detected.</p> : (
-          <ul className="space-y-1.5">
-            {gaps.map((g) => (
-              <li key={g.key} className="flex items-center gap-2 text-sm">
-                <span className={`w-2 h-2 rounded-full ${g.severity === 'high' ? 'bg-red-500' : 'bg-amber-500'}`} />
-                <span className="text-gray-300">{g.label}</span>
-              </li>
-            ))}
+        <h2 className="text-white font-bold text-lg mb-1">Data Gaps / Required Inputs</h2>
+        <p className="text-gray-500 text-xs mb-3">Live audit — a gap disappears automatically once its requirement is verified. Each shows why it matters, the source, and what it blocks.</p>
+        {gaps.length === 0 ? <p className="text-green-400 text-sm">✓ No gaps — all inputs verified.</p> : (
+          <ul className="space-y-2.5">
+            {gaps.map((g) => {
+              const blockLabels: Record<string, string> = { safe_to_spend: 'Safe-to-Spend', forecast: 'Forecast', debt_optimization: 'Debt optimizer', confidence: 'Confidence only' }
+              return (
+                <li key={g.key} className="flex items-start gap-2 text-sm">
+                  <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${g.severity === 'high' ? 'bg-red-500' : g.severity === 'medium' ? 'bg-amber-500' : 'bg-gray-500'}`} />
+                  <div>
+                    <p className="text-gray-200">{g.label}</p>
+                    <p className="text-gray-500 text-xs">{g.why} <span className="text-gray-600">· Source: {g.source}</span></p>
+                    <div className="flex gap-1 mt-0.5">
+                      {g.blocks.map((b) => <span key={b} className={`text-[10px] px-1.5 py-0.5 rounded-full border ${b === 'confidence' ? 'bg-gray-800 text-gray-400 border-gray-700' : 'bg-red-950/30 text-red-300/80 border-red-900/50'}`}>{b === 'confidence' ? 'improves confidence' : `blocks ${blockLabels[b]}`}</span>)}
+                    </div>
+                  </div>
+                </li>
+              )
+            })}
           </ul>
         )}
       </div>
