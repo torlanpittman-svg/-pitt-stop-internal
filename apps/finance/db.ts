@@ -311,11 +311,15 @@ export async function getDataGaps(): Promise<DataGap[]> {
   const unverified = debts.filter((d) => !d.verified && (d.principalCents ?? 0) > 0)
   const extraco = unverified.filter((d) => /extraco/i.test(d.name) && d.kind !== 'floor_plan')
   const floor = unverified.filter((d) => d.kind === 'floor_plan' || /floor plan/i.test(d.name))
-  const qb = unverified.filter((d) => /\bqb\b|quickbooks/i.test(d.name))
+  // QB Capital: payments now verified from bank; only APR is missing (QB Capital dashboard is
+  // discontinued). Flag on missing APR, not on the verified flag — and only for the debt optimizer.
+  const qbAll = debts.filter((d) => /\bqb\b|quickbooks/i.test(d.name) && (d.principalCents ?? 0) > 0)
+  const qbNoApr = qbAll.filter((d) => d.aprBps == null)
+  const qb = extraco.filter(() => false) // (placeholder — QB handled below with its own message)
   const sumC = (xs: typeof debts) => xs.reduce((t, d) => t + (d.principalCents ?? 0), 0)
   if (floor.length) gaps.push({ key: 'floor_plan_terms', label: `Floor-plan terms unverified (${floor.length} line, ~$${(sumC(floor) / 100).toLocaleString()} principal)`, why: 'Floor-plan curtailments/payoffs encumber *5600 auto-sales cash and are committed outflows.', source: 'Extraco “Loan Activity” emails (Nancy) / statements', blocks: ['safe_to_spend', 'debt_optimization'], severity: 'high' })
   if (extraco.length) gaps.push({ key: 'extraco_terms', label: `Extraco loan/LOC terms unverified (${extraco.length} loans, ~$${(sumC(extraco) / 100).toLocaleString()} principal)`, why: 'APR / payment / maturity drive debt service and the debt-vs-reserve optimizer.', source: 'Extraco “Loan Activity” emails (Nancy) / statements', blocks: ['debt_optimization'], severity: 'high' })
-  if (qb.length) gaps.push({ key: 'qb_capital_terms', label: `QuickBooks Capital terms unverified (${qb.length} loans, ~$${(sumC(qb) / 100).toLocaleString()} principal)`, why: 'High-APR debt; terms needed to prioritize payoff.', source: 'QuickBooks Capital dashboard', blocks: ['debt_optimization'], severity: 'medium' })
+  if (qbNoApr.length) gaps.push({ key: 'qb_capital_apr', label: `QuickBooks Capital APR unverified (${qbNoApr.length} loans, ~$${(sumC(qbAll) / 100).toLocaleString()} bal; payments known ~$2,658/mo)`, why: 'Payments/balances are verified from the bank; only the APR (owner estimate ~27–29%) is missing — needed to rank payoff priority.', source: 'Original QB Capital loan agreements (QB Capital dashboard is discontinued)', blocks: ['debt_optimization'], severity: 'low' })
 
   // ── Auto-sales encumbrance unknown → can’t compute unencumbered *5600 cash ──
   gaps.push({ key: 'autosales_encumbrance', label: 'Auto-sales floor-plan/title/payoff obligations not registered', why: 'Without them, *5600 shows bank cash but “unencumbered” = Unknown; can’t safely backstop *2649.', source: 'Extraco floor-plan + vehicle title/payoff records', blocks: ['confidence'], severity: 'medium' })
