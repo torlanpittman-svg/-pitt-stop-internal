@@ -10,6 +10,7 @@ import { autoSalesEnabled, autoSalesCutoverDate } from '@/apps/settings/db'
 import { getInventoryList, createAcquisition } from '@/apps/auto-sales/db'
 import { validateVIN, normalizeVIN, decodeVINFromNHTSA } from '@/apps/vehicle-entry/vin'
 import { IN_SCOPE_ACCOUNTS } from '@/apps/auto-sales/types'
+import AcquireVinFields from './AcquireVinFields'
 
 export const dynamic = 'force-dynamic'
 const money = (c: number | null | undefined) => c == null ? '—' : `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -62,21 +63,19 @@ export default async function AutoSalesPage() {
       {/* Quick Acquisition */}
       <div className={`${card} mb-6`}>
         <h2 className="text-white font-bold mb-1">Quick Acquisition</h2>
-        <p className="text-gray-500 text-xs mb-3">Enter a VIN — we decode year/make/model (NHTSA), match or create the canonical vehicle, and generate a <b>PS-{'{'}last 4 of VIN{'}'}</b> stock number. Creates the inventory record + acquisition event.</p>
-        <form action={acquireAction} className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <label className="text-xs text-gray-500 col-span-2">VIN<br /><input name="vin" placeholder="17 chars (or leave blank + type Y/M/M)" className={input} /></label>
-          <label className="text-xs text-gray-500">Acquisition cost ($)<br /><input name="cost" type="number" step="0.01" min="0" required className={input} /></label>
-          <label className="text-xs text-gray-500">Acquired date<br /><input name="acquiredAt" type="date" required className={input} /></label>
-          <label className="text-xs text-gray-500">Year<br /><input name="year" className={input} /></label>
-          <label className="text-xs text-gray-500">Make<br /><input name="make" className={input} /></label>
-          <label className="text-xs text-gray-500">Model<br /><input name="model" className={input} /></label>
-          <label className="text-xs text-gray-500">Color<br /><input name="color" className={input} /></label>
-          <label className="text-xs text-gray-500">Source<br /><select name="source" className={input} defaultValue="auction"><option value="auction">auction</option><option value="trade_in">trade_in</option><option value="private">private</option><option value="dealer">dealer</option><option value="other">other</option></select></label>
-          <label className="text-xs text-gray-500">Seller<br /><input name="seller" className={input} /></label>
-          <label className="text-xs text-gray-500">Funding account<br /><select name="account" className={input} defaultValue="unknown">{IN_SCOPE_ACCOUNTS.map((a) => <option key={a.ref} value={a.ref}>{a.label}</option>)}</select></label>
-          <label className="text-xs text-gray-500 flex items-end gap-2"><input name="floorPlanned" type="checkbox" className="mb-2.5" /> <span className="mb-2">Floor-planned</span></label>
-          <label className="text-xs text-gray-500">Floor-plan lender<br /><input name="floorPlanLender" placeholder="Extraco" className={input} /></label>
-          <div className="col-span-2 md:col-span-4"><button className="bg-green-600 text-white text-sm font-semibold px-4 py-2 rounded-lg">Acquire vehicle</button></div>
+        <p className="text-gray-500 text-xs mb-3">Scan or type a VIN — we decode year/make/model (NHTSA) and auto-fill it, match or create the canonical vehicle, and generate a <b>PS-{'{'}last 4 of VIN{'}'}</b> stock number. Manual Y/M/M is only a fallback if decoding fails. Creates the inventory record + acquisition event.</p>
+        <form action={acquireAction}>
+          <AcquireVinFields />
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <label className="text-xs text-gray-500">Acquisition cost ($)<br /><input name="cost" type="number" step="0.01" min="0" required className={input} /></label>
+            <label className="text-xs text-gray-500">Acquired date<br /><input name="acquiredAt" type="date" required className={input} /></label>
+            <label className="text-xs text-gray-500">Source<br /><select name="source" className={input} defaultValue="auction"><option value="auction">auction</option><option value="trade_in">trade_in</option><option value="private">private</option><option value="dealer">dealer</option><option value="other">other</option></select></label>
+            <label className="text-xs text-gray-500">Seller<br /><input name="seller" className={input} /></label>
+            <label className="text-xs text-gray-500">Funding account<br /><select name="account" className={input} defaultValue="unknown">{IN_SCOPE_ACCOUNTS.map((a) => <option key={a.ref} value={a.ref}>{a.label}</option>)}</select></label>
+            <label className="text-xs text-gray-500 flex items-end gap-2"><input name="floorPlanned" type="checkbox" className="mb-2.5" /> <span className="mb-2">Floor-planned</span></label>
+            <label className="text-xs text-gray-500">Floor-plan lender<br /><input name="floorPlanLender" placeholder="Extraco" className={input} /></label>
+            <div className="flex items-end"><button className="bg-green-600 text-white text-sm font-semibold px-4 py-2 rounded-lg w-full">Acquire vehicle</button></div>
+          </div>
         </form>
       </div>
 
@@ -95,7 +94,10 @@ export default async function AutoSalesPage() {
                 const cm = COMPLETENESS[r.completeness] ?? COMPLETENESS.needs_review
                 return (
                   <tr key={r.id} className="border-b border-gray-800">
-                    <td className="py-2"><Link href={`/admin/auto-sales/${r.id}`} className="text-indigo-300 font-medium">{r.stockNumber ?? '(no stock — needs VIN)'}</Link><span className="block text-gray-500 text-xs">{[r.year, r.make, r.model, r.color].filter(Boolean).join(' ') || 'Unidentified'}{r.vin ? ` · ${r.vin.slice(-6)}` : ''}</span></td>
+                    <td className="py-2">{r.stockNumber
+                      ? <Link href={`/admin/auto-sales/${r.id}`} className="text-indigo-300 font-medium">{r.stockNumber}</Link>
+                      : <Link href={`/admin/auto-sales/${r.id}`} className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-indigo-700 text-indigo-200">📷 Add / Scan VIN →</Link>}
+                      <span className="block text-gray-500 text-xs">{[r.year, r.make, r.model, r.color].filter(Boolean).join(' ') || 'Unidentified'}{r.vin ? ` · ${r.vin.slice(-6)}` : ''}</span></td>
                     <td className="py-2 text-gray-400 capitalize">{r.status.replace('_', ' ')}</td>
                     <td className="py-2 text-right tabular-nums text-white">{money(r.summary.acquisitionCostCents)}</td>
                     <td className="py-2 text-right tabular-nums text-gray-300">{money(r.summary.verifiedAdditionalCents)}</td>

@@ -10,6 +10,7 @@ import { notFound } from 'next/navigation'
 import { getVehicleFolder, addExpenseEvent, reverseEvent, addReturnRefund, settleRefund, sellVehicle, updateCloseout } from '@/apps/auto-sales/db'
 import { ECONOMIC_CATEGORIES, IN_SCOPE_ACCOUNTS, REFUND_KINDS, labelFor, type EconomicCategory } from '@/apps/auto-sales/types'
 import { autoSalesCutoverDate } from '@/apps/settings/db'
+import VinResolver from './VinResolver'
 
 export const dynamic = 'force-dynamic'
 const money = (c: number | null | undefined) => c == null ? '—' : `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -90,7 +91,11 @@ export default async function VehicleFolderPage({ params }: { params: Promise<{ 
       <div className="flex items-center gap-3 mt-1">
         <h1 className="text-2xl font-bold text-white">{inv.stockNumber ?? '(no stock — needs VIN)'} <span className="text-gray-500 font-normal text-lg">· {[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Unidentified vehicle'}</span></h1>
         {closeoutBadge && <span className={`text-[11px] px-2 py-0.5 rounded-full border ${closeoutBadge.c}`}>{closeoutBadge.label}</span>}
+        {!vehicle.vin && <span className="text-[11px] px-2 py-0.5 rounded-full border bg-red-950/40 text-red-300 border-red-900/60">Needs VIN</span>}
       </div>
+
+      {/* Needs-VIN → Add / Scan VIN (decode + dedup + PS stock) */}
+      {!vehicle.vin && <VinResolver inventoryVehicleId={inv.id} backfill={{ year: vehicle.year, make: vehicle.make, model: vehicle.model }} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
         {/* Vehicle identity */}

@@ -2,12 +2,12 @@
  * Auto-Sales B0 — read models + append-only writes over the canonical vehicle.
  * Facts only; no accounting policy. No money movement; no QBO/bank writes.
  */
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, ne, inArray, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
-import { vehicles } from '@/apps/workflow/schema'
+import { vehicles, serviceOrders } from '@/apps/workflow/schema'
 import { inventoryVehicles, vehicleFinancialEvents } from './schema'
 import { autoSalesCutoverDate } from '@/apps/settings/db'
-import { normalizeVIN } from '@/apps/vehicle-entry/vin'
+import { normalizeVIN, validateVIN, decodeVINFromNHTSA, type VINDecodeResult } from '@/apps/vehicle-entry/vin'
 import { generateStockNumber } from './stock'
 import { costRelevance, defaultCashflow, type EconomicCategory, type FinancialCompleteness } from './types'
 
@@ -26,6 +26,88 @@ async function findOrCreateVehicle(input: { vin?: string | null; year?: string |
     color: input.color ?? null, vinRaw: (input.vinRaw ?? null) as any,
   }).returning({ id: vehicles.id })
   return row.id
+}
+
+// ── VIN resolution (validate → reuse decoder → dedup → conflict → attach + PS stock) ──
+export interface VinDecodePreview { ok: boolean; error?: string; decoded?: VINDecodeResult }
+/** Validate + decode a VIN for the UI to preview (reuses the shared NHTSA decoder). */
+export async function previewVinDecode(rawVin: string): Promise<VinDecodePreview> {
+  const { valid, error } = validateVIN(rawVin || '')
+  if (!valid) return { ok: false, error }
+  try { return { ok: true, decoded: await decodeVINFromNHTSA(normalizeVIN(rawVin)) } }
+  catch { return { ok: false, error: 'VIN lookup service unavailable — try again in a moment' } }
+}
+
+export type VinResolveStatus = 'ok' | 'invalid' | 'conflict' | 'duplicate' | 'not_found'
+export interface VinResolveResult {
+  status: VinResolveStatus; error?: string; decoded?: VINDecodeResult; stockNumber?: string
+  existingYmm?: { year: string | null; make: string | null; model: string | null }   // for conflict
+  duplicateInfo?: string                                                              // for duplicate
+}
+/**
+ * Attach a full VIN to a (typically Needs-VIN) inventory vehicle. VIN is the strongest identity:
+ *  - validate + decode (reuse shared decoder)
+ *  - DEDUP: if the VIN already belongs to another canonical vehicle that is bound to a DIFFERENT
+ *    inventory unit → 'duplicate' (owner must resolve). If it belongs to another canonical NOT bound
+ *    to inventory (e.g. a prior detail-scan) → re-point this inventory to that canonical (merge) and
+ *    delete the now-orphan record.
+ *  - CONFLICT: decoded year/make/model materially differs from the current backfill → 'conflict'
+ *    unless confirmConflict (never silently overwrite).
+ *  - APPLY: set VIN + decoded attributes on the canonical, generate PS-{last4}, record evidence.
+ *  Financial completeness is unchanged (identity resolved ≠ historical costs suddenly complete).
+ */
+export async function resolveVin(input: { inventoryVehicleId: string; rawVin: string; confirmConflict?: boolean; actor: string | null }): Promise<VinResolveResult> {
+  const db = getDb()
+  const { valid, error } = validateVIN(input.rawVin || '')
+  if (!valid) return { status: 'invalid', error }
+  const vin = normalizeVIN(input.rawVin)
+  let decoded: VINDecodeResult
+  try { decoded = await decodeVINFromNHTSA(vin) } catch { return { status: 'invalid', error: 'VIN lookup service unavailable — try again in a moment' } }
+
+  const [row] = await db.select({ inv: inventoryVehicles, v: vehicles }).from(inventoryVehicles)
+    .innerJoin(vehicles, eq(inventoryVehicles.vehicleId, vehicles.id)).where(eq(inventoryVehicles.id, input.inventoryVehicleId)).limit(1)
+  if (!row) return { status: 'not_found', error: 'Inventory vehicle not found' }
+  const currentCanonicalId = row.v.id
+
+  // DEDUP — VIN uniqueness is the strongest check.
+  const [vinOwner] = await db.select().from(vehicles).where(and(eq(vehicles.vin, vin), ne(vehicles.id, currentCanonicalId))).limit(1)
+  let targetCanonicalId = currentCanonicalId
+  let merging = false
+  if (vinOwner) {
+    const [boundInv] = await db.select({ id: inventoryVehicles.id, stock: inventoryVehicles.stockNumber }).from(inventoryVehicles).where(eq(inventoryVehicles.vehicleId, vinOwner.id)).limit(1)
+    if (boundInv && boundInv.id !== input.inventoryVehicleId) {
+      return { status: 'duplicate', decoded, duplicateInfo: `VIN ${vin} is already the identity of another inventory vehicle${boundInv.stock ? ` (${boundInv.stock})` : ''}. Two inventory units cannot share one VIN — resolve which is correct.` }
+    }
+    targetCanonicalId = vinOwner.id; merging = true   // VIN belongs to a non-inventory canonical → attach to it
+  }
+
+  // CONFLICT — decoded YMM vs the existing backfill (never silently overwrite).
+  const norm = (s: string | null | undefined) => (s ?? '').trim().toLowerCase()
+  const conflict = (decoded.year && norm(decoded.year) !== norm(row.v.year) && row.v.year)
+    || (decoded.make && norm(decoded.make) !== norm(row.v.make) && row.v.make)
+    || (decoded.model && norm(decoded.model) !== norm(row.v.model) && row.v.model)
+  if (conflict && !input.confirmConflict) {
+    return { status: 'conflict', decoded, existingYmm: { year: row.v.year, make: row.v.make, model: row.v.model } }
+  }
+
+  // APPLY
+  const attrs = {
+    vin, year: decoded.year ?? row.v.year, make: decoded.make ?? row.v.make, model: decoded.model ?? row.v.model,
+    bodyClass: decoded.bodyClass ?? row.v.bodyClass, vinRaw: decoded as any, updatedAt: new Date(),
+  }
+  await db.update(vehicles).set(attrs).where(eq(vehicles.id, targetCanonicalId))
+  const stockNumber = await generateStockNumber(vin, input.inventoryVehicleId)
+  const evidence = `VIN ${vin} entered/decoded ${new Date().toISOString().slice(0, 10)} → ${[decoded.year, decoded.make, decoded.model, decoded.trim].filter(Boolean).join(' ')}${merging ? ' · linked to existing canonical vehicle (dedup)' : ''}${conflict ? ' · YMM conflict confirmed by user' : ''}.`
+  const set: Record<string, unknown> = { stockNumber, notes: [row.inv.notes, evidence].filter(Boolean).join(' | '), updatedAt: new Date() }
+  if (merging) set.vehicleId = targetCanonicalId
+  await db.update(inventoryVehicles).set(set).where(eq(inventoryVehicles.id, input.inventoryVehicleId))
+  // If we merged onto another canonical, delete the now-orphan old canonical (only if unreferenced).
+  if (merging && currentCanonicalId !== targetCanonicalId) {
+    const so = await db.select({ id: serviceOrders.id }).from(serviceOrders).where(eq(serviceOrders.vehicleId, currentCanonicalId)).limit(1)
+    const stillInv = await db.select({ id: inventoryVehicles.id }).from(inventoryVehicles).where(eq(inventoryVehicles.vehicleId, currentCanonicalId)).limit(1)
+    if (so.length === 0 && stillInv.length === 0) await db.delete(vehicles).where(eq(vehicles.id, currentCanonicalId))
+  }
+  return { status: 'ok', decoded, stockNumber: stockNumber ?? undefined }
 }
 
 export interface AcquireInput {

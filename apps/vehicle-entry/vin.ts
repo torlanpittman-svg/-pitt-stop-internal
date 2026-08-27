@@ -55,6 +55,13 @@ export interface VINDecodeResult {
   make:      string | null
   model:     string | null
   bodyClass: string | null
+  // Additional reliable attributes (optional; populated when NHTSA provides them). Existing callers
+  // that only read year/make/model/bodyClass are unaffected.
+  trim?:      string | null
+  driveType?: string | null
+  engine?:    string | null   // e.g. "3.5L 6cyl"
+  fuelType?:  string | null
+  raw?:       Record<string, string>
 }
 
 // ── Server-side only ────────────────────────────────────────────────────────
@@ -96,6 +103,9 @@ export async function decodeVINFromNHTSA(vin: string): Promise<VINDecodeResult> 
 
   const rawMake = cleanField(result['Make'])
   const model   = cleanField(result['Model'])
+  const disp    = cleanField(result['DisplacementL'])
+  const cyl     = cleanField(result['EngineCylinders'])
+  const engine  = disp || cyl ? [disp ? `${Number(disp).toFixed(1)}L` : null, cyl ? `${cyl}cyl` : null].filter(Boolean).join(' ') : null
 
   return {
     vin:       v,
@@ -103,5 +113,10 @@ export async function decodeVINFromNHTSA(vin: string): Promise<VINDecodeResult> 
     make:      rawMake ? normalizeMake(rawMake) : null,
     model,
     bodyClass: cleanField(result['BodyClass']),
+    trim:      cleanField(result['Trim']) ?? cleanField(result['Series']),
+    driveType: cleanField(result['DriveType']),
+    engine,
+    fuelType:  cleanField(result['FuelTypePrimary']),
+    raw:       result,
   }
 }
