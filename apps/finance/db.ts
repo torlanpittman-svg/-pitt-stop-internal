@@ -74,19 +74,25 @@ export async function getOperatingCash(): Promise<OperatingCash | null> {
 /** Auto-sales (*5600) liquidity view. Bank cash is NOT freely spendable: some is encumbered by
  *  floor-plan/title/payoff obligations on sold-but-not-cleared vehicles. Until those obligations are
  *  registered, we cannot compute unencumbered cash — we disclose it rather than pretend. */
-export interface AutoSalesLiquidity { bankAvailableCents: number | null; asOf: string | null; knownEncumbranceCents: number; encumbranceKnown: boolean; unencumberedCents: number | null; note: string }
+export interface AutoSalesLiquidity { bankAvailableCents: number | null; asOf: string | null; floorPlanBalanceCents: number | null; unencumberedCents: number | null; note: string }
 export async function getAutoSalesLiquidity(): Promise<AutoSalesLiquidity> {
   const db = getDb()
   const rows = await db.select({ pa: finPlaidAccounts, fa: finAccounts })
     .from(finPlaidAccounts).innerJoin(finAccounts, eq(finPlaidAccounts.mappedAccountId, finAccounts.id))
     .where(and(eq(finPlaidAccounts.mappingVerified, true), eq(finPlaidAccounts.status, 'active')))
   const as = rows.find((r) => /5600/.test(r.fa.name) || /5600/.test(r.pa.mask ?? ''))
-  if (!as) return { bankAvailableCents: null, asOf: null, knownEncumbranceCents: 0, encumbranceKnown: false, unencumberedCents: null, note: 'No verified auto-sales account.' }
-  // Encumbrances (floor-plan/title/payoff) are not yet registered → treat balance as potentially encumbered.
+  if (!as) return { bankAvailableCents: null, asOf: null, floorPlanBalanceCents: null, unencumberedCents: null, note: 'No verified auto-sales account.' }
+  // Floor-plan balance = total owed to Extraco against inventory. The portion tied to ALREADY-SOLD
+  // vehicles (the curtailment owed on this cash) is not yet known per-vehicle, so unencumbered stays
+  // unknown — we do NOT net the whole floor plan against the cash.
+  const [fp] = await db.select().from(finDebts).where(and(eq(finDebts.kind, 'floor_plan'), eq(finDebts.verified, true))).limit(1)
+  const fpBal = fp?.principalCents ?? null
   return {
     bankAvailableCents: as.pa.availableBalanceCents, asOf: (as.pa.balanceAsOf ?? new Date()).toISOString(),
-    knownEncumbranceCents: 0, encumbranceKnown: false, unencumberedCents: null,
-    note: 'Floor-plan / title / payoff obligations for recently-sold vehicles are not yet registered — treat this balance as POTENTIALLY ENCUMBERED, not free cash.',
+    floorPlanBalanceCents: fpBal, unencumberedCents: null,
+    note: fpBal != null
+      ? `Extraco floor plan owes ~$${(fpBal / 100).toLocaleString()} against inventory (verified, 8.25% APR). As vehicles sell, sale proceeds in *5600 must curtail that principal. The per-vehicle curtailment owed on THIS cash isn't itemized yet → unencumbered = Unknown. Do NOT treat *5600 as free cash.`
+      : 'Floor-plan/title/payoff obligations not yet registered — treat this balance as POTENTIALLY ENCUMBERED, not free cash.',
   }
 }
 

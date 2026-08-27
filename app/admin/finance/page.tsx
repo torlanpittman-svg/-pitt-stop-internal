@@ -541,7 +541,7 @@ export default async function FinancePage() {
         <h2 className="text-white font-bold text-lg mb-1">Auto-Sales liquidity <span className="text-gray-600 text-sm font-normal">(Extraco *5600 · separate from operating)</span></h2>
         <div className="grid grid-cols-3 gap-4">
           <div><p className="text-gray-500 text-xs uppercase tracking-widest">Bank cash</p><p className="text-xl font-bold text-white mt-1">{money(autoSales.bankAvailableCents)}</p></div>
-          <div><p className="text-gray-500 text-xs uppercase tracking-widest">Known encumbrance</p><p className="text-xl font-bold text-gray-400 mt-1">{autoSales.encumbranceKnown ? money(autoSales.knownEncumbranceCents) : '—'}</p></div>
+          <div><p className="text-gray-500 text-xs uppercase tracking-widest">Floor-plan owed (inventory)</p><p className="text-xl font-bold text-gray-400 mt-1">{autoSales.floorPlanBalanceCents == null ? '—' : money(autoSales.floorPlanBalanceCents)}</p></div>
           <div><p className="text-gray-500 text-xs uppercase tracking-widest">Unencumbered</p><p className="text-xl font-bold text-amber-400 mt-1">{autoSales.unencumberedCents == null ? 'Unknown' : money(autoSales.unencumberedCents)}</p></div>
         </div>
         <p className="text-amber-300/80 text-xs mt-2">⚠ {autoSales.note} Do NOT treat this as available operating cash; transfers *5600↔*2649 are inter-account liquidity, not income/expense.</p>
