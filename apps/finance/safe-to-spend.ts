@@ -25,19 +25,27 @@ function nextWeekday(from: Date, dow: number): Date { const d = new Date(Date.UT
 function nextDom(from: Date, dom: number): Date { const d = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), dom)); const t = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate())); if (d < t) d.setUTCMonth(d.getUTCMonth() + 1); return d }
 
 export type Priority = 'critical' | 'contractual' | 'planned'
-export interface DueEvent { label: string; category: string; cents: number; due: string; priority: Priority; committedOnIssue: boolean }
+export interface DueEvent { label: string; category: string; cents: number; due: string; priority: Priority; committedOnIssue: boolean; accountId: string | null }
 
-/** Expand confirmed obligations into concrete dated due-events within [now, now+horizon]. */
-async function upcomingEvents(horizonDays: number): Promise<DueEvent[]> {
+/** The operating (*2649) fin_account id — obligations paid from here reduce operating Safe-to-Spend.
+ *  Obligations paid from *5600 (auto-sales) do NOT reduce operating cash. */
+async function operatingAccountId(): Promise<string | null> {
+  const op = await getOperatingCash(); return op?.finAccountId ?? null
+}
+
+/** Expand confirmed obligations into concrete dated due-events within [now, now+horizon].
+ *  When `accountId` is given, only obligations paid from that account are included. */
+async function upcomingEvents(horizonDays: number, accountId?: string | null): Promise<DueEvent[]> {
   const db = getDb()
   const now = new Date(); const end = new Date(Date.now() + horizonDays * 86400_000)
   const confirmed = await db.select().from(finObligations).where(eq(finObligations.status, 'confirmed'))
   const events: DueEvent[] = []
   for (const o of confirmed) {
+    if (accountId !== undefined && accountId !== null && o.paymentAccountId !== accountId) continue
     const cents = o.amountCents ?? o.avgAmountCents ?? 0
     if (!cents) continue
     const priority = (o.priority as Priority) ?? 'contractual'
-    const base = { label: o.vendor, category: o.category ?? 'other', cents, priority, committedOnIssue: o.committedOnIssue }
+    const base = { label: o.vendor, category: o.category ?? 'other', cents, priority, committedOnIssue: o.committedOnIssue, accountId: o.paymentAccountId }
     if (o.frequency === 'weekly' && o.dayOfWeek != null) {
       for (let d = nextWeekday(now, o.dayOfWeek); d <= end; d.setUTCDate(d.getUTCDate() + 7)) events.push({ ...base, due: iso(d) })
     } else if (o.frequency === 'biweekly' && o.dayOfWeek != null) {
@@ -52,6 +60,36 @@ async function upcomingEvents(horizonDays: number): Promise<DueEvent[]> {
   return events.sort((a, b) => a.due.localeCompare(b.due))
 }
 
+// ── Upcoming-obligations CALENDAR (per account, 7/14/30-day) ──
+export interface CalendarEvent { due: string; label: string; category: string; cents: number; priority: Priority; account: string }
+export interface ObligationCalendar {
+  events: CalendarEvent[]
+  window7Cents: number; window14Cents: number; window30Cents: number
+  byAccount: { account: string; window7: number; window14: number; window30: number }[]
+}
+export async function getObligationCalendar(days = 30): Promise<ObligationCalendar> {
+  const db = getDb()
+  const { finAccounts } = await import('./schema')
+  const accts = await db.select().from(finAccounts)
+  const nameById = new Map(accts.map((a) => [a.id, a.name]))
+  const all = await upcomingEvents(days) // all accounts
+  const now = Date.now()
+  const within = (e: CalendarEvent, d: number) => new Date(e.due + 'T00:00:00Z').getTime() <= now + d * 86400_000
+  const events: CalendarEvent[] = all.map((e) => ({ due: e.due, label: e.label, category: e.category, cents: e.cents, priority: e.priority, account: e.accountId ? (nameById.get(e.accountId) ?? '—') : 'unassigned' }))
+  const sum = (xs: CalendarEvent[]) => xs.reduce((t, e) => t + e.cents, 0)
+  const acctNames = [...new Set(events.map((e) => e.account))]
+  return {
+    events,
+    window7Cents: sum(events.filter((e) => within(e, 7))),
+    window14Cents: sum(events.filter((e) => within(e, 14))),
+    window30Cents: sum(events.filter((e) => within(e, 30))),
+    byAccount: acctNames.map((account) => {
+      const es = events.filter((e) => e.account === account)
+      return { account, window7: sum(es.filter((e) => within(e, 7))), window14: sum(es.filter((e) => within(e, 14))), window30: sum(es.filter((e) => within(e, 30))) }
+    }),
+  }
+}
+
 export interface Deduction { label: string; cents: number; due: string; priority: Priority }
 export interface SafeToSpend {
   availableCents: number | null; asOf: string | null; stale: boolean; horizonDays: number
@@ -64,7 +102,7 @@ export interface SafeToSpend {
 export async function computeSafeToSpend(horizonDays = 14): Promise<SafeToSpend> {
   const op = await getOperatingCash()
   const reserves = await getReservePolicy()
-  const events = await upcomingEvents(horizonDays)
+  const events = await upcomingEvents(horizonDays, await operatingAccountId())
   const toDed = (e: DueEvent): Deduction => ({ label: e.label, cents: e.cents, due: e.due, priority: e.priority })
   const critical = events.filter((e) => e.priority === 'critical').map(toDed)
   const contractual = events.filter((e) => e.priority === 'contractual').map(toDed)
@@ -103,7 +141,7 @@ export interface CashProjection {
 export async function projectCashLow(horizonDays = 14): Promise<CashProjection> {
   const op = await getOperatingCash()
   const start = op?.availableCents ?? null
-  const events = await upcomingEvents(horizonDays)
+  const events = await upcomingEvents(horizonDays, await operatingAccountId())
 
   const points: ProjectionPoint[] = []
   let bal = start ?? 0; let low = start; let lowDate = start != null ? iso(new Date()) : null
@@ -144,7 +182,7 @@ export async function forecastWithInflows(horizonDays = 21): Promise<Forecast> {
   const op = await getOperatingCash()
   const start = op?.availableCents ?? null
   const now = new Date(); const endD = iso(new Date(Date.now() + horizonDays * 86400_000))
-  const outs = (await upcomingEvents(horizonDays)).map((e) => ({ date: e.due, label: e.label, kind: 'out' as const, cents: -e.cents, confidence: undefined as string | undefined, priority: e.priority }))
+  const outs = (await upcomingEvents(horizonDays, await operatingAccountId())).map((e) => ({ date: e.due, label: e.label, kind: 'out' as const, cents: -e.cents, confidence: undefined as string | undefined, priority: e.priority }))
   const inflows = await db.select().from(finExpectedInflows)
     .where(and(sql`${finExpectedInflows.status} <> 'dismissed'`, sql`${finExpectedInflows.expectedDate} <= ${endD}`))
   const ins = inflows.map((r) => ({ date: r.expectedDate, label: r.label, kind: 'in' as const, cents: r.amountCents, confidence: r.confidence as string, priority: undefined }))

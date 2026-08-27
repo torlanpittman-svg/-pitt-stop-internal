@@ -11,7 +11,7 @@ import { getAccounts, getDebts, getLatestPayroll, getDocuments, getLatestSyncRun
 import { plaidDiagnostics } from '@/apps/finance/plaid'
 import { ingestTransactions, getRecentTransactions, getClassificationSummary } from '@/apps/finance/transactions'
 import { discoverObligations, getObligationsByStatus, setObligationStatus } from '@/apps/finance/obligations-discovery'
-import { computeSafeToSpend, projectCashLow, forecastWithInflows } from '@/apps/finance/safe-to-spend'
+import { computeSafeToSpend, projectCashLow, forecastWithInflows, getObligationCalendar } from '@/apps/finance/safe-to-spend'
 import { getExpectedInflows, getPipelineContext, addManualInflow, dismissInflow, deriveExpectedInflows } from '@/apps/finance/expected-inflows'
 import { getReservePolicy } from '@/apps/settings/db'
 import { freshnessLabel } from '@/apps/finance/sources'
@@ -146,7 +146,7 @@ export default async function FinancePage() {
   const [enabled, accounts, allAccounts, debts, payroll, documents, run, gaps, connections, operating, recentTx, txSummary, s2s, projection, oblByStatus, reserves, autoSales] = await Promise.all([
     financeEnabled(), getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getOperatingCash(), getRecentTransactions(30), getClassificationSummary(120), computeSafeToSpend(21), projectCashLow(21), getObligationsByStatus(), getReservePolicy(), getAutoSalesLiquidity(),
   ])
-  const [forecast, expectedInflows, pipeline] = await Promise.all([forecastWithInflows(21), getExpectedInflows(21), getPipelineContext()])
+  const [forecast, expectedInflows, pipeline, calendar] = await Promise.all([forecastWithInflows(21), getExpectedInflows(21), getPipelineContext(), getObligationCalendar(30)])
   const plaid = plaidDiagnostics()
   const s = (run?.summary ?? {}) as any
   const cash = accounts.filter((a) => a.kind === 'bank' && !a.clearingSuspect)
@@ -424,6 +424,43 @@ export default async function FinancePage() {
           <p className="text-gray-600 text-xs mt-3">QBO payroll liabilities: {s.payrollLiabilities.map((p: any) => `${p.name} ${dollars(p.balance)}`).join(' · ')}</p>
         )}
         <p className="text-gray-600 text-xs mt-1">QuickBooks employees on file: {s.employeesCount ?? '—'}</p>
+      </div>
+
+      {/* Upcoming-obligations CALENDAR (per account, 7/14/30-day) */}
+      <div className={`${card} mb-6`}>
+        <h2 className="text-white font-bold text-lg mb-1">Upcoming obligations calendar <span className="text-gray-600 text-sm font-normal">(what leaves each account · next 30 days)</span></h2>
+        <div className="grid grid-cols-3 gap-4 my-3">
+          <div><p className="text-gray-500 text-xs uppercase tracking-widest">Next 7 days</p><p className="text-2xl font-bold text-red-300 mt-1">{money(calendar.window7Cents)}</p></div>
+          <div><p className="text-gray-500 text-xs uppercase tracking-widest">Next 14 days</p><p className="text-2xl font-bold text-red-300 mt-1">{money(calendar.window14Cents)}</p></div>
+          <div><p className="text-gray-500 text-xs uppercase tracking-widest">Next 30 days</p><p className="text-2xl font-bold text-red-300 mt-1">{money(calendar.window30Cents)}</p></div>
+        </div>
+        <div className="flex flex-wrap gap-2 mb-3">
+          {calendar.byAccount.map((a) => (
+            <div key={a.account} className="rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-1.5 text-xs">
+              <span className="text-gray-300 font-medium">{a.account}</span>
+              <span className="text-gray-600"> · 7d </span><span className="text-red-300/80 tabular-nums">{money(a.window7)}</span>
+              <span className="text-gray-600"> · 30d </span><span className="text-red-300/80 tabular-nums">{money(a.window30)}</span>
+            </div>
+          ))}
+        </div>
+        <table className="w-full text-sm">
+          <tbody>
+            {calendar.events.map((e, i) => {
+              const dt = new Date(e.due + 'T00:00:00Z'); const dow = dt.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })
+              const pc = e.priority === 'critical' ? 'text-red-400' : e.priority === 'contractual' ? 'text-amber-400' : 'text-gray-500'
+              return (
+                <tr key={i} className="border-b border-gray-800/50">
+                  <td className="py-1 text-gray-500 text-xs whitespace-nowrap">{e.due} <span className="text-gray-600">{dow}</span></td>
+                  <td className="py-1 text-gray-300">{e.label}</td>
+                  <td className="py-1"><span className={`text-[10px] ${pc}`}>● {e.priority}</span></td>
+                  <td className="py-1 text-gray-600 text-xs">{e.account.replace('Pitt Stop ', '')}</td>
+                  <td className="py-1 text-right tabular-nums text-red-300">−{money(e.cents)}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+        <p className="text-gray-600 text-xs mt-2">Per-account: obligations paid from *5600 (auto-sales — F250, floor-plan, RLOC) do <b>not</b> reduce *2649 operating Safe-to-Spend. QB Capital + payroll + rent + owner draw pay from *2649.</p>
       </div>
 
       {/* STRICT: how much can I spend today from VERIFIED cash */}
