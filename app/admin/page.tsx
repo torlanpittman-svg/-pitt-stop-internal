@@ -68,6 +68,16 @@ const ADMIN_SECTIONS: AdminSection[] = [
     ],
   },
   {
+    group: 'Auto Sales',
+    links: [
+      {
+        label: 'Vehicle Financial System',
+        description: 'Owned inventory · per-vehicle financial folder · acquisition, expenses, returns/refunds, sale & closeout',
+        href: '/admin/auto-sales',
+      },
+    ],
+  },
+  {
     group: 'Business Settings',
     links: [
       {

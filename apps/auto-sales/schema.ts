@@ -38,10 +38,19 @@ export const inventoryVehicles = pgTable(
     acquiredAt:        date('acquired_at'),
     listedPriceCents:  integer('listed_price_cents'),
 
-    // Disposition facts (B1)
+    // Disposition + sale/closeout facts (B1). Closeout completeness is DERIVED from these + events.
     disposition:   varchar('disposition', { length: 20 }),                     // retail | wholesale | unwound
     soldAt:        date('sold_at'),
     deliveredAt:   date('delivered_at'),
+    salePriceCents:  integer('sale_price_cents'),
+    saleType:        varchar('sale_type', { length: 20 }),                     // retail | wholesale
+    proceedsAccount: varchar('proceeds_account', { length: 40 }),
+    buyerRef:        varchar('buyer_ref', { length: 200 }),                    // reference only; no sensitive PII in B0/B1 storage
+    payoffKnownCents:integer('payoff_known_cents'),
+    payoffStatus:    varchar('payoff_status', { length: 16 }),                 // open | paid | unknown | none
+    proceedsReceived:varchar('proceeds_received', { length: 16 }),            // yes | no | unknown
+    titleOutstanding:boolean('title_outstanding'),
+    closeoutNotes:   text('closeout_notes'),
 
     // Go-forward cutover + completeness (facts-first; historical uncertainty stays visible)
     origin:        varchar('origin', { length: 24 }).notNull().default('quick_entry'), // quick_entry | spreadsheet_backfill | trade_in
@@ -88,8 +97,15 @@ export const vehicleFinancialEvents = pgTable(
 
     // Append/reversal linkage (returns/refunds/trades/corrections)
     originalEventId:    uuid('original_event_id'),                                 // return/refund → the original expense
-    reversesEventId:    uuid('reverses_event_id'),                                 // reversal → the voided event
+    reversesEventId:    uuid('reverses_event_id'),                                 // reversal (correction) → the voided event
     relatedEventId:     uuid('related_event_id'),                                  // trade pairing / general link
+
+    // Refund lifecycle (return/refund/credit events) — SEPARATE from economic effect. Cash is only
+    // "received" when refund_status='settled' AND the method is cash/card (not a vendor/store credit).
+    refundStatus:       varchar('refund_status', { length: 16 }),                  // expected|pending|settled
+    refundMethod:       varchar('refund_method', { length: 20 }),                  // cash|card|vendor_credit|store_credit|exchange|other
+    refundDestinationAccount: varchar('refund_destination_account', { length: 40 }),
+    settledAt:          date('settled_at'),
 
     status:             varchar('status', { length: 16 }).notNull().default('verified'), // proposed|unverified|verified|reconciled|void
     confidence:         varchar('confidence', { length: 16 }).notNull().default('manual'),

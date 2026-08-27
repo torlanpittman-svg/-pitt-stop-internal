@@ -105,40 +105,179 @@ export async function reverseEvent(eventId: string, actor: string | null): Promi
 // ── Factual summary (never a single "total cost basis" when incomplete) ──
 export interface VehicleFinancialSummary {
   acquisitionCostCents: number
-  verifiedAdditionalCents: number
+  verifiedAdditionalCents: number       // verified cost_add − verified cost_contra (returns/refunds/credits)
   unverifiedAdditionalCents: number
   knownInvestmentCents: number          // acquisition + verified additional (NOT called "total cost basis")
-  proceedsCents: number                 // sale/deposit (B1)
+  sellingCostsCents: number             // commission etc — separate from vehicle investment
+  proceedsCents: number                 // sale/deposit
+  refundPendingCents: number            // economic reduction recognized, cash NOT yet received
+  refundSettledCents: number
+  cashRefundReceivedCents: number       // settled cash/card refunds only (vendor/store credits excluded)
   completeness: FinancialCompleteness
   historicalIncomplete: boolean
 }
 export function computeSummary(events: (typeof vehicleFinancialEvents.$inferSelect)[], completeness: FinancialCompleteness): VehicleFinancialSummary {
-  // Exclude reversed pairs (append-only correction) from all cost math.
+  // Exclude reversed pairs (append-only CORRECTION) from all math — distinct from a real-world return.
   const reversedTargets = new Set(events.filter((e) => e.reversesEventId).map((e) => e.reversesEventId as string))
   const excluded = (e: typeof events[number]) => e.status === 'void' || Boolean(e.reversesEventId) || reversedTargets.has(e.id)
 
-  let acq = 0, addV = 0, contraV = 0, addU = 0, contraU = 0, proceeds = 0
+  let acq = 0, addV = 0, contraV = 0, addU = 0, contraU = 0, selling = 0, proceeds = 0
+  let refundPending = 0, refundSettled = 0, cashReceived = 0
   for (const e of events) {
     if (excluded(e)) continue
     const rel = costRelevance(e.economicCategory as EconomicCategory)
     const verified = e.status === 'verified' || e.status === 'reconciled'
+    // Refund lifecycle (cash tracking) — independent of the economic cost reduction below.
+    if (e.refundStatus) {
+      if (e.refundStatus === 'settled') { refundSettled += e.amountCents; if (e.refundMethod === 'cash' || e.refundMethod === 'card') cashReceived += e.amountCents }
+      else refundPending += e.amountCents
+    }
     if (e.economicCategory === 'acquisition') { acq += e.amountCents; continue }
     if (rel === 'cost_add') { verified ? (addV += e.amountCents) : (addU += e.amountCents) }
     else if (rel === 'cost_contra') { verified ? (contraV += e.amountCents) : (contraU += e.amountCents) }
+    else if (rel === 'selling_cost' && verified) { selling += e.amountCents }
     else if (rel === 'proceeds' && verified) { proceeds += e.amountCents }
   }
-  const verifiedAdditional = addV - contraV
-  const unverifiedAdditional = addU - contraU
   return {
-    acquisitionCostCents: acq, verifiedAdditionalCents: verifiedAdditional, unverifiedAdditionalCents: unverifiedAdditional,
-    knownInvestmentCents: acq + verifiedAdditional, proceedsCents: proceeds,
+    acquisitionCostCents: acq, verifiedAdditionalCents: addV - contraV, unverifiedAdditionalCents: addU - contraU,
+    knownInvestmentCents: acq + (addV - contraV), sellingCostsCents: selling, proceedsCents: proceeds,
+    refundPendingCents: refundPending, refundSettledCents: refundSettled, cashRefundReceivedCents: cashReceived,
     completeness, historicalIncomplete: completeness === 'historical_incomplete' || completeness === 'partially_reconstructed' || completeness === 'needs_review',
   }
 }
 
+// ── Indicative result + closeout completeness (completeness-aware; never definitive when incomplete) ──
+export interface VehicleResult {
+  sold: boolean
+  indicativeProfitCents: number | null
+  resultLabel: string                   // 'Indicative gross profit' | 'Indicative tracked margin'
+  confidence: 'normal' | 'limited'
+  closeoutStatus: 'not_sold' | 'sale_pending' | 'sold_complete' | 'sold_incomplete'
+  unresolved: string[]                  // outstanding closeout items
+}
+export function computeResult(inv: typeof inventoryVehicles.$inferSelect, s: VehicleFinancialSummary): VehicleResult {
+  const sold = inv.status === 'sold' || inv.status === 'delivered' || inv.status === 'wholesaled'
+  const salePending = inv.status === 'sale_pending'
+  const indicative = sold ? s.proceedsCents - s.knownInvestmentCents - s.sellingCostsCents : null
+  const complete = s.completeness === 'complete'
+  // Unresolved closeout items keep a sold vehicle at "closeout incomplete".
+  const unresolved: string[] = []
+  if (inv.payoffStatus === 'open') unresolved.push(`floor-plan/loan payoff outstanding${inv.payoffKnownCents ? ` (~$${(inv.payoffKnownCents / 100).toLocaleString()})` : ''}`)
+  if (inv.proceedsReceived === 'no') unresolved.push('sale proceeds not yet received')
+  if (inv.titleOutstanding) unresolved.push('title work outstanding')
+  if (s.refundPendingCents > 0) unresolved.push(`refund pending ($${(s.refundPendingCents / 100).toLocaleString()})`)
+  const closeoutStatus = !sold && !salePending ? 'not_sold' : salePending ? 'sale_pending' : unresolved.length ? 'sold_incomplete' : 'sold_complete'
+  return {
+    sold, indicativeProfitCents: indicative,
+    resultLabel: complete ? 'Indicative gross profit' : 'Indicative tracked margin',
+    confidence: complete ? 'normal' : 'limited', closeoutStatus, unresolved,
+  }
+}
+
+// ── Returns / refunds / credits (append-only; link to the original expense; partial supported) ──
+export interface ReturnableExpense { id: string; economicCategory: string; vendor: string | null; eventDate: string; amountCents: number; returnedCents: number; remainingCents: number }
+/** Expenses eligible to return (verified cost_add events) with how much remains returnable. */
+export async function getReturnableExpenses(inventoryVehicleId: string): Promise<ReturnableExpense[]> {
+  const db = getDb()
+  const events = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.inventoryVehicleId, inventoryVehicleId))
+  const reversedTargets = new Set(events.filter((e) => e.reversesEventId).map((e) => e.reversesEventId))
+  const active = events.filter((e) => e.status !== 'void' && !e.reversesEventId && !reversedTargets.has(e.id))
+  const returnsByOriginal = new Map<string, number>()
+  for (const e of active) if (e.originalEventId && costRelevance(e.economicCategory as EconomicCategory) === 'cost_contra') returnsByOriginal.set(e.originalEventId, (returnsByOriginal.get(e.originalEventId) ?? 0) + e.amountCents)
+  return active.filter((e) => costRelevance(e.economicCategory as EconomicCategory) === 'cost_add')
+    .map((e) => { const returned = returnsByOriginal.get(e.id) ?? 0; return { id: e.id, economicCategory: e.economicCategory, vendor: e.vendor, eventDate: e.eventDate, amountCents: e.amountCents, returnedCents: returned, remainingCents: e.amountCents - returned } })
+    .filter((e) => e.remainingCents > 0 || e.returnedCents > 0)
+}
+
+export interface ReturnInput {
+  inventoryVehicleId: string; originalEventId: string; econ: EconomicCategory; refundMethod: string; cash: boolean
+  amountCents: number; eventDate: string; refundStatus: 'expected' | 'pending' | 'settled'; destinationAccount?: string
+  memo?: string; allowExceed?: boolean; actor: string | null
+}
+/** Append a return/refund/credit event linked to the original expense. Partial supported. Guards against
+ *  returning more than economically remains unless allowExceed is set (audited via memo). Never deletes. */
+export async function addReturnRefund(input: ReturnInput): Promise<{ ok: boolean; error?: string }> {
+  const db = getDb()
+  const [orig] = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.id, input.originalEventId)).limit(1)
+  if (!orig) return { ok: false, error: 'Original expense not found' }
+  const returnable = await getReturnableExpenses(input.inventoryVehicleId)
+  const remaining = returnable.find((r) => r.id === input.originalEventId)?.remainingCents ?? 0
+  if (input.amountCents > remaining && !input.allowExceed) return { ok: false, error: `Exceeds remaining ($${(remaining / 100).toFixed(2)}). Confirm an explicit over-return to proceed.` }
+  // Cash/card refunds start pending (no cash yet); vendor/store credits settle immediately as NON-cash.
+  const cashflow = input.cash ? (input.refundStatus === 'settled' ? 'cash_inflow' : 'pending') : 'non_cash'
+  await db.insert(vehicleFinancialEvents).values({
+    inventoryVehicleId: input.inventoryVehicleId, economicCategory: input.econ, cashflowCategory: cashflow,
+    amountCents: input.amountCents, eventDate: input.eventDate, vendor: orig.vendor, originalEventId: orig.id,
+    refundStatus: input.refundStatus, refundMethod: input.refundMethod, refundDestinationAccount: input.destinationAccount ?? null,
+    settledAt: input.refundStatus === 'settled' ? input.eventDate : null, status: 'verified', source: 'manual',
+    memo: input.memo ?? `${input.allowExceed && input.amountCents > remaining ? 'OVER-RETURN — ' : ''}${input.refundMethod} against ${orig.economicCategory}`, createdBy: input.actor,
+  })
+  return { ok: true }
+}
+
+/** Move a pending cash/card refund to settled (cash received). Lifecycle transition on the same event
+ *  (not a destructive amount edit). B3 will later reconcile it against the actual bank/card credit. */
+export async function settleRefund(eventId: string, settledDate: string, actor: string | null): Promise<void> {
+  const db = getDb()
+  const [e] = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.id, eventId)).limit(1)
+  if (!e || !e.refundStatus || e.refundStatus === 'settled') return
+  await db.update(vehicleFinancialEvents).set({
+    refundStatus: 'settled', settledAt: settledDate,
+    cashflowCategory: (e.refundMethod === 'cash' || e.refundMethod === 'card') ? 'cash_inflow' : 'non_cash',
+  }).where(eq(vehicleFinancialEvents.id, eventId))
+}
+
+// ── Sale / closeout ──
+export interface SaleInput {
+  inventoryVehicleId: string; saleDate: string; salePriceCents: number; saleType?: 'retail' | 'wholesale'
+  proceedsAccount?: string; buyerRef?: string; commissionCents?: number; payoffKnownCents?: number
+  payoffStatus?: 'open' | 'paid' | 'unknown' | 'none'; titleOutstanding?: boolean; proceedsReceived?: 'yes' | 'no' | 'unknown'
+  markDelivered?: boolean; notes?: string; actor: string | null
+}
+/** Record a sale: a sale (proceeds) event, optional commission (selling cost) + known payoff (financing)
+ *  events, and the closeout facts on the vehicle. Status → sale_pending/sold/delivered. Does NOT feed
+ *  *5600 unencumbered or company Safe-to-Spend. Manually-known payoff is captured, not reconciled (B4). */
+export async function sellVehicle(input: SaleInput): Promise<void> {
+  const db = getDb()
+  await db.insert(vehicleFinancialEvents).values({
+    inventoryVehicleId: input.inventoryVehicleId, economicCategory: 'sale', cashflowCategory: input.proceedsReceived === 'yes' ? 'cash_inflow' : 'pending',
+    amountCents: input.salePriceCents, eventDate: input.saleDate, vendor: input.buyerRef ?? null, paymentAccountRef: input.proceedsAccount ?? 'unknown',
+    status: 'verified', source: 'manual', memo: `Vehicle sale (${input.saleType ?? 'retail'})`, createdBy: input.actor,
+  })
+  if (input.commissionCents && input.commissionCents > 0) await db.insert(vehicleFinancialEvents).values({
+    inventoryVehicleId: input.inventoryVehicleId, economicCategory: 'commission', cashflowCategory: 'cash_outflow',
+    amountCents: input.commissionCents, eventDate: input.saleDate, status: 'verified', source: 'manual', memo: 'Selling commission/fee', createdBy: input.actor,
+  })
+  if (input.payoffKnownCents && input.payoffKnownCents > 0) await db.insert(vehicleFinancialEvents).values({
+    inventoryVehicleId: input.inventoryVehicleId, economicCategory: 'financing_settlement', cashflowCategory: 'financing_repayment',
+    amountCents: input.payoffKnownCents, eventDate: input.saleDate, paymentAccountRef: '*5600',
+    status: input.payoffStatus === 'paid' ? 'verified' : 'unverified', confidence: 'estimated', source: 'manual',
+    memo: `Manually-known payoff (${input.payoffStatus ?? 'unknown'}) — not reconciled to Extraco until B4`, createdBy: input.actor,
+  })
+  const status = input.markDelivered ? 'delivered' : 'sold'
+  await db.update(inventoryVehicles).set({
+    status, disposition: input.saleType ?? 'retail', soldAt: input.saleDate, deliveredAt: input.markDelivered ? input.saleDate : null,
+    salePriceCents: input.salePriceCents, saleType: input.saleType ?? 'retail', proceedsAccount: input.proceedsAccount ?? null, buyerRef: input.buyerRef ?? null,
+    payoffKnownCents: input.payoffKnownCents ?? null, payoffStatus: input.payoffStatus ?? 'unknown',
+    proceedsReceived: input.proceedsReceived ?? 'unknown', titleOutstanding: input.titleOutstanding ?? false, closeoutNotes: input.notes ?? null,
+    updatedAt: new Date(),
+  }).where(eq(inventoryVehicles.id, input.inventoryVehicleId))
+}
+
+/** Resolve outstanding closeout items (proceeds received / payoff paid / title done / delivered). */
+export async function updateCloseout(input: { inventoryVehicleId: string; proceedsReceived?: 'yes' | 'no' | 'unknown'; payoffStatus?: 'open' | 'paid' | 'unknown' | 'none'; titleOutstanding?: boolean; markDelivered?: boolean; actor: string | null }): Promise<void> {
+  const db = getDb()
+  const set: Record<string, unknown> = { updatedAt: new Date() }
+  if (input.proceedsReceived) set.proceedsReceived = input.proceedsReceived
+  if (input.payoffStatus) set.payoffStatus = input.payoffStatus
+  if (input.titleOutstanding !== undefined) set.titleOutstanding = input.titleOutstanding
+  if (input.markDelivered) { set.status = 'delivered'; set.deliveredAt = iso(new Date()) }
+  await db.update(inventoryVehicles).set(set).where(eq(inventoryVehicles.id, input.inventoryVehicleId))
+}
+
 export interface InventoryRow {
   id: string; stockNumber: string | null; vin: string | null; year: string | null; make: string | null; model: string | null; color: string | null
-  status: string; acquiredAt: string | null; daysOnLot: number | null; completeness: FinancialCompleteness; summary: VehicleFinancialSummary
+  status: string; acquiredAt: string | null; daysOnLot: number | null; completeness: FinancialCompleteness; summary: VehicleFinancialSummary; result: VehicleResult
 }
 export async function getInventoryList(): Promise<InventoryRow[]> {
   const db = getDb()
@@ -151,18 +290,21 @@ export async function getInventoryList(): Promise<InventoryRow[]> {
   const byVeh = new Map<string, (typeof events)>()
   for (const e of events) { const a = byVeh.get(e.inventoryVehicleId) ?? []; a.push(e); byVeh.set(e.inventoryVehicleId, a) }
   const today = new Date()
-  return rows.map(({ inv, v }) => ({
-    id: inv.id, stockNumber: inv.stockNumber, vin: v.vin, year: v.year, make: v.make, model: v.model, color: v.color,
-    status: inv.status, acquiredAt: inv.acquiredAt,
-    daysOnLot: inv.acquiredAt ? Math.max(0, Math.round((today.getTime() - new Date(inv.acquiredAt + 'T00:00:00Z').getTime()) / 86400_000)) : null,
-    completeness: inv.financialCompleteness as FinancialCompleteness,
-    summary: computeSummary(byVeh.get(inv.id) ?? [], inv.financialCompleteness as FinancialCompleteness),
-  }))
+  return rows.map(({ inv, v }) => {
+    const summary = computeSummary(byVeh.get(inv.id) ?? [], inv.financialCompleteness as FinancialCompleteness)
+    return {
+      id: inv.id, stockNumber: inv.stockNumber, vin: v.vin, year: v.year, make: v.make, model: v.model, color: v.color,
+      status: inv.status, acquiredAt: inv.acquiredAt,
+      daysOnLot: inv.acquiredAt ? Math.max(0, Math.round((today.getTime() - new Date(inv.acquiredAt + 'T00:00:00Z').getTime()) / 86400_000)) : null,
+      completeness: inv.financialCompleteness as FinancialCompleteness, summary, result: computeResult(inv, summary),
+    }
+  })
 }
 
 export interface VehicleFolder {
   inv: typeof inventoryVehicles.$inferSelect; vehicle: typeof vehicles.$inferSelect
-  events: (typeof vehicleFinancialEvents.$inferSelect)[]; summary: VehicleFinancialSummary; daysOnLot: number | null
+  events: (typeof vehicleFinancialEvents.$inferSelect)[]; summary: VehicleFinancialSummary; result: VehicleResult
+  returnable: ReturnableExpense[]; daysOnLot: number | null
 }
 export async function getVehicleFolder(id: string): Promise<VehicleFolder | null> {
   const db = getDb()
@@ -172,7 +314,8 @@ export async function getVehicleFolder(id: string): Promise<VehicleFolder | null
   const events = await db.select().from(vehicleFinancialEvents)
     .where(eq(vehicleFinancialEvents.inventoryVehicleId, id)).orderBy(vehicleFinancialEvents.eventDate, vehicleFinancialEvents.createdAt)
   const daysOnLot = row.inv.acquiredAt ? Math.max(0, Math.round((Date.now() - new Date(row.inv.acquiredAt + 'T00:00:00Z').getTime()) / 86400_000)) : null
-  return { inv: row.inv, vehicle: row.v, events, summary: computeSummary(events, row.inv.financialCompleteness as FinancialCompleteness), daysOnLot }
+  const summary = computeSummary(events, row.inv.financialCompleteness as FinancialCompleteness)
+  return { inv: row.inv, vehicle: row.v, events, summary, result: computeResult(row.inv, summary), returnable: await getReturnableExpenses(id), daysOnLot }
 }
 
 // ── Opening-inventory backfill (review-based; import facts, never fabricate history) ──

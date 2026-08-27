@@ -33,6 +33,19 @@ export type AccountingTreatment = (typeof ACCOUNTING_TREATMENTS)[number]
 export type InventoryStatus = 'sourcing' | 'acquired' | 'in_recon' | 'listed' | 'sale_pending' | 'sold' | 'delivered' | 'wholesaled' | 'unwound'
 export type FinancialCompleteness = 'complete' | 'partially_reconstructed' | 'historical_incomplete' | 'needs_review'
 export type EventStatus = 'proposed' | 'unverified' | 'verified' | 'reconciled' | 'void'
+export type RefundStatus = 'expected' | 'pending' | 'settled'
+
+// Return/refund/credit kinds (UI). Cash/card refunds carry a settlement lifecycle; vendor/store
+// credits and exchanges reduce economic cost but are NOT bank cash. `econ` = ledger economic_category.
+export const REFUND_KINDS = [
+  { kind: 'cash_refund',   label: 'Cash refund',   econ: 'refund' as EconomicCategory,        method: 'cash',         cash: true },
+  { kind: 'card_refund',   label: 'Card refund',   econ: 'refund' as EconomicCategory,        method: 'card',         cash: true },
+  { kind: 'vendor_credit', label: 'Vendor credit', econ: 'vendor_credit' as EconomicCategory, method: 'vendor_credit', cash: false },
+  { kind: 'store_credit',  label: 'Store credit',  econ: 'vendor_credit' as EconomicCategory, method: 'store_credit',  cash: false },
+  { kind: 'exchange',      label: 'Exchange (return leg)', econ: 'return' as EconomicCategory, method: 'exchange',     cash: false },
+  { kind: 'other_credit',  label: 'Other credit',  econ: 'refund' as EconomicCategory,        method: 'other',        cash: false },
+] as const
+export type RefundKind = (typeof REFUND_KINDS)[number]['kind']
 
 // In-scope cash accounts (allowlist; extensible without schema change). Personal/holding excluded.
 export const IN_SCOPE_ACCOUNTS = [
@@ -68,13 +81,15 @@ export function defaultCashflow(cat: EconomicCategory): CashflowCategory {
  *  - financing   : floor-plan draw/curtailment/payoff (cash-movement, not a vehicle cost)
  *  - informational: adjustments/other with no cost effect
  */
-export function costRelevance(cat: EconomicCategory): 'cost_add' | 'cost_contra' | 'proceeds' | 'financing' | 'informational' {
+export function costRelevance(cat: EconomicCategory): 'cost_add' | 'cost_contra' | 'selling_cost' | 'proceeds' | 'financing' | 'informational' {
   switch (cat) {
     case 'acquisition':
     case 'part': case 'recon_labor': case 'mechanic': case 'bodywork': case 'pdr': case 'paint':
     case 'transport': case 'title_tax': case 'registration': case 'auction_fee': case 'buyer_fee':
-    case 'floorplan_interest': case 'floorplan_fee': case 'commission':
+    case 'floorplan_interest': case 'floorplan_fee':
       return 'cost_add'
+    case 'commission':                       // selling cost — separate from vehicle investment
+      return 'selling_cost'
     case 'return': case 'refund': case 'vendor_credit':
       return 'cost_contra'
     case 'sale': case 'deposit':
