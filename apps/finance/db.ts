@@ -324,5 +324,9 @@ export async function getDataGaps(): Promise<DataGap[]> {
   // ── Auto-sales encumbrance unknown → can’t compute unencumbered *5600 cash ──
   gaps.push({ key: 'autosales_encumbrance', label: 'Auto-sales floor-plan/title/payoff obligations not registered', why: 'Without them, *5600 shows bank cash but “unencumbered” = Unknown; can’t safely backstop *2649.', source: 'Extraco floor-plan + vehicle title/payoff records', blocks: ['confidence'], severity: 'medium' })
 
+  // ── IRS back-tax payment plan status unknown (paused obligation exists) ──
+  const [irs] = await db.select().from(finObligations).where(and(eq(finObligations.discoveryKey, 'irs-backtax-plan'), eq(finObligations.status, 'paused'))).limit(1)
+  if (irs) gaps.push({ key: 'irs_backtax', label: 'IRS back-tax plan (~$1,500/mo) current status unknown', why: 'Two $1,500 IRS installments (6/15, 7/15) then stopped — plan may be complete, paused, or changed. Until verified, it is not counted as a definite bill, but a resumed ~$1,500/mo would be a critical obligation.', source: 'IRS / EFTPS account (verify current plan status)', blocks: ['forecast', 'confidence'], severity: 'high' })
+
   return gaps
 }
