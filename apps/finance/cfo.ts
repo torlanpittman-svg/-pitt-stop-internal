@@ -22,12 +22,21 @@ export type Health = 'HEALTHY' | 'WATCH' | 'TIGHT' | 'CRITICAL'
 // ── A. CFO headline ──────────────────────────────────────────────────────────
 export interface CfoHeadline {
   operatingAvailableCents: number | null
-  strictSafeToSpendCents: number | null
+  strictSafeToSpendCents: number | null           // may be negative (verified cash − committed)
+  safeToSpendTodayCents: number | null            // floored at $0 for display
+  liquidityShortfallCents: number                 // = −strict when strict < 0, else 0
   forecastSafeToSpendCents: number | null
   next7InCents: number; next7OutCents: number; next7ProjectedEndingCents: number | null
   status: Health
   statement: string
 }
+
+/** *2649 operating-account obligation windows (7/14/30d) — NEVER blends *5600 auto-sales debts. */
+function operatingWindows(cal: Awaited<ReturnType<typeof getObligationCalendar>>) {
+  const op = cal.byAccount.find((a) => /2649|Detail/.test(a.account))
+  return { w7: op?.window7 ?? 0, w14: op?.window14 ?? 0, w30: op?.window30 ?? 0 }
+}
+const isOperatingEvent = (account: string) => /2649|Detail/.test(account)
 
 /** The headline the owner reads first: where we stand + are we okay, in plain English. */
 export async function getCfoHeadline(): Promise<CfoHeadline> {
@@ -38,7 +47,7 @@ export async function getCfoHeadline(): Promise<CfoHeadline> {
   const strict = s2s.coreSafeToSpendCents
   // Forecast Safe-to-Spend = strict + high-confidence expected inflows over the horizon.
   const forecastS2s = strict == null ? null : strict + forecast.expectedHighCents
-  const next7Out = cal.window7Cents
+  const next7Out = operatingWindows(cal).w7                 // *2649 obligations only — never *5600
   const next7In = inflows.filter((i) => i.confidence === 'high').reduce((t, i) => t + i.amountCents, 0)
   const next7Ending = avail == null ? null : avail + next7In - next7Out
 
@@ -52,7 +61,9 @@ export async function getCfoHeadline(): Promise<CfoHeadline> {
   else status = 'HEALTHY'
 
   const stmt = buildStatement({ status, avail, strict, forecastS2s, next7In, next7Out, cal, s2s, highCovered: highScn?.firstPayrollCovered, verifiedCovered: verifiedScn?.firstPayrollCovered, payrollDate: verifiedScn?.firstPayrollDate })
-  return { operatingAvailableCents: avail, strictSafeToSpendCents: strict, forecastSafeToSpendCents: forecastS2s, next7InCents: next7In, next7OutCents: next7Out, next7ProjectedEndingCents: next7Ending, status, statement: stmt }
+  const safeToday = strict == null ? null : Math.max(0, strict)          // Safe-to-Spend floors at $0
+  const shortfall = strict != null && strict < 0 ? -strict : 0            // deficit shown separately
+  return { operatingAvailableCents: avail, strictSafeToSpendCents: strict, safeToSpendTodayCents: safeToday, liquidityShortfallCents: shortfall, forecastSafeToSpendCents: forecastS2s, next7InCents: next7In, next7OutCents: next7Out, next7ProjectedEndingCents: next7Ending, status, statement: stmt }
 }
 
 function buildStatement(a: { status: Health; avail: number | null; strict: number | null; forecastS2s: number | null; next7In: number; next7Out: number; cal: any; s2s: SafeToSpend; highCovered?: boolean | null; verifiedCovered?: boolean | null; payrollDate?: string | null }): string {
@@ -84,7 +95,8 @@ export async function getNextDanger(): Promise<NextDanger> {
   const [runway, projStrict, cal, inflows] = await Promise.all([getCashRunway(30), projectCashLow(30), getObligationCalendar(30), getExpectedInflows(30)])
   const lowDate = runway.lowDate
   if (!lowDate || runway.startCents == null) return { date: null, lowCents: null, overdraft: false, items: [], expectedBeforeCents: 0, risk: 'LOW', explanation: 'No verified cash to project from.' }
-  const items = cal.events.filter((e) => e.due === lowDate).map((e) => ({ label: e.label, cents: e.cents, priority: e.priority }))
+  // Only *2649 obligations belong to the operating danger read — never *5600 auto-sales debts.
+  const items = cal.events.filter((e) => e.due === lowDate && isOperatingEvent(e.account)).map((e) => ({ label: e.label, cents: e.cents, priority: e.priority }))
   const highBefore = inflows.filter((i) => i.confidence === 'high' && i.expectedDate <= lowDate).reduce((t, i) => t + i.amountCents, 0)
   let risk: NextDanger['risk']
   if (runway.overdraft) risk = 'HIGH'                              // realistic path dips below zero
@@ -137,7 +149,7 @@ export interface ReserveStatus {
 export async function getReserveStatus(): Promise<ReserveStatus> {
   const [op, cal, reserves] = await Promise.all([getOperatingCash(), getObligationCalendar(30), getReservePolicy()])
   const raw = op?.availableCents ?? null
-  const oblig30 = cal.byAccount.find((a) => /2649|Detail/.test(a.account))?.window30 ?? cal.window30Cents
+  const oblig30 = operatingWindows(cal).w30   // *2649 only — auto-sales obligations never reduce operating reserve
   const target = 5_000_000, next = 10_000_000 // $50k first milestone, $100k long-term
   const trueReserve = raw == null ? 0 : Math.max(0, raw - oblig30)
   const pct = Math.round((trueReserve / target) * 100)
@@ -151,31 +163,41 @@ export async function getReserveStatus(): Promise<ReserveStatus> {
 }
 
 // ── I. Debt command center ───────────────────────────────────────────────────
-export interface DebtLine { name: string; kind: string; balanceCents: number; aprPct: number | null; paymentCents: number | null; account: string | null; verified: boolean; highInterest: boolean }
+export interface DebtLine { name: string; kind: string; balanceCents: number; aprPct: number | null; paymentCents: number | null; account: 'operating' | 'auto_sales' | 'unknown'; verified: boolean; highInterest: boolean }
 export interface DebtSummary {
   totalCents: number; highInterestCents: number; monthlyServiceCents: number; weightedAprPct: number | null
+  operatingMonthlyServiceCents: number; autoSalesMonthlyServiceCents: number   // which account actually pays
   mostExpensive: DebtLine | null
   lines: DebtLine[]
+}
+
+/** Which bank account services a debt (from verified bank-history matching): QB Capital pays from
+ *  *2649 (operating); Extraco floor-plan / F250 / RLOC pay from *5600 (auto-sales). */
+function debtAccount(name: string, kind: string): DebtLine['account'] {
+  if (/extraco|floor.?plan/i.test(name) || kind === 'floor_plan') return 'auto_sales'
+  if (/\bqb\b|quickbooks|payme/i.test(name)) return 'operating'
+  return 'unknown'
 }
 
 export async function getDebtSummary(): Promise<DebtSummary> {
   const debts = await getDebts()
   const lines: DebtLine[] = debts.filter((d) => (d.principalCents ?? 0) > 0).map((d) => {
     const apr = d.aprBps != null ? d.aprBps / 100 : null
-    // monthly-equivalent service
     const pf = d.paymentFrequency
     const monthly = d.paymentCents == null ? null : pf === 'weekly' ? Math.round(d.paymentCents * 52 / 12) : pf === 'biweekly' ? Math.round(d.paymentCents * 26 / 12) : d.paymentCents
-    return { name: d.name, kind: d.kind, balanceCents: d.principalCents ?? 0, aprPct: apr, paymentCents: monthly, account: null, verified: d.verified, highInterest: (apr ?? 0) >= 20 }
+    return { name: d.name, kind: d.kind, balanceCents: d.principalCents ?? 0, aprPct: apr, paymentCents: monthly, account: debtAccount(d.name, d.kind), verified: d.verified, highInterest: (apr ?? 0) >= 20 }
   })
   const total = lines.reduce((t, l) => t + l.balanceCents, 0)
   const highInterest = lines.filter((l) => l.highInterest).reduce((t, l) => t + l.balanceCents, 0)
   const monthlyService = lines.reduce((t, l) => t + (l.paymentCents ?? 0), 0)
+  const operatingMonthlyService = lines.filter((l) => l.account === 'operating').reduce((t, l) => t + (l.paymentCents ?? 0), 0)
+  const autoSalesMonthlyService = lines.filter((l) => l.account === 'auto_sales').reduce((t, l) => t + (l.paymentCents ?? 0), 0)
   const withApr = lines.filter((l) => l.aprPct != null)
   const weightedApr = withApr.length && withApr.reduce((t, l) => t + l.balanceCents, 0) > 0
     ? withApr.reduce((t, l) => t + l.balanceCents * (l.aprPct as number), 0) / withApr.reduce((t, l) => t + l.balanceCents, 0)
     : null
   const mostExpensive = withApr.slice().sort((a, b) => (b.aprPct as number) - (a.aprPct as number))[0] ?? null
-  return { totalCents: total, highInterestCents: highInterest, monthlyServiceCents: monthlyService, weightedAprPct: weightedApr, mostExpensive, lines: lines.sort((a, b) => (b.aprPct ?? 0) - (a.aprPct ?? 0)) }
+  return { totalCents: total, highInterestCents: highInterest, monthlyServiceCents: monthlyService, weightedAprPct: weightedApr, operatingMonthlyServiceCents: operatingMonthlyService, autoSalesMonthlyServiceCents: autoSalesMonthlyService, mostExpensive, lines: lines.sort((a, b) => (b.aprPct ?? 0) - (a.aprPct ?? 0)) }
 }
 
 // ── C. 30-day cash runway (daily series for the chart) ───────────────────────

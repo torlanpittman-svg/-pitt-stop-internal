@@ -125,17 +125,26 @@ export default async function FinancePage() {
   const clearing = accounts.filter((a) => a.clearingSuspect)
   const inactiveAccounts = allAccounts.filter((a) => a.status !== 'active')
   const hl = HEALTH[headline.status]
+  // Per-account obligation windows — operating (*2649) is primary; auto-sales (*5600) is shown
+  // separately and NEVER folded into operating totals.
+  const opWin = calendar.byAccount.find((a) => /2649|Detail/.test(a.account)) ?? { window7: 0, window14: 0, window30: 0 }
+  const asWin = calendar.byAccount.find((a) => /5600|Auto/.test(a.account))
+  const opEvents = calendar.events.filter((e) => /2649|Detail/.test(e.account))
+  const asEvents = calendar.events.filter((e) => !/2649|Detail/.test(e.account))
 
   return (
     <main className="min-h-screen bg-gray-950 text-gray-200 px-8 py-8 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-1">
-        <h1 className="text-2xl font-bold text-white">Pitt Stop — Financial Position</h1>
+        <div>
+          <h1 className="text-2xl font-bold text-white">Operating CFO <span className="text-gray-500 font-semibold text-lg">· American Momentum *2649</span></h1>
+          <p className="text-gray-600 text-xs mt-0.5">This dashboard answers ONE question: how much can I safely spend from *2649? Auto-sales *5600 is shown separately and never added to operating cash.</p>
+        </div>
         <div className="flex items-center gap-2">
-          <span className="text-gray-600 text-xs">operating cash {operating ? freshnessLabel(operating.asOf) : 'not connected'}</span>
+          <span className="text-gray-600 text-xs">*2649 {operating ? freshnessLabel(operating.asOf) : 'not connected'}</span>
           <form action={refreshPlaidAction}><button className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300">Refresh cash</button></form>
         </div>
       </div>
-      <p className="text-gray-600 text-xs mb-5">Live bank cash (Plaid, read-only) · CFO decision view · admin-only · no money movement{!enabled && ' · finance_enabled OFF (preview)'}</p>
+      <p className="text-gray-600 text-xs mb-5">Live *2649 bank cash (Plaid, read-only) · CFO decision view · admin-only · no money movement{!enabled && ' · finance_enabled OFF (preview)'}</p>
 
       {/* ═══ A. CFO ANSWER ═══ */}
       <section className={`rounded-2xl border ${hl.ring} ${hl.bg} p-6 mb-4`}>
@@ -149,10 +158,14 @@ export default async function FinancePage() {
             <p className="text-gray-200 text-[15px] leading-relaxed mt-3 max-w-3xl">{headline.statement}</p>
           </div>
           <div className="grid grid-cols-2 gap-x-8 gap-y-3 shrink-0">
-            <div><p className={kicker}>Operating cash</p><p className="text-xl font-bold text-white tabular-nums">{big(headline.operatingAvailableCents)}</p></div>
-            <div><p className={kicker}>Strict safe-to-spend</p><p className={`text-xl font-bold tabular-nums ${(headline.strictSafeToSpendCents ?? 0) < 0 ? 'text-red-400' : 'text-white'}`}>{big(headline.strictSafeToSpendCents)}</p></div>
-            <div><p className={kicker}>Forecast safe-to-spend</p><p className={`text-xl font-bold tabular-nums ${(headline.forecastSafeToSpendCents ?? 0) < 0 ? 'text-amber-400' : 'text-emerald-300'}`}>{big(headline.forecastSafeToSpendCents)}</p></div>
-            <div><p className={kicker}>Next 7 days</p><p className="text-sm text-gray-300 tabular-nums mt-1"><span className="text-emerald-300">+{big(headline.next7InCents)}</span> in · <span className="text-red-300">−{big(headline.next7OutCents)}</span> out</p><p className="text-xs text-gray-500">ending ≈ <b className={`${(headline.next7ProjectedEndingCents ?? 0) < 0 ? 'text-red-400' : 'text-gray-300'}`}>{big(headline.next7ProjectedEndingCents)}</b></p></div>
+            <div><p className={kicker}>*2649 available cash</p><p className="text-xl font-bold text-white tabular-nums">{big(headline.operatingAvailableCents)}</p></div>
+            <div>
+              <p className={kicker}>Safe-to-Spend today</p>
+              <p className={`text-xl font-bold tabular-nums ${(headline.safeToSpendTodayCents ?? 0) > 0 ? 'text-white' : 'text-gray-400'}`}>{big(headline.safeToSpendTodayCents)}</p>
+              {headline.liquidityShortfallCents > 0 && <p className="text-[11px] text-red-400">liquidity shortfall −{big(headline.liquidityShortfallCents)}</p>}
+            </div>
+            <div><p className={kicker}>Forecast cash (with expected in)</p><p className={`text-xl font-bold tabular-nums ${(headline.forecastSafeToSpendCents ?? 0) < 0 ? 'text-amber-400' : 'text-emerald-300'}`}>{big(headline.forecastSafeToSpendCents)}</p></div>
+            <div><p className={kicker}>Next 7 days (*2649)</p><p className="text-sm text-gray-300 tabular-nums mt-1"><span className="text-emerald-300">+{big(headline.next7InCents)}</span> in · <span className="text-red-300">−{big(headline.next7OutCents)}</span> out</p><p className="text-xs text-gray-500">projected ≈ <b className={`${(headline.next7ProjectedEndingCents ?? 0) < 0 ? 'text-red-400' : 'text-gray-300'}`}>{big(headline.next7ProjectedEndingCents)}</b></p></div>
           </div>
         </div>
       </section>
@@ -161,11 +174,12 @@ export default async function FinancePage() {
       <section className={`${card} mb-4`}>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div>
-            <p className={kicker}>How much can I actually spend? · verified cash only</p>
+            <p className={kicker}>How much can I actually spend from *2649? · verified cash only</p>
             <div className="mt-3 space-y-1.5 text-sm">
-              <div className="flex justify-between"><span className="text-gray-300">Current bank cash <span className="text-gray-600">(*2649 live)</span></span><span className="tabular-nums text-white">{money(s2s.availableCents)}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">− Money already spoken for <span className="text-gray-600">(30d payroll, tax, rent, debt, reserves)</span></span><span className="tabular-nums text-red-300">−{money((s2s.criticalCents) + (s2s.contractualCents) + (s2s.reservesCents))}</span></div>
-              <div className="flex justify-between border-t border-gray-700 pt-2 mt-1"><span className="text-white font-bold text-base">Strict Safe-to-Spend</span><span className={`tabular-nums font-black text-2xl ${(s2s.coreSafeToSpendCents ?? 0) < 0 ? 'text-red-400' : 'text-white'}`}>{big(s2s.coreSafeToSpendCents)}</span></div>
+              <div className="flex justify-between"><span className="text-gray-300">Available now <span className="text-gray-600">(*2649 live, nets pending)</span></span><span className="tabular-nums text-white">{money(s2s.availableCents)}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">− Already committed <span className="text-gray-600">(30d *2649 payroll, tax, rent, debt, reserves)</span></span><span className="tabular-nums text-red-300">−{money((s2s.criticalCents) + (s2s.contractualCents) + (s2s.reservesCents))}</span></div>
+              <div className="flex justify-between border-t border-gray-700 pt-2 mt-1"><span className="text-white font-bold text-base">Safe-to-Spend today</span><span className={`tabular-nums font-black text-2xl ${(headline.safeToSpendTodayCents ?? 0) > 0 ? 'text-white' : 'text-gray-400'}`}>{big(headline.safeToSpendTodayCents)}</span></div>
+              {headline.liquidityShortfallCents > 0 && <div className="flex justify-between"><span className="text-red-300 text-xs">Liquidity shortfall <span className="text-gray-600">(committed exceeds current cash — needs expected receipts)</span></span><span className="tabular-nums text-red-400 font-bold">−{big(headline.liquidityShortfallCents)}</span></div>}
             </div>
             <div className="mt-4 space-y-1.5 text-sm border-t border-gray-800 pt-3">
               <div className="flex justify-between"><span className="text-gray-400">+ Expected money coming in <span className="text-gray-600">(high-confidence)</span></span><span className="tabular-nums text-emerald-300">+{money(forecast.expectedHighCents)}</span></div>
@@ -300,8 +314,8 @@ export default async function FinancePage() {
       {/* ═══ H. UPCOMING OBLIGATIONS ═══ */}
       <section className={`${card} mb-4`}>
         <div className="flex items-baseline justify-between mb-3">
-          <h2 className="text-white font-bold">Upcoming obligations</h2>
-          <span className="text-sm tabular-nums text-gray-400">7d <b className="text-red-300">−{big(calendar.window7Cents)}</b> · 14d <b className="text-red-300">−{big(calendar.window14Cents)}</b> · 30d <b className="text-red-300">−{big(calendar.window30Cents)}</b></span>
+          <h2 className="text-white font-bold">Upcoming obligations <span className="text-gray-600 text-sm font-normal">· *2649 operating</span></h2>
+          <span className="text-sm tabular-nums text-gray-400">7d <b className="text-red-300">−{big(opWin.window7)}</b> · 14d <b className="text-red-300">−{big(opWin.window14)}</b> · 30d <b className="text-red-300">−{big(opWin.window30)}</b></span>
         </div>
         {needsVerify.length > 0 && (
           <div className="rounded-xl border border-purple-900/40 bg-purple-950/15 p-3 mb-3">
@@ -311,7 +325,7 @@ export default async function FinancePage() {
           </div>
         )}
         <table className="w-full text-sm"><tbody>
-          {calendar.events.slice(0, 18).map((e, i) => {
+          {opEvents.slice(0, 16).map((e, i) => {
             const dt = new Date(e.due + 'T00:00:00Z'); const dow = dt.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })
             const pc = e.priority === 'critical' ? 'text-red-400' : e.priority === 'contractual' ? 'text-amber-400' : 'text-gray-500'
             return (
@@ -319,12 +333,21 @@ export default async function FinancePage() {
                 <td className="py-1.5 text-gray-500 text-xs whitespace-nowrap w-24">{dow} {e.due.slice(5)}</td>
                 <td className="py-1.5 text-gray-300">{e.label}</td>
                 <td className="py-1.5"><span className={`text-[10px] ${pc}`}>● {e.priority}</span></td>
-                <td className="py-1.5 text-gray-600 text-xs">{e.account.replace('Pitt Stop ', '')}</td>
                 <td className="py-1.5 text-right tabular-nums text-red-300">−{money(e.cents)}</td>
               </tr>
             )
           })}
         </tbody></table>
+        {asWin && (asWin.window30 > 0) && (
+          <details className="mt-3">
+            <summary className="text-gray-500 text-xs cursor-pointer">Auto-sales *5600 obligations (separate — paid from *5600, NOT operating): 30d −{big(asWin.window30)} ▾</summary>
+            <table className="w-full text-sm mt-2"><tbody>
+              {asEvents.slice(0, 8).map((e, i) => { const dt = new Date(e.due + 'T00:00:00Z'); const dow = dt.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })
+                return <tr key={i} className="border-b border-gray-800/40"><td className="py-1 text-gray-600 text-xs w-24">{dow} {e.due.slice(5)}</td><td className="py-1 text-gray-500">{e.label}</td><td className="py-1 text-right tabular-nums text-gray-500">−{money(e.cents)}</td></tr>
+              })}
+            </tbody></table>
+          </details>
+        )}
       </section>
 
       {/* ═══ I. DEBT COMMAND CENTER ═══ */}
@@ -333,7 +356,7 @@ export default async function FinancePage() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
           <div><p className={kicker}>Total debt</p><p className="text-xl font-bold text-white tabular-nums">{big(debt.totalCents)}</p></div>
           <div><p className={kicker}>High-interest (≥20%)</p><p className="text-xl font-bold text-orange-300 tabular-nums">{big(debt.highInterestCents)}</p></div>
-          <div><p className={kicker}>Monthly service</p><p className="text-xl font-bold text-white tabular-nums">{big(debt.monthlyServiceCents)}</p></div>
+          <div><p className={kicker}>Monthly service</p><p className="text-xl font-bold text-white tabular-nums">{big(debt.monthlyServiceCents)}</p><p className="text-[11px] text-gray-500">*2649 {big(debt.operatingMonthlyServiceCents)} · *5600 {big(debt.autoSalesMonthlyServiceCents)}</p></div>
           <div><p className={kicker}>Weighted APR</p><p className="text-xl font-bold text-white tabular-nums">{debt.weightedAprPct == null ? '—' : `${debt.weightedAprPct.toFixed(1)}%`}</p></div>
         </div>
         {debt.mostExpensive && (
@@ -353,6 +376,7 @@ export default async function FinancePage() {
                 <td className="py-1.5 text-right tabular-nums text-white">{money(d.balanceCents)}</td>
                 <td className="py-1.5 text-right tabular-nums text-gray-400">{d.aprPct == null ? '—' : `${d.aprPct.toFixed(2)}%`}</td>
                 <td className="py-1.5 text-right tabular-nums text-gray-400">{money(d.paymentCents)}/mo</td>
+                <td className="py-1.5 pl-2 text-xs text-gray-500">{d.account === 'operating' ? 'pays *2649' : d.account === 'auto_sales' ? 'pays *5600' : '—'}</td>
                 <td className="py-1.5 pl-2"><Badge confidence={d.verified ? 'manual_verified' : 'book'} /></td>
               </tr>
             ))}
@@ -367,28 +391,41 @@ export default async function FinancePage() {
           <p className="text-gray-300 text-sm mt-1">American Momentum *2649</p>
           <div className="grid grid-cols-2 gap-3 mt-2">
             <div><p className={kicker}>Bank cash</p><p className="text-lg font-bold text-white tabular-nums">{money(operating?.availableCents)}</p></div>
-            <div><p className={kicker}>Strict safe-to-spend</p><p className={`text-lg font-bold tabular-nums ${(s2s.coreSafeToSpendCents ?? 0) < 0 ? 'text-red-400' : 'text-white'}`}>{big(s2s.coreSafeToSpendCents)}</p></div>
+            <div><p className={kicker}>Safe-to-Spend today</p><p className={`text-lg font-bold tabular-nums ${(headline.safeToSpendTodayCents ?? 0) > 0 ? 'text-white' : 'text-gray-400'}`}>{big(headline.safeToSpendTodayCents)}</p>{headline.liquidityShortfallCents > 0 && <p className="text-[10px] text-red-400">shortfall −{big(headline.liquidityShortfallCents)}</p>}</div>
             <div><p className={kicker}>30-day projected low</p><p className={`text-lg font-bold tabular-nums ${runway.overdraft ? 'text-red-400' : 'text-amber-300'}`}>{big(runway.lowCents)}</p></div>
           </div>
         </div>
         <div className={`${card} border-blue-900/30`}>
-          <p className={kicker}>Auto Sales · separate entity</p>
+          <p className={kicker}>Auto Sales · separate entity · financial modeling incomplete</p>
           <p className="text-gray-300 text-sm mt-1">Extraco *5600</p>
           <div className="grid grid-cols-2 gap-3 mt-2">
             <div><p className={kicker}>Bank cash</p><p className="text-lg font-bold text-white tabular-nums">{money(autoSales.bankAvailableCents)}</p></div>
             <div><p className={kicker}>Verified unencumbered</p><p className="text-lg font-bold text-amber-400">{autoSales.unencumberedCents == null ? 'UNKNOWN' : money(autoSales.unencumberedCents)}</p></div>
             <div><p className={kicker}>Floor-plan exposure</p><p className="text-lg font-bold text-gray-400 tabular-nums">{big(autoSales.floorPlanBalanceCents)}</p></div>
+            <div><p className={kicker}>Status</p><p className="text-sm font-semibold text-amber-400">Potentially encumbered</p></div>
           </div>
-          <p className="text-amber-300/70 text-[11px] mt-2">Do NOT treat the *5600 balance as available to operations — it's encumbered by floor-plan curtailments.</p>
+          <p className="text-emerald-300/80 text-[11px] mt-2 font-semibold">✓ Contributes $0 to *2649 Safe-to-Spend — no auto-sales cash is counted as operating liquidity unless an actual *5600→*2649 transfer occurs.</p>
+          <p className="text-gray-600 text-[11px] mt-1">True unencumbered cash needs the auto-sales VIN/floor-plan ledger (Phase B) — not built yet.</p>
+        </div>
+      </section>
+
+      {/* Company-wide liquidity — explicitly NOT combined until auto-sales is modeled */}
+      <section className={`${card} mb-4 border-gray-800`}>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className={kicker}>Company-wide Safe-to-Spend</p>
+            <p className="text-xl font-bold text-gray-400 mt-1">NOT YET CALCULATED</p>
+          </div>
+          <p className="text-gray-500 text-xs max-w-md text-right">Adding *2649 + *5600 would overstate real liquidity. A company-wide number waits until auto-sales vehicle/floor-plan encumbrances are modeled (Phase B). Until then: <b className="text-gray-300">Operating *2649 = {big(headline.safeToSpendTodayCents)}</b> safe today; <b className="text-gray-300">Auto-sales *5600 unencumbered = UNKNOWN</b>.</p>
         </div>
       </section>
 
       {/* ═══ K. PROFIT-TO-CASH (structure ready; honest incomplete) ═══ */}
       <section className={`${card} mb-4`}>
         <h2 className="text-white font-bold mb-1">Why is cash tight even when we're busy?</h2>
-        <p className="text-gray-400 text-sm max-w-3xl">Profit and cash differ because cash is consumed by things the P&amp;L doesn't show: <b>debt principal</b> (~{big(debt.monthlyServiceCents)}/mo service), <b>owner distributions</b> (~{big(s2s.plannedCents)}/mo planned), <b>vehicle inventory</b> bought on the floor plan, <b>uncollected receivables</b>, and <b>timing</b> between doing the work and getting paid. A full profit-to-cash bridge needs mature segment + per-vehicle attribution — not yet available, so we show the structure honestly rather than fabricate the split.</p>
+        <p className="text-gray-400 text-sm max-w-3xl">On *2649, profit and cash differ because cash is consumed by things the P&amp;L doesn't show: <b>debt principal</b> (~{big(debt.operatingMonthlyServiceCents)}/mo operating service), <b>owner distributions</b> (~{big(s2s.plannedCents)}/mo planned), <b>uncollected receivables</b>, and <b>timing</b> between doing the work and getting paid. Some *2649 outflows are actually auto-sales expenses (historically commingled) — those are a segment-attribution question for later, not operating cash. A full profit-to-cash bridge needs mature segment + per-vehicle attribution — shown as structure, not fabricated numbers.</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 text-sm">
-          <div><p className={kicker}>Debt service /mo</p><p className="text-red-300 tabular-nums">−{big(debt.monthlyServiceCents)}</p></div>
+          <div><p className={kicker}>Operating debt /mo</p><p className="text-red-300 tabular-nums">−{big(debt.operatingMonthlyServiceCents)}</p></div>
           <div><p className={kicker}>Planned / owner /mo</p><p className="text-red-300 tabular-nums">−{big(s2s.plannedCents)}</p></div>
           <div><p className={kicker}>Vehicle inventory</p><p className="text-gray-500">not attributed</p></div>
           <div><p className={kicker}>Receivable timing</p><p className="text-gray-500">not attributed</p></div>
