@@ -19,12 +19,9 @@ const MODULES = [
     sub:     'Live vehicle workflow — check in, track status, assign techs',
   },
   {
-    href:     '/admin/auto-sales',
-    label:    'Auto Sales Inventory',
-    sub:      'Owned vehicles — scan a VIN, track costs, record the sale.',
-    // Admin-gated via proxy.ts (/admin/*). Disable Link prefetch so Next.js doesn't background-hit
-    // the auth gate and pop a Basic-Auth dialog on this public homepage. Auth is unchanged.
-    prefetch: false as const,
+    href:  '/auto-sales',
+    label: 'Auto Sales Inventory',
+    sub:   'Owned vehicles — scan a VIN, track costs, record the sale.',
   },
 ]
 
@@ -47,7 +44,6 @@ export default function Home() {
           <Link
             key={mod.href}
             href={mod.href}
-            prefetch={'prefetch' in mod ? mod.prefetch : undefined}
             className="block w-full bg-gray-900 border border-gray-800 rounded-2xl p-6 hover:border-gray-700 active:bg-gray-800 transition-colors"
           >
             <h2 className="text-white font-bold text-xl mb-1">{mod.label}</h2>

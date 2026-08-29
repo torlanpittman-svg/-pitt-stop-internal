@@ -1,0 +1,157 @@
+- generic [ref=f78e23]:
+  - generic:
+    - generic:
+      - link "Skip to Main Content":
+        - /url: "#main"
+      - banner [ref=f78e24]:
+        - navigation "Tools" [ref=f78e25]:
+          - heading "Pitt Stop Detail & Auto Sales" [level=2] [ref=f78e30]
+          - search [ref=f78e33]:
+            - searchbox "Search" [ref=f78e41]
+          - generic [ref=f78e42]:
+            - button "Contact expert help" [ref=f78e46] [cursor=pointer]
+            - button "Tasks" [ref=f78e53] [cursor=pointer]
+            - button "Integrations" [ref=f78e59] [cursor=pointer]
+            - button "Inbox" [ref=f78e67] [cursor=pointer]
+            - button "Help" [ref=f78e75] [cursor=pointer]
+            - generic [ref=f78e83] [cursor=pointer]
+            - button "Settings" [ref=f78e88] [cursor=pointer]
+            - button "Intuit account (T)" [ref=f78e96] [cursor=pointer]:
+              - generic [ref=f78e97]: T
+            - button "Open Intuit Intelligence chat" [ref=f78e103] [cursor=pointer]
+  - navigation "Side" [ref=f78e148]:
+    - link "QuickBooks" [ref=f78e149] [cursor=pointer]:
+      - /url: payroll?locale=en-us&iux_intuit_tid=1-6a8f116e-2116856e07b0ff19507c8358
+    - generic [ref=f78e151]:
+      - button "Create" [ref=f78e154] [cursor=pointer]
+      - button "Bookmarks" [ref=f78e162] [cursor=pointer]
+    - generic [ref=f78e167]:
+      - link "Home" [ref=f78e168] [cursor=pointer]:
+        - /url: /app/homepage
+      - button "Reports" [ref=f78e175] [cursor=pointer]
+      - link "All apps" [ref=f78e183] [cursor=pointer]:
+        - /url: /app/banking?jobId=accounting
+    - generic [ref=f78e188]:
+      - generic [ref=f78e189]: PINNED
+      - generic [ref=f78e190]:
+        - button "Accounting" [ref=f78e194] [cursor=pointer]
+        - button "Expenses" [ref=f78e200] [cursor=pointer]
+        - button "Sales" [ref=f78e206] [cursor=pointer]
+    - button "Customize" [ref=f78e211] [cursor=pointer]
+  - navigation [ref=f78e216]:
+    - generic [ref=f78e217]:
+      - button "Collapse" [expanded] [ref=f78e219] [cursor=pointer]
+      - heading "Reports & Analytics" [level=2] [ref=f78e223]
+      - generic [ref=f78e224]:
+        - generic [ref=f78e225]:
+          - link "Standard reports" [ref=f78e226] [cursor=pointer]:
+            - /url: /app/standardreports
+          - button "Add bookmark Standard reports" [ref=f78e229] [cursor=pointer]
+        - generic [ref=f78e231]:
+          - link "Custom reports" [ref=f78e232] [cursor=pointer]:
+            - /url: /app/customreports
+          - button "Add bookmark Custom reports" [ref=f78e235] [cursor=pointer]
+        - generic [ref=f78e237]:
+          - link "Management reports" [ref=f78e238] [cursor=pointer]:
+            - /url: /app/managementreports
+          - button "Add bookmark Management reports" [ref=f78e241] [cursor=pointer]
+        - generic [ref=f78e243]:
+          - link "KPIs" [ref=f78e244] [cursor=pointer]:
+            - /url: /app/business-intelligence/kpi-scorecard
+          - button "Add bookmark KPIs" [ref=f78e247] [cursor=pointer]
+        - generic [ref=f78e249]:
+          - link "Dashboards" [ref=f78e250] [cursor=pointer]:
+            - /url: /app/business-intelligence/analytics-dashboard
+          - button "Add bookmark Dashboards" [ref=f78e253] [cursor=pointer]
+        - generic [ref=f78e256]:
+          - button "Financial planning" [expanded] [ref=f78e258] [cursor=pointer]
+          - region "Financial planning" [ref=f78e263]:
+            - generic [ref=f78e264]:
+              - generic [ref=f78e265]:
+                - link "Cash flow overview" [ref=f78e266] [cursor=pointer]:
+                  - /url: /app/cashflowoverview
+                - button "Add bookmark Cash flow overview" [ref=f78e269] [cursor=pointer]
+              - generic [ref=f78e271]:
+                - link "Cash flow planner" [ref=f78e272] [cursor=pointer]:
+                  - /url: /app/cashflowplanner
+                - button "Add bookmark Cash flow planner" [ref=f78e275] [cursor=pointer]
+              - generic [ref=f78e277]:
+                - link "Budgets" [ref=f78e278] [cursor=pointer]:
+                  - /url: /app/budgets
+                - button "Add bookmark Budgets" [ref=f78e281] [cursor=pointer]
+        - link "Spreadsheet sync" [ref=f78e284] [cursor=pointer]:
+          - /url: /app/spreadsheetsync
+  - main [ref=f78e291]:
+    - generic [ref=f78e292]:
+      - generic [ref=f78e293]:
+        - button "Back" [ref=f78e295] [cursor=pointer]
+        - generic [ref=f78e303]:
+          - generic [ref=f78e304]: PRIVACY
+          - switch "PRIVACY" [ref=f78e305] [cursor=pointer]
+      - generic [ref=f78e306]:
+        - generic [ref=f78e307]:
+          - heading "Paycheck list" [level=3] [ref=f78e308]
+          - button "Feedback" [ref=f78e311] [cursor=pointer]
+        - generic [ref=f78e313]:
+          - button "Set up paycheck printing" [ref=f78e315] [cursor=pointer]
+          - button "Make a Correction" [ref=f78e316] [cursor=pointer]
+          - generic [ref=f78e329]:
+            - button "Export" [ref=f78e330] [cursor=pointer]
+            - button "Export" [ref=f78e334] [cursor=pointer]
+      - generic [ref=f78e337]:
+        - button "Filter the paycheck list" [ref=f78e340] [cursor=pointer]:
+          - generic [ref=f78e343]: Filter
+        - grid [ref=f78e346]:
+          - generic [ref=f78e347]:
+            - table "Table column headers" [ref=f78e350]:
+              - caption [ref=f78e351]: Column headers for the data table below. Use arrow keys to navigate between columns.
+              - rowgroup [ref=f78e362]:
+                - row [ref=f78e363]:
+                  - columnheader "Select all rows" [ref=f78e364]:
+                    - checkbox "Select all rows" [ref=f78e368] [cursor=pointer]: 
+                  - columnheader "Pay date" [ref=f78e371] [cursor=pointer]
+                  - columnheader "Name" [ref=f78e377] [cursor=pointer]
+                  - columnheader "Total pay" [ref=f78e383] [cursor=pointer]
+                  - columnheader "Net pay" [ref=f78e389] [cursor=pointer]
+                  - columnheader "Pay method" [ref=f78e395]
+                  - columnheader "Check number" [ref=f78e399]
+                  - columnheader "Status" [ref=f78e403]
+                  - columnheader "Action" [ref=f78e407]
+            - region "Scrollable table data region" [ref=f78e413]:
+              - table "Table column headers" [ref=f78e414]:
+                - caption [ref=f78e415]: Data table content. Column headers are above this table. Use arrow keys to navigate.
+                - rowgroup [ref=f78e426]:
+                  - row [ref=f78e427]:
+                    - gridcell "Select this row" [ref=f78e428]:
+                      - checkbox "Select this row" [ref=f78e432] [cursor=pointer]: 
+                    - gridcell "08/21/2026" [ref=f78e434]
+                    - gridcell "Pittman, Anthony" [ref=f78e437]
+                    - 'gridcell "Total pay: $1,200.00" [ref=f78e440]':
+                      - 'generic "Total pay: $1,200.00" [ref=f78e441]': $1,200.00
+                    - 'gridcell "Net pay: $1,006.12" [ref=f78e442]':
+                      - 'generic "Net pay: $1,006.12" [ref=f78e443]': $1,006.12
+                    - gridcell "Check" [ref=f78e444]
+                    - gridcell [ref=f78e447]:
+                      - textbox [ref=f78e452]
+                    - gridcell "-" [ref=f78e453]
+                    - gridcell [ref=f78e456]:
+                      - generic "Print pay stub" [ref=f78e458]:
+                        - button "Print pay stub" [ref=f78e459] [cursor=pointer]
+                        - button "Expand Menu" [ref=f78e461] [cursor=pointer]
+                  - row [ref=f78e464]:
+                    - gridcell "Select this row" [ref=f78e465]:
+                      - checkbox "Select this row" [ref=f78e469] [cursor=pointer]: 
+                    - gridcell "08/21/2026" [ref=f78e471]
+                    - gridcell "Pittman, Torlan" [ref=f78e474]
+                    - 'gridcell "Total pay: $1,800.00" [ref=f78e477]':
+                      - 'generic "Total pay: $1,800.00" [ref=f78e478]': $1,800.00
+                    - 'gridcell "Net pay: $1,572.45" [ref=f78e479]':
+                      - 'generic "Net pay: $1,572.45" [ref=f78e480]': $1,572.45
+                    - gridcell "Check" [ref=f78e481]
+                    - gridcell [ref=f78e484]:
+                      - textbox [ref=f78e489]: "10308"
+                    - gridcell "-" [ref=f78e490]
+                    - gridcell [ref=f78e493]:
+                      - generic "Print pay stub" [ref=f78e495]:
+                        - button "Print pay stub" [ref=f78e496] [cursor=pointer]
+                        - button "Expand Menu" [ref=f78e498] [cursor=pointer]

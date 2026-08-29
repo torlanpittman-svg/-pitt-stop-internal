@@ -4,7 +4,7 @@
  *  flags any conflict with the recorded backfill, and attaches (dedup + PS stock) on confirm. */
 import { useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { resolveVinAction } from './vin-actions'
+import { resolveVinAction } from '@/apps/auto-sales/actions'
 
 type Decoded = { vin: string; year: string | null; make: string | null; model: string | null; bodyClass: string | null; trim?: string | null; driveType?: string | null; engine?: string | null; fuelType?: string | null }
 
