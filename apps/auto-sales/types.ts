@@ -30,6 +30,25 @@ export const ACCOUNTING_TREATMENTS = [
 ] as const
 export type AccountingTreatment = (typeof ACCOUNTING_TREATMENTS)[number]
 
+// B2 — friendly receipt categories shown to employees → existing economic category. Client-safe
+// (no server deps) so both the AI module and the capture UI can import it.
+export const RECEIPT_CATEGORIES: { label: string; econ: EconomicCategory }[] = [
+  { label: 'Parts', econ: 'part' },
+  { label: 'Mechanical / Labor', econ: 'mechanic' },
+  { label: 'Body / Paint', econ: 'bodywork' },
+  { label: 'PDR', econ: 'pdr' },
+  { label: 'Tires / Wheels', econ: 'part' },
+  { label: 'Transport / Towing', econ: 'transport' },
+  { label: 'Detail / Recon', econ: 'recon_labor' },
+  { label: 'Title / Registration', econ: 'title_tax' },
+  { label: 'Auction / Purchase Fees', econ: 'auction_fee' },
+  { label: 'Fuel', econ: 'other' },
+  { label: 'Other', econ: 'other' },
+]
+export function econForLabel(label: string | null | undefined): EconomicCategory {
+  return RECEIPT_CATEGORIES.find((c) => c.label.toLowerCase() === (label ?? '').toLowerCase())?.econ ?? 'other'
+}
+
 export type InventoryStatus = 'sourcing' | 'acquired' | 'in_recon' | 'listed' | 'sale_pending' | 'sold' | 'delivered' | 'wholesaled' | 'unwound'
 export type FinancialCompleteness = 'complete' | 'partially_reconstructed' | 'historical_incomplete' | 'needs_review'
 export type EventStatus = 'proposed' | 'unverified' | 'verified' | 'reconciled' | 'void'

@@ -5,7 +5,7 @@
 import { and, desc, eq, ne, inArray, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { vehicles, serviceOrders } from '@/apps/workflow/schema'
-import { inventoryVehicles, vehicleFinancialEvents } from './schema'
+import { inventoryVehicles, vehicleFinancialEvents, vehicleDocuments } from './schema'
 import { autoSalesCutoverDate } from '@/apps/settings/db'
 import { normalizeVIN, validateVIN, decodeVINFromNHTSA, type VINDecodeResult } from '@/apps/vehicle-entry/vin'
 import { generateStockNumber } from './stock'
@@ -387,6 +387,8 @@ export interface VehicleFolder {
   inv: typeof inventoryVehicles.$inferSelect; vehicle: typeof vehicles.$inferSelect
   events: (typeof vehicleFinancialEvents.$inferSelect)[]; summary: VehicleFinancialSummary; result: VehicleResult
   returnable: ReturnableExpense[]; daysOnLot: number | null
+  /** eventId → receipt attachment (ordinary-sensitivity docs only get a viewable url). */
+  attachments: Record<string, { documentId: string; url: string | null; docType: string }>
 }
 export async function getVehicleFolder(id: string): Promise<VehicleFolder | null> {
   const db = getDb()
@@ -397,7 +399,74 @@ export async function getVehicleFolder(id: string): Promise<VehicleFolder | null
     .where(eq(vehicleFinancialEvents.inventoryVehicleId, id)).orderBy(vehicleFinancialEvents.eventDate, vehicleFinancialEvents.createdAt)
   const daysOnLot = row.inv.acquiredAt ? Math.max(0, Math.round((Date.now() - new Date(row.inv.acquiredAt + 'T00:00:00Z').getTime()) / 86400_000)) : null
   const summary = computeSummary(events, row.inv.financialCompleteness as FinancialCompleteness)
-  return { inv: row.inv, vehicle: row.v, events, summary, result: computeResult(row.inv, summary), returnable: await getReturnableExpenses(id), daysOnLot }
+  // Attachments: documents linked to this vehicle's events. Only ordinary docs expose a direct url;
+  // sensitive docs (future titles/buyer paperwork) would resolve through a gated route instead.
+  const docs = await db.select().from(vehicleDocuments).where(eq(vehicleDocuments.inventoryVehicleId, id))
+  const attachments: VehicleFolder['attachments'] = {}
+  for (const d of docs) if (d.linkedEventId) attachments[d.linkedEventId] = { documentId: d.id, url: d.sensitivity === 'ordinary' && d.storage === 'blob_public' ? d.storageRef : null, docType: d.docType }
+  return { inv: row.inv, vehicle: row.v, events, summary, result: computeResult(row.inv, summary), returnable: await getReturnableExpenses(id), daysOnLot, attachments }
+}
+
+// ── B2: Receipt / document capture ──────────────────────────────────────────
+export interface ReceiptDocInput {
+  inventoryVehicleId: string; docType?: string; storage: 'blob_public' | 'none'; storageRef: string | null
+  filename?: string; contentType?: string; imageHash: string; byteSize?: number
+  aiStatus: 'extracted' | 'failed'; aiModel: string | null; aiRaw: unknown; aiExtracted: unknown; uploadedBy: string | null
+}
+/** A prior, non-deleted document with the same content hash — for Blob reuse + duplicate warning. */
+export async function findDocumentByHash(hash: string): Promise<(typeof vehicleDocuments.$inferSelect) | null> {
+  const [d] = await getDb().select().from(vehicleDocuments).where(eq(vehicleDocuments.imageHash, hash)).orderBy(desc(vehicleDocuments.createdAt)).limit(1)
+  return d ?? null
+}
+/** Create the document row on scan (image preserved even if AI failed → never strands a receipt). */
+export async function createReceiptDocument(input: ReceiptDocInput): Promise<string> {
+  const [row] = await getDb().insert(vehicleDocuments).values({
+    inventoryVehicleId: input.inventoryVehicleId, docType: input.docType ?? 'receipt', sensitivity: 'ordinary',
+    storage: input.storage, storageRef: input.storageRef, filename: input.filename ?? null, contentType: input.contentType ?? null,
+    imageHash: input.imageHash, byteSize: input.byteSize ?? null, aiStatus: input.aiStatus, aiModel: input.aiModel,
+    aiRaw: input.aiRaw as any, aiExtracted: input.aiExtracted as any, uploadedBy: input.uploadedBy,
+  }).returning({ id: vehicleDocuments.id })
+  return row.id
+}
+
+export interface SaveReceiptInput {
+  documentId: string; economicCategory: EconomicCategory; amountCents: number; eventDate: string
+  vendor?: string; receiptTotalCents?: number; paymentAccountRef?: string; memo?: string
+  isReturn?: boolean; originalEventId?: string; actor: string | null
+}
+/** Turn a verified receipt into a financial event and link it to the document. Append-only: a return
+ *  creates a return/refund event referencing the original (never edits the original). The amount can be
+ *  a PORTION of the receipt total (split); receiptTotalCents preserves the true total on the document. */
+export async function saveReceipt(input: SaveReceiptInput): Promise<{ ok: boolean; eventId?: string; error?: string }> {
+  const db = getDb()
+  const [doc] = await db.select().from(vehicleDocuments).where(eq(vehicleDocuments.id, input.documentId)).limit(1)
+  if (!doc) return { ok: false, error: 'Document not found' }
+  if (doc.linkedEventId) return { ok: false, error: 'This receipt was already saved.' }
+  const vehId = doc.inventoryVehicleId
+  let eventId: string
+  if (input.isReturn && input.originalEventId) {
+    // Reuse the B1 return/refund chain (append-only, linked to the original purchase).
+    const r = await addReturnRefund({ inventoryVehicleId: vehId, originalEventId: input.originalEventId, econ: 'refund',
+      refundMethod: 'card', cash: true, amountCents: input.amountCents, eventDate: input.eventDate, refundStatus: 'settled',
+      memo: input.memo ?? `Return (receipt ${input.vendor ?? ''})`, actor: input.actor })
+    if (!r.ok) return { ok: false, error: r.error }
+    const [ev] = await db.select({ id: vehicleFinancialEvents.id }).from(vehicleFinancialEvents)
+      .where(and(eq(vehicleFinancialEvents.inventoryVehicleId, vehId), eq(vehicleFinancialEvents.originalEventId, input.originalEventId)))
+      .orderBy(desc(vehicleFinancialEvents.createdAt)).limit(1)
+    eventId = ev?.id ?? ''
+  } else {
+    eventId = await addExpenseEvent({ inventoryVehicleId: vehId, economicCategory: input.economicCategory, amountCents: input.amountCents,
+      eventDate: input.eventDate, vendor: input.vendor, memo: input.memo, paymentAccountRef: input.paymentAccountRef ?? 'unknown', actor: input.actor })
+  }
+  // Link event → document, document → event; stamp document as 'receipt_ai' source on the event.
+  if (eventId) await db.update(vehicleFinancialEvents).set({ documentId: input.documentId, source: doc.aiStatus === 'extracted' ? 'receipt_ai' : 'manual' }).where(eq(vehicleFinancialEvents.id, eventId))
+  await db.update(vehicleDocuments).set({
+    linkedEventId: eventId || null, isReturn: input.isReturn ?? false, originalEventId: input.originalEventId ?? null,
+    receiptTotalCents: input.receiptTotalCents ?? null,
+    confirmed: { vendor: input.vendor ?? null, date: input.eventDate, category: input.economicCategory, amountCents: input.amountCents, receiptTotalCents: input.receiptTotalCents ?? null, isReturn: input.isReturn ?? false } as any,
+    updatedAt: new Date(),
+  }).where(eq(vehicleDocuments.id, input.documentId))
+  return { ok: true, eventId }
 }
 
 // ── Opening-inventory backfill (review-based; import facts, never fabricate history) ──

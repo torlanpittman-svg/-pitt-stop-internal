@@ -13,6 +13,7 @@ import { IN_SCOPE_ACCOUNTS, REFUND_KINDS, labelFor, costRelevance, type Economic
 import { autoSalesCutoverDate } from '@/apps/settings/db'
 import { addExpenseAction, sellAction, returnRefundAction, settleAction, closeoutAction } from '@/apps/auto-sales/actions'
 import VinResolver from './VinResolver'
+import ReceiptCapture from './ReceiptCapture'
 
 const money = (c: number | null | undefined) => c == null ? '—' : `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const COMPLETENESS: Record<string, { c: string; label: string }> = {
@@ -26,7 +27,8 @@ const card = 'rounded-2xl bg-gray-900 border border-gray-800 p-4'
 export default async function VehicleFolderView({ id, admin, reverseAction }: { id: string; admin: boolean; reverseAction?: (fd: FormData) => Promise<void> }) {
   const [folder, cutover] = await Promise.all([getVehicleFolder(id), autoSalesCutoverDate()])
   if (!folder) notFound()
-  const { inv, vehicle, events, summary, result, returnable, daysOnLot } = folder
+  const { inv, vehicle, events, summary, result, returnable, daysOnLot, attachments } = folder
+  const returnableForReceipt = returnable.filter((r) => r.remainingCents > 0).map((r) => ({ id: r.id, label: `${labelFor(r.economicCategory)}${r.vendor ? ` · ${r.vendor}` : ''} · ${money(r.amountCents)}` }))
   const cm = COMPLETENESS[inv.financialCompleteness] ?? COMPLETENESS.needs_review
   const reversedTargets = new Set(events.filter((e) => e.reversesEventId).map((e) => e.reversesEventId))
   const returnEvents = events.filter((e) => e.originalEventId && ['return', 'refund', 'vendor_credit'].includes(e.economicCategory))
@@ -104,9 +106,12 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
 
       {/* Primary actions */}
       <div className="mt-5 space-y-3">
-        {/* Add expense */}
+        {/* Add receipt (camera + AI) — the fast path */}
+        <ReceiptCapture vehicleId={inv.id} returnable={returnableForReceipt} />
+
+        {/* Add expense (manual — no receipt) */}
         <details className="rounded-2xl bg-gray-900 border border-gray-800 overflow-hidden">
-          <summary className="px-4 py-4 cursor-pointer list-none text-white font-bold text-lg flex items-center justify-between">+ Add Expense <span className="text-gray-500 text-sm">▾</span></summary>
+          <summary className="px-4 py-4 cursor-pointer list-none text-white font-bold text-lg flex items-center justify-between">+ Add Expense <span className="text-gray-500 text-sm">(no receipt) ▾</span></summary>
           <form action={addExpenseAction} className="px-4 pb-4 space-y-3">
             <input type="hidden" name="inventoryVehicleId" value={inv.id} />
             <label className="text-xs text-gray-500">What was it?<br /><select name="category" className={box} defaultValue="part">{EXPENSE_CATS.map((c) => <option key={c} value={c}>{labelFor(c)}</option>)}</select></label>
@@ -212,6 +217,9 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
                 <div className="min-w-0">
                   <span className="text-gray-200">{labelFor(e.economicCategory)}</span>
                   {e.reversesEventId && <span className="text-amber-400 text-xs no-underline"> ↩</span>}
+                  {attachments[e.id] && (attachments[e.id].url
+                    ? <a href={attachments[e.id].url!} target="_blank" rel="noopener" className="text-indigo-300 no-underline ml-1" title="View receipt">📎</a>
+                    : <span className="ml-1" title="receipt on file">📎</span>)}
                   <span className="block text-gray-600 text-xs">{e.eventDate}{e.vendor ? ` · ${e.vendor}` : ''}</span>
                 </div>
                 <div className="text-right shrink-0">

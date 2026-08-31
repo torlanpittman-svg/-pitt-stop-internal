@@ -19,6 +19,8 @@
 import { pgTable, uuid, text, varchar, integer, boolean, date, timestamp, jsonb, index, uniqueIndex } from 'drizzle-orm/pg-core'
 import { vehicles } from '@/apps/workflow/schema'
 
+// (vehicleDocuments defined at the bottom of this file — B2 Receipt Capture.)
+
 // One owned-inventory record per canonical vehicle (specific identification). 1:1 with vehicles.
 export const inventoryVehicles = pgTable(
   'inventory_vehicles',
@@ -120,5 +122,45 @@ export const vehicleFinancialEvents = pgTable(
     index('vfe_date_idx').on(t.eventDate),
     index('vfe_econ_idx').on(t.economicCategory),
     index('vfe_original_idx').on(t.originalEventId),
+  ]
+)
+
+// B2 — Receipt/document capture. One row per uploaded receipt/invoice/return doc. Preserves the
+// original image (Vercel Blob, deduped by sha-256), the RAW AI extraction (audit only) and the
+// employee-CONFIRMED values (operational truth). `sensitivity` keeps ordinary receipts on the public
+// blob path while allowing future title/buyer/financing docs to use private storage — no rewrite.
+// linkedEventId / eventDocumentId are plain uuids (no DB FK cycle); multiple events may reference one
+// document → future split allocation across vehicles/events is possible without a schema change.
+export const vehicleDocuments = pgTable(
+  'vehicle_documents',
+  {
+    id:                 uuid('id').primaryKey().defaultRandom(),
+    inventoryVehicleId: uuid('inventory_vehicle_id').notNull().references(() => inventoryVehicles.id),
+    docType:            varchar('doc_type', { length: 24 }).notNull().default('receipt'),
+    sensitivity:        varchar('sensitivity', { length: 12 }).notNull().default('ordinary'), // ordinary|sensitive
+    storage:            varchar('storage', { length: 16 }).notNull().default('blob_public'),  // blob_public|blob_private|none
+    storageRef:         text('storage_ref'),                              // Vercel Blob URL (public) or private key
+    filename:           varchar('filename', { length: 300 }),
+    contentType:        varchar('content_type', { length: 60 }),
+    imageHash:          varchar('image_hash', { length: 64 }),            // sha-256, dedup
+    byteSize:           integer('byte_size'),
+    receiptTotalCents:  integer('receipt_total_cents'),                   // full receipt total (kept even on partial allocation)
+    aiStatus:           varchar('ai_status', { length: 16 }).notNull().default('pending'), // pending|extracted|failed|skipped
+    aiModel:            varchar('ai_model', { length: 60 }),
+    aiRaw:              jsonb('ai_raw'),                                   // raw AI (audit only)
+    aiExtracted:        jsonb('ai_extracted'),                            // normalized proposal
+    confirmed:          jsonb('confirmed'),                               // employee-confirmed values
+    linkedEventId:      uuid('linked_event_id'),                          // resulting financial event
+    isReturn:           boolean('is_return').notNull().default(false),
+    originalEventId:    uuid('original_event_id'),                        // for returns: original purchase event
+    uploadedBy:         varchar('uploaded_by', { length: 200 }),
+    notes:              text('notes'),
+    createdAt:          timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:          timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('vehicle_documents_vehicle_idx').on(t.inventoryVehicleId),
+    index('vehicle_documents_hash_idx').on(t.imageHash),
+    index('vehicle_documents_event_idx').on(t.linkedEventId),
   ]
 )

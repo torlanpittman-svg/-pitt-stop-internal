@@ -9,8 +9,8 @@
  * Each action revalidates BOTH route trees so a change shows on whichever surface the user is on.
  */
 import { revalidatePath } from 'next/cache'
-import { createAcquisition, addExpenseEvent, addReturnRefund, settleRefund, sellVehicle, updateCloseout, resolveVin, type VinResolveResult } from './db'
-import { ECONOMIC_CATEGORIES, REFUND_KINDS, type EconomicCategory } from './types'
+import { createAcquisition, addExpenseEvent, addReturnRefund, settleRefund, sellVehicle, updateCloseout, resolveVin, saveReceipt, type VinResolveResult } from './db'
+import { ECONOMIC_CATEGORIES, REFUND_KINDS, econForLabel, type EconomicCategory } from './types'
 
 const revalidateVehicle = (id: string) => { revalidatePath(`/auto-sales/${id}`); revalidatePath(`/admin/auto-sales/${id}`) }
 const revalidateList = () => { revalidatePath('/auto-sales'); revalidatePath('/admin/auto-sales') }
@@ -86,4 +86,26 @@ export async function closeoutAction(fd: FormData) {
 /** VIN scan/decode/attach — employee-safe (identity resolution, dedup + conflict handled in db). */
 export async function resolveVinAction(inventoryVehicleId: string, rawVin: string, confirmConflict: boolean): Promise<VinResolveResult> {
   return resolveVin({ inventoryVehicleId, rawVin, confirmConflict, actor: 'auto-sales' })
+}
+
+/** Save a verified receipt (employee-safe): create the financial event (a PORTION of the receipt total
+ *  is allowed) and link it to the document. Accepts either a friendly category label OR an economic
+ *  category. Returns the folder id for redirect. */
+export interface SaveReceiptForm {
+  documentId: string; vehicleId: string; categoryLabel?: string; economicCategory?: EconomicCategory
+  amountDollars: string; totalDollars?: string; eventDate: string; vendor?: string; memo?: string
+  isReturn?: boolean; originalEventId?: string
+}
+export async function saveReceiptAction(f: SaveReceiptForm): Promise<{ ok: boolean; error?: string }> {
+  const amountCents = Math.round(parseFloat(f.amountDollars || '') * 100)
+  const totalCents = f.totalDollars ? Math.round(parseFloat(f.totalDollars) * 100) : undefined
+  if (!f.documentId || !Number.isFinite(amountCents) || amountCents <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(f.eventDate))
+    return { ok: false, error: 'Enter an amount and date.' }
+  const econ = f.economicCategory ?? econForLabel(f.categoryLabel)
+  if (!ECONOMIC_CATEGORIES.includes(econ)) return { ok: false, error: 'Invalid category.' }
+  const r = await saveReceipt({ documentId: f.documentId, economicCategory: econ, amountCents, eventDate: f.eventDate,
+    vendor: f.vendor || undefined, receiptTotalCents: totalCents, memo: f.memo || undefined,
+    isReturn: f.isReturn ?? false, originalEventId: f.originalEventId || undefined, actor: 'auto-sales' })
+  if (r.ok) { revalidatePath(`/auto-sales/${f.vehicleId}`); revalidatePath(`/admin/auto-sales/${f.vehicleId}`) }
+  return { ok: r.ok, error: r.error }
 }
