@@ -11,7 +11,7 @@
 import { revalidatePath } from 'next/cache'
 import { createAcquisition, addExpenseEvent, addReturnRefund, settleRefund, sellVehicle, updateCloseout, resolveVin, saveReceipt, type VinResolveResult } from './db'
 import { ECONOMIC_CATEGORIES, REFUND_KINDS, econForLabel, type EconomicCategory } from './types'
-import { employeeAuthorized } from './guard'
+import { employeeAuthorized } from '@/apps/auth/employee-guard'
 
 const revalidateVehicle = (id: string) => { revalidatePath(`/auto-sales/${id}`); revalidatePath(`/admin/auto-sales/${id}`) }
 const revalidateList = () => { revalidatePath('/auto-sales'); revalidatePath('/admin/auto-sales') }

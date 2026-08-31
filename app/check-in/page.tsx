@@ -1,5 +1,7 @@
-import CheckInFlow from './CheckInFlow'
+import SmartCheckIn from './SmartCheckIn'
+
+export const dynamic = 'force-dynamic'
 
 export default function CheckInPage() {
-  return <CheckInFlow />
+  return <SmartCheckIn />
 }

@@ -10,6 +10,7 @@
 import { NextResponse } from 'next/server'
 import { checkInDealerVehicle, type CheckInInput } from '@/apps/dealer-checkin/service'
 import { getEnvironment } from '@/apps/quickbooks/config'
+import { employeeAuthorizedFromRequest } from '@/apps/auth/employee-guard'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
@@ -17,6 +18,10 @@ export const dynamic = 'force-dynamic'
 
 export async function POST(req: Request) {
   try {
+    // Defense-in-depth (proxy.ts is the primary gate): no unauthenticated dealer check-in / QB write.
+    if (!(await employeeAuthorizedFromRequest(req))) {
+      return NextResponse.json({ ok: false, error: 'Sign in required' }, { status: 401 })
+    }
     if (getEnvironment() === 'production' && req.headers.get('x-qb-write-approved') !== 'true') {
       return NextResponse.json(
         { ok: false, error: 'Production QuickBooks write requires explicit approval (X-QB-Write-Approved header).' },

@@ -110,6 +110,28 @@ export default function QuickEntryFlow() {
   // Clean up the object URL + any pending debounce on unmount.
   useEffect(() => () => { if (vinPhotoUrl) URL.revokeObjectURL(vinPhotoUrl); if (decodeTimer.current) clearTimeout(decodeTimer.current) }, [vinPhotoUrl])
 
+  // Smart Check-In hand-off: if the intake identified a retail VIN, pre-fill the vehicle (still editable)
+  // so the employee just adds customer + services. Additive; normal Quick Entry entry is unchanged.
+  const resumedRef = useRef(false)
+  useEffect(() => {
+    if (resumedRef.current) return
+    resumedRef.current = true
+    let raw: string | null = null
+    try { raw = sessionStorage.getItem('ps_intake_retail') } catch { return }
+    if (!raw) return
+    try { sessionStorage.removeItem('ps_intake_retail') } catch { /* ignore */ }
+    let d: { vin?: string; year?: string; make?: string; model?: string }
+    try { d = JSON.parse(raw) } catch { return }
+    if (!d.vin) return
+    setVeh((v) => ({ ...v, vin: d.vin!, year: d.year || v.year, make: d.make || v.make, model: d.model || v.model }))
+    setVehicleMode('new')
+    audit.current.autoIdentified = true
+    idMethodRef.current = 'vin_camera'
+    setVinStatus('ok')
+    setVinMsg(`VIN read ✓ ${[d.year, d.make, d.model].filter(Boolean).join(' ')}`.trim())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // ── VIN photo → OCR → editable candidate → auto validate/decode ─────────────
   // Runs automatically the moment a photo is selected (Take or Upload) — no extra tap.
   const decodeVinPhoto = useCallback(async (file: File) => {

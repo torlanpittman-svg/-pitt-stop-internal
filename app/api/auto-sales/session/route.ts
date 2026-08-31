@@ -9,7 +9,7 @@
  */
 import { NextResponse } from 'next/server'
 import { timingSafeEqual } from 'node:crypto'
-import { EMP_COOKIE, getEmployeePin, employeePinConfigured, signEmployeeSession, employeeSessionMaxAgeSeconds } from '@/apps/auto-sales/session'
+import { EMP_COOKIE, getEmployeePin, employeePinConfigured, signEmployeeSession, employeeSessionMaxAgeSeconds } from '@/apps/auth/employee-session'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'

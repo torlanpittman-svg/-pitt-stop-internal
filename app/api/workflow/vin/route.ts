@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { validateVIN, normalizeVIN, decodeVINFromNHTSA } from '@/apps/vehicle-entry/vin'
+import { employeeAuthorizedFromRequest } from '@/apps/auth/employee-guard'
 import OpenAI from 'openai'
 
 export const dynamic = 'force-dynamic'
@@ -254,6 +255,10 @@ async function processVinImage(image: File, client: OpenAI) {
 
 export async function POST(request: Request) {
   try {
+    // Defense-in-depth (proxy.ts is the primary gate): never run VIN OCR/AI for an unauthenticated caller.
+    if (!(await employeeAuthorizedFromRequest(request))) {
+      return NextResponse.json({ error: 'Sign in required' }, { status: 401 })
+    }
     const contentType = request.headers.get('content-type') ?? ''
 
     // ── Image OCR path ────────────────────────────────────────────────────────

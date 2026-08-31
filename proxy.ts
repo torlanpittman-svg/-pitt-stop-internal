@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
-import { EMP_COOKIE, employeePinConfigured, verifyEmployeeToken } from '@/apps/auto-sales/session'
+import { EMP_COOKIE, employeePinConfigured, verifyEmployeeToken } from '@/apps/auth/employee-session'
 
 /** Valid admin Basic-Auth? (password-only; trimmed). Admin always satisfies any gate below. */
 function adminOk(request: NextRequest): boolean {
@@ -14,14 +14,30 @@ function adminOk(request: NextRequest): boolean {
   } catch { return false }
 }
 
+/**
+ * Is this the employee OPERATIONAL surface? The shared shop PIN (ps_emp) gates the everyday phone tools
+ * — Auto Sales, Work Board, Check In, Quick Entry, Dealer Check-In — and their AI/mutation APIs, so an
+ * unauthenticated internet user can't view them, create Jobs/check-ins, or burn AI credits. Broadly
+ * shared READ APIs (e.g. /api/workflow/orders) are intentionally NOT here (they'd break /orders,
+ * /production, etc. and carry no AI/write). /admin/* is NEVER here (it stays on ADMIN_PASSWORD).
+ */
+function isEmployeeSurface(pathname: string): boolean {
+  const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in']
+  if (pages.some((p) => pathname === p || pathname.startsWith(p + '/'))) return true
+  const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/']
+  if (apis.some((p) => pathname.startsWith(p)) || pathname === '/api/dealer-checkin') return true
+  if (pathname === '/api/estimator/vin' || pathname === '/api/workflow/vin') return true
+  return false
+}
+
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
 
-  // ── Employee Auto-Sales surface: /auto-sales/* + /api/auto-sales/* ──
-  // Gated by a 4-digit EMPLOYEE_PIN session (or admin Basic-Auth). The login page + session API are
+  // ── Employee operational surface (Auto Sales + Work Board + Check In + Quick Entry + Dealer Check-In) ──
+  // Gated by the shared EMPLOYEE_PIN session (or admin Basic-Auth). The login page + session API are
   // exempt so a device CAN log in. This branch ALWAYS returns — it never falls through to the admin
   // Basic-Auth gate below (so the PIN login surface isn't blocked). It never unlocks /admin/*.
-  const isEmployeeArea = pathname.startsWith('/auto-sales') || pathname.startsWith('/api/auto-sales')
+  const isEmployeeArea = isEmployeeSurface(pathname)
   if (isEmployeeArea) {
     const isLoginSurface = pathname === '/auto-sales/login' || pathname.startsWith('/api/auto-sales/session')
     if (isLoginSurface) return NextResponse.next()
@@ -63,10 +79,19 @@ export const config = {
   // functions directly, never these HTTP routes).
   matcher: [
     '/admin/:path*',
-    // Employee Auto-Sales surface (pages + server-action POSTs + the receipt API). Gated by the
-    // 4-digit EMPLOYEE_PIN session (login surfaces are exempted inside proxy()).
+    // Employee operational surface — pages + server-action POSTs + AI/mutation APIs. Gated by the shared
+    // EMPLOYEE_PIN session (login surfaces exempted inside proxy()). Broadly-shared read APIs like
+    // /api/workflow/orders are deliberately excluded (no AI/write; used by /orders, /production, …).
     '/auto-sales/:path*',
     '/api/auto-sales/:path*',
+    '/work-board/:path*',
+    '/check-in/:path*',
+    '/quick-entry/:path*',
+    '/dealer-check-in/:path*',
+    '/api/dealer-checkin/:path*',
+    '/api/quick-entry/:path*',
+    '/api/estimator/vin',
+    '/api/workflow/vin',
     // read-only diagnostics (expose customer email / memo / invoice data)
     '/api/quickbooks/query-customers',
     '/api/quickbooks/query-invoice',

@@ -15,6 +15,7 @@ import { extractVehicleData } from '@/apps/vehicle-entry/ai'
 import { uploadPhoto } from '@/platform/blob'
 import { findImageUrlByHash } from '@/apps/dealer-checkin/db'
 import { sanitizeRawOcr } from '@/apps/dealer-checkin/rules'
+import { employeeAuthorizedFromRequest } from '@/apps/auth/employee-guard'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
@@ -25,6 +26,8 @@ const APP = 'dealer-checkin:ocr'
 export async function POST(req: Request) {
   const started = Date.now()
   try {
+    // Defense-in-depth (proxy.ts is the primary gate): never run OCR/AI for an unauthenticated caller.
+    if (!(await employeeAuthorizedFromRequest(req))) return NextResponse.json({ ok: false, error: 'Sign in required' }, { status: 401 })
     const form = await req.formData()
     const image = (form.get('tagImage') || form.get('image')) as File | null
     if (!image) return NextResponse.json({ ok: false, error: 'No image provided' }, { status: 400 })

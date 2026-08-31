@@ -15,7 +15,7 @@ import { uploadPhoto } from '@/platform/blob'
 import { extractReceipt } from '@/apps/auto-sales/ai/receipt'
 import { findDocumentByHash, createReceiptDocument, proposeReturnMatch } from '@/apps/auto-sales/db'
 import { isAcceptedMimeType } from '@/platform/image'
-import { EMP_COOKIE, employeePinConfigured, verifyEmployeeToken } from '@/apps/auto-sales/session'
+import { EMP_COOKIE, employeePinConfigured, verifyEmployeeToken } from '@/apps/auth/employee-session'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'

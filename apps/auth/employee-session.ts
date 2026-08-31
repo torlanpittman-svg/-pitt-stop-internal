@@ -1,12 +1,15 @@
 /**
- * Employee Auto-Sales session — a signed, httpOnly cookie establishing that a shop device entered the
- * 4-digit EMPLOYEE_PIN. EDGE + NODE safe (Web Crypto only; no node:crypto / next-headers) so the SAME
- * verify runs in middleware (Edge) and in server actions/routes (Node). Signing secret reuses the
- * existing convention (IDENTITY_SECRET || ADMIN_PASSWORD) — see apps/workflow/identity.ts.
+ * Employee shop session — the ONE shared employee-auth implementation for Pitt Stop OS.
  *
- * Employee PIN ≠ admin auth: this session unlocks ONLY the /auto-sales employee surface. /admin/* stays
- * behind ADMIN_PASSWORD (proxy.ts) and is NEVER unlocked by this cookie. The PIN itself is never in the
- * cookie, client source, logs, URLs, or responses — only a signed {exp} token is.
+ * A signed, httpOnly cookie establishing that a shop device entered the shared EMPLOYEE_PIN. It gates
+ * the employee operational tools (Auto Sales, Work Board, Check In, Quick Entry, Dealer Check-In) and
+ * their AI/mutation APIs. EDGE + NODE safe (Web Crypto only; no node:crypto / next-headers) so the SAME
+ * verify runs in middleware (Edge) and in server routes/actions (Node). Signing secret reuses the
+ * existing convention (IDENTITY_SECRET || ADMIN_PASSWORD).
+ *
+ * Employee PIN ≠ admin auth: this session NEVER unlocks /admin/* (that stays behind ADMIN_PASSWORD in
+ * proxy.ts). The PIN itself is never in the cookie, client source, logs, URLs, or responses — only a
+ * signed {exp} token is.
  */
 export const EMP_COOKIE = 'ps_emp'
 

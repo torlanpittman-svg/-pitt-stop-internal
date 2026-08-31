@@ -8,7 +8,10 @@ import { useRouter, useSearchParams } from 'next/navigation'
 export default function PinPad() {
   const router = useRouter()
   const params = useSearchParams()
-  const next = params.get('next') || '/auto-sales'
+  // Only allow returning to a known internal employee tool path (prevents open redirects).
+  const EMP_PATHS = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in']
+  const rawNext = params.get('next') || '/auto-sales'
+  const next = EMP_PATHS.some((p) => rawNext === p || rawNext.startsWith(p + '/')) ? rawNext : '/auto-sales'
   const [pin, setPin] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -18,7 +21,7 @@ export default function PinPad() {
     try {
       const res = await fetch('/api/auto-sales/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pin: finalPin }) })
       const j = await res.json().catch(() => ({}))
-      if (res.ok && j.ok) { router.replace(next.startsWith('/auto-sales') ? next : '/auto-sales'); router.refresh() }
+      if (res.ok && j.ok) { router.replace(next); router.refresh() }
       else { setErr(j.error || 'Wrong PIN'); setPin(''); setBusy(false) }
     } catch { setErr('No connection — try again.'); setPin(''); setBusy(false) }
   }

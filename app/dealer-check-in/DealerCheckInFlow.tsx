@@ -344,6 +344,34 @@ export default function DealerCheckInFlow() {
     }
   }, [preview, fields, vin, newVehicle, rate, storedUrl, imageHash, rawOcr, ocrValues, selectedDealerId, ocrDealer, writeResult])
 
+  // Smart Check-In hand-off: if the intake stashed a pre-scanned dealer tag, resume STRAIGHT into the
+  // review (seed image + OCR fields + dealer preview) WITHOUT re-running OCR. Reuses the exact same
+  // review + confirm → checkInDealerVehicle path. Additive; the normal camera/upload flow is untouched.
+  const resumedRef = useRef(false)
+  useEffect(() => {
+    if (resumedRef.current) return
+    resumedRef.current = true
+    let raw: string | null = null
+    try { raw = sessionStorage.getItem('ps_intake_dealer') } catch { return }
+    if (!raw) return
+    try { sessionStorage.removeItem('ps_intake_dealer') } catch { /* ignore */ }
+    let d: { photoUrl?: string | null; imageHash?: string | null; rawOcr?: unknown; stockNumber?: string; year?: string; make?: string; model?: string; color?: string }
+    try { d = JSON.parse(raw) } catch { return }
+    if (d.photoUrl) { setImageUrl(d.photoUrl); setStoredUrl(d.photoUrl) }
+    setImageHash(d.imageHash ?? null)
+    setRawOcr(d.rawOcr ?? null)
+    const ocr = { stockNumber: d.stockNumber ?? '', year: d.year ?? '', make: d.make ?? '', model: d.model ?? '', color: d.color ?? '' }
+    setOcrValues(ocr)
+    setFields({ stockNumber: ocr.stockNumber, year: ocr.year, make: ocr.make, model: ocr.model, color: ocr.color })
+    setPhase('processing')
+    ;(async () => {
+      const p = await runPreview(ocr.stockNumber, false)
+      setOcrDealer(p?.dealership ?? null)
+      setPhase('review')
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const stockValid = STOCK_RE.test(fields.stockNumber.trim())
   const dealerOk = Boolean(preview?.dealership?.qbCustomerId)
   const canSend = dealerOk && !preview?.duplicate && (stockValid || overrideFormat)

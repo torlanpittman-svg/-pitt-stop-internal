@@ -2,12 +2,17 @@
 import { NextResponse } from 'next/server'
 import { createQuickEntryJob, type CreateJobInput } from '@/apps/quick-entry/jobs-db'
 import { getActor } from '@/apps/workflow/identity'
+import { employeeAuthorizedFromRequest } from '@/apps/auth/employee-guard'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: Request) {
   try {
+    // Defense-in-depth (proxy.ts is the primary gate): no unauthenticated Job creation.
+    if (!(await employeeAuthorizedFromRequest(req))) {
+      return NextResponse.json({ ok: false, error: 'Sign in required' }, { status: 401 })
+    }
     const body = (await req.json()) as CreateJobInput
     if (!body?.customerName?.trim()) {
       return NextResponse.json({ ok: false, error: 'Customer name is required.' }, { status: 400 })
