@@ -84,7 +84,7 @@ export default async function InventoryView({ admin }: { admin: boolean }) {
                 <div className="flex items-center justify-between mt-3">
                   {needsVin
                     ? <span className="inline-flex items-center gap-1 text-sm font-semibold px-3 py-1.5 rounded-full border border-indigo-700 text-indigo-200">📷 Add / Scan VIN</span>
-                    : <span className="text-gray-500 text-xs">In it: <b className="text-gray-200">{money(r.summary.knownInvestmentCents)}</b>{r.summary.historicalIncomplete && <span className="text-amber-400" title="historical costs may be incomplete"> ⚠</span>}</span>}
+                    : <span className="text-gray-500 text-xs">In it: <b className="text-gray-200">{money(r.summary.knownInvestmentCents)}</b>{admin && r.summary.historicalIncomplete && <span className="text-amber-400" title="historical costs may be incomplete"> ⚠</span>}</span>}
                   <span className="text-gray-600 text-xs">{r.daysOnLot != null ? `${r.daysOnLot}d on lot` : ''}</span>
                 </div>
               </Link>
@@ -92,7 +92,7 @@ export default async function InventoryView({ admin }: { admin: boolean }) {
           })}
         </div>
       )}
-      <p className="text-gray-700 text-[11px] mt-4">“In it” = what we paid + tracked costs so far. ⚠ = older costs may be incomplete.</p>
+      <p className="text-gray-700 text-[11px] mt-4">“In it” = what we paid + tracked costs so far.{admin && ' ⚠ = older costs may be incomplete.'}</p>
     </main>
   )
 }

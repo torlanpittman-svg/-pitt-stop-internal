@@ -66,6 +66,29 @@ export const REFUND_KINDS = [
 ] as const
 export type RefundKind = (typeof REFUND_KINDS)[number]['kind']
 
+// B2.5 — how the receipt AI classifies a document. A PROPOSAL (never truth). `store_credit`/`vendor
+// credit` stay NON-CASH; only cash/card refunds move bank/card money (preserves the B1 distinction so
+// B3 can reconcile real cash later). Client-safe.
+export const DOCUMENT_TYPES = ['purchase', 'return', 'partial_return', 'refund', 'store_credit', 'unknown'] as const
+export type DocumentType = (typeof DOCUMENT_TYPES)[number]
+export const RETURN_DOC_TYPES: DocumentType[] = ['return', 'partial_return', 'refund', 'store_credit']
+export const isReturnDocType = (t: string | null | undefined): boolean => RETURN_DOC_TYPES.includes((t ?? '') as DocumentType)
+
+/** Default refund KIND for an AI document type — drives cash vs non-cash. Store/vendor credit is
+ *  non-cash; refund/return default to a card refund (cash) but the employee can change it on verify. */
+export function refundKindForDocType(t: DocumentType | string | null | undefined): RefundKind {
+  switch (t) {
+    case 'store_credit': return 'store_credit'
+    case 'refund':
+    case 'return':
+    case 'partial_return': return 'card_refund'
+    default: return 'card_refund'
+  }
+}
+export function refundKindDef(kind: string): (typeof REFUND_KINDS)[number] {
+  return REFUND_KINDS.find((k) => k.kind === kind) ?? REFUND_KINDS[1] // default card_refund
+}
+
 // In-scope cash accounts (allowlist; extensible without schema change). Personal/holding excluded.
 export const IN_SCOPE_ACCOUNTS = [
   { ref: '*2649', label: 'American Momentum *2649 (operating)' },

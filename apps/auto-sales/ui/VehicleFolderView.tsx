@@ -11,16 +11,15 @@ import { notFound } from 'next/navigation'
 import { getVehicleFolder } from '@/apps/auto-sales/db'
 import { IN_SCOPE_ACCOUNTS, REFUND_KINDS, labelFor, costRelevance, type EconomicCategory } from '@/apps/auto-sales/types'
 import { autoSalesCutoverDate } from '@/apps/settings/db'
-import { addExpenseAction, sellAction, returnRefundAction, settleAction, closeoutAction } from '@/apps/auto-sales/actions'
+import { sellAction, returnRefundAction, settleAction, closeoutAction } from '@/apps/auto-sales/actions'
 import VinResolver from './VinResolver'
-import ReceiptCapture from './ReceiptCapture'
+import AddExpense from './AddExpense'
 
 const money = (c: number | null | undefined) => c == null ? '—' : `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const COMPLETENESS: Record<string, { c: string; label: string }> = {
   complete: { c: 'text-emerald-300', label: 'Complete' }, partially_reconstructed: { c: 'text-amber-300', label: 'Partially reconstructed' },
   historical_incomplete: { c: 'text-amber-300', label: 'Historical costs incomplete' }, needs_review: { c: 'text-red-300', label: 'Needs review' },
 }
-const EXPENSE_CATS: EconomicCategory[] = ['part', 'recon_labor', 'mechanic', 'bodywork', 'pdr', 'paint', 'transport', 'title_tax', 'registration', 'auction_fee', 'buyer_fee', 'floorplan_interest', 'floorplan_fee', 'other']
 const box = 'bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-base text-white w-full'
 const card = 'rounded-2xl bg-gray-900 border border-gray-800 p-4'
 
@@ -31,7 +30,9 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
   const returnableForReceipt = returnable.filter((r) => r.remainingCents > 0).map((r) => ({ id: r.id, label: `${labelFor(r.economicCategory)}${r.vendor ? ` · ${r.vendor}` : ''} · ${money(r.amountCents)}` }))
   const cm = COMPLETENESS[inv.financialCompleteness] ?? COMPLETENESS.needs_review
   const reversedTargets = new Set(events.filter((e) => e.reversesEventId).map((e) => e.reversesEventId))
-  const returnEvents = events.filter((e) => e.originalEventId && ['return', 'refund', 'vendor_credit'].includes(e.economicCategory))
+  // Returns/credits — includes UNMATCHED (originalEventId null, flagged for review) so they stay visible.
+  const returnEvents = events.filter((e) => ['return', 'refund', 'vendor_credit'].includes(e.economicCategory) && !e.reversesEventId && e.status !== 'void')
+  const isFlagged = (e: typeof events[number]) => { const ev = e.evidence as any; return Boolean(ev?.unmatched || ev?.review || ev?.match?.unmatched) }
   const sold = result.sold || inv.status === 'sale_pending'
   const closeoutBadge = result.closeoutStatus === 'sold_incomplete' ? { c: 'bg-amber-950/40 text-amber-300 border-amber-900/60', label: 'SOLD · closeout incomplete' }
     : result.closeoutStatus === 'sold_complete' ? { c: 'bg-emerald-950/40 text-emerald-300 border-emerald-900/60', label: 'Sold' }
@@ -68,7 +69,7 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
           <div className="flex justify-between border-t border-gray-700 pt-1.5 mt-1"><span className="text-white font-semibold">In it so far</span><span className="text-white font-bold text-lg tabular-nums">{money(summary.knownInvestmentCents)}</span></div>
           {summary.refundPendingCents > 0 && <div className="flex justify-between text-xs"><span className="text-amber-400/90">Refund pending (not received yet)</span><span className="text-amber-400/90 tabular-nums">{money(summary.refundPendingCents)}</span></div>}
         </div>
-        {summary.historicalIncomplete && (
+        {admin && summary.historicalIncomplete && (
           <details className="mt-2">
             <summary className="text-amber-400/90 text-xs cursor-pointer list-none">⚠ Older costs may be incomplete</summary>
             <p className="text-gray-500 text-xs mt-1">This vehicle was on the lot before we started tracking every cost ({cutover}). “In it so far” is what we can prove — real costs may be higher. Costs from {cutover} forward are complete.</p>
@@ -84,7 +85,7 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
             <span className={`text-2xl font-bold tabular-nums ${(result.indicativeProfitCents ?? 0) < 0 ? 'text-red-400' : 'text-emerald-300'}`}>{money(result.indicativeProfitCents)}</span>
           </div>
           <p className="text-gray-500 text-xs mt-1">Sold {money(summary.proceedsCents)} − in it {money(summary.knownInvestmentCents)}{summary.sellingCostsCents > 0 ? ` − selling ${money(summary.sellingCostsCents)}` : ''}</p>
-          {result.confidence === 'limited' && <p className="text-amber-300/80 text-xs mt-1">Estimate only — older costs may be missing.</p>}
+          {admin && result.confidence === 'limited' && <p className="text-amber-300/80 text-xs mt-1">Estimate only — older costs may be missing.</p>}
           {result.unresolved.length > 0 && (
             <div className="mt-3 rounded-xl border border-amber-900/50 bg-amber-950/15 p-3">
               <p className="text-amber-300 text-sm font-semibold">Still to finish:</p>
@@ -106,29 +107,8 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
 
       {/* Primary actions */}
       <div className="mt-5 space-y-3">
-        {/* Add receipt (camera + AI) — the fast path */}
-        <ReceiptCapture vehicleId={inv.id} returnable={returnableForReceipt} />
-
-        {/* Add expense (manual — no receipt) */}
-        <details className="rounded-2xl bg-gray-900 border border-gray-800 overflow-hidden">
-          <summary className="px-4 py-4 cursor-pointer list-none text-white font-bold text-lg flex items-center justify-between">+ Add Expense <span className="text-gray-500 text-sm">(no receipt) ▾</span></summary>
-          <form action={addExpenseAction} className="px-4 pb-4 space-y-3">
-            <input type="hidden" name="inventoryVehicleId" value={inv.id} />
-            <label className="text-xs text-gray-500">What was it?<br /><select name="category" className={box} defaultValue="part">{EXPENSE_CATS.map((c) => <option key={c} value={c}>{labelFor(c)}</option>)}</select></label>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="text-xs text-gray-500">Amount<br /><input name="amount" type="number" step="0.01" min="0" inputMode="decimal" required className={box} /></label>
-              <label className="text-xs text-gray-500">Date<br /><input name="eventDate" type="date" defaultValue={today} required className={box} /></label>
-            </div>
-            <label className="text-xs text-gray-500">Vendor<br /><input name="vendor" placeholder="e.g. O’Reilly" className={box} /></label>
-            <details className="rounded-xl border border-gray-800 bg-gray-900/60"><summary className="px-3 py-2 text-gray-400 text-sm cursor-pointer list-none">More (paid from, note) ▾</summary>
-              <div className="px-3 pb-3 space-y-2">
-                <label className="text-xs text-gray-500">Paid from<br /><select name="account" className={box} defaultValue="unknown">{IN_SCOPE_ACCOUNTS.map((a) => <option key={a.ref} value={a.ref}>{a.ref}</option>)}</select></label>
-                <label className="text-xs text-gray-500">Note<br /><input name="memo" className={box} /></label>
-              </div>
-            </details>
-            <button className="w-full bg-green-600 active:bg-green-700 text-white text-lg font-bold py-4 rounded-2xl">Add Expense</button>
-          </form>
-        </details>
+        {/* ONE unified Add Expense: Take Photo / Upload / Enter Manually (+ smart return matching) */}
+        <AddExpense vehicleId={inv.id} returnable={returnableForReceipt} />
 
         {/* Mark sold */}
         {!sold && (
@@ -190,18 +170,32 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
         <div className={`${card} mt-4`}>
           <p className="text-gray-400 text-sm font-semibold mb-2">Returns &amp; credits</p>
           <div className="space-y-2">
-            {returnEvents.map((e) => (
-              <div key={e.id} className="flex items-center justify-between text-sm">
-                <div><span className="text-gray-300">{labelFor(e.economicCategory)}</span> <span className="text-gray-600 text-xs">{e.eventDate}</span>
-                  <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full border ${e.refundStatus === 'settled' ? 'bg-emerald-950/40 text-emerald-300 border-emerald-900/60' : 'bg-amber-950/40 text-amber-300 border-amber-900/60'}`}>{e.refundStatus === 'settled' ? 'received' : e.refundStatus}</span></div>
-                <div className="text-right">
-                  <span className="text-emerald-300 tabular-nums">−{money(e.amountCents)}</span>
-                  {e.refundStatus !== 'settled' && (e.refundMethod === 'cash' || e.refundMethod === 'card') && (
-                    <form action={settleAction} className="mt-1 flex items-center gap-1 justify-end"><input type="hidden" name="inventoryVehicleId" value={inv.id} /><input type="hidden" name="eventId" value={e.id} /><input name="date" type="date" defaultValue={today} className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white" required /><button className="text-emerald-400 text-xs underline">received</button></form>
-                  )}
+            {returnEvents.map((e) => {
+              const ev = e.evidence as any
+              return (
+              <div key={e.id} className="text-sm">
+                <div className="flex items-center justify-between">
+                  <div><span className="text-gray-300">{labelFor(e.economicCategory)}</span> <span className="text-gray-600 text-xs">{e.eventDate}{e.vendor ? ` · ${e.vendor}` : ''}</span>
+                    {e.refundStatus && <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full border ${e.refundStatus === 'settled' ? 'bg-emerald-950/40 text-emerald-300 border-emerald-900/60' : 'bg-amber-950/40 text-amber-300 border-amber-900/60'}`}>{e.refundStatus === 'settled' ? (e.refundMethod === 'cash' || e.refundMethod === 'card' ? 'received' : 'credit') : e.refundStatus}</span>}
+                    {isFlagged(e) && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full border bg-amber-950/40 text-amber-300 border-amber-900/60" title="No matched original purchase — needs review">review</span>}</div>
+                  <div className="text-right">
+                    <span className="text-emerald-300 tabular-nums">−{money(e.amountCents)}</span>
+                    {e.refundStatus !== 'settled' && (e.refundMethod === 'cash' || e.refundMethod === 'card') && (
+                      <form action={settleAction} className="mt-1 flex items-center gap-1 justify-end"><input type="hidden" name="inventoryVehicleId" value={inv.id} /><input type="hidden" name="eventId" value={e.id} /><input name="date" type="date" defaultValue={today} className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white" required /><button className="text-emerald-400 text-xs underline">received</button></form>
+                    )}
+                  </div>
                 </div>
+                {/* Admin audit: matched original, match reasons, unmatched status (read-only). */}
+                {admin && (ev?.match || e.originalEventId) && (
+                  <p className="text-gray-600 text-[11px] mt-0.5">
+                    {e.originalEventId ? `linked to original ${e.originalEventId.slice(0, 8)}` : 'unmatched — no original linked'}
+                    {ev?.match?.kind ? ` · ${ev.match.kind}` : ''}
+                    {Array.isArray(ev?.match?.reasons) && ev.match.reasons.length ? ` · ${ev.match.reasons[0]}` : ''}
+                    {ev?.match?.referencedReceipt ? ` · ref #${ev.match.referencedReceipt}` : ''}
+                  </p>
+                )}
               </div>
-            ))}
+            )})}
           </div>
         </div>
       )}

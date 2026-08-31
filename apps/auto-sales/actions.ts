@@ -102,7 +102,9 @@ export async function resolveVinAction(inventoryVehicleId: string, rawVin: strin
 export interface SaveReceiptForm {
   documentId: string; vehicleId: string; categoryLabel?: string; economicCategory?: EconomicCategory
   amountDollars: string; totalDollars?: string; eventDate: string; vendor?: string; memo?: string
-  isReturn?: boolean; originalEventId?: string
+  // Return handling: refundKind (cash vs non-cash), a matched originalEventId or unmatched, + match evidence.
+  isReturn?: boolean; refundKind?: string; originalEventId?: string; unmatched?: boolean
+  matchConfidence?: string; matchReasons?: string[]; returnedLineRef?: string; referencedReceipt?: string
 }
 export async function saveReceiptAction(f: SaveReceiptForm): Promise<{ ok: boolean; error?: string }> {
   if (!(await employeeAuthorized())) return { ok: false, error: 'Sign in required' }
@@ -114,7 +116,9 @@ export async function saveReceiptAction(f: SaveReceiptForm): Promise<{ ok: boole
   if (!ECONOMIC_CATEGORIES.includes(econ)) return { ok: false, error: 'Invalid category.' }
   const r = await saveReceipt({ documentId: f.documentId, economicCategory: econ, amountCents, eventDate: f.eventDate,
     vendor: f.vendor || undefined, receiptTotalCents: totalCents, memo: f.memo || undefined,
-    isReturn: f.isReturn ?? false, originalEventId: f.originalEventId || undefined, actor: 'auto-sales' })
+    isReturn: f.isReturn ?? false, refundKind: f.refundKind, originalEventId: f.isReturn ? (f.originalEventId || null) : undefined,
+    unmatched: f.unmatched, matchConfidence: f.matchConfidence, matchReasons: f.matchReasons,
+    returnedLineRef: f.returnedLineRef, referencedReceipt: f.referencedReceipt, actor: 'auto-sales' })
   if (r.ok) { revalidatePath(`/auto-sales/${f.vehicleId}`); revalidatePath(`/admin/auto-sales/${f.vehicleId}`) }
   return { ok: r.ok, error: r.error }
 }

@@ -13,7 +13,7 @@ import { NextResponse } from 'next/server'
 import { createHash } from 'node:crypto'
 import { uploadPhoto } from '@/platform/blob'
 import { extractReceipt } from '@/apps/auto-sales/ai/receipt'
-import { findDocumentByHash, createReceiptDocument } from '@/apps/auto-sales/db'
+import { findDocumentByHash, createReceiptDocument, proposeReturnMatch } from '@/apps/auto-sales/db'
 import { isAcceptedMimeType } from '@/platform/image'
 import { EMP_COOKIE, employeePinConfigured, verifyEmployeeToken } from '@/apps/auto-sales/session'
 import { logger } from '@/platform/logger'
@@ -91,13 +91,17 @@ export async function POST(req: Request) {
     // 6) AI extraction (never throws; failed → empty proposal for manual entry).
     const ai = await extractReceipt(bytes.toString('base64'), contentType)
 
+    // 6b) If it reads as a return/refund/credit, propose links to this vehicle's prior purchases
+    //     (read-only; evidence-based; never fabricates). Employee confirms on the verify screen.
+    const returnMatch = ai.extraction.isReturn ? await proposeReturnMatch(inventoryVehicleId, ai.extraction).catch(() => null) : null
+
     const documentId = await createReceiptDocument({
       inventoryVehicleId, storage, storageRef, filename: image.name, contentType, imageHash, byteSize: bytes.length,
       aiStatus: ai.status, aiModel: ai.model, aiRaw: ai.raw, aiExtracted: ai.extraction, uploadedBy: 'auto-sales',
     })
 
-    logger.info(APP, 'scanned', { vehicle: inventoryVehicleId, aiStatus: ai.status, stored: storage, dup: !!duplicateWarning })
-    return NextResponse.json({ ok: true, documentId, storageRef, imageHash, aiStatus: ai.status, proposal: ai.extraction, duplicateWarning })
+    logger.info(APP, 'scanned', { vehicle: inventoryVehicleId, aiStatus: ai.status, stored: storage, dup: !!duplicateWarning, ret: returnMatch?.classification })
+    return NextResponse.json({ ok: true, documentId, storageRef, imageHash, aiStatus: ai.status, proposal: ai.extraction, duplicateWarning, returnMatch })
   } catch (err) {
     logger.error(APP, 'failed', { error: String(err) })
     return NextResponse.json({ ok: false, error: 'Could not process receipt — enter it manually.' }, { status: 500 })

@@ -3,13 +3,16 @@
  * Facts only; no accounting policy. No money movement; no QBO/bank writes.
  */
 import { and, desc, eq, ne, inArray, sql } from 'drizzle-orm'
+import { randomUUID } from 'node:crypto'
 import { getDb } from '@/platform/db'
 import { vehicles, serviceOrders } from '@/apps/workflow/schema'
 import { inventoryVehicles, vehicleFinancialEvents, vehicleDocuments } from './schema'
 import { autoSalesCutoverDate } from '@/apps/settings/db'
 import { normalizeVIN, validateVIN, decodeVINFromNHTSA, type VINDecodeResult } from '@/apps/vehicle-entry/vin'
 import { generateStockNumber } from './stock'
-import { costRelevance, defaultCashflow, type EconomicCategory, type FinancialCompleteness } from './types'
+import { costRelevance, defaultCashflow, refundKindDef, type EconomicCategory, type FinancialCompleteness } from './types'
+import { scoreReturnMatch, type NormalizedLine, type PriorPurchase, type ReturnQuery, type ReturnMatchResult } from './returns'
+import type { ReceiptExtraction } from './ai/receipt'
 
 const iso = (d: Date) => d.toISOString().slice(0, 10)
 
@@ -274,11 +277,11 @@ export async function getReturnableExpenses(inventoryVehicleId: string): Promise
 export interface ReturnInput {
   inventoryVehicleId: string; originalEventId: string; econ: EconomicCategory; refundMethod: string; cash: boolean
   amountCents: number; eventDate: string; refundStatus: 'expected' | 'pending' | 'settled'; destinationAccount?: string
-  memo?: string; allowExceed?: boolean; actor: string | null
+  memo?: string; allowExceed?: boolean; evidence?: unknown; actor: string | null
 }
 /** Append a return/refund/credit event linked to the original expense. Partial supported. Guards against
  *  returning more than economically remains unless allowExceed is set (audited via memo). Never deletes. */
-export async function addReturnRefund(input: ReturnInput): Promise<{ ok: boolean; error?: string }> {
+export async function addReturnRefund(input: ReturnInput): Promise<{ ok: boolean; error?: string; eventId?: string }> {
   const db = getDb()
   const [orig] = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.id, input.originalEventId)).limit(1)
   if (!orig) return { ok: false, error: 'Original expense not found' }
@@ -287,14 +290,79 @@ export async function addReturnRefund(input: ReturnInput): Promise<{ ok: boolean
   if (input.amountCents > remaining && !input.allowExceed) return { ok: false, error: `Exceeds remaining ($${(remaining / 100).toFixed(2)}). Confirm an explicit over-return to proceed.` }
   // Cash/card refunds start pending (no cash yet); vendor/store credits settle immediately as NON-cash.
   const cashflow = input.cash ? (input.refundStatus === 'settled' ? 'cash_inflow' : 'pending') : 'non_cash'
-  await db.insert(vehicleFinancialEvents).values({
+  const [row] = await db.insert(vehicleFinancialEvents).values({
     inventoryVehicleId: input.inventoryVehicleId, economicCategory: input.econ, cashflowCategory: cashflow,
     amountCents: input.amountCents, eventDate: input.eventDate, vendor: orig.vendor, originalEventId: orig.id,
     refundStatus: input.refundStatus, refundMethod: input.refundMethod, refundDestinationAccount: input.destinationAccount ?? null,
     settledAt: input.refundStatus === 'settled' ? input.eventDate : null, status: 'verified', source: 'manual',
+    evidence: (input.evidence ?? null) as any,
     memo: input.memo ?? `${input.allowExceed && input.amountCents > remaining ? 'OVER-RETURN — ' : ''}${input.refundMethod} against ${orig.economicCategory}`, createdBy: input.actor,
+  }).returning({ id: vehicleFinancialEvents.id })
+  return { ok: true, eventId: row.id }
+}
+
+export interface UnmatchedReturnInput {
+  inventoryVehicleId: string; econ: EconomicCategory; refundMethod: string; cash: boolean
+  amountCents: number; eventDate: string; refundStatus: 'expected' | 'pending' | 'settled'; destinationAccount?: string
+  vendor?: string | null; memo?: string; evidence?: unknown; actor: string | null
+}
+/** Append a return/refund/credit event with NO confirmed original purchase (owner choice: reduce Known
+ *  Investment now, flagged for review). Still VERIFIED so the economic reversal is recognized immediately;
+ *  originalEventId stays null and evidence carries { unmatched:true, review:true } so admin can reconcile.
+ *  Never fabricates a link. Cash vs non-cash preserved via refundMethod/cash. */
+export async function addUnmatchedReturn(input: UnmatchedReturnInput): Promise<string> {
+  const cashflow = input.cash ? (input.refundStatus === 'settled' ? 'cash_inflow' : 'pending') : 'non_cash'
+  const [row] = await getDb().insert(vehicleFinancialEvents).values({
+    inventoryVehicleId: input.inventoryVehicleId, economicCategory: input.econ, cashflowCategory: cashflow,
+    amountCents: input.amountCents, eventDate: input.eventDate, vendor: input.vendor ?? null, originalEventId: null,
+    refundStatus: input.refundStatus, refundMethod: input.refundMethod, refundDestinationAccount: input.destinationAccount ?? null,
+    settledAt: input.refundStatus === 'settled' ? input.eventDate : null, status: 'verified', source: 'receipt_ai',
+    evidence: (input.evidence ?? { unmatched: true, review: true }) as any,
+    memo: input.memo ?? `${input.refundMethod} — unmatched return (needs review)`, createdBy: input.actor,
+  }).returning({ id: vehicleFinancialEvents.id })
+  return row.id
+}
+
+// ── Smart return matching (in-memory; reads prior purchases + their receipt line items) ──
+/** NormalizedLine from a document's confirmed (preferred, has stable keys) or aiExtracted line items. */
+function docLines(doc: (typeof vehicleDocuments.$inferSelect) | undefined): NormalizedLine[] {
+  const src = (doc?.confirmed as any)?.lineItems ?? (doc?.aiExtracted as any)?.lineItems ?? []
+  if (!Array.isArray(src)) return []
+  return src.map((li: any) => ({
+    key: typeof li?.key === 'string' ? li.key : null,
+    description: String(li?.description ?? ''),
+    amountCents: typeof li?.amountCents === 'number' ? li.amountCents : null,
+    quantity: typeof li?.quantity === 'number' ? li.quantity : null,
+    unitPriceCents: typeof li?.unitPriceCents === 'number' ? li.unitPriceCents : null,
+    sku: typeof li?.sku === 'string' ? li.sku : null,
+  })).filter((l: NormalizedLine) => l.description)
+}
+function docReceiptNumber(doc: (typeof vehicleDocuments.$inferSelect) | undefined): string | null {
+  return (doc?.confirmed as any)?.receiptNumber ?? (doc?.aiExtracted as any)?.receiptNumber ?? null
+}
+/** Propose links between a scanned return and this vehicle's prior purchases. Read-only; never writes. */
+export async function proposeReturnMatch(inventoryVehicleId: string, extraction: ReceiptExtraction): Promise<ReturnMatchResult> {
+  const db = getDb()
+  const returnable = (await getReturnableExpenses(inventoryVehicleId)).filter((r) => r.remainingCents > 0)
+  const docs = await db.select().from(vehicleDocuments).where(eq(vehicleDocuments.inventoryVehicleId, inventoryVehicleId))
+  const docByEvent = new Map<string, typeof docs[number]>()
+  for (const d of docs) if (d.linkedEventId) docByEvent.set(d.linkedEventId, d)
+  const priors: PriorPurchase[] = returnable.map((r) => {
+    const d = docByEvent.get(r.id)
+    return { eventId: r.id, vendor: r.vendor, eventDate: r.eventDate, amountCents: r.amountCents, remainingCents: r.remainingCents, receiptNumber: docReceiptNumber(d), lineItems: docLines(d) }
   })
-  return { ok: true }
+  // Already-returned specific lines (line-level double-return guard) from prior return-event evidence.
+  const allEvents = await db.select({ evidence: vehicleFinancialEvents.evidence }).from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.inventoryVehicleId, inventoryVehicleId))
+  const alreadyReturnedKeys = new Set<string>()
+  for (const e of allEvents) { const ref = (e.evidence as any)?.match?.returnedLineRef; if (typeof ref === 'string') alreadyReturnedKeys.add(ref) }
+  const returnedLines = extraction.lineItems.filter((l) => l.returned)
+  const useLines = (returnedLines.length ? returnedLines : extraction.lineItems)
+  const query: ReturnQuery = {
+    vendor: extraction.vendor, date: extraction.date, totalCents: extraction.totalCents,
+    receiptNumber: extraction.receiptNumber, originalReference: extraction.originalReference,
+    lineItems: useLines.map((l) => ({ key: null, description: l.description, amountCents: l.amountCents, quantity: l.quantity, unitPriceCents: l.unitPriceCents, sku: l.sku })),
+  }
+  return scoreReturnMatch(query, priors, alreadyReturnedKeys)
 }
 
 /** Move a pending cash/card refund to settled (cash received). Lifecycle transition on the same event
@@ -429,31 +497,57 @@ export async function createReceiptDocument(input: ReceiptDocInput): Promise<str
   return row.id
 }
 
+/** Stamp stable immutable keys onto a document's AI line items → confirmed line items. Never rewrites
+ *  an existing key (idempotent); old B2 docs with no line items just yield []. */
+function confirmedLineItems(doc: (typeof vehicleDocuments.$inferSelect)): any[] {
+  const src = (doc.confirmed as any)?.lineItems ?? (doc.aiExtracted as any)?.lineItems ?? []
+  if (!Array.isArray(src)) return []
+  return src.map((li: any) => ({
+    key: typeof li?.key === 'string' ? li.key : `li_${randomUUID().slice(0, 8)}`,
+    description: String(li?.description ?? ''), amountCents: li?.amountCents ?? null,
+    quantity: li?.quantity ?? null, unitPriceCents: li?.unitPriceCents ?? null, sku: li?.sku ?? null,
+    returned: Boolean(li?.returned),
+  })).filter((li: any) => li.description)
+}
+
 export interface SaveReceiptInput {
   documentId: string; economicCategory: EconomicCategory; amountCents: number; eventDate: string
   vendor?: string; receiptTotalCents?: number; paymentAccountRef?: string; memo?: string
-  isReturn?: boolean; originalEventId?: string; actor: string | null
+  // Return handling: refundKind selects cash vs non-cash (REFUND_KINDS); originalEventId links a matched
+  // return; unmatched=true records a flagged return with no confirmed original (reduces now, needs review).
+  isReturn?: boolean; refundKind?: string; originalEventId?: string | null; unmatched?: boolean
+  matchConfidence?: string; matchReasons?: string[]; returnedLineRef?: string | null; referencedReceipt?: string | null
+  actor: string | null
 }
 /** Turn a verified receipt into a financial event and link it to the document. Append-only: a return
- *  creates a return/refund event referencing the original (never edits the original). The amount can be
- *  a PORTION of the receipt total (split); receiptTotalCents preserves the true total on the document. */
+ *  creates a return/refund/credit event (never edits the original). The amount can be a PORTION of the
+ *  receipt total (split); receiptTotalCents preserves the true total. Cash vs non-cash is preserved from
+ *  the refund kind; the confirmed line items carry stable keys for future partial-return matching. */
 export async function saveReceipt(input: SaveReceiptInput): Promise<{ ok: boolean; eventId?: string; error?: string }> {
   const db = getDb()
   const [doc] = await db.select().from(vehicleDocuments).where(eq(vehicleDocuments.id, input.documentId)).limit(1)
   if (!doc) return { ok: false, error: 'Document not found' }
   if (doc.linkedEventId) return { ok: false, error: 'This receipt was already saved.' }
   const vehId = doc.inventoryVehicleId
-  let eventId: string
-  if (input.isReturn && input.originalEventId) {
-    // Reuse the B1 return/refund chain (append-only, linked to the original purchase).
-    const r = await addReturnRefund({ inventoryVehicleId: vehId, originalEventId: input.originalEventId, econ: 'refund',
-      refundMethod: 'card', cash: true, amountCents: input.amountCents, eventDate: input.eventDate, refundStatus: 'settled',
-      memo: input.memo ?? `Return (receipt ${input.vendor ?? ''})`, actor: input.actor })
-    if (!r.ok) return { ok: false, error: r.error }
-    const [ev] = await db.select({ id: vehicleFinancialEvents.id }).from(vehicleFinancialEvents)
-      .where(and(eq(vehicleFinancialEvents.inventoryVehicleId, vehId), eq(vehicleFinancialEvents.originalEventId, input.originalEventId)))
-      .orderBy(desc(vehicleFinancialEvents.createdAt)).limit(1)
-    eventId = ev?.id ?? ''
+  let eventId = ''
+  let matchInfo: any = null
+  if (input.isReturn) {
+    const kd = refundKindDef(input.refundKind ?? 'card_refund')                 // econ, method, cash
+    const refundStatus: 'pending' | 'settled' = kd.method === 'card' ? 'pending' : 'settled' // card posts later; cash/credit immediate
+    matchInfo = { confidence: input.matchConfidence ?? null, reasons: input.matchReasons ?? [], returnedLineRef: input.returnedLineRef ?? null, referencedReceipt: input.referencedReceipt ?? null, kind: kd.kind, unmatched: !input.originalEventId }
+    const evidence = { match: matchInfo }
+    if (input.originalEventId) {
+      const r = await addReturnRefund({ inventoryVehicleId: vehId, originalEventId: input.originalEventId, econ: kd.econ,
+        refundMethod: kd.method, cash: kd.cash, amountCents: input.amountCents, eventDate: input.eventDate, refundStatus,
+        memo: input.memo ?? `${kd.label} (receipt ${input.vendor ?? ''})`, evidence, actor: input.actor })
+      if (!r.ok) return { ok: false, error: r.error }
+      eventId = r.eventId ?? ''
+    } else {
+      // Unmatched (owner choice): reduce Known Investment now, flagged for review. Never fabricate a link.
+      eventId = await addUnmatchedReturn({ inventoryVehicleId: vehId, econ: kd.econ, refundMethod: kd.method, cash: kd.cash,
+        amountCents: input.amountCents, eventDate: input.eventDate, refundStatus, vendor: input.vendor ?? null,
+        memo: input.memo ?? `${kd.label} — unmatched return (needs review)`, evidence: { unmatched: true, review: true, match: matchInfo }, actor: input.actor })
+    }
   } else {
     eventId = await addExpenseEvent({ inventoryVehicleId: vehId, economicCategory: input.economicCategory, amountCents: input.amountCents,
       eventDate: input.eventDate, vendor: input.vendor, memo: input.memo, paymentAccountRef: input.paymentAccountRef ?? 'unknown', actor: input.actor })
@@ -463,7 +557,12 @@ export async function saveReceipt(input: SaveReceiptInput): Promise<{ ok: boolea
   await db.update(vehicleDocuments).set({
     linkedEventId: eventId || null, isReturn: input.isReturn ?? false, originalEventId: input.originalEventId ?? null,
     receiptTotalCents: input.receiptTotalCents ?? null,
-    confirmed: { vendor: input.vendor ?? null, date: input.eventDate, category: input.economicCategory, amountCents: input.amountCents, receiptTotalCents: input.receiptTotalCents ?? null, isReturn: input.isReturn ?? false } as any,
+    confirmed: {
+      vendor: input.vendor ?? null, date: input.eventDate, category: input.economicCategory, amountCents: input.amountCents,
+      receiptTotalCents: input.receiptTotalCents ?? null, isReturn: input.isReturn ?? false,
+      receiptNumber: (doc.aiExtracted as any)?.receiptNumber ?? null, originalReference: (doc.aiExtracted as any)?.originalReference ?? null,
+      lineItems: confirmedLineItems(doc), match: matchInfo,
+    } as any,
     updatedAt: new Date(),
   }).where(eq(vehicleDocuments.id, input.documentId))
   return { ok: true, eventId }
