@@ -11,11 +11,13 @@
 import { revalidatePath } from 'next/cache'
 import { createAcquisition, addExpenseEvent, addReturnRefund, settleRefund, sellVehicle, updateCloseout, resolveVin, saveReceipt, type VinResolveResult } from './db'
 import { ECONOMIC_CATEGORIES, REFUND_KINDS, econForLabel, type EconomicCategory } from './types'
+import { employeeAuthorized } from './guard'
 
 const revalidateVehicle = (id: string) => { revalidatePath(`/auto-sales/${id}`); revalidatePath(`/admin/auto-sales/${id}`) }
 const revalidateList = () => { revalidatePath('/auto-sales'); revalidatePath('/admin/auto-sales') }
 
 export async function acquireAction(fd: FormData) {
+  if (!(await employeeAuthorized())) return
   const { validateVIN, normalizeVIN, decodeVINFromNHTSA } = await import('@/apps/vehicle-entry/vin')
   const rawVin = String(fd.get('vin') ?? '').trim()
   const cost = Math.round(parseFloat(String(fd.get('cost') ?? '')) * 100)
@@ -41,6 +43,7 @@ export async function acquireAction(fd: FormData) {
 }
 
 export async function addExpenseAction(fd: FormData) {
+  if (!(await employeeAuthorized())) return
   const id = String(fd.get('inventoryVehicleId') ?? ''); const amt = Math.round(parseFloat(String(fd.get('amount') ?? '')) * 100)
   const eventDate = String(fd.get('eventDate') ?? ''); const cat = String(fd.get('category') ?? '') as EconomicCategory
   if (id && ECONOMIC_CATEGORIES.includes(cat) && Number.isFinite(amt) && amt > 0 && /^\d{4}-\d{2}-\d{2}$/.test(eventDate))
@@ -49,6 +52,7 @@ export async function addExpenseAction(fd: FormData) {
 }
 
 export async function returnRefundAction(fd: FormData) {
+  if (!(await employeeAuthorized())) return
   const id = String(fd.get('inventoryVehicleId') ?? ''); const originalEventId = String(fd.get('originalEventId') ?? '')
   const kindDef = REFUND_KINDS.find((k) => k.kind === String(fd.get('kind') ?? '')); const amt = Math.round(parseFloat(String(fd.get('amount') ?? '')) * 100)
   const eventDate = String(fd.get('eventDate') ?? ''); const refundStatus = String(fd.get('refundStatus') ?? 'pending') as 'expected' | 'pending' | 'settled'
@@ -58,11 +62,13 @@ export async function returnRefundAction(fd: FormData) {
 }
 
 export async function settleAction(fd: FormData) {
+  if (!(await employeeAuthorized())) return
   const id = String(fd.get('inventoryVehicleId') ?? ''); const eventId = String(fd.get('eventId') ?? ''); const date = String(fd.get('date') ?? '')
   if (eventId && /^\d{4}-\d{2}-\d{2}$/.test(date)) await settleRefund(eventId, date, 'auto-sales'); revalidateVehicle(id)
 }
 
 export async function sellAction(fd: FormData) {
+  if (!(await employeeAuthorized())) return
   const id = String(fd.get('inventoryVehicleId') ?? ''); const price = Math.round(parseFloat(String(fd.get('salePrice') ?? '')) * 100)
   const saleDate = String(fd.get('saleDate') ?? '')
   if (id && Number.isFinite(price) && price >= 0 && /^\d{4}-\d{2}-\d{2}$/.test(saleDate)) {
@@ -78,6 +84,7 @@ export async function sellAction(fd: FormData) {
 }
 
 export async function closeoutAction(fd: FormData) {
+  if (!(await employeeAuthorized())) return
   const id = String(fd.get('inventoryVehicleId') ?? '')
   await updateCloseout({ inventoryVehicleId: id, proceedsReceived: (String(fd.get('proceedsReceived') ?? '') || undefined) as any, payoffStatus: (String(fd.get('payoffStatus') ?? '') || undefined) as any, titleOutstanding: fd.get('titleField') ? fd.get('titleOutstanding') === 'on' : undefined, markDelivered: fd.get('markDelivered') === 'on', actor: 'auto-sales' })
   revalidateVehicle(id)
@@ -85,6 +92,7 @@ export async function closeoutAction(fd: FormData) {
 
 /** VIN scan/decode/attach — employee-safe (identity resolution, dedup + conflict handled in db). */
 export async function resolveVinAction(inventoryVehicleId: string, rawVin: string, confirmConflict: boolean): Promise<VinResolveResult> {
+  if (!(await employeeAuthorized())) return { status: 'invalid', error: 'Sign in required' }
   return resolveVin({ inventoryVehicleId, rawVin, confirmConflict, actor: 'auto-sales' })
 }
 
@@ -97,6 +105,7 @@ export interface SaveReceiptForm {
   isReturn?: boolean; originalEventId?: string
 }
 export async function saveReceiptAction(f: SaveReceiptForm): Promise<{ ok: boolean; error?: string }> {
+  if (!(await employeeAuthorized())) return { ok: false, error: 'Sign in required' }
   const amountCents = Math.round(parseFloat(f.amountDollars || '') * 100)
   const totalCents = f.totalDollars ? Math.round(parseFloat(f.totalDollars) * 100) : undefined
   if (!f.documentId || !Number.isFinite(amountCents) || amountCents <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(f.eventDate))

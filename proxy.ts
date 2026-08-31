@@ -1,50 +1,55 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
+import { EMP_COOKIE, employeePinConfigured, verifyEmployeeToken } from '@/apps/auto-sales/session'
 
-export function proxy(request: NextRequest) {
+/** Valid admin Basic-Auth? (password-only; trimmed). Admin always satisfies any gate below. */
+function adminOk(request: NextRequest): boolean {
   const adminPassword = process.env.ADMIN_PASSWORD
-
-  // No password set = open access (local dev / first-run)
-  if (!adminPassword) {
-    return NextResponse.next()
-  }
-
+  if (!adminPassword) return true // no password set = open (local dev / first-run)
   const authHeader = request.headers.get('authorization')
-  if (authHeader?.startsWith('Basic ')) {
-    try {
-      const credentials = atob(authHeader.slice(6))
-      const colonIdx = credentials.indexOf(':')
-      const password = credentials.slice(colonIdx + 1)
-      // Trim both sides: env values pasted into hosting dashboards commonly pick up a
-      // trailing newline/space, which would otherwise silently reject the correct password.
-      // Username is intentionally ignored (password-only gate).
-      if (password.trim() === adminPassword.trim()) {
-        return NextResponse.next()
-      }
-    } catch {
-      // fall through to 401
-    }
+  if (!authHeader?.startsWith('Basic ')) return false
+  try {
+    const creds = atob(authHeader.slice(6))
+    return creds.slice(creds.indexOf(':') + 1).trim() === adminPassword.trim()
+  } catch { return false }
+}
+
+export async function proxy(request: NextRequest) {
+  const { pathname } = request.nextUrl
+
+  // ── Employee Auto-Sales surface: /auto-sales/* + /api/auto-sales/* ──
+  // Gated by a 4-digit EMPLOYEE_PIN session (or admin Basic-Auth). The login page + session API are
+  // exempt so a device CAN log in. This branch ALWAYS returns — it never falls through to the admin
+  // Basic-Auth gate below (so the PIN login surface isn't blocked). It never unlocks /admin/*.
+  const isEmployeeArea = pathname.startsWith('/auto-sales') || pathname.startsWith('/api/auto-sales')
+  if (isEmployeeArea) {
+    const isLoginSurface = pathname === '/auto-sales/login' || pathname.startsWith('/api/auto-sales/session')
+    if (isLoginSurface) return NextResponse.next()
+    if (!employeePinConfigured()) return NextResponse.next() // no PIN configured = open (dev)
+    if (adminOk(request)) return NextResponse.next()          // admin always allowed
+    const token = request.cookies.get(EMP_COOKIE)?.value
+    if (await verifyEmployeeToken(token)) return NextResponse.next()
+    // Not authorized: API → 401 JSON (never a Basic-Auth challenge); page → redirect to PIN login.
+    if (pathname.startsWith('/api/')) return NextResponse.json({ ok: false, error: 'Sign in required' }, { status: 401 })
+    const url = request.nextUrl.clone(); url.pathname = '/auto-sales/login'; url.search = `?next=${encodeURIComponent(pathname)}`
+    return NextResponse.redirect(url)
   }
 
-  // Prefetch requests must NOT emit a Basic-Auth challenge: Next.js / the browser
-  // background-prefetch admin <Link>s that can appear on normal pages, and a 401
-  // carrying `WWW-Authenticate: Basic` makes mobile Safari pop the native sign-in
-  // dialog even though the user never navigated to /admin. Deny the prefetch
-  // silently (no challenge) — real navigations below still get the login prompt,
-  // so /admin stays fully protected.
+  // ── Admin surface (/admin/* + gated QB/finance APIs) — existing ADMIN_PASSWORD Basic-Auth ──
+  if (!process.env.ADMIN_PASSWORD) return NextResponse.next()
+  if (adminOk(request)) return NextResponse.next()
+
+  // Prefetch requests must NOT emit a Basic-Auth challenge (mobile Safari would pop the native
+  // sign-in dialog on a normal page that merely prefetched an admin <Link>). Deny silently.
   const isPrefetch =
     request.headers.get('next-router-prefetch') === '1' ||
     request.headers.get('purpose') === 'prefetch' ||
     /prefetch/i.test(request.headers.get('sec-purpose') ?? '')
-  if (isPrefetch) {
-    return new NextResponse(null, { status: 401 })
-  }
+  if (isPrefetch) return new NextResponse(null, { status: 401 })
 
   return new NextResponse('Unauthorized', {
     status: 401,
-    headers: {
-      'WWW-Authenticate': 'Basic realm="Pitt Stop Admin"',
-    },
+    headers: { 'WWW-Authenticate': 'Basic realm="Pitt Stop Admin"' },
   })
 }
 
@@ -58,6 +63,10 @@ export const config = {
   // functions directly, never these HTTP routes).
   matcher: [
     '/admin/:path*',
+    // Employee Auto-Sales surface (pages + server-action POSTs + the receipt API). Gated by the
+    // 4-digit EMPLOYEE_PIN session (login surfaces are exempted inside proxy()).
+    '/auto-sales/:path*',
+    '/api/auto-sales/:path*',
     // read-only diagnostics (expose customer email / memo / invoice data)
     '/api/quickbooks/query-customers',
     '/api/quickbooks/query-invoice',
