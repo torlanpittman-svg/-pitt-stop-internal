@@ -4,11 +4,53 @@
  * appears on /work-board, plus a quick_entry_jobs record (customer + lines).
  */
 import { getDb } from '@/platform/db'
+import { sql } from 'drizzle-orm'
 import { quickEntryJobs } from './schema'
 import { getFullCatalog, listTechnicianInstructions, type FullCatalogItem, type TechRow } from './db'
 import { serviceLabels } from './job-lines'
 import { findOrCreateVehicle, getVehicleById, createServiceOrder } from '@/apps/workflow/db'
-import { getOrCreateEstimate, promoteTextServices, recomputeEstimate, setExplicitPrice, setInternalNote } from '@/apps/workflow/estimate-db'
+import { getOrCreateEstimate, promoteTextServices, recomputeEstimate, setExplicitPrice, setAgreedPrice, setInternalNote } from '@/apps/workflow/estimate-db'
+import { searchServiceHistory, type HistoryEntry, type ServiceMatch } from './service-history'
+
+// ── Retail service-history knowledge base (grounded in real completed work) ──
+// Cached in-process (tiny dataset); a short TTL keeps it fresh as new Jobs complete. RETAIL ONLY —
+// dealer work is excluded so dealer pricing can never leak into a retail suggestion.
+let historyCache: { at: number; rows: HistoryEntry[] } | null = null
+const HISTORY_TTL_MS = 5 * 60_000
+async function loadRetailServiceHistory(): Promise<HistoryEntry[]> {
+  if (historyCache && Date.now() - historyCache.at < HISTORY_TTL_MS) return historyCache.rows
+  const db = getDb()
+  // Priced lines: non-generated job_line_items on RETAIL (non-dealer) estimates → name + price.
+  // Name-only history: service_orders.services text on retail Jobs (adds families with no price yet).
+  const priced = await db.execute(sql`
+    SELECT li.name AS name, li.price_cents AS price_cents
+    FROM job_line_items li
+    JOIN job_services js ON js.id = li.job_service_id
+    JOIN job_estimates je ON je.id = js.job_estimate_id
+    JOIN service_orders so ON so.id = je.service_order_id
+    WHERE li.generated = false AND li.price_cents > 0
+      AND lower(coalesce(so.source,'')) NOT IN ('dealer','dealer_checkin')
+      AND lower(coalesce(so.service_type,'')) NOT LIKE 'dealer%'
+  `)
+  const named = await db.execute(sql`
+    SELECT jsonb_array_elements_text(so.services) AS name
+    FROM service_orders so
+    WHERE so.services IS NOT NULL AND jsonb_typeof(so.services) = 'array'
+      AND lower(coalesce(so.source,'')) NOT IN ('dealer','dealer_checkin')
+      AND lower(coalesce(so.service_type,'')) NOT LIKE 'dealer%'
+  `)
+  const rows: HistoryEntry[] = []
+  for (const r of priced.rows as { name: string; price_cents: number }[]) rows.push({ name: r.name, priceCents: r.price_cents })
+  for (const r of named.rows as { name: string }[]) if (r.name) rows.push({ name: r.name, priceCents: null })
+  historyCache = { at: Date.now(), rows }
+  return rows
+}
+
+/** Search the retail service history for families similar to the employee's typed "Other" name. */
+export async function searchRetailServices(query: string): Promise<ServiceMatch[]> {
+  if (!query || query.trim().length < 2) return []
+  return searchServiceHistory(query, await loadRetailServiceHistory())
+}
 
 export interface QuickEntryCatalog { packages: FullCatalogItem[]; addons: FullCatalogItem[]; tech: TechRow[] }
 
@@ -50,6 +92,11 @@ export interface CreateJobInput {
   /** Manager/admin-entered authoritative pre-fee/pre-tax work price (cents). The route
    *  only sets this for a manager/admin actor; null/absent → itemized/$0 as today. */
   workPriceCents?: number | null
+  /** Employee-confirmed EXPECTED Job value at intake (pre-fee/pre-tax, cents) — the sum of the
+   *  per-service intake prices. Operational production value; NOT the authoritative invoice price. */
+  agreedPriceCents?: number | null
+  /** Per-service intake audit: employee text + matched historical family/suggestion + confirmed price. */
+  agreedServices?: Array<{ originalText: string; matchedFamily?: string | null; matchedDisplay?: string | null; suggestedCents?: number | null; sampleSize?: number | null; confirmedCents: number }>
   /** Internal note/instruction captured from NL intake → job_estimates.internalNotes. */
   internalNote?: string | null
 }
@@ -106,6 +153,13 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
       // Manager priced this Job: the amount is the authoritative pre-fee/pre-tax work
       // subtotal (explicit_pretax). No per-service line prices are fabricated.
       await setExplicitPrice(est.id, input.workPriceCents, input.createdBy ?? null)
+    }
+    // Employee-confirmed EXPECTED value at intake (any actor). Operational production value only —
+    // does NOT set the authoritative invoice price / price_mode / fees / tax / QuickBooks.
+    if (input.agreedPriceCents && input.agreedPriceCents > 0) {
+      await setAgreedPrice(est.id, input.agreedPriceCents, {
+        services: input.agreedServices ?? [], enteredBy: input.createdBy ?? null, at: new Date().toISOString(),
+      }, input.createdBy ?? null)
     }
     if (input.internalNote && input.internalNote.trim()) {
       await setInternalNote(est.id, input.internalNote.trim())

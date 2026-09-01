@@ -3,9 +3,16 @@
 import Link from 'next/link'
 import { useState, useCallback } from 'react'
 import type { OrderWithContext } from '@/apps/workflow/db'
-import { isDealerOrder } from '@/apps/workflow/fees'
+import { isDealerOrder, orderSourceKind } from '@/apps/workflow/fees'
 import CustomerContactModal from '@/app/components/CustomerContactModal'
 import SwipeRow from '@/app/components/SwipeRow'
+
+/** Dealer stock number, read from the Job notes ("Stock: X | Invoice: … | Dealer"). Display-only. */
+function stockFromNotes(notes: string | null | undefined): string | null {
+  const m = (notes ?? '').match(/Stock:\s*([^|]+?)\s*(?:\||$)/i)
+  const s = m?.[1]?.trim()
+  return s && s.toLowerCase() !== 'n/a' ? s : null
+}
 
 // Employee-facing card status: is the Job still active, or finished? The detailed
 // lifecycle (in_progress/paused/drying/qc_ready) stays in the data model + manager
@@ -45,7 +52,9 @@ export default function VehicleCard({
   const vehicleName = ymm ? (color ? `${ymm} · ${color}` : ymm) : 'Unknown Vehicle'
   // Card title = retail customer or dealer name; vehicle info goes underneath.
   const title = order.customerName?.trim() || 'Unknown Customer'
-  const isDealer = isDealerOrder(order)
+  const kind = orderSourceKind(order)               // 'retail' | 'dealer' | 'unknown' (canonical, positive-ID)
+  const isDealer = kind === 'dealer'
+  const stock = isDealer ? stockFromNotes(order.notes) : null
   // Swipe-to-remove is RETAIL + manager/admin only (dealer cards never get the gesture).
   const canRemove = removable && !isDealer
 
@@ -72,17 +81,28 @@ export default function VehicleCard({
     finally { setRemoving(false) }
   }, [order.id, removing, onRemoved])
 
+  // Visual hierarchy: RETAIL draws the eye (emerald left-rail + stronger surface); DEALER stays the
+  // default neutral card; UNKNOWN stays plain. The green `highlighted` ring (just-added Job) still wins.
+  const accent = highlighted
+    ? 'border-green-500 shadow-lg shadow-green-900/30 border-l'
+    : kind === 'retail'
+      ? 'border-gray-800 border-l-4 border-l-emerald-500 bg-emerald-950/10'
+      : 'border-gray-800 border-l'
+
   const card = (
     <Link
       href={`/orders/${order.id}`}
-      className={`block bg-gray-900 rounded-2xl px-5 py-4 active:bg-gray-800 transition-all border ${
-        highlighted
-          ? 'border-green-500 shadow-lg shadow-green-900/30'
-          : 'border-gray-800'
-      }`}
+      className={`block bg-gray-900 rounded-2xl px-5 py-4 active:bg-gray-800 transition-all border ${accent}`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
+          {/* Source badge: RETAIL (emphasis) / DEALER (secondary) / nothing for unknown. Own line. */}
+          {kind === 'retail' && (
+            <span className="block w-fit mb-1 text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">RETAIL</span>
+          )}
+          {kind === 'dealer' && (
+            <span className="block w-fit mb-1 text-[10px] font-semibold tracking-wider px-2 py-0.5 rounded-md bg-gray-800 text-gray-400 border border-gray-700">DEALER</span>
+          )}
           {/* Retail customer name → tap opens the contact popup (doesn't navigate). Dealer name is plain. */}
           {isDealer ? (
             <p className="text-white font-bold text-lg leading-tight truncate">{title}</p>
@@ -96,6 +116,7 @@ export default function VehicleCard({
           <p className="text-gray-500 text-sm mt-0.5 truncate">
             {vehicleName}
           </p>
+          {stock && <p className="text-gray-600 text-xs mt-0.5 truncate">Stock {stock}</p>}
         </div>
         <span className={`flex-none text-xs font-semibold px-2.5 py-1 rounded-full ${style.bg} ${style.text}`}>
           {style.label}

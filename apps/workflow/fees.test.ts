@@ -1,9 +1,31 @@
 import { describe, it, expect } from 'vitest'
 import {
   feePercentLabel, eligibleBasisCents, computeShopSupplies, computePaymentCharge,
-  computeFees, reconcilePlan, explicitPretaxTotals, effectiveFeeConfig, isDealerOrder,
+  computeFees, reconcilePlan, explicitPretaxTotals, effectiveFeeConfig, isDealerOrder, orderSourceKind,
   type FeeConfig, type ExistingFeeLine,
 } from './fees'
+
+describe('orderSourceKind', () => {
+  it('dealer sources → dealer', () => {
+    expect(orderSourceKind({ source: 'dealer' })).toBe('dealer')
+    expect(orderSourceKind({ source: 'dealer_checkin' })).toBe('dealer')
+    expect(orderSourceKind({ serviceType: 'dealer_detail' })).toBe('dealer')
+  })
+  it('retail sources → retail', () => {
+    expect(orderSourceKind({ source: 'quick_entry' })).toBe('retail')
+    expect(orderSourceKind({ source: 'walk_in' })).toBe('retail')
+    expect(orderSourceKind({ source: 'vin_scan' })).toBe('retail')
+    expect(orderSourceKind({ serviceType: 'retail' })).toBe('retail')
+  })
+  it('null / legacy / unrecognized source → unknown (never falsely labeled)', () => {
+    expect(orderSourceKind({ source: null })).toBe('unknown')
+    expect(orderSourceKind({})).toBe('unknown')
+    expect(orderSourceKind({ source: 'import_legacy' })).toBe('unknown')
+  })
+  it('dealer wins even if a retail-ish serviceType is present', () => {
+    expect(orderSourceKind({ source: 'dealer', serviceType: 'retail' })).toBe('dealer')
+  })
+})
 
 // Production retail defaults: shop supplies ON (3%, cap $20), payment charge ON (3%,
 // basis = work + supplies).

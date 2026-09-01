@@ -31,6 +31,23 @@ export function isDealerOrder(order: { source?: string | null; serviceType?: str
   return s === 'dealer' || s === 'dealer_checkin' || t.startsWith('dealer')
 }
 
+/** Retail source values that POSITIVELY identify a customer/retail Job (canonical source field). */
+const RETAIL_SOURCES = new Set(['quick_entry', 'walk_in', 'vin_scan', 'retail'])
+
+/**
+ * Three-way, POSITIVE-identification Job kind from canonical source/type — never inferred from the
+ * customer name. Dealer wins first (existing detector). Retail requires a known retail source or a
+ * 'retail' serviceType. Anything else (null/legacy/unrecognized source) stays 'unknown' — we never
+ * falsely label a Job retail or dealer without canonical evidence.
+ */
+export function orderSourceKind(order: { source?: string | null; serviceType?: string | null }): 'retail' | 'dealer' | 'unknown' {
+  if (isDealerOrder(order)) return 'dealer'
+  const s = (order.source ?? '').toLowerCase()
+  const t = (order.serviceType ?? '').toLowerCase()
+  if (RETAIL_SOURCES.has(s) || t === 'retail' || t.startsWith('retail')) return 'retail'
+  return 'unknown'
+}
+
 /**
  * The config the engine actually uses for a Job. Dealer Jobs → shop supplies + payment
  * charge forced OFF (dealer billing is unchanged: work price only). Retail Jobs → global

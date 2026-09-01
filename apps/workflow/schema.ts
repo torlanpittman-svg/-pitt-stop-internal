@@ -152,6 +152,12 @@ export const jobEstimates = pgTable(
     taxExempt:              boolean('tax_exempt').notNull().default(false),
     pricingSetBy:           varchar('pricing_set_by', { length: 200 }),
     pricingSetAt:           timestamp('pricing_set_at', { withTimezone: true }),
+    // Employee-set EXPECTED/operational Job value at intake (pre-fee/pre-tax). SEPARATE from the
+    // manager-authoritative explicit_total_cents/invoice: this drives the Production number when no
+    // manager price exists, but never the customer invoice. agreed_meta keeps the per-service audit
+    // (employee text, matched historical family, suggested price + sample size, confirmed price).
+    agreedPriceCents:       integer('agreed_price_cents'),
+    agreedMeta:             jsonb('agreed_meta'),
     customerNotes:          text('customer_notes'),
     internalNotes:          text('internal_notes'),
     sentAt:                 timestamp('sent_at', { withTimezone: true }),

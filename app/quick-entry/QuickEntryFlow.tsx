@@ -19,6 +19,8 @@ import { norm } from '@/apps/quick-entry/interpret'
 type Phase = 'details' | 'services' | 'review' | 'submitting' | 'done'
 interface Tier { size: string; condition: string; startPriceCents: number }
 interface Pkg { id: string; slug: string; name: string; hasSize: boolean; hasCondition: boolean; defaultPriceCents: number | null; tiers: Tier[] }
+// Historical "Other" suggestion returned by /api/quick-entry/service-search (grounded in real work).
+interface ServiceMatch { display: string; familyKey: string; suggestedPriceCents: number | null; sampleSize: number; confidence: 'strong' | 'weak' | 'none'; evidenceLabel: string }
 interface Tech { slug: string; label: string; group: string }
 interface Catalog { packages: Pkg[]; addons: Pkg[]; tech: Tech[]; plateLookupEnabled?: boolean; nlEnabled?: boolean; voiceEnabled?: boolean }
 
@@ -99,6 +101,7 @@ export default function QuickEntryFlow() {
   const decodeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [lines, setLines] = useState<JobLine[]>([])
+  const [suggByKey, setSuggByKey] = useState<Record<string, ServiceMatch | null>>({})
   const [tech, setTech] = useState<Set<string>>(new Set())
   const [result, setResult] = useState<{ orderNumber: string; serviceOrderId: string } | null>(null)
 
@@ -219,15 +222,38 @@ export default function QuickEntryFlow() {
     else addNewVehicle()
   }, [selectVehicle, addNewVehicle])
 
-  // ── Service selection ───────────────────────────────────────────────────────
-  // Pure tap-to-select: no price, no size/condition tiers. Tapping a service toggles it.
+  // ── Service selection + intake pricing ───────────────────────────────────────
+  // Each selected service carries an editable price. Presets prefill from the catalog; "Other" prefills
+  // from a historical suggestion. The sum is the Job's EXPECTED value (operational, not the invoice).
   const addLine = (l: Omit<JobLine, 'key'>) => setLines((xs) => [...xs, { ...l, key: `k${keySeq++}` }])
   const isSelected = (id: string) => lines.some((l) => l.catalogId === id)
   const tapPackage = (p: Pkg) => setLines((xs) =>
     xs.some((l) => l.catalogId === p.id)
       ? xs.filter((l) => l.catalogId !== p.id)                                        // deselect
-      : [...xs, { key: `k${keySeq++}`, catalogId: p.id, kind: 'package', name: p.name, priceCents: 0 }]) // select
+      : [...xs, { key: `k${keySeq++}`, catalogId: p.id, kind: 'package', name: p.name, priceCents: p.defaultPriceCents ?? 0 }]) // select (prefill catalog price)
   const addOther = () => addLine({ catalogId: null, kind: 'custom', name: '', priceCents: 0 })
+  const setLinePrice = (key: string, dollars: string) =>
+    setLines((xs) => xs.map((l) => (l.key === key ? { ...l, priceCents: dollarsToCents(dollars) } : l)))
+  const expectedTotalCents = lines.reduce((s, l) => s + (Number.isFinite(l.priceCents) ? l.priceCents : 0), 0)
+
+  // Smart "Other": debounced historical search. Suggestion is a PROPOSAL — it prefills the price only
+  // when the employee hasn't typed one, and they can always change it. No AI, no per-keystroke call.
+  const searchTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  const searchOther = useCallback((key: string, name: string) => {
+    if (searchTimers.current[key]) clearTimeout(searchTimers.current[key])
+    if (name.trim().length < 2) { setSuggByKey((m) => ({ ...m, [key]: null })); return }
+    searchTimers.current[key] = setTimeout(async () => {
+      try {
+        const d = await (await fetch(`/api/quick-entry/service-search?q=${encodeURIComponent(name.trim())}`)).json()
+        const top: ServiceMatch | null = d?.matches?.[0] ?? null
+        setSuggByKey((m) => ({ ...m, [key]: top }))
+      } catch { /* suggestion is best-effort */ }
+    }, 350)
+  }, [])
+  const applySuggestion = (key: string, s: ServiceMatch) => {
+    if (s.suggestedPriceCents == null) return
+    setLines((xs) => xs.map((l) => (l.key === key ? { ...l, priceCents: s.suggestedPriceCents! } : l)))
+  }
 
   // Natural-language intake (P-B3) — merges into the SAME lines (dedup by title),
   // preserving bubbles/custom. Populates Work Price only when the server allows it
@@ -315,11 +341,17 @@ export default function QuickEntryFlow() {
           vehicleId: vehicleMode === 'existing' ? selectedVehicleId : null,  // reuse the exact saved vehicle (no duplicate)
           lines: lines
             .filter((l) => l.kind !== 'custom' || l.name.trim())  // drop empty "Other" lines
-            // Quick Entry ignores pricing: no size/condition, price 0 (set later in estimating/invoicing)
-            .map((l) => ({ catalogId: l.catalogId, kind: l.kind, name: l.name.trim(), size: null, condition: null, priceCents: 0 })),
+            .map((l) => ({ catalogId: l.catalogId, kind: l.kind, name: l.name.trim(), size: null, condition: null, priceCents: l.priceCents || 0 })),
           techInstructions: SHOW_TECH_INSTRUCTIONS ? [...tech] : [], createdBy: 'quick_entry',
-          // Manager-entered work price (server drops it for non-managers → itemized/$0).
+          // Manager-entered AUTHORITATIVE invoice work price (server drops it for non-managers).
           workPriceCents: dollarsToCents(workPrice) || null,
+          // Employee-confirmed EXPECTED value at intake (operational; ANY employee). Sum of the per-service
+          // prices + per-service audit (original text + matched historical family + confirmed price).
+          agreedPriceCents: expectedTotalCents || null,
+          agreedServices: lines.filter((l) => (l.kind !== 'custom' || l.name.trim()) && l.priceCents > 0).map((l) => {
+            const s = suggByKey[l.key]
+            return { originalText: l.name.trim(), matchedFamily: s?.familyKey ?? null, matchedDisplay: s?.display ?? null, suggestedCents: s?.suggestedPriceCents ?? null, sampleSize: s?.sampleSize ?? null, confirmedCents: l.priceCents }
+          }),
           internalNote: nlNote.trim() || null,
           // Vehicle-identification audit (VIN photo only now). No secrets.
           audit: {
@@ -337,7 +369,7 @@ export default function QuickEntryFlow() {
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); setPhase('review') }
     // workPrice + nlNote MUST be deps: otherwise the create closure reads their stale
     // initial values and the manager's Work Price / internal note are silently dropped.
-  }, [cust, veh, lines, tech, vehicleMode, selectedVehicleId, workPrice, nlNote])
+  }, [cust, veh, lines, tech, vehicleMode, selectedVehicleId, workPrice, nlNote, expectedTotalCents, suggByKey])
 
   const input = 'w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500'
 
@@ -510,22 +542,51 @@ export default function QuickEntryFlow() {
 
             {lines.length > 0 && (
               <div>
-                <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Selected</p>
+                <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Selected · price each</p>
                 <div className="rounded-2xl bg-gray-900 border border-gray-800 divide-y divide-gray-800">
-                  {lines.map((l) => (
-                    <div key={l.key} className="flex items-center gap-2 px-3 py-2">
-                      <div className="flex-1 min-w-0">
-                        {l.kind === 'custom' ? (
-                          // Free-text custom service — supports the keyboard mic (voice dictation)
-                          <input value={l.name} onChange={(e) => setLineName(l.key, e.target.value)} placeholder="What are we doing?" autoFocus
-                            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-sm" />
-                        ) : (
-                          <p className="text-white text-sm truncate">{l.name}</p>
-                        )}
+                  {lines.map((l) => {
+                    const sugg = l.kind === 'custom' ? suggByKey[l.key] : null
+                    return (
+                    <div key={l.key} className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 min-w-0">
+                          {l.kind === 'custom' ? (
+                            // Free-text custom service → smart historical search (supports keyboard mic)
+                            <input value={l.name} onChange={(e) => { setLineName(l.key, e.target.value); searchOther(l.key, e.target.value) }} placeholder="What are we doing?" autoFocus
+                              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-sm" />
+                          ) : (
+                            <p className="text-white text-sm truncate">{l.name}</p>
+                          )}
+                        </div>
+                        {/* Editable price */}
+                        <div className="flex items-center rounded-lg bg-gray-800 border border-gray-700 px-2 w-24 shrink-0">
+                          <span className="text-gray-500 text-sm">$</span>
+                          <input value={l.priceCents ? (l.priceCents / 100).toString() : ''} onChange={(e) => setLinePrice(l.key, e.target.value)}
+                            inputMode="decimal" placeholder="0" className="w-full bg-transparent px-1 py-1 text-white text-sm text-right focus:outline-none" />
+                        </div>
+                        <button onClick={() => removeLine(l.key)} className="text-gray-600 text-lg px-1">×</button>
                       </div>
-                      <button onClick={() => removeLine(l.key)} className="text-gray-600 text-lg px-1">×</button>
+                      {/* Historical suggestion for "Other" (grounded; proposal only) */}
+                      {l.kind === 'custom' && l.name.trim().length >= 2 && (
+                        sugg && sugg.suggestedPriceCents != null ? (
+                          <button type="button" onClick={() => applySuggestion(l.key, sugg)}
+                            className="mt-1.5 w-full flex items-center justify-between rounded-lg bg-blue-950/30 border border-blue-900/50 px-2.5 py-1.5 text-left active:opacity-70">
+                            <span className="min-w-0"><span className="text-blue-200 text-xs font-semibold">{sugg.display}</span><span className="block text-blue-300/70 text-[11px]">{sugg.evidenceLabel}</span></span>
+                            <span className="text-blue-300 text-xs font-bold shrink-0 ml-2">Use ${(sugg.suggestedPriceCents / 100).toFixed(0)}</span>
+                          </button>
+                        ) : sugg && sugg.confidence === 'none' ? (
+                          <p className="mt-1 text-gray-600 text-[11px]">Matched “{sugg.display}” — no reliable previous price, enter one.</p>
+                        ) : (
+                          <p className="mt-1 text-gray-600 text-[11px]">No reliable previous price — enter one.</p>
+                        )
+                      )}
                     </div>
-                  ))}
+                  )})}
+                </div>
+                {/* Expected job total (operational; not the final invoice) */}
+                <div className="mt-2 flex items-center justify-between px-1">
+                  <span className="text-gray-400 text-sm">Expected job total</span>
+                  <span className="text-white font-bold text-lg tabular-nums">${(expectedTotalCents / 100).toFixed(2)}</span>
                 </div>
               </div>
             )}
@@ -570,10 +631,17 @@ export default function QuickEntryFlow() {
             <p className="px-4 py-2 text-gray-500 text-xs uppercase tracking-widest">Services</p>
             {lines.length === 0 && <p className="px-4 py-3 text-gray-500 text-sm">No services selected.</p>}
             {lines.map((l) => (
-              <div key={l.key} className="px-4 py-2 text-sm">
-                <span className="text-gray-200">{l.name.trim() || (l.kind === 'custom' ? 'Custom service' : '')}</span>
+              <div key={l.key} className="px-4 py-2 text-sm flex items-center justify-between gap-2">
+                <span className="text-gray-200 min-w-0 truncate">{l.name.trim() || (l.kind === 'custom' ? 'Custom service' : '')}</span>
+                {l.priceCents > 0 && <span className="text-gray-400 tabular-nums shrink-0">${(l.priceCents / 100).toFixed(2)}</span>}
               </div>
             ))}
+            {expectedTotalCents > 0 && (
+              <div className="px-4 py-2 text-sm flex items-center justify-between">
+                <span className="text-gray-400 font-semibold">Expected total</span>
+                <span className="text-white font-bold tabular-nums">${(expectedTotalCents / 100).toFixed(2)}</span>
+              </div>
+            )}
           </div>
           {SHOW_TECH_INSTRUCTIONS && tech.size > 0 && (
             <div className="rounded-2xl bg-gray-900 border border-gray-800 p-4">

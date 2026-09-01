@@ -186,6 +186,21 @@ export async function setExplicitPrice(estimateId: string, workPriceCents: numbe
   }).where(eq(jobEstimates.id, estimateId))
 }
 
+/**
+ * Set the employee-confirmed EXPECTED Job value at intake (pre-fee/pre-tax). This is the operational
+ * production value ANY employee may establish — it does NOT set explicit_total_cents, does NOT change
+ * price_mode, and never touches fees/tax/QuickBooks (those stay manager-only). agreedMeta carries the
+ * per-service audit. Production reads agreed_price_cents only when no manager price exists (precedence).
+ */
+export async function setAgreedPrice(estimateId: string, agreedPriceCents: number, meta: unknown, actor: string | null): Promise<void> {
+  await getDb().update(jobEstimates).set({
+    agreedPriceCents: Math.max(0, Math.round(agreedPriceCents)),
+    agreedMeta: (meta ?? null) as never,
+    updatedAt: new Date(),
+  }).where(eq(jobEstimates.id, estimateId))
+  void actor
+}
+
 // ── Simplified mobile Estimate: one visible service = one editable price ──────────
 // A service's price is carried by a single non-generated line (type 'labor', non-taxable
 // detailing → tax $0). The manager never sees line types/cost/tax; they see title + price.
