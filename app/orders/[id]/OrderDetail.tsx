@@ -1647,11 +1647,69 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
         </div>
       )}
 
-      {/* The detailed "Manager controls" block (granular status actions, Invoice Draft, Production Date,
-          Reopen, Estimate link, activity log, SO#/Waiting meta) is intentionally NOT rendered on this
-          operational detail screen — UI cleanup only. All underlying status transitions, APIs, audit
-          events, and the modal components remain intact; manager billing lives in the post-Finish
-          Completion Summary flow. */}
+      {/* ── Job Management (manager/admin only) — the USEFUL controls, without the old clutter ──
+          Restores Invoice Draft, Estimate, Production Date, Reopen + Activity (all reusing the existing
+          components/state/APIs). INTENTIONALLY still hidden: the old "Manager controls" heading, the
+          Waiting/SO#/tech/timer meta line, and the granular status buttons (Start Work / Cancel / Pause /
+          QC / Deliver / Send Back). Ordinary employees keep the clean operational page above. UI hiding
+          is not the security boundary — each endpoint still enforces its own manager/admin authorization. */}
+      {isManager && (
+        <div className="px-6 mt-2 mb-8 border-t border-gray-900 pt-5">
+          <h2 className="text-gray-600 text-xs font-semibold uppercase tracking-widest mb-3">Job Management</h2>
+
+          {/* Invoice Draft — clean billing summary from the estimate (no QuickBooks) */}
+          <button onClick={() => setShowInvoice(true)}
+            className="w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80 mb-4">
+            Invoice Draft
+          </button>
+
+          {/* optional Estimate layer (pricing + approval) */}
+          {identity.estimateEnabled && (
+            <a href={`/orders/${order.id}/estimate`} className="inline-block text-blue-400 text-sm font-semibold active:opacity-70 mb-4">Build / Edit Estimate →</a>
+          )}
+
+          {/* Production Date — move a completed Job to a different Daily Production day
+              (override; never changes completed_at). Self-hides for non-completed Jobs. */}
+          {order.completedAt && <ProductionDateSection orderId={order.id} onChanged={reload} />}
+
+          {/* reopen a Ready Job that wasn't truly finished (reason + PIN) */}
+          {order.status === 'ready' && (
+            <button onClick={() => { setReopenMsg(null); setReopening(true) }}
+              className="w-full text-amber-300 font-semibold text-sm py-3 rounded-2xl border border-amber-800/60 bg-amber-950/30 active:opacity-80 mb-4">
+              Reopen Job
+            </button>
+          )}
+
+          {/* activity / audit timeline */}
+          {order.recentEvents.length > 0 && (
+            <div className="mt-2">
+              <h3 className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">Activity</h3>
+              <div className="space-y-2">
+                {order.recentEvents.map((event: ServiceOrderEvent) => (
+                  <div key={event.id} className="flex items-start gap-3">
+                    <div className="w-1.5 h-1.5 rounded-full bg-gray-700 mt-2 shrink-0" />
+                    <div>
+                      <p className="text-gray-300 text-sm">
+                        {event.eventType === 'reopened'
+                          ? `Reopened${event.employeeName ? ' by ' + event.employeeName : ''}${reopenReason(event.note)}`
+                          : event.eventType === 'completed'
+                            ? `Completed (Ready)${event.employeeName ? ' · ' + event.employeeName : ''}`
+                            : event.eventType === 'service_added'
+                              ? `Service added: ${event.note ?? ''}${event.employeeName ? ` · ${event.employeeName}` : ''}`
+                              : event.newStatus
+                                ? `${event.employeeName ? event.employeeName + ' — ' : ''}${STATUS_CONFIG[event.newStatus]?.label ?? event.newStatus}`
+                                : `${EVENT_LABELS[event.eventType] ?? event.eventType}${event.employeeName ? ` · ${event.employeeName}` : ''}`
+                        }
+                      </p>
+                      <p className="text-gray-600 text-xs"><EventTime date={event.createdAt} /></p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Employee picker */}
       {picking && (
