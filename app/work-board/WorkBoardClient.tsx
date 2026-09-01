@@ -17,9 +17,18 @@ type FilterTab = 'active' | 'ready'
 // Daily Production. Ready Jobs move to the "Ready" tab (pickup/delivery/reopen).
 const ACTIVE_WORK_STATUSES = new Set(['arrived', 'in_progress', 'paused', 'drying', 'qc_ready'])
 
+// Urgent Jobs sort FIRST within the current list (stable → existing arrivedAt order preserved within
+// each group). Urgency is visual/priority only — it never moves a Job between statuses.
+function urgentFirst(orders: OrderWithContext[]): OrderWithContext[] {
+  return orders
+    .map((o, i) => [o, i] as const)
+    .sort((a, b) => (Number(b[0].isUrgent) - Number(a[0].isUrgent)) || (a[1] - b[1]))
+    .map(([o]) => o)
+}
+
 function filterOrders(orders: OrderWithContext[], tab: FilterTab): OrderWithContext[] {
-  if (tab === 'ready') return orders.filter(o => o.status === 'ready')
-  return orders.filter(o => ACTIVE_WORK_STATUSES.has(o.status))
+  if (tab === 'ready') return urgentFirst(orders.filter(o => o.status === 'ready'))
+  return urgentFirst(orders.filter(o => ACTIVE_WORK_STATUSES.has(o.status)))
 }
 
 export default function WorkBoardClient({

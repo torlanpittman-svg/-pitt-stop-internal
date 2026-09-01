@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
+import BackLink from './BackLink'
 
 function HomeIcon() {
   return (
@@ -22,11 +23,7 @@ export default function NavHeader({ back, title, right }: {
 }) {
   return (
     <header className="sticky top-0 z-30 flex items-center gap-3 px-4 py-3 text-sm border-b border-gray-900 bg-gray-950/95 backdrop-blur shrink-0">
-      {back && (
-        <Link href={back.href} className="text-gray-400 hover:text-white flex items-center gap-1">
-          <span aria-hidden="true">←</span>{back.label}
-        </Link>
-      )}
+      {back && <BackLink href={back.href} label={back.label} />}
       {title && <span className="text-gray-300 font-medium truncate">{title}</span>}
       <div className="ml-auto flex items-center gap-3">
         {right}

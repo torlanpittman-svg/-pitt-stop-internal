@@ -1321,10 +1321,11 @@ function ProductionDateSection({ orderId, onChanged }: { orderId: string; onChan
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithContext }) {
+export default function OrderDetail({ initialOrder, workValueCents = null }: { initialOrder: OrderWithContext; workValueCents?: number | null }) {
   const router = useRouter()
 
   const [order,       setOrder]       = useState<OrderWithContext>(initialOrder)
+  const [urgentBusy,  setUrgentBusy]  = useState(false)
   const [pending,     setPending]     = useState<string | null>(null)
   const [picking,     setPicking]     = useState<ActionConfig | null>(null)
   const [error,       setError]       = useState<string | null>(null)
@@ -1382,6 +1383,24 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
       setOrder(data.order)
     }
   }, [order.id])
+
+  // Mark / remove URGENT (any authenticated employee). Visual + Work Board priority only — never
+  // changes status, price, production, or QuickBooks. Optimistic; reverts on failure.
+  const toggleUrgent = useCallback(async () => {
+    if (urgentBusy) return
+    const next = !order.isUrgent
+    setUrgentBusy(true); setError(null)
+    setOrder((o) => ({ ...o, isUrgent: next }))
+    try {
+      const res = await fetch(`/api/workflow/orders/${order.id}/urgent`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ urgent: next }),
+      })
+      if (!res.ok) throw new Error()
+    } catch {
+      setOrder((o) => ({ ...o, isUrgent: !next }))  // revert
+      setError('Could not update urgency — try again.')
+    } finally { setUrgentBusy(false) }
+  }, [order.id, order.isUrgent, urgentBusy])
 
   // Add services to this order (display-only). Attributes to the active tech when one
   // is working, else 'staff'. Confirms before adding an already-present service.
@@ -1532,9 +1551,26 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
               </div>
             )}
           </div>
-          <span className={`flex-none font-bold text-base mt-1 ${simpleStatus.color}`}>
-            {simpleStatus.label}
-          </span>
+          <div className="flex-none flex flex-col items-end gap-1 mt-1">
+            {order.isUrgent && <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/50">URGENT</span>}
+            <span className={`font-bold text-base ${simpleStatus.color}`}>{simpleStatus.label}</span>
+          </div>
+        </div>
+
+        {/* Urgent toggle (any authenticated employee) + retail TOTAL PRICE (view-only). */}
+        <div className="flex items-center gap-3 mt-4">
+          <button onClick={toggleUrgent} disabled={urgentBusy}
+            className={`text-sm font-semibold px-3.5 py-2 rounded-xl border active:opacity-70 disabled:opacity-40 ${order.isUrgent ? 'border-amber-500 bg-amber-500/15 text-amber-300' : 'border-gray-700 text-gray-300'}`}>
+            {order.isUrgent ? '★ Urgent — tap to remove' : 'Mark Urgent'}
+          </button>
+          {!isDealerOrder(order) && (
+            <div className="ml-auto text-right">
+              <p className="text-gray-500 text-[11px] uppercase tracking-widest">Total price</p>
+              <p className={`font-bold tabular-nums ${workValueCents != null ? 'text-white text-lg' : 'text-gray-500 text-sm'}`}>
+                {workValueCents != null ? money(workValueCents) : 'Not priced yet'}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1611,87 +1647,11 @@ export default function OrderDetail({ initialOrder }: { initialOrder: OrderWithC
         </div>
       )}
 
-      {/* ── Manager controls (detailed) — hidden from employees, backend untouched ── */}
-      {isManager && (
-        <div className="px-6 mt-2 mb-8 border-t border-gray-900 pt-5">
-          <h2 className="text-gray-600 text-xs font-semibold uppercase tracking-widest mb-3">Manager controls</h2>
-
-          {/* precise status + focus + tech + timer + SO number */}
-          <div className="text-xs text-gray-500 flex flex-wrap items-center gap-x-3 gap-y-1 mb-4">
-            <span className={statusCfg.color}>{statusCfg.label}</span>
-            {order.serviceFocus && <span className="bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">{FOCUS_LABELS[order.serviceFocus] ?? order.serviceFocus}</span>}
-            {activeTech && <span>{activeTech} working</span>}
-            {order.arrivedAt && <span className="text-gray-600"><ElapsedTime from={order.arrivedAt} /> on lot</span>}
-            <span className="text-gray-700 ml-auto">{order.orderNumber}</span>
-          </div>
-
-          {/* granular status actions (Start Work, Cancel, Pause, QC, Deliver, …) — compact
-              secondary controls; Finish Job stays the large green primary, Invoice Draft is
-              the prominent manager action */}
-          {actions.length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-3">
-              {actions.map(action => (
-                <button key={action.newStatus} onClick={() => handleAction(action)} disabled={pending !== null}
-                  className="text-sm font-medium text-gray-300 bg-gray-800/70 border border-gray-700 px-3 py-1.5 rounded-lg active:opacity-70 disabled:opacity-40">
-                  {pending === action.newStatus ? '…' : action.label}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Invoice Draft — clean billing summary from the estimate (no QuickBooks) */}
-          <button onClick={() => setShowInvoice(true)}
-            className="w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80 mb-4">
-            Invoice Draft
-          </button>
-
-          {/* Production Date — move a completed Job to a different Daily Production day
-              (override; never changes completed_at). Self-hides for non-completed Jobs. */}
-          {order.completedAt && <ProductionDateSection orderId={order.id} onChanged={reload} />}
-
-          {/* reopen a Ready Job that wasn't truly finished (reason + PIN) */}
-          {order.status === 'ready' && (
-            <button onClick={() => { setReopenMsg(null); setReopening(true) }}
-              className="w-full text-amber-300 font-semibold text-sm py-3 rounded-2xl border border-amber-800/60 bg-amber-950/30 active:opacity-80 mb-4">
-              Reopen Job
-            </button>
-          )}
-
-          {/* optional Estimate layer (pricing + approval) */}
-          {identity.estimateEnabled && (
-            <a href={`/orders/${order.id}/estimate`} className="inline-block text-blue-400 text-sm font-semibold active:opacity-70 mb-4">Build / Edit Estimate →</a>
-          )}
-
-          {/* activity / audit timeline */}
-          {order.recentEvents.length > 0 && (
-            <div className="mt-2">
-              <h3 className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">Activity</h3>
-              <div className="space-y-2">
-                {order.recentEvents.map((event: ServiceOrderEvent) => (
-                  <div key={event.id} className="flex items-start gap-3">
-                    <div className="w-1.5 h-1.5 rounded-full bg-gray-700 mt-2 shrink-0" />
-                    <div>
-                      <p className="text-gray-300 text-sm">
-                        {event.eventType === 'reopened'
-                          ? `Reopened${event.employeeName ? ' by ' + event.employeeName : ''}${reopenReason(event.note)}`
-                          : event.eventType === 'completed'
-                            ? `Completed (Ready)${event.employeeName ? ' · ' + event.employeeName : ''}`
-                            : event.eventType === 'service_added'
-                              ? `Service added: ${event.note ?? ''}${event.employeeName ? ` · ${event.employeeName}` : ''}`
-                              : event.newStatus
-                                ? `${event.employeeName ? event.employeeName + ' — ' : ''}${STATUS_CONFIG[event.newStatus]?.label ?? event.newStatus}`
-                                : `${EVENT_LABELS[event.eventType] ?? event.eventType}${event.employeeName ? ` · ${event.employeeName}` : ''}`
-                        }
-                      </p>
-                      <p className="text-gray-600 text-xs"><EventTime date={event.createdAt} /></p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      {/* The detailed "Manager controls" block (granular status actions, Invoice Draft, Production Date,
+          Reopen, Estimate link, activity log, SO#/Waiting meta) is intentionally NOT rendered on this
+          operational detail screen — UI cleanup only. All underlying status transitions, APIs, audit
+          events, and the modal components remain intact; manager billing lives in the post-Finish
+          Completion Summary flow. */}
 
       {/* Employee picker */}
       {picking && (

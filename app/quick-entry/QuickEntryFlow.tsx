@@ -9,6 +9,7 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
+import { resolveBack } from '@/app/components/back-origin'
 import PhotoInput from '@/app/components/PhotoInput'
 import NavHeader from '@/app/components/NavHeader'
 import { useIdentity } from '@/app/components/IdentityBar'
@@ -42,6 +43,11 @@ const dollarsToCents = (s: string) => { const n = parseFloat(String(s).replace(/
 
 export default function QuickEntryFlow() {
   const router = useRouter()
+  // Back target: Check In when reached via Smart Check-In (?from=check-in), else Work Board fallback.
+  // Allowlist-only (no external redirect). Resolved AFTER mount (useEffect) so SSR + first client render
+  // both show the fallback → no hydration mismatch; it upgrades to Check In post-mount when applicable.
+  const [backTarget, setBackTarget] = useState<{ href: string; label: string }>({ href: '/work-board', label: 'Work Board' })
+  useEffect(() => { setBackTarget(resolveBack(new URLSearchParams(window.location.search).get('from'), { href: '/work-board', label: 'Work Board' })) }, [])
   const identity = useIdentity()
   const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
   const [bizCfg, setBizCfg] = useState<BizConfig | null>(null)
@@ -102,6 +108,7 @@ export default function QuickEntryFlow() {
 
   const [lines, setLines] = useState<JobLine[]>([])
   const [suggByKey, setSuggByKey] = useState<Record<string, ServiceMatch | null>>({})
+  const [isUrgent, setIsUrgent] = useState(false)
   const [tech, setTech] = useState<Set<string>>(new Set())
   const [result, setResult] = useState<{ orderNumber: string; serviceOrderId: string } | null>(null)
 
@@ -352,6 +359,7 @@ export default function QuickEntryFlow() {
             const s = suggByKey[l.key]
             return { originalText: l.name.trim(), matchedFamily: s?.familyKey ?? null, matchedDisplay: s?.display ?? null, suggestedCents: s?.suggestedPriceCents ?? null, sampleSize: s?.sampleSize ?? null, confirmedCents: l.priceCents }
           }),
+          isUrgent,
           internalNote: nlNote.trim() || null,
           // Vehicle-identification audit (VIN photo only now). No secrets.
           audit: {
@@ -369,13 +377,13 @@ export default function QuickEntryFlow() {
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); setPhase('review') }
     // workPrice + nlNote MUST be deps: otherwise the create closure reads their stale
     // initial values and the manager's Work Price / internal note are silently dropped.
-  }, [cust, veh, lines, tech, vehicleMode, selectedVehicleId, workPrice, nlNote, expectedTotalCents, suggByKey])
+  }, [cust, veh, lines, tech, vehicleMode, selectedVehicleId, workPrice, nlNote, expectedTotalCents, suggByKey, isUrgent])
 
   const input = 'w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500'
 
   return (
     <main className="min-h-screen bg-gray-950 text-white flex flex-col">
-      <NavHeader title={`Quick Entry${phase === 'details' ? ' · Details' : phase === 'services' ? ' · Services' : phase === 'review' ? ' · Review' : ''}`} />
+      <NavHeader back={backTarget} title={`Quick Entry${phase === 'details' ? ' · Details' : phase === 'services' ? ' · Services' : phase === 'review' ? ' · Review' : ''}`} />
 
       {error && <p className="text-red-400 text-sm text-center px-5 py-2">{error}</p>}
 
@@ -482,6 +490,14 @@ export default function QuickEntryFlow() {
               </>
             )}
           </div>
+
+          {/* Urgency — needs back ASAP. Independent of retail/dealer; visual + Work Board priority only. */}
+          <button type="button" onClick={() => setIsUrgent((u) => !u)}
+            className={`w-full flex items-center gap-3 rounded-2xl border px-4 py-3.5 ${isUrgent ? 'border-amber-500 bg-amber-950/20' : 'border-gray-800 bg-gray-900'}`}>
+            <span className={`w-6 h-6 rounded-md flex items-center justify-center text-sm shrink-0 ${isUrgent ? 'bg-amber-500 text-black' : 'border border-gray-600 text-transparent'}`}>✓</span>
+            <span className="text-left"><span className={`font-semibold ${isUrgent ? 'text-amber-300' : 'text-white'}`}>Urgent · Needs back ASAP</span></span>
+          </button>
+
           <div className="fixed bottom-0 inset-x-0 p-4 bg-gray-950/95 border-t border-gray-900">
             <button disabled={!cust.first.trim()} onClick={() => setPhase('services')}
               className="w-full h-14 rounded-2xl bg-blue-600 active:bg-blue-700 text-white text-lg font-bold disabled:opacity-40">Continue →</button>
@@ -697,7 +713,7 @@ export default function QuickEntryFlow() {
           <p className="text-2xl font-bold">Job created</p>
           <p className="text-gray-300">The Job is on the Work Board.</p>
           <button onClick={() => router.push(`/work-board?new=${result.serviceOrderId}`)} className="mt-3 w-full max-w-xs h-14 rounded-2xl bg-white text-black text-lg font-bold">View Work Board</button>
-          <button onClick={() => { setCust({ first: '', last: '', phone: '', email: '' }); setVeh({ vin: '', year: '', make: '', model: '', color: '' }); setLines([]); setTech(new Set()); setResult(null); setVinMsg(null); setVinStatus('idle'); setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null }); setMatches([]); setCustVehicles([]); setSelectedVehicleId(null); setVehicleMode('new'); setError(null); setPhase('details') }}
+          <button onClick={() => { setCust({ first: '', last: '', phone: '', email: '' }); setVeh({ vin: '', year: '', make: '', model: '', color: '' }); setLines([]); setTech(new Set()); setIsUrgent(false); setResult(null); setVinMsg(null); setVinStatus('idle'); setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null }); setMatches([]); setCustVehicles([]); setSelectedVehicleId(null); setVehicleMode('new'); setError(null); setPhase('details') }}
             className="w-full max-w-xs h-12 rounded-2xl border border-gray-700 text-gray-300">New Quick Entry</button>
         </div>
       )}

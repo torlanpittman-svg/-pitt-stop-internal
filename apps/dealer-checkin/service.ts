@@ -108,6 +108,8 @@ export interface CheckInInput {
   force?:           boolean
   /** Client-measured time from camera-ready to confirm, for instrumentation. */
   scanDurationMs?:  number | null
+  /** Operational urgency set at check-in (defaults Normal). Visual/sort only. */
+  urgent?:          boolean
 }
 
 export type CheckInOutcome =
@@ -454,6 +456,7 @@ export async function checkInDealerVehicle(input: CheckInInput): Promise<CheckIn
       notes:       `Stock: ${input.stockNumber ?? 'n/a'} | Invoice: ${invoiceLabel} | ${dealership.name}`,
       customerName: dealership.name,       // Work Board card title = dealer
       services:    ['Complete Detail'],    // operational default label only (no extra QB line)
+      isUrgent:    input.urgent ?? false,
     })
     await logScanEvent({ scanId: scan.id, eventType: 'work_board_created', newValue: { serviceOrderId: order.id, orderNumber: order.orderNumber } })
 

@@ -13,6 +13,7 @@
  */
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
+import { resolveBack } from '@/app/components/back-origin'
 import NavHeader from '@/app/components/NavHeader'
 import { newClientRequestId, blankFields } from '@/apps/dealer-checkin/scan-session'
 import PhotoInput from '@/app/components/PhotoInput'
@@ -45,6 +46,10 @@ const STOCK_RE = /^[A-Za-z]{1,3}[- ]?\d{2,}$/
 
 export default function DealerCheckInFlow() {
   const router = useRouter()
+  // Back target: Check In when reached via Smart Check-In (?from=check-in), else Work Board fallback.
+  // Resolved AFTER mount so SSR + first client render match (no hydration mismatch); allowlist-only.
+  const [backTarget, setBackTarget] = useState<{ href: string; label: string }>({ href: '/work-board', label: 'Work Board' })
+  useEffect(() => { setBackTarget(resolveBack(new URLSearchParams(window.location.search).get('from'), { href: '/work-board', label: 'Work Board' })) }, [])
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const submittingRef = useRef(false)
@@ -80,6 +85,7 @@ export default function DealerCheckInFlow() {
   const [newVehicle, setNewVehicle] = useState(false)
   const [priceOverride, setPriceOverride] = useState<string>('')
   const [overrideFormat, setOverrideFormat] = useState(false)
+  const [urgent, setUrgent] = useState(false)
 
   const [writeResult, setWriteResult] = useState<
     { outcome: string; invoiceNumber: string | null; action?: string; serviceOrderId: string } | null
@@ -156,7 +162,7 @@ export default function DealerCheckInFlow() {
     submittingRef.current = false
     clientRequestIdRef.current = newClientRequestId()
     setPreview(null); setSelectedDealerId(null); setOcrDealer(null); setVin(null)
-    setNewVehicle(false); setPriceOverride(''); setOverrideFormat(false); setWriteResult(null)
+    setNewVehicle(false); setPriceOverride(''); setOverrideFormat(false); setUrgent(false); setWriteResult(null)
     setImageHash(null); setRawOcr(null); setOcrValues(null); setStoredUrl(null); setFields(blankFields())
     setPhase('processing'); setError(null); setStatus('Reading tag…')
     startedAt.current = Date.now()
@@ -278,7 +284,7 @@ export default function DealerCheckInFlow() {
     }
     clientRequestIdRef.current = newClientRequestId()
     setPreview(null); setError(null); setNewVehicle(false); setPriceOverride('')
-    setOverrideFormat(false); setWriteResult(null); setVin(null); setStatus(null)
+    setOverrideFormat(false); setUrgent(false); setWriteResult(null); setVin(null); setStatus(null)
     setImageUrl(null); setStoredUrl(null); setImageHash(null); setRawOcr(null); setOcrValues(null)
     setSelectedDealerId(null); setOcrDealer(null)
     setFields(blankFields())
@@ -319,6 +325,7 @@ export default function DealerCheckInFlow() {
           ocrDealershipName: ocrDealer?.name ?? null,
           clientRequestId: clientRequestIdRef.current, // idempotency key for this scan
           approvedBy: 'operator',
+          urgent,
           scanDurationMs: Date.now() - startedAt.current,
         }),
       })
@@ -342,7 +349,7 @@ export default function DealerCheckInFlow() {
     } finally {
       submittingRef.current = false
     }
-  }, [preview, fields, vin, newVehicle, rate, storedUrl, imageHash, rawOcr, ocrValues, selectedDealerId, ocrDealer, writeResult])
+  }, [preview, fields, vin, newVehicle, rate, storedUrl, imageHash, rawOcr, ocrValues, selectedDealerId, ocrDealer, writeResult, urgent])
 
   // Smart Check-In hand-off: if the intake stashed a pre-scanned dealer tag, resume STRAIGHT into the
   // review (seed image + OCR fields + dealer preview) WITHOUT re-running OCR. Reuses the exact same
@@ -383,7 +390,7 @@ export default function DealerCheckInFlow() {
   // ── UI ──────────────────────────────────────────────────────────────────────
   return (
     <main className="min-h-screen bg-black text-white flex flex-col">
-      <NavHeader title="Dealer Check-In" right={phase !== 'entry' && phase !== 'submitting' ? (
+      <NavHeader back={backTarget} title="Dealer Check-In" right={phase !== 'entry' && phase !== 'submitting' ? (
         <button onClick={reset} className="text-gray-400 border border-gray-700 rounded-full px-3 py-1 active:bg-gray-800">Start Over</button>
       ) : undefined} />
 
@@ -481,6 +488,12 @@ export default function DealerCheckInFlow() {
               ? `Adds to open invoice #${preview.invoiceTarget.invoiceNumber}`
               : 'Starts a new invoice'}
           </p>
+
+          {/* Urgency — dealer needs it back ASAP. Visual + Work Board priority only; no pricing impact. */}
+          <button type="button" onClick={() => setUrgent((u) => !u)}
+            className={`mt-3 w-full h-14 rounded-2xl border-2 text-lg font-semibold ${urgent ? 'border-amber-500 bg-amber-500/15 text-amber-300' : 'border-gray-700 text-gray-300'}`}>
+            {urgent ? '✓ Urgent · Needs back ASAP' : 'Urgent? Tap — needs back ASAP'}
+          </button>
 
           {showPricingToggle && (
             <button

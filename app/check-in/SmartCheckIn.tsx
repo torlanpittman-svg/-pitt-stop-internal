@@ -28,7 +28,7 @@ export default function SmartCheckIn() {
 
   function routeRetail(v: { vin: string; year?: string | null; make?: string | null; model?: string | null }) {
     try { sessionStorage.setItem('ps_intake_retail', JSON.stringify({ vin: v.vin, year: v.year ?? '', make: v.make ?? '', model: v.model ?? '' })) } catch { /* ignore */ }
-    router.push('/quick-entry')
+    router.push('/quick-entry?from=check-in')   // logical parent for Back = Check In
   }
   function routeDealer(ocr: DealerOcr) {
     try {
@@ -37,7 +37,7 @@ export default function SmartCheckIn() {
         stockNumber: ocr.stockNumber ?? '', year: ocr.year ?? '', make: ocr.make ?? '', model: ocr.model ?? '', color: ocr.color ?? '',
       }))
     } catch { /* ignore */ }
-    router.push('/dealer-check-in')
+    router.push('/dealer-check-in?from=check-in')   // logical parent for Back = Check In
   }
 
   async function onPhoto(file: File) {
@@ -80,7 +80,7 @@ export default function SmartCheckIn() {
 
   return (
     <main className="min-h-screen bg-gray-950 text-white flex flex-col">
-      <NavHeader title="Check In" />
+      <NavHeader back={{ href: '/work-board', label: 'Work Board' }} title="Check In" />
 
       {phase === 'entry' && (
         <div className="flex-1 flex flex-col justify-center gap-4 px-6 pb-12">
@@ -109,8 +109,8 @@ export default function SmartCheckIn() {
             <h1 className="text-xl font-bold">I couldn’t tell what this photo is.</h1>
             <p className="text-gray-400 mt-1">Pick one to continue.</p>
           </div>
-          <button onClick={() => router.push('/quick-entry')} className="w-full h-16 rounded-2xl bg-blue-600 active:bg-blue-700 text-white text-lg font-bold">Scan VIN (retail)</button>
-          <button onClick={() => router.push('/dealer-check-in')} className="w-full h-16 rounded-2xl bg-white text-black text-lg font-bold">Scan Dealer Tag</button>
+          <button onClick={() => router.push('/quick-entry?from=check-in')} className="w-full h-16 rounded-2xl bg-blue-600 active:bg-blue-700 text-white text-lg font-bold">Scan VIN (retail)</button>
+          <button onClick={() => router.push('/dealer-check-in?from=check-in')} className="w-full h-16 rounded-2xl bg-white text-black text-lg font-bold">Scan Dealer Tag</button>
           <button onClick={() => { setError(null); setPhase('entry') }} className="w-full h-14 rounded-2xl border border-gray-700 text-gray-300 text-base">Try Another Photo</button>
         </div>
       )}

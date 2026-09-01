@@ -187,6 +187,8 @@ export async function createServiceOrder(data: {
   services?:    string[]
   /** Card title: retail customer name or dealer name. Omitted → null (→ "Unknown Customer"). */
   customerName?: string | null
+  /** Operational urgency set at check-in (defaults Normal). Visual/sort only. */
+  isUrgent?: boolean
 }): Promise<ServiceOrderRow> {
   const db = getDb()
   const orderNumber = await nextOrderNumber()
@@ -204,6 +206,7 @@ export async function createServiceOrder(data: {
       notes:       data.notes        ?? null,
       services:    data.services && data.services.length > 0 ? data.services : null,
       customerName: data.customerName?.trim() || null,
+      isUrgent:    data.isUrgent ?? false,
       status:      'arrived',
       arrivedAt:   new Date(),
     })
@@ -216,6 +219,21 @@ export async function createServiceOrder(data: {
     newStatus:      'arrived',
   })
 
+  return row
+}
+
+/**
+ * Set/clear a Job's operational urgency (any authenticated employee). Visual/sort priority only —
+ * never touches status, pricing, production, or QuickBooks. Records a lightweight audit event.
+ */
+export async function setOrderUrgent(orderId: string, urgent: boolean, actor: string | null): Promise<ServiceOrderRow | null> {
+  const db = getDb()
+  const [row] = await db.update(serviceOrders)
+    .set({ isUrgent: urgent, updatedAt: new Date() })
+    .where(eq(serviceOrders.id, orderId))
+    .returning()
+  if (!row) return null
+  await logEvent({ serviceOrderId: orderId, eventType: 'urgency_changed', employeeName: actor, note: urgent ? 'urgent' : 'normal' })
   return row
 }
 

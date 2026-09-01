@@ -62,6 +62,10 @@ export const serviceOrders = pgTable(
 
     status: varchar('status', { length: 30 }).notNull().default('arrived'),
 
+    // Operational urgency (independent of source/status). false = Normal, true = Urgent ("needs back
+    // ASAP"). Visual/sort priority only — never changes status/pricing/production/QB.
+    isUrgent: boolean('is_urgent').notNull().default(false),
+
     estimateId:         uuid('estimate_id'),
     quotedPriceCents:   integer('quoted_price_cents'),
     approvedPriceCents: integer('approved_price_cents'),

@@ -205,3 +205,28 @@ export async function weeklyProduction(anchor: string, tz: string = shopTimezone
 export function shopToday(tz: string = shopTimezone()): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date())
 }
+
+/**
+ * The ONE canonical retail work value for a Job (pre-fee/pre-tax), for read-only display on the Job
+ * detail page. Reuses `retailProductionValueCents` precedence (manager explicit > manager itemized >
+ * employee agreed > null) — NO second calculation. Returns null when unpriced (render "Not priced yet",
+ * never $0). Read-only: never mutates, never exposes invoice/fee/tax/QB controls.
+ */
+export async function getOrderRetailWorkValueCents(orderId: string): Promise<number | null> {
+  const db = getDb()
+  const rows = await db.execute(sql`
+    SELECT je.explicit_total_cents AS explicit_total_cents,
+           je.agreed_price_cents   AS agreed_price_cents,
+           (SELECT COALESCE(SUM(li.price_cents), 0) FROM job_line_items li
+              JOIN job_services js ON js.id = li.job_service_id
+             WHERE js.job_estimate_id = je.id AND li.generated = false) AS itemized_subtotal_cents
+    FROM job_estimates je WHERE je.service_order_id = ${orderId} LIMIT 1
+  `)
+  const r = rows.rows[0] as { explicit_total_cents: number | null; agreed_price_cents: number | null; itemized_subtotal_cents: number | null } | undefined
+  if (!r) return null
+  return retailProductionValueCents({
+    explicitTotalCents: r.explicit_total_cents != null ? Number(r.explicit_total_cents) : null,
+    itemizedSubtotalCents: r.itemized_subtotal_cents != null ? Number(r.itemized_subtotal_cents) : null,
+    agreedPriceCents: r.agreed_price_cents != null ? Number(r.agreed_price_cents) : null,
+  })
+}

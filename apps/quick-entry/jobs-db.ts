@@ -99,6 +99,8 @@ export interface CreateJobInput {
   agreedServices?: Array<{ originalText: string; matchedFamily?: string | null; matchedDisplay?: string | null; suggestedCents?: number | null; sampleSize?: number | null; confirmedCents: number }>
   /** Internal note/instruction captured from NL intake → job_estimates.internalNotes. */
   internalNote?: string | null
+  /** Operational urgency set at check-in (defaults Normal). Visual/sort only. */
+  isUrgent?: boolean
 }
 
 /** Create the job: find/create the vehicle, put it on the Work Board, store the job + lines. */
@@ -119,6 +121,7 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
     vehicleId: vehicle.id, source: 'quick_entry', serviceType: 'retail',
     checkedInBy: input.createdBy ?? 'quick_entry', notes, services: labels,
     customerName: input.customerName,  // Work Board card title
+    isUrgent: input.isUrgent ?? false,
   })
 
   const db = getDb()

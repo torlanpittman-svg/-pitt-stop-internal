@@ -38,7 +38,8 @@ export async function POST(req: Request) {
         }))
       : undefined
     const internalNote = typeof body.internalNote === 'string' ? body.internalNote.slice(0, 500) : null
-    const res = await createQuickEntryJob({ ...body, customerName: body.customerName.trim(), createdBy, workPriceCents, agreedPriceCents, agreedServices, internalNote })
+    const isUrgent = body.isUrgent === true
+    const res = await createQuickEntryJob({ ...body, customerName: body.customerName.trim(), createdBy, workPriceCents, agreedPriceCents, agreedServices, internalNote, isUrgent })
     return NextResponse.json({ ok: true, ...res })
   } catch (err) {
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })

@@ -6,8 +6,8 @@
  * `reverseAction` (defined in the gated admin module) — so it is never reachable from the public
  * route. Advanced/accounting Details render only when admin. No money movement.
  */
-import Link from 'next/link'
 import { notFound } from 'next/navigation'
+import BackLink from '@/app/components/BackLink'
 import { getVehicleFolder } from '@/apps/auto-sales/db'
 import { IN_SCOPE_ACCOUNTS, REFUND_KINDS, labelFor, costRelevance, type EconomicCategory } from '@/apps/auto-sales/types'
 import { autoSalesCutoverDate } from '@/apps/settings/db'
@@ -45,7 +45,7 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
 
   return (
     <main className="min-h-screen bg-gray-950 text-gray-200 max-w-xl mx-auto px-4 py-6">
-      <Link href={base} className="text-gray-500 text-sm">← Inventory</Link>
+      <BackLink href={base} label="Inventory" />
 
       {/* Header: the car */}
       <div className="mt-2">

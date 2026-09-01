@@ -54,6 +54,7 @@ export default function VehicleCard({
   const title = order.customerName?.trim() || 'Unknown Customer'
   const kind = orderSourceKind(order)               // 'retail' | 'dealer' | 'unknown' (canonical, positive-ID)
   const isDealer = kind === 'dealer'
+  const isUrgent = order.isUrgent === true
   const stock = isDealer ? stockFromNotes(order.notes) : null
   // Swipe-to-remove is RETAIL + manager/admin only (dealer cards never get the gesture).
   const canRemove = removable && !isDealer
@@ -81,13 +82,16 @@ export default function VehicleCard({
     finally { setRemoving(false) }
   }, [order.id, removing, onRemoved])
 
-  // Visual hierarchy: RETAIL draws the eye (emerald left-rail + stronger surface); DEALER stays the
-  // default neutral card; UNKNOWN stays plain. The green `highlighted` ring (just-added Job) still wins.
+  // Visual hierarchy: URGENT has the STRONGEST priority (amber outline + rail, overrides the normal
+  // retail/dealer accent — the badges below still keep the source visible). Otherwise RETAIL draws the
+  // eye (emerald left-rail); DEALER/UNKNOWN stay neutral. The green `highlighted` ring (just-added) wins.
   const accent = highlighted
     ? 'border-green-500 shadow-lg shadow-green-900/30 border-l'
-    : kind === 'retail'
-      ? 'border-gray-800 border-l-4 border-l-emerald-500 bg-emerald-950/10'
-      : 'border-gray-800 border-l'
+    : isUrgent
+      ? 'border-2 border-amber-500 border-l-4 border-l-amber-500 bg-amber-950/15'
+      : kind === 'retail'
+        ? 'border-gray-800 border-l-4 border-l-emerald-500 bg-emerald-950/10'
+        : 'border-gray-800 border-l'
 
   const card = (
     <Link
@@ -96,13 +100,18 @@ export default function VehicleCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          {/* Source badge: RETAIL (emphasis) / DEALER (secondary) / nothing for unknown. Own line. */}
-          {kind === 'retail' && (
-            <span className="block w-fit mb-1 text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">RETAIL</span>
-          )}
-          {kind === 'dealer' && (
-            <span className="block w-fit mb-1 text-[10px] font-semibold tracking-wider px-2 py-0.5 rounded-md bg-gray-800 text-gray-400 border border-gray-700">DEALER</span>
-          )}
+          {/* Badges: URGENT (amber, strongest) + the source badge — urgent NEVER hides RETAIL/DEALER. */}
+          <div className="flex flex-wrap items-center gap-1.5 mb-1">
+            {isUrgent && (
+              <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/50">URGENT</span>
+            )}
+            {kind === 'retail' && (
+              <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">RETAIL</span>
+            )}
+            {kind === 'dealer' && (
+              <span className="text-[10px] font-semibold tracking-wider px-2 py-0.5 rounded-md bg-gray-800 text-gray-400 border border-gray-700">DEALER</span>
+            )}
+          </div>
           {/* Retail customer name → tap opens the contact popup (doesn't navigate). Dealer name is plain. */}
           {isDealer ? (
             <p className="text-white font-bold text-lg leading-tight truncate">{title}</p>
