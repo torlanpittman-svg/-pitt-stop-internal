@@ -14,7 +14,7 @@ import { getOrderWithContext, logEvent } from '@/apps/workflow/db'
 import { getEstimateRow, getFullEstimate, setEstimateWaiver, recomputeEstimate, flagQbSyncNeededIfInvoiced } from '@/apps/workflow/estimate-db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { isDealerOrder } from '@/apps/workflow/fees'
-import { getActor } from '@/apps/workflow/identity'
+import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { getBusinessConfig } from '@/apps/settings/db'
 
 export const runtime = 'nodejs'
@@ -25,7 +25,7 @@ const FIELDS: Field[] = ['shop_supplies', 'payment', 'tax_exempt']
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const actor = getActor(req.headers.get('cookie'))
+  const actor = await authenticatedActorFromRequest(req)
   if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) {
     return NextResponse.json({ error: 'Managers and admins only.' }, { status: 403 })
   }

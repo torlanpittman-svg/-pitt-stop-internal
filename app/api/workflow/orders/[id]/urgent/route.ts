@@ -8,8 +8,7 @@
  */
 import { NextResponse } from 'next/server'
 import { setOrderUrgent } from '@/apps/workflow/db'
-import { getActor } from '@/apps/workflow/identity'
-import { employeeAuthorizedFromRequest } from '@/apps/auth/employee-guard'
+import { employeeAuthorizedFromRequest, authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -21,7 +20,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params
   const body = (await req.json().catch(() => ({}))) as { urgent?: boolean }
   const urgent = body.urgent === true
-  const actor = getActor(req.headers.get('cookie'))?.name ?? 'employee'
+  const actor = (await authenticatedActorFromRequest(req))?.name ?? 'employee'
   const row = await setOrderUrgent(id, urgent, actor)
   if (!row) return NextResponse.json({ ok: false, error: 'Job not found' }, { status: 404 })
   return NextResponse.json({ ok: true, isUrgent: row.isUrgent })

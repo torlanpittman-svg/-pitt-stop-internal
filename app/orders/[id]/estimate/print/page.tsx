@@ -3,9 +3,8 @@
  * Manager-gated. Clearly marks which lines are taxable. No pricing engine here —
  * renders the cached figures. V1 print-only (no SMS/email/portal).
  */
-import { cookies } from 'next/headers'
 import { redirect, notFound } from 'next/navigation'
-import { parseActor, verifyElevation, effectiveRole } from '@/apps/workflow/identity'
+import { authenticatedActor } from '@/apps/auth/employee-guard'
 import { estimateEnabled } from '@/apps/workflow/estimate'
 import { getOrderWithContext } from '@/apps/workflow/db'
 import { getFullEstimate } from '@/apps/workflow/estimate-db'
@@ -16,9 +15,8 @@ const amt = (price: number, qty: string) => fmt(Math.round(price * (parseFloat(q
 
 export default async function EstimatePrintPage({ params }: { params: Promise<{ id: string }> }) {
   if (!estimateEnabled()) redirect('/')
-  const c = await cookies()
-  const role = effectiveRole(parseActor(c.get('ps_actor')?.value), verifyElevation(c.get('ps_elev')?.value))
-  if (role !== 'manager' && role !== 'admin') redirect('/')
+  const actor = await authenticatedActor()
+  if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) redirect('/')
   const { id } = await params
   const order = await getOrderWithContext(id)
   if (!order) notFound()

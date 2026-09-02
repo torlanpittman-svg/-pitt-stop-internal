@@ -13,7 +13,7 @@ import { getDb } from '@/platform/db'
 import { eq, desc } from 'drizzle-orm'
 import { getOrderWithContext, logEvent } from '@/apps/workflow/db'
 import { flagQbSyncNeededIfInvoiced } from '@/apps/workflow/estimate-db'
-import { getActor } from '@/apps/workflow/identity'
+import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { serviceOrders } from '@/apps/workflow/schema'
 import { quickEntryJobs } from '@/apps/quick-entry/schema'
@@ -25,7 +25,7 @@ const clean = (v: unknown): string | null => { const s = (v == null ? '' : Strin
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const actor = getActor(req.headers.get('cookie'))
+  const actor = await authenticatedActorFromRequest(req)
   if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) {
     return NextResponse.json({ ok: false, error: 'Only a manager or admin can edit customer info.' }, { status: 403 })
   }

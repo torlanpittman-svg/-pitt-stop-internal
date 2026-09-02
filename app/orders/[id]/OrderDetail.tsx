@@ -297,15 +297,14 @@ function CompletionModal({ services, qcRequired, busy, error, onConfirm, onCance
   )
 }
 
-// ── Reopen (sensitive correction: reason + manager PIN step-up) ───────────────
+// ── Reopen (sensitive correction: reason only — the signed manager session proves who) ──
 
 function ReopenModal({ busy, error, onConfirm, onCancel }: {
   busy: boolean; error: string | null
-  onConfirm: (reason: string, pin: string) => void
+  onConfirm: (reason: string) => void
   onCancel: () => void
 }) {
   const [reason, setReason] = useState('')
-  const [pin, setPin] = useState('')
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
       <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10">
@@ -314,11 +313,8 @@ function ReopenModal({ busy, error, onConfirm, onCancel }: {
         <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">Reason</p>
         <textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why is this being reopened?" rows={2}
           className="w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base" />
-        <p className="text-gray-500 text-xs uppercase tracking-widest mt-4 mb-1">Manager PIN</p>
-        <input value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 8))} inputMode="numeric"
-          placeholder="PIN" className="w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-2xl tracking-[0.4em] text-center" />
         {error && <p className="text-red-400 text-sm mt-3">{error}</p>}
-        <button onClick={() => onConfirm(reason, pin)} disabled={busy || !reason.trim() || pin.length < 4}
+        <button onClick={() => onConfirm(reason)} disabled={busy || !reason.trim()}
           className="mt-5 w-full h-14 rounded-2xl bg-amber-600 active:bg-amber-700 text-white text-lg font-bold disabled:opacity-40">
           {busy ? 'Reopening…' : 'Confirm reopen'}
         </button>
@@ -1504,12 +1500,12 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
     } catch { setCompleteMsg('Network error — try again.') } finally { setCompleteBusy(false) }
   }, [order, router, identity.completionInvoiceEnabled, isManager])
 
-  // Manager correction: reopen a Ready Job (sensitive → reason + PIN step-up).
-  const submitReopen = useCallback(async (reason: string, pin: string) => {
+  // Manager correction: reopen a Ready Job (sensitive → reason; the signed manager session proves who).
+  const submitReopen = useCallback(async (reason: string) => {
     setReopenBusy(true); setReopenMsg(null)
     try {
       const res = await fetch(`/api/workflow/orders/${order.id}/reopen`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason, pin }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }),
       })
       const d = await res.json()
       if (!res.ok || !d.ok) { setReopenMsg(d.error ?? 'Could not reopen.'); return }

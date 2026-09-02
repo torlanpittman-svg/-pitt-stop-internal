@@ -4,7 +4,7 @@
  * POST → action dispatch (build, services, lines, tax, status, approval, convert).
  */
 import { NextResponse } from 'next/server'
-import { parseActor, baseRole } from '@/apps/workflow/identity'
+import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { estimateEnabled } from '@/apps/workflow/estimate'
 import {
   getOrCreateEstimate, getEstimateRow, getFullEstimate, promoteTextServices, recomputeEstimate,
@@ -17,22 +17,17 @@ import type { ApprovalState, EstimateStatus } from '@/apps/workflow/estimate'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-function actorFrom(req: Request) {
-  const cookie = req.headers.get('cookie') ?? ''
-  const m = cookie.split(';').map((p) => p.trim()).find((p) => p.startsWith('ps_actor='))
-  return parseActor(m ? decodeURIComponent(m.slice('ps_actor='.length)) : null)
-}
-function guard(req: Request): { ok: true; name: string | null } | { ok: false; res: NextResponse } {
+async function guard(req: Request): Promise<{ ok: true; name: string | null } | { ok: false; res: NextResponse }> {
   if (!estimateEnabled()) return { ok: false, res: NextResponse.json({ ok: false, error: 'not enabled' }, { status: 404 }) }
-  const actor = actorFrom(req)
-  if (baseRole(actor) !== 'manager' && baseRole(actor) !== 'admin') {
+  const actor = await authenticatedActorFromRequest(req)
+  if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) {
     return { ok: false, res: NextResponse.json({ ok: false, error: 'Manager access required.' }, { status: 403 }) }
   }
-  return { ok: true, name: actor?.name ?? null }
+  return { ok: true, name: actor.name }
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const g = guard(req); if (!g.ok) return g.res
+  const g = await guard(req); if (!g.ok) return g.res
   const { id } = await params
   // Simplified mobile view (title + price + Work Total). Raw estimate/services also
   // included for the future richer desktop view over the same record.
@@ -41,7 +36,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const g = guard(req); if (!g.ok) return g.res
+  const g = await guard(req); if (!g.ok) return g.res
   const { id } = await params
   const actor = g.name
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>

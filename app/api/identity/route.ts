@@ -1,16 +1,17 @@
 /**
- * GET  /api/identity            → current actor + role + elevation state
- * POST /api/identity {action}   → 'select' | 'elevate' | 'lock'
+ * GET /api/identity → the authenticated actor + role for app-side visibility (drives which manager
+ *                     controls the Job detail / Work Board show). Derived from the SIGNED ps_emp
+ *                     session (server-verified), never a client-writable cookie.
+ * POST /api/identity {action} → 'signout' clears any legacy attribution cookies. 'select'/'elevate'
+ *                     are retired: identity + role now come from the PIN at sign-in, so a client can
+ *                     no longer choose who it is or self-elevate. Sign out via DELETE
+ *                     /api/auto-sales/session (clears the signed session).
  *
- * Attribution + manager elevation only. Admin AREA stays behind ADMIN_PASSWORD
- * (proxy.ts) — never unlocked here. PIN hashes are never returned.
+ * Admin AREA (/admin/*) stays behind ADMIN_PASSWORD (proxy.ts) — never unlocked here.
  */
 import { NextResponse } from 'next/server'
-import { getEmployee } from '@/apps/workflow/db'
-import {
-  getActor, getElevation, effectiveRole, verifyPin, signElevation, elevationMinutes,
-  identityEnabled, type Role,
-} from '@/apps/workflow/identity'
+import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
+import { identityEnabled } from '@/apps/workflow/identity'
 import { completionEnabled } from '@/apps/workflow/completion'
 import { estimateEnabled } from '@/apps/workflow/estimate'
 import { completionInvoiceEnabled } from '@/apps/settings/db'
@@ -18,19 +19,15 @@ import { completionInvoiceEnabled } from '@/apps/settings/db'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-const YEAR = 365 * 24 * 60 * 60
-
 export async function GET(req: Request) {
-  const cookie = req.headers.get('cookie')
-  const actor = getActor(cookie)
-  const elev = getElevation(cookie)
+  const actor = await authenticatedActorFromRequest(req)
   return NextResponse.json({
     enabled: identityEnabled(),
-    actor: actor ? { id: actor.id, name: actor.name, role: actor.role } : null,
-    elevated: !!elev && !!actor && elev.employeeId === actor.id,
-    elevatedUntil: elev?.exp ?? null,
-    effectiveRole: effectiveRole(actor, elev),
-    minutes: elevationMinutes(),
+    actor: actor ? { id: actor.key, name: actor.name, role: actor.role } : null,
+    elevated: false,
+    elevatedUntil: null,
+    effectiveRole: actor?.role ?? 'employee',
+    minutes: 0,
     completionEnabled: completionEnabled(),
     estimateEnabled: estimateEnabled(),
     completionInvoiceEnabled: await completionInvoiceEnabled(),
@@ -38,52 +35,18 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as { action?: string; employeeId?: string; pin?: string }
-  const action = body.action
+  const body = (await req.json().catch(() => ({}))) as { action?: string }
 
-  if (action === 'select') {
-    if (!body.employeeId) return NextResponse.json({ ok: false, error: 'employeeId required' }, { status: 400 })
-    const emp = await getEmployee(body.employeeId)
-    if (!emp || !emp.active) return NextResponse.json({ ok: false, error: 'Unknown employee' }, { status: 404 })
-    const res = NextResponse.json({ ok: true, actor: { id: emp.id, name: emp.name, role: emp.role } })
-    res.cookies.set('ps_actor', JSON.stringify({ id: emp.id, name: emp.name, role: emp.role }),
-      { httpOnly: false, sameSite: 'lax', path: '/', maxAge: YEAR })
-    res.cookies.set('ps_elev', '', { path: '/', maxAge: 0 })  // switching person drops elevation
-    return res
-  }
-
-  if (action === 'elevate') {
-    const actor = getActor(req.headers.get('cookie'))
-    const id = body.employeeId || actor?.id
-    if (!id) return NextResponse.json({ ok: false, error: 'No employee selected' }, { status: 400 })
-    const emp = await getEmployee(id)
-    if (!emp || !emp.active) return NextResponse.json({ ok: false, error: 'Unknown employee' }, { status: 404 })
-    if (emp.role !== 'manager' && emp.role !== 'admin') {
-      return NextResponse.json({ ok: false, error: 'This user is not a manager.' }, { status: 403 })
-    }
-    if (!verifyPin(body.pin ?? '', emp.pinHash)) {
-      return NextResponse.json({ ok: false, error: 'Incorrect PIN.' }, { status: 401 })
-    }
-    const exp = Date.now() + elevationMinutes() * 60_000
-    const token = signElevation({ employeeId: emp.id, role: emp.role as Role, exp })
-    const res = NextResponse.json({ ok: true, elevatedUntil: exp, role: emp.role })
-    res.cookies.set('ps_elev', token, { httpOnly: true, sameSite: 'lax', path: '/', maxAge: elevationMinutes() * 60 })
-    return res
-  }
-
-  if (action === 'lock') {
-    const res = NextResponse.json({ ok: true })
-    res.cookies.set('ps_elev', '', { path: '/', maxAge: 0 })  // drop any temporary above-base elevation only
-    return res
-  }
-
-  if (action === 'signout') {
-    // Lock the device: clear the remembered identity (next person must re-select).
+  if (body.action === 'signout') {
+    // Clear legacy attribution cookies. The authoritative sign-out (signed session) is
+    // DELETE /api/auto-sales/session.
     const res = NextResponse.json({ ok: true })
     res.cookies.set('ps_actor', '', { path: '/', maxAge: 0 })
     res.cookies.set('ps_elev', '', { path: '/', maxAge: 0 })
     return res
   }
 
-  return NextResponse.json({ ok: false, error: 'Unknown action' }, { status: 400 })
+  // 'select' / 'elevate' are retired — identity + role are established by the PIN at sign-in and
+  // proven by the signed session. A client may not choose an identity or self-elevate.
+  return NextResponse.json({ ok: false, error: 'Identity is set by your PIN at sign-in.' }, { status: 410 })
 }

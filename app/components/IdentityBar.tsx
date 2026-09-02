@@ -56,60 +56,32 @@ export function AdminLink({ className = '' }: { className?: string }) {
 
 const ROLE_LABEL: Record<Role, string> = { employee: '', manager: 'Manager', admin: 'Admin' }
 
+/**
+ * Signed-in identity strip. Identity + role come from the PIN at sign-in (the signed session), so
+ * there is no client-side "switch user" — just who is signed in + Sign out. Sign out clears the
+ * signed session and returns to the PIN screen so the next person signs in as themselves.
+ */
 export default function IdentityBar() {
   const id = useIdentity()
-  const [panel, setPanel] = useState(false)  // switch-user sheet
-  const [employees, setEmployees] = useState<{ id: string; name: string; role: Role }[]>([])
+  const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
-    if (panel) fetch('/api/workflow/employees').then((r) => r.json()).then((d) => setEmployees(d.employees ?? []))
-  }, [panel])
+  if (!id.actor) return null   // anonymous/legacy session or not signed in → nothing to show
 
-  if (!id.enabled) return null
-
-  const sync = () => window.dispatchEvent(new Event('ps-identity'))
-  // Selecting a person is remembered on the device across closes/reloads (base role
-  // is active automatically — no PIN for normal work).
-  const select = async (employeeId: string) => {
-    await fetch('/api/identity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'select', employeeId }) })
-    setPanel(false); sync()
+  const signOut = async () => {
+    setBusy(true)
+    try { await fetch('/api/auto-sales/session', { method: 'DELETE' }) } catch { /* ignore */ }
+    window.location.href = '/auto-sales/login'
   }
-  // Lock = sign this person out of the device so the next person must re-select.
-  const lock = async () => { await fetch('/api/identity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'signout' }) }); sync() }
 
   return (
     <div className="w-full">
       <div className="flex items-center gap-2 text-sm">
         <span className="text-gray-500">👤</span>
-        {id.actor ? (
-          <>
-            <button onClick={() => setPanel(true)} className="text-gray-200 font-medium">{id.actor.name}</button>
-            {ROLE_LABEL[id.actor.role] && <span className="text-[10px] uppercase tracking-wide text-gray-500 border border-gray-700 rounded-full px-1.5 py-0.5">{ROLE_LABEL[id.actor.role]}</span>}
-            <span className="ml-auto flex items-center gap-3">
-              <button onClick={() => setPanel(true)} className="text-xs text-gray-400 underline">Switch</button>
-              <button onClick={lock} className="text-xs text-gray-400 underline">Lock</button>
-            </span>
-          </>
-        ) : (
-          <button onClick={() => setPanel(true)} className="text-blue-400 font-semibold">Who are you?</button>
-        )}
+        <span className="text-gray-400">Signed in as</span>
+        <span className="text-gray-200 font-medium">{id.actor.name}</span>
+        {ROLE_LABEL[id.actor.role] && <span className="text-[10px] uppercase tracking-wide text-gray-500 border border-gray-700 rounded-full px-1.5 py-0.5">{ROLE_LABEL[id.actor.role]}</span>}
+        <button onClick={signOut} disabled={busy} className="ml-auto text-xs text-gray-400 underline disabled:opacity-40">{busy ? 'Signing out…' : 'Sign out'}</button>
       </div>
-
-      {panel && (
-        <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60" onClick={() => setPanel(false)}>
-          <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-4"><h2 className="text-white font-bold text-xl">Who are you?</h2><button onClick={() => setPanel(false)} className="text-gray-500 text-sm">Close</button></div>
-            <div className="grid grid-cols-2 gap-3">
-              {employees.map((e) => (
-                <button key={e.id} onClick={() => select(e.id)} className="bg-gray-800 border border-gray-700 text-white font-semibold py-4 rounded-2xl active:bg-gray-700">
-                  {e.name}{e.role !== 'employee' ? <span className="block text-[10px] text-gray-400 uppercase">{e.role}</span> : null}
-                </button>
-              ))}
-              {employees.length === 0 && <p className="text-gray-500 text-sm col-span-2 text-center py-6">No employees yet — add them in Admin.</p>}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

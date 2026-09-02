@@ -15,7 +15,7 @@ import { eq } from 'drizzle-orm'
 import { getOrderWithContext, updateVehicleFields, logEvent } from '@/apps/workflow/db'
 import { getEstimateRow } from '@/apps/workflow/estimate-db'
 import { jobEstimates } from '@/apps/workflow/schema'
-import { getActor } from '@/apps/workflow/identity'
+import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { getScanByServiceOrderId, updateScan, logScanEvent } from '@/apps/dealer-checkin/db'
 import { correctedLineDescription, diffVehicle, qbSyncDecision, type VehicleFields } from '@/apps/dealer-checkin/correction'
 import { updateDealerLineByDescription } from '@/apps/quickbooks/invoice-write'
@@ -43,7 +43,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const actor = getActor(req.headers.get('cookie'))
+  const actor = await authenticatedActorFromRequest(req)
   if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) {
     return NextResponse.json({ error: 'Only a manager or admin can correct vehicle info.' }, { status: 403 })
   }

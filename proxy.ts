@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
-import { EMP_COOKIE, employeePinConfigured, verifyEmployeeToken } from '@/apps/auth/employee-session'
+import { EMP_COOKIE, employeeAuthConfigured, verifyEmployeeToken } from '@/apps/auth/employee-session'
 
 /** Valid admin Basic-Auth? (password-only; trimmed). Admin always satisfies any gate below. */
 function adminOk(request: NextRequest): boolean {
@@ -41,7 +41,7 @@ export async function proxy(request: NextRequest) {
   if (isEmployeeArea) {
     const isLoginSurface = pathname === '/auto-sales/login' || pathname.startsWith('/api/auto-sales/session')
     if (isLoginSurface) return NextResponse.next()
-    if (!employeePinConfigured()) return NextResponse.next() // no PIN configured = open (dev)
+    if (!employeeAuthConfigured()) return NextResponse.next() // no PIN configured = open (dev)
     if (adminOk(request)) return NextResponse.next()          // admin always allowed
     const token = request.cookies.get(EMP_COOKIE)?.value
     if (await verifyEmployeeToken(token)) return NextResponse.next()
