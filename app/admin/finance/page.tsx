@@ -16,6 +16,7 @@ import { computeSafeToSpend, forecastWithInflows, getObligationCalendar } from '
 import { getExpectedInflows, getPipelineContext, addManualInflow, dismissInflow, deriveExpectedInflows } from '@/apps/finance/expected-inflows'
 import { getCfoHeadline, getNextDanger, getRecommendations, getReserveStatus, getDebtSummary, getCashRunway, getMoneyFlow, getCfoConfidence, getNeedsVerification, type Health } from '@/apps/finance/cfo'
 import { getReservePolicy } from '@/apps/settings/db'
+import { getSyncHealth, type FreshnessStatus } from '@/apps/finance/sync-health'
 import { freshnessLabel } from '@/apps/finance/sources'
 import PlaidLinkButton from './PlaidLinkButton'
 
@@ -115,8 +116,8 @@ export default async function FinancePage() {
     computeSafeToSpend(30), forecastWithInflows(30), getObligationCalendar(30), getExpectedInflows(30), getPipelineContext(), getOperatingCash(), getAutoSalesLiquidity(), getReservePolicy(),
   ])
   // Detail/admin data (lower on page)
-  const [accounts, allAccounts, debtsRaw, payroll, documents, run, gaps, connections, recentTx, txSummary, oblByStatus] = await Promise.all([
-    getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getRecentTransactions(30), getClassificationSummary(120), getObligationsByStatus(),
+  const [accounts, allAccounts, debtsRaw, payroll, documents, run, gaps, connections, recentTx, txSummary, oblByStatus, syncHealth] = await Promise.all([
+    getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getRecentTransactions(30), getClassificationSummary(120), getObligationsByStatus(), getSyncHealth(),
   ])
   const plaid = plaidDiagnostics()
   const s = (run?.summary ?? {}) as any
@@ -145,6 +146,27 @@ export default async function FinancePage() {
         </div>
       </div>
       <p className="text-gray-600 text-xs mb-5">Live *2649 bank cash (Plaid, read-only) · CFO decision view · admin-only · no money movement{!enabled && ' · finance_enabled OFF (preview)'}</p>
+
+      {/* ═══ Data freshness — a stale bank balance must never look current ═══ */}
+      {(() => {
+        const FRESH: Record<FreshnessStatus, { ring: string; bg: string; dot: string; label: string }> = {
+          fresh:   { ring: 'border-emerald-800/60', bg: 'bg-emerald-950/25', dot: 'bg-emerald-400', label: 'DATA FRESH' },
+          stale:   { ring: 'border-amber-800/70',   bg: 'bg-amber-950/30',   dot: 'bg-amber-400',   label: 'DATA STALE' },
+          failed:  { ring: 'border-red-800/70',     bg: 'bg-red-950/30',     dot: 'bg-red-400',     label: 'SYNC FAILED' },
+          unknown: { ring: 'border-gray-700',       bg: 'bg-gray-900',       dot: 'bg-gray-500',    label: 'NO SYNC' },
+        }
+        const f = FRESH[syncHealth.status]
+        return (
+          <section className={`rounded-xl border ${f.ring} ${f.bg} px-4 py-2.5 mb-4 flex items-center justify-between gap-4`}>
+            <div className="flex items-center gap-2.5">
+              <span className={`inline-block w-2.5 h-2.5 rounded-full ${f.dot} ${syncHealth.status !== 'fresh' ? 'animate-pulse' : ''}`} />
+              <span className="text-xs font-bold tracking-wider text-gray-200">{f.label}</span>
+              <span className="text-xs text-gray-400">{syncHealth.message}</span>
+            </div>
+            <form action={syncTransactionsAction}><button className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-600 text-gray-200 hover:bg-gray-800">Sync now</button></form>
+          </section>
+        )
+      })()}
 
       {/* ═══ A. CFO ANSWER ═══ */}
       <section className={`rounded-2xl border ${hl.ring} ${hl.bg} p-6 mb-4`}>
