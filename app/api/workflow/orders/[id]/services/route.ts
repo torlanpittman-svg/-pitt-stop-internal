@@ -7,7 +7,7 @@
  */
 import { NextResponse } from 'next/server'
 import { addServiceToOrder, getOrderWithContext } from '@/apps/workflow/db'
-import { getActor } from '@/apps/workflow/identity'
+import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { getOrCreateEstimate, promoteTextServices, recomputeEstimate, removeServiceFromJob } from '@/apps/workflow/estimate-db'
 
@@ -23,7 +23,7 @@ export const dynamic = 'force-dynamic'
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
-    const actor = getActor(req.headers.get('cookie'))
+    const actor = await authenticatedActorFromRequest(req)
     if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) {
       return NextResponse.json({ ok: false, error: 'Only a manager or admin can remove a service.' }, { status: 403 })
     }
@@ -54,8 +54,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (services.length === 0) {
       return NextResponse.json({ ok: false, error: 'Select at least one service.' }, { status: 400 })
     }
-    // Attribute to the active employee (falls back to client-provided actor / 'staff').
-    const addedBy = getActor(req.headers.get('cookie'))?.name || body.addedBy || null
+    // Attribute to the authenticated employee (falls back to client-provided actor / 'staff').
+    const addedBy = (await authenticatedActorFromRequest(req))?.name || body.addedBy || null
     const result = await addServiceToOrder(id, services, { addedBy, confirmDuplicates: body.confirmDuplicates })
     if (!result.ok) {
       return NextResponse.json({ ok: false, needsConfirm: true, duplicates: result.duplicates }, { status: 409 })

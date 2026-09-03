@@ -4,25 +4,17 @@
  * operational production report.
  */
 import { NextResponse } from 'next/server'
-import { parseActor, verifyElevation, effectiveRole } from '@/apps/workflow/identity'
+import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { completionEnabled } from '@/apps/workflow/completion'
 import { dailyProduction, shopToday } from '@/apps/workflow/production'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-function readValue(cookieHeader: string | null, name: string): string | undefined {
-  for (const part of (cookieHeader ?? '').split(';')) {
-    const i = part.indexOf('=')
-    if (i > -1 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim())
-  }
-}
-
 export async function GET(req: Request) {
   if (!completionEnabled()) return NextResponse.json({ ok: false, error: 'not enabled' }, { status: 404 })
-  const cookie = req.headers.get('cookie')
-  const role = effectiveRole(parseActor(readValue(cookie, 'ps_actor')), verifyElevation(readValue(cookie, 'ps_elev')))
-  if (role !== 'manager' && role !== 'admin') {
+  const actor = await authenticatedActorFromRequest(req)
+  if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) {
     return NextResponse.json({ ok: false, error: 'Manager access required.' }, { status: 403 })
   }
   const date = new URL(req.url).searchParams.get('date') || shopToday()

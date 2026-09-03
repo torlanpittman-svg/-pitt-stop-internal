@@ -7,7 +7,7 @@
  * text, and only returns a price to a manager/admin. Never writes anything.
  */
 import { NextResponse } from 'next/server'
-import { getActor } from '@/apps/workflow/identity'
+import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { getFullCatalog } from '@/apps/quick-entry/db'
 import { nlEnabled } from '@/apps/settings/db'
 import { deterministicInterpret, norm, type CatalogService, type RecognizedService } from '@/apps/quick-entry/interpret'
@@ -22,7 +22,7 @@ const LABEL: Record<string, string> = { paint_correction_1step: 'Polish', exteri
 
 export async function POST(req: Request) {
   if (!(await nlEnabled())) return NextResponse.json({ ok: false, error: 'disabled' }, { status: 404 })
-  const actor = getActor(req.headers.get('cookie'))
+  const actor = await authenticatedActorFromRequest(req)
   const priceAllowed = actor?.role === 'manager' || actor?.role === 'admin'
 
   const body = await req.json().catch(() => ({})) as { text?: string }

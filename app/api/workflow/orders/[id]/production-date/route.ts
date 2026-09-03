@@ -8,7 +8,7 @@
  * Never modifies completed_at, the completion event, Job status, or any QuickBooks state.
  */
 import { NextResponse } from 'next/server'
-import { getActor } from '@/apps/workflow/identity'
+import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { getOrderWithContext, setProductionDateOverride } from '@/apps/workflow/db'
 import { effectiveProductionDate, shopToday } from '@/apps/workflow/production'
 import { shopTimezone } from '@/apps/workflow/completion'
@@ -20,7 +20,7 @@ export const dynamic = 'force-dynamic'
 // completed_at-derived day, all in the shop timezone). Manager/admin only.
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const actor = getActor(req.headers.get('cookie'))
+  const actor = await authenticatedActorFromRequest(req)
   if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) {
     return NextResponse.json({ ok: false, error: 'Managers and admins only.' }, { status: 403 })
   }
@@ -42,7 +42,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const actor = getActor(req.headers.get('cookie'))
+  const actor = await authenticatedActorFromRequest(req)
   if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) {
     return NextResponse.json({ ok: false, error: 'Managers and admins only.' }, { status: 403 })
   }

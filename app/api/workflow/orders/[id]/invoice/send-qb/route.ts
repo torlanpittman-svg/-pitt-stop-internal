@@ -10,7 +10,7 @@
  * body { confirm: true, resend: true } → deliberate Resend of an already-sent invoice.
  */
 import { NextResponse } from 'next/server'
-import { getActor } from '@/apps/workflow/identity'
+import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { retailQbSendEnabled } from '@/apps/settings/db'
 import { resolveRetailSend, sendRetailQBInvoice } from '@/apps/quickbooks/retail-invoice-service'
 
@@ -19,7 +19,7 @@ export const dynamic = 'force-dynamic'
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const actor = getActor(req.headers.get('cookie'))
+  const actor = await authenticatedActorFromRequest(req)
   // Send is manager + admin — employees are denied. Enforced here, not just in the UI.
   if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) {
     return NextResponse.json({ ok: false, error: 'Managers and admins only.' }, { status: 403 })

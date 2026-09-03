@@ -9,7 +9,10 @@
  */
 import { NextResponse } from 'next/server'
 import { timingSafeEqual } from 'node:crypto'
-import { EMP_COOKIE, getEmployeePin, employeePinConfigured, signEmployeeSession, employeeSessionMaxAgeSeconds } from '@/apps/auth/employee-session'
+import {
+  EMP_COOKIE, getEmployeePin, employeeAuthConfigured, resolveIdentityByPin,
+  signEmployeeSession, employeeSessionMaxAgeSeconds,
+} from '@/apps/auth/employee-session'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
@@ -25,7 +28,7 @@ function eq(a: string, b: string): boolean {
 }
 
 export async function POST(req: Request) {
-  if (!employeePinConfigured()) return NextResponse.json({ ok: false, error: 'PIN not configured' }, { status: 503 })
+  if (!employeeAuthConfigured()) return NextResponse.json({ ok: false, error: 'PIN not configured' }, { status: 503 })
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
   const now = Date.now()
   const rec = attempts.get(ip)
@@ -35,17 +38,23 @@ export async function POST(req: Request) {
 
   const body = await req.json().catch(() => ({})) as { pin?: string }
   const pin = String(body.pin ?? '')
-  const expected = getEmployeePin() ?? ''
-  if (!/^\d{4,8}$/.test(pin) || !eq(pin, expected)) {
+
+  // Individual identity first (WHO is signing in). Legacy shared EMPLOYEE_PIN mints an anonymous session
+  // (retired once the individual PINs are verified in production). Both paths are constant-time compared.
+  const identity = /^\d{4,8}$/.test(pin) ? resolveIdentityByPin(pin) : null
+  const legacyPin = getEmployeePin() ?? ''
+  const legacyOk = !identity && legacyPin !== '' && /^\d{4,8}$/.test(pin) && eq(pin, legacyPin)
+
+  if (!identity && !legacyOk) {
     const r = rec && now - rec.first < WINDOW_MS ? { n: rec.n + 1, first: rec.first } : { n: 1, first: now }
     attempts.set(ip, r)
-    logger.warn('auto-sales:session', 'pin_reject', { ip, n: r.n })
+    logger.warn('auto-sales:session', 'pin_reject', { ip, n: r.n }) // never logs the PIN itself
     return NextResponse.json({ ok: false, error: 'Wrong PIN' }, { status: 401 })
   }
 
   attempts.delete(ip)
-  const res = NextResponse.json({ ok: true })
-  res.cookies.set(EMP_COOKIE, await signEmployeeSession(), {
+  const res = NextResponse.json({ ok: true, actor: identity ? { name: identity.name, role: identity.role } : null })
+  res.cookies.set(EMP_COOKIE, await signEmployeeSession(identity), {
     httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: employeeSessionMaxAgeSeconds(),
   })
   return res

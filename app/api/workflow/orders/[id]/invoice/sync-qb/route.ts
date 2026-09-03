@@ -10,7 +10,7 @@
  *                           when the invoice was already emailed).
  */
 import { NextResponse } from 'next/server'
-import { getActor } from '@/apps/workflow/identity'
+import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { retailQbEnabled, retailQbSyncEnabled } from '@/apps/settings/db'
 import { resolveRetailSync, syncRetailQBInvoice } from '@/apps/quickbooks/retail-invoice-service'
 
@@ -19,7 +19,7 @@ export const dynamic = 'force-dynamic'
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const actor = getActor(req.headers.get('cookie'))
+  const actor = await authenticatedActorFromRequest(req)
   if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) {
     return NextResponse.json({ ok: false, error: 'Managers and admins only.' }, { status: 403 })
   }

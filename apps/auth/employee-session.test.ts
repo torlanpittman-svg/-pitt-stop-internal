@@ -1,0 +1,91 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import {
+  resolveIdentityByPin, signEmployeeSession, verifyEmployeeToken, authedActorFromToken,
+  employeeAuthConfigured, identityPinsConfigured, EMPLOYEE_IDENTITIES,
+} from './employee-session'
+
+// Throwaway TEST PINs — NOT the production values. Real PINs live only in the deploy env.
+const TEST_PINS = { darryl: '4001', tony: '4002', torlan: '4003' }
+
+const OLD = { ...process.env }
+function clearAuthEnv() {
+  delete process.env.EMPLOYEE_PIN
+  for (const i of EMPLOYEE_IDENTITIES) delete process.env[i.pinEnv]
+}
+beforeEach(() => {
+  process.env.IDENTITY_SECRET = 'test-secret'
+  clearAuthEnv()
+  process.env.PIN_DARRYL = TEST_PINS.darryl
+  process.env.PIN_TONY = TEST_PINS.tony
+  process.env.PIN_TORLAN = TEST_PINS.torlan
+})
+afterEach(() => { process.env = { ...OLD } })
+
+describe('resolveIdentityByPin — a PIN identifies WHO (server-side)', () => {
+  it('maps each configured PIN to the right identity + role', () => {
+    expect(resolveIdentityByPin(TEST_PINS.darryl)).toEqual({ key: 'darryl', name: 'Darryl', role: 'employee' })
+    expect(resolveIdentityByPin(TEST_PINS.tony)).toEqual({ key: 'tony', name: 'Tony', role: 'employee' })
+    expect(resolveIdentityByPin(TEST_PINS.torlan)).toEqual({ key: 'torlan', name: 'Torlan', role: 'manager' })
+  })
+  it('the manager is Torlan only (Darryl/Tony are employees)', () => {
+    expect(resolveIdentityByPin(TEST_PINS.darryl)!.role).toBe('employee')
+    expect(resolveIdentityByPin(TEST_PINS.tony)!.role).toBe('employee')
+    expect(resolveIdentityByPin(TEST_PINS.torlan)!.role).toBe('manager')
+  })
+  it('rejects an unknown / malformed PIN', () => {
+    expect(resolveIdentityByPin('0000')).toBeNull()   // not configured
+    expect(resolveIdentityByPin('12')).toBeNull()      // too short
+    expect(resolveIdentityByPin('abcd')).toBeNull()    // non-numeric
+    expect(resolveIdentityByPin('')).toBeNull()
+  })
+  it('an unconfigured identity does not resolve', () => {
+    delete process.env.PIN_TORLAN
+    expect(resolveIdentityByPin(TEST_PINS.torlan)).toBeNull()
+  })
+})
+
+describe('signed session carries tamper-proof identity claims', () => {
+  it('round-trips {key,name,role} through sign → verify → authedActorFromToken', async () => {
+    const actor = { key: 'torlan', name: 'Torlan', role: 'manager' as const }
+    const tok = await signEmployeeSession(actor)
+    const payload = await verifyEmployeeToken(tok)
+    expect(payload).not.toBeNull()
+    expect(authedActorFromToken(payload)).toEqual(actor)
+  })
+  it('an anonymous (legacy) session verifies but has no identity', async () => {
+    const tok = await signEmployeeSession(null)
+    const payload = await verifyEmployeeToken(tok)
+    expect(payload).not.toBeNull()
+    expect(authedActorFromToken(payload)).toBeNull()
+  })
+  it('rejects a tampered token (role cannot be forged)', async () => {
+    const tok = await signEmployeeSession({ key: 'darryl', name: 'Darryl', role: 'employee' })
+    expect(await verifyEmployeeToken(tok.slice(0, -2) + 'xx')).toBeNull()
+  })
+  it('rejects an expired token', async () => {
+    const tok = await signEmployeeSession({ key: 'tony', name: 'Tony', role: 'employee' }, -1)
+    expect(await verifyEmployeeToken(tok)).toBeNull()
+  })
+  it('rejects a token signed with a different secret', async () => {
+    const tok = await signEmployeeSession({ key: 'torlan', name: 'Torlan', role: 'manager' })
+    process.env.IDENTITY_SECRET = 'other-secret'
+    expect(await verifyEmployeeToken(tok)).toBeNull()
+  })
+})
+
+describe('gate configuration', () => {
+  it('is configured when individual PINs are set', () => {
+    expect(identityPinsConfigured()).toBe(true)
+    expect(employeeAuthConfigured()).toBe(true)
+  })
+  it('is configured by the legacy shared PIN alone', () => {
+    clearAuthEnv()
+    expect(identityPinsConfigured()).toBe(false)
+    process.env.EMPLOYEE_PIN = '9999'
+    expect(employeeAuthConfigured()).toBe(true)
+  })
+  it('is unconfigured (open/dev) when nothing is set', () => {
+    clearAuthEnv()
+    expect(employeeAuthConfigured()).toBe(false)
+  })
+})

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { transitionOrder, startAssignment, getOrderWithContext } from '@/apps/workflow/db'
-import { getActor } from '@/apps/workflow/identity'
+import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { validateCompletion, completionEnabled, type CompletionPayload } from '@/apps/workflow/completion'
 
 export const dynamic = 'force-dynamic'
@@ -24,7 +24,7 @@ export async function POST(
 
     // Who changed the status = the explicitly chosen tech (picker) or, failing that,
     // the active employee. The tech ASSIGNMENT below still uses the chosen tech only.
-    const actorName = getActor(request.headers.get('cookie'))?.name ?? null
+    const actorName = (await authenticatedActorFromRequest(request))?.name ?? null
 
     // Completion gate: becoming Ready requires acknowledging every assigned service +
     // the general final checks (QC only when qc_required). Blocks casual one-tap done.
