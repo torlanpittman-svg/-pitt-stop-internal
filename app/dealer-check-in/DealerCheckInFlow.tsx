@@ -82,6 +82,10 @@ export default function DealerCheckInFlow() {
   const [dealers, setDealers] = useState<DealerOption[]>([])
   const [selectedDealerId, setSelectedDealerId] = useState<string | null>(null)
   const [ocrDealer, setOcrDealer] = useState<{ id: string; name: string; qbCustomerId: string | null } | null>(null)
+  // Dealer pricing defaults to the standard/default rate; the employee adjusts the Price field before
+  // confirming when a vehicle needs a different rate (e.g. a new Sterling Auto vehicle at $125). The old
+  // "$125 shortcut" toggle was removed in favor of that editable price. Stays false (drives rate/tagColor);
+  // the setter is still used by the scan-reset paths below.
   const [newVehicle, setNewVehicle] = useState(false)
   const [priceOverride, setPriceOverride] = useState<string>('')
   const [overrideFormat, setOverrideFormat] = useState(false)
@@ -385,7 +389,6 @@ export default function DealerCheckInFlow() {
   // The dropdown value: the operator's explicit choice, else the resolved dealer.
   const optionIdForName = (name?: string | null) => (name ? dealers.find((d) => d.name === name)?.dealershipId ?? '' : '')
   const currentDealerId = selectedDealerId ?? optionIdForName(preview?.dealership?.name)
-  const showPricingToggle = Boolean(preview?.pricing.promptRequired) || preview?.dealership?.name === 'Sterling Auto Group'
 
   // ── UI ──────────────────────────────────────────────────────────────────────
   return (
@@ -492,17 +495,8 @@ export default function DealerCheckInFlow() {
           {/* Urgency — dealer needs it back ASAP. Visual + Work Board priority only; no pricing impact. */}
           <button type="button" onClick={() => setUrgent((u) => !u)}
             className={`mt-3 w-full h-14 rounded-2xl border-2 text-lg font-semibold ${urgent ? 'border-amber-500 bg-amber-500/15 text-amber-300' : 'border-gray-700 text-gray-300'}`}>
-            {urgent ? '✓ Urgent · Needs back ASAP' : 'Urgent? Tap — needs back ASAP'}
+            {urgent ? '✓ Urgent' : 'Mark Urgent'}
           </button>
-
-          {showPricingToggle && (
-            <button
-              onClick={() => { const v = !newVehicle; setNewVehicle(v); setPriceOverride(''); void runPreview(fields.stockNumber, v, selectedDealerId ?? undefined) }}
-              className={`mt-3 w-full h-14 rounded-2xl border-2 text-lg font-semibold ${newVehicle ? 'border-green-500 bg-green-500/15 text-green-300' : 'border-gray-700 text-gray-300'}`}
-            >
-              {newVehicle ? '✓ New Sterling Auto vehicle — $125' : 'New Sterling Auto vehicle? Tap for $125'}
-            </button>
-          )}
 
           {!stockValid && fields.stockNumber.length > 0 && !overrideFormat && (
             <button onClick={() => setOverrideFormat(true)} className="mt-3 w-full h-12 rounded-2xl border border-amber-600 text-amber-300 text-sm font-semibold">

@@ -40,6 +40,29 @@ describe('authenticatedActorFromRequest — the authoritative identity for authz
   })
 })
 
+describe('manager is NEVER admin — a manager PIN session grants no admin authority', () => {
+  it('a signed manager session resolves to role=manager, not admin', async () => {
+    for (const m of [
+      { key: 'darryl', name: 'Darryl', role: 'manager' as const },
+      { key: 'tony', name: 'Tony', role: 'manager' as const },
+      { key: 'torlan', name: 'Torlan', role: 'manager' as const },
+    ]) {
+      const actor = await authenticatedActorFromRequest(await reqWithSession(m))
+      expect(actor?.role).toBe('manager')
+      expect(actor?.role).not.toBe('admin')
+    }
+  })
+  it('a forged client role/actor cookie cannot escalate a manager to admin (signed session wins)', async () => {
+    const tok = await signEmployeeSession({ key: 'darryl', name: 'Darryl', role: 'manager' })
+    // Attacker appends client-writable cookies claiming admin alongside the real signed session.
+    const req = new Request('https://x/api', {
+      headers: { cookie: `ps_actor=${encodeURIComponent(JSON.stringify({ role: 'admin' }))}; ps_elev=1; ${EMP_COOKIE}=${tok}` },
+    })
+    const actor = await authenticatedActorFromRequest(req)
+    expect(actor).toEqual({ key: 'darryl', name: 'Darryl', role: 'manager' }) // still manager — forged claims ignored
+  })
+})
+
 describe('employeeAuthorizedFromRequest — the shared gate still accepts individual sessions', () => {
   it('accepts a valid employee session', async () => {
     expect(await employeeAuthorizedFromRequest(await reqWithSession({ key: 'tony', name: 'Tony', role: 'employee' }))).toBe(true)

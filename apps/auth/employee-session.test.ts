@@ -23,14 +23,24 @@ afterEach(() => { process.env = { ...OLD } })
 
 describe('resolveIdentityByPin — a PIN identifies WHO (server-side)', () => {
   it('maps each configured PIN to the right identity + role', () => {
-    expect(resolveIdentityByPin(TEST_PINS.darryl)).toEqual({ key: 'darryl', name: 'Darryl', role: 'employee' })
-    expect(resolveIdentityByPin(TEST_PINS.tony)).toEqual({ key: 'tony', name: 'Tony', role: 'employee' })
+    expect(resolveIdentityByPin(TEST_PINS.darryl)).toEqual({ key: 'darryl', name: 'Darryl', role: 'manager' })
+    expect(resolveIdentityByPin(TEST_PINS.tony)).toEqual({ key: 'tony', name: 'Tony', role: 'manager' })
     expect(resolveIdentityByPin(TEST_PINS.torlan)).toEqual({ key: 'torlan', name: 'Torlan', role: 'manager' })
   })
-  it('the manager is Torlan only (Darryl/Tony are employees)', () => {
-    expect(resolveIdentityByPin(TEST_PINS.darryl)!.role).toBe('employee')
-    expect(resolveIdentityByPin(TEST_PINS.tony)!.role).toBe('employee')
-    expect(resolveIdentityByPin(TEST_PINS.torlan)!.role).toBe('manager')
+  it('Darryl, Tony, and Torlan are ALL managers with identical role (no manager tiers)', () => {
+    const darryl = resolveIdentityByPin(TEST_PINS.darryl)!
+    const tony = resolveIdentityByPin(TEST_PINS.tony)!
+    const torlan = resolveIdentityByPin(TEST_PINS.torlan)!
+    expect(darryl.role).toBe('manager')
+    expect(tony.role).toBe('manager')
+    expect(torlan.role).toBe('manager')
+    expect(darryl.role).toBe(torlan.role)
+    expect(tony.role).toBe(torlan.role)
+  })
+  it('manager is NEVER admin — no PIN resolves to the admin role', () => {
+    for (const p of Object.values(TEST_PINS)) {
+      expect(resolveIdentityByPin(p)!.role).not.toBe('admin')
+    }
   })
   it('rejects an unknown / malformed PIN', () => {
     expect(resolveIdentityByPin('0000')).toBeNull()   // not configured

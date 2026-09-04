@@ -3,26 +3,35 @@
  *  session cookie → redirect back to where they were headed. The PIN is only POSTed to the session
  *  API; it is never stored client-side. */
 import { useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
 
 export default function PinPad() {
-  const router = useRouter()
   const params = useSearchParams()
-  // Only allow returning to a known internal employee tool path (prevents open redirects).
+  // Only allow returning to a known internal employee tool path (prevents open redirects). If the
+  // person was sent here trying to reach a tool, `next` returns them there; otherwise → the Work Board.
   const EMP_PATHS = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in']
-  const rawNext = params.get('next') || '/auto-sales'
-  const next = EMP_PATHS.some((p) => rawNext === p || rawNext.startsWith(p + '/')) ? rawNext : '/auto-sales'
+  const rawNext = params.get('next') || '/work-board'
+  const next = EMP_PATHS.some((p) => rawNext === p || rawNext.startsWith(p + '/')) ? rawNext : '/work-board'
   const [pin, setPin] = useState('')
   const [busy, setBusy] = useState(false)
+  const [signedInAs, setSignedInAs] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   async function submit(finalPin: string) {
     setBusy(true); setErr(null)
     try {
       const res = await fetch('/api/auto-sales/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pin: finalPin }) })
-      const j = await res.json().catch(() => ({}))
-      if (res.ok && j.ok) { router.replace(next); router.refresh() }
-      else { setErr(j.error || 'Wrong PIN'); setPin(''); setBusy(false) }
+      const j = await res.json().catch(() => ({})) as { ok?: boolean; error?: string; actor?: { name?: string } | null }
+      if (res.ok && j.ok) {
+        // Success: the signed httpOnly ps_emp cookie is now set. A SOFT router.replace() here would serve
+        // the router's stale RSC cache for `next` (prefetched while unauthenticated → a middleware redirect
+        // back to login), so it never left this screen and "Checking…" stuck. A hard top-level navigation
+        // makes the Edge middleware re-evaluate `next` with the fresh cookie — the reliable, cache-proof fix.
+        setSignedInAs(j.actor?.name ?? 'you')   // brief confirmation while the destination loads
+        window.location.assign(next)
+        return                                   // stay busy; the page is unloading
+      }
+      setErr(j.error || 'Incorrect PIN'); setPin(''); setBusy(false)
     } catch { setErr('No connection — try again.'); setPin(''); setBusy(false) }
   }
   function press(d: string) {
@@ -46,7 +55,9 @@ export default function PinPad() {
         <button onClick={() => press('0')} disabled={busy} className="h-16 rounded-2xl bg-gray-900 border border-gray-800 active:bg-gray-800 text-white text-2xl font-semibold disabled:opacity-50">0</button>
         <button onClick={back} disabled={busy} className="h-16 rounded-2xl text-gray-400 text-lg">⌫</button>
       </div>
-      {busy && <p className="text-gray-500 text-sm text-center mt-4">Checking…</p>}
+      {signedInAs
+        ? <p className="text-emerald-400 text-sm text-center mt-4">✓ Signed in as {signedInAs}…</p>
+        : busy && <p className="text-gray-500 text-sm text-center mt-4">Checking…</p>}
     </div>
   )
 }
