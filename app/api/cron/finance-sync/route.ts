@@ -54,7 +54,20 @@ export async function GET(req: Request) {
     const transactions = await ingestTransactions('cron')
     const obligations = await discoverObligations('cron')
     const inflows = await deriveExpectedInflows('cron', 21)
-    const summary = { balances, transactions, obligations, inflows }
+    // Read-only QuickBooks accounting refresh (P&L / Balance Sheet / A-R / debt book balances). The
+    // QBO client auto-refreshes its token and retries on 401, so the daily schedule keeps accounting
+    // fresh alongside Plaid. Isolated in its own try so a QB hiccup never fails the (more critical)
+    // live-cash sync — syncFromQbo records its own fin_sync_runs row (source='qbo') either way.
+    let quickbooks: { ok: boolean; error?: string } = { ok: false, error: 'skipped' }
+    try {
+      const { syncFromQbo } = await import('@/apps/finance/qbo-sync')
+      const qb = await syncFromQbo('cron')
+      quickbooks = { ok: qb.ok, error: qb.error }
+    } catch (e) {
+      quickbooks = { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }
+      logger.warn('cron:finance-sync', 'qbo_sync_failed', { error: quickbooks.error })
+    }
+    const summary = { balances, transactions, obligations, inflows, quickbooks }
     const anyError = (transactions.errors?.length ?? 0) > 0
     await db.update(finSyncRuns).set({ status: anyError ? 'partial' : 'ok', finishedAt: new Date(), summary: summary as any, error: anyError ? transactions.errors.join(' | ').slice(0, 500) : null }).where(eq(finSyncRuns.id, run.id))
     logger.info('cron:finance-sync', 'synced', { reason: decision.reason, ...summary })

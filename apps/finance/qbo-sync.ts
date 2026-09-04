@@ -125,8 +125,17 @@ export async function syncFromQbo(actor: string | null): Promise<{ ok: boolean; 
     const plM = reportTotals(pl), plL = reportTotals(plLast), bsM = reportTotals(bs), arM = reportTotals(agedAR)
     const payrollLiab = accounts.filter((a: any) => a.AccountSubType === 'PayrollTaxPayable').map((a: any) => ({ name: a.Name, balance: a.CurrentBalance }))
     summary.company = company
-    summary.plThisMonth = { income: pick(plM, 'Total Income'), expenses: pick(plM, 'Total Expenses'), net: pick(plM, 'Net Income'), grossProfit: pick(plM, 'Gross Profit') }
-    summary.plLastMonth = { income: pick(plL, 'Total Income'), expenses: pick(plL, 'Total Expenses'), net: pick(plL, 'Net Income'), grossProfit: pick(plL, 'Gross Profit') }
+    // COGS is a distinct P&L layer: Net = Income − COGS − Operating Expenses. QBO reports it as
+    // "Total Cost of Goods Sold" (or embeds it as Income − Gross Profit). We capture it explicitly so
+    // the dashboard waterfall reconciles instead of looking broken (Income − Expenses ≠ Net).
+    const cogsOf = (m: Record<string, number>) => {
+      const direct = pick(m, 'Total Cost of Goods Sold', 'Cost of Goods Sold', 'Total COGS')
+      if (direct != null) return direct
+      const inc = pick(m, 'Total Income'), gp = pick(m, 'Gross Profit')
+      return inc != null && gp != null ? Math.round((inc - gp) * 100) / 100 : null
+    }
+    summary.plThisMonth = { income: pick(plM, 'Total Income'), cogs: cogsOf(plM), grossProfit: pick(plM, 'Gross Profit'), expenses: pick(plM, 'Total Expenses'), net: pick(plM, 'Net Income'), periodStart: ymd(monthStart), periodEnd: ymd(now) }
+    summary.plLastMonth = { income: pick(plL, 'Total Income'), cogs: cogsOf(plL), grossProfit: pick(plL, 'Gross Profit'), expenses: pick(plL, 'Total Expenses'), net: pick(plL, 'Net Income'), periodStart: ymd(lastStart), periodEnd: ymd(lastEnd) }
     summary.balanceSheet = { totalAssets: pick(bsM, 'TOTAL ASSETS', 'Total Assets'), totalBank: pick(bsM, 'Total Bank Accounts'), totalLiabilities: pick(bsM, 'Total Liabilities'), totalEquity: pick(bsM, 'Total Equity'), totalCreditCards: pick(bsM, 'Total Credit Cards') }
     summary.arTotal = pick(arM, 'TOTAL', 'Total')
     summary.employeesCount = (empRes.Employee ?? []).length

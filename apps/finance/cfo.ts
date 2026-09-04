@@ -240,7 +240,8 @@ export async function getCashRunway(days = 30): Promise<CashRunway> {
 // ── D. Money in / money out roll-up ──────────────────────────────────────────
 export interface MoneyFlow {
   in7Cents: number; in30Cents: number; out7Cents: number; out30Cents: number
-  inByCat: { label: string; cents: number; confidence: string }[]
+  patternInCents: number   // portion of expected-in that is a historical deposit PATTERN (not booked)
+  inByCat: { label: string; cents: number; confidence: string; basis: 'pattern' | 'booked' }[]
   outByCat: { category: string; cents: number; priority: string }[]
 }
 
@@ -260,31 +261,36 @@ export async function getMoneyFlow(): Promise<MoneyFlow> {
     cur.cents += e.cents
     catMap.set(e.category, cur)
   }
-  const inMap = new Map<string, { cents: number; confidence: string }>()
+  // Basis: derived dealer_weekly / card_baseline rows are historical deposit PATTERNS (run-rate),
+  // NOT booked receivables. We surface that so the owner never reads a projection as money owed.
+  const isPattern = (source: string, derived: boolean) => derived || source === 'dealer_weekly' || source === 'card_baseline'
+  const inMap = new Map<string, { cents: number; confidence: string; basis: 'pattern' | 'booked' }>()
+  let patternIn = 0
   for (const i of inflows30) {
+    const basis: 'pattern' | 'booked' = isPattern(i.source, i.derived) ? 'pattern' : 'booked'
+    if (basis === 'pattern') patternIn += i.amountCents
     const key = i.label.replace(/\s*—.*$/, '').replace(/\d+/g, '').trim() || i.label
-    const cur = inMap.get(key) ?? { cents: 0, confidence: i.confidence }
+    const cur = inMap.get(key) ?? { cents: 0, confidence: i.confidence, basis }
     cur.cents += i.amountCents
     inMap.set(key, cur)
   }
   return {
-    in7Cents: in7, in30Cents: in30, out7Cents: out7, out30Cents: out30,
-    inByCat: [...inMap.entries()].map(([label, v]) => ({ label, cents: v.cents, confidence: v.confidence })).sort((a, b) => b.cents - a.cents),
+    in7Cents: in7, in30Cents: in30, out7Cents: out7, out30Cents: out30, patternInCents: patternIn,
+    inByCat: [...inMap.entries()].map(([label, v]) => ({ label, cents: v.cents, confidence: v.confidence, basis: v.basis })).sort((a, b) => b.cents - a.cents),
     outByCat: [...catMap.entries()].map(([category, v]) => ({ category, cents: v.cents, priority: v.priority })).sort((a, b) => b.cents - a.cents),
   }
 }
 
 // ── L. CFO confidence + gaps ─────────────────────────────────────────────────
+// Overall confidence is now the WEIGHTED per-domain scorecard (apps/finance/confidence.ts) —
+// a defensible data-reliability figure, not the old cosmetic "100 − gap penalties". The open
+// data-gaps list is retained alongside it as the actionable "what's missing" view.
 export interface CfoConfidence { pct: number; label: string; gaps: DataGap[] }
 
 export async function getCfoConfidence(): Promise<CfoConfidence> {
-  const gaps = await getDataGaps()
-  // Weight: high gap -12, medium -6, low -2 from 100. Floor 40.
-  let score = 100
-  for (const g of gaps) score -= g.severity === 'high' ? 12 : g.severity === 'medium' ? 6 : 2
-  score = Math.max(40, Math.min(100, score))
-  const label = score >= 85 ? 'High confidence' : score >= 70 ? 'Good — some gaps' : 'Provisional — key gaps open'
-  return { pct: score, label, gaps }
+  const { getConfidenceScorecard } = await import('./confidence')
+  const sc = await getConfidenceScorecard()
+  return { pct: sc.overallPct, label: sc.label, gaps: sc.gaps }
 }
 
 // ── H. Needs-verification obligations (paused, e.g. IRS back-tax) ─────────────

@@ -15,6 +15,7 @@ import { discoverObligations, getObligationsByStatus, setObligationStatus } from
 import { computeSafeToSpend, forecastWithInflows, getObligationCalendar } from '@/apps/finance/safe-to-spend'
 import { getExpectedInflows, getPipelineContext, addManualInflow, dismissInflow, deriveExpectedInflows } from '@/apps/finance/expected-inflows'
 import { getCfoHeadline, getNextDanger, getRecommendations, getReserveStatus, getDebtSummary, getCashRunway, getMoneyFlow, getCfoConfidence, getNeedsVerification, type Health } from '@/apps/finance/cfo'
+import { getConfidenceScorecard, type Tier } from '@/apps/finance/confidence'
 import { getReservePolicy } from '@/apps/settings/db'
 import { getSyncHealth, type FreshnessStatus } from '@/apps/finance/sync-health'
 import { freshnessLabel } from '@/apps/finance/sources'
@@ -111,10 +112,15 @@ function RunwayChart({ points, low, lowDate, startCents }: { points: { date: str
 }
 
 export default async function FinancePage() {
-  const [enabled, headline, reserve, danger, recs, debt, runway, flow, confidence, needsVerify, s2s, forecast, calendar, expectedInflows, pipeline, operating, autoSales, reserves] = await Promise.all([
-    financeEnabled(), getCfoHeadline(), getReserveStatus(), getNextDanger(), getRecommendations(), getDebtSummary(), getCashRunway(30), getMoneyFlow(), getCfoConfidence(), getNeedsVerification(),
+  const [enabled, headline, reserve, danger, recs, debt, runway, flow, scorecard, needsVerify, s2s, forecast, calendar, expectedInflows, pipeline, operating, autoSales, reserves] = await Promise.all([
+    financeEnabled(), getCfoHeadline(), getReserveStatus(), getNextDanger(), getRecommendations(), getDebtSummary(), getCashRunway(30), getMoneyFlow(), getConfidenceScorecard(), getNeedsVerification(),
     computeSafeToSpend(30), forecastWithInflows(30), getObligationCalendar(30), getExpectedInflows(30), getPipelineContext(), getOperatingCash(), getAutoSalesLiquidity(), getReservePolicy(),
   ])
+  // Runway lows at 7/14/30-day horizons — the REAL operational liquidity read (lowest projected
+  // *2649 balance and when), distinct from the "30-day committed vs today's cash" gap.
+  const [rw7, rw14] = await Promise.all([getCashRunway(7), getCashRunway(14)])
+  const projGap = (r: { lowCents: number | null }) => (r.lowCents != null && r.lowCents < 0 ? -r.lowCents : 0)
+  const liquidityCushionNeeded = Math.max(projGap(rw7), projGap(rw14), projGap(runway))
   // Detail/admin data (lower on page)
   const [accounts, allAccounts, debtsRaw, payroll, documents, run, gaps, connections, recentTx, txSummary, oblByStatus, syncHealth] = await Promise.all([
     getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getRecentTransactions(30), getClassificationSummary(120), getObligationsByStatus(), getSyncHealth(),
@@ -180,13 +186,17 @@ export default async function FinancePage() {
             <p className="text-gray-200 text-[15px] leading-relaxed mt-3 max-w-3xl">{headline.statement}</p>
           </div>
           <div className="grid grid-cols-2 gap-x-8 gap-y-3 shrink-0">
-            <div><p className={kicker}>*2649 available cash</p><p className="text-xl font-bold text-white tabular-nums">{big(headline.operatingAvailableCents)}</p></div>
+            <div><p className={kicker}>*2649 verified cash now</p><p className="text-xl font-bold text-white tabular-nums">{big(headline.operatingAvailableCents)}</p></div>
             <div>
               <p className={kicker}>Safe-to-Spend today</p>
               <p className={`text-xl font-bold tabular-nums ${(headline.safeToSpendTodayCents ?? 0) > 0 ? 'text-white' : 'text-gray-400'}`}>{big(headline.safeToSpendTodayCents)}</p>
-              {headline.liquidityShortfallCents > 0 && <p className="text-[11px] text-red-400">liquidity shortfall −{big(headline.liquidityShortfallCents)}</p>}
+              {headline.liquidityShortfallCents > 0 && <p className="text-[11px] text-gray-500">today&apos;s cash is {big(headline.liquidityShortfallCents)} under 30-day committed obligations</p>}
             </div>
-            <div><p className={kicker}>Forecast cash (with expected in)</p><p className={`text-xl font-bold tabular-nums ${(headline.forecastSafeToSpendCents ?? 0) < 0 ? 'text-amber-400' : 'text-emerald-300'}`}>{big(headline.forecastSafeToSpendCents)}</p></div>
+            <div>
+              <p className={kicker}>Projected low (30d) · realistic path</p>
+              <p className={`text-xl font-bold tabular-nums ${runway.overdraft ? 'text-red-400' : 'text-amber-300'}`}>{big(runway.lowCents)} <span className="text-gray-500 text-xs font-normal">on {runway.lowDate}</span></p>
+              {liquidityCushionNeeded > 0 && <p className="text-[11px] text-red-400">cushion needed to stay ≥ $0: {big(liquidityCushionNeeded)}</p>}
+            </div>
             <div><p className={kicker}>Next 7 days (*2649)</p><p className="text-sm text-gray-300 tabular-nums mt-1"><span className="text-emerald-300">+{big(headline.next7InCents)}</span> in · <span className="text-red-300">−{big(headline.next7OutCents)}</span> out</p><p className="text-xs text-gray-500">projected ≈ <b className={`${(headline.next7ProjectedEndingCents ?? 0) < 0 ? 'text-red-400' : 'text-gray-300'}`}>{big(headline.next7ProjectedEndingCents)}</b></p></div>
           </div>
         </div>
@@ -198,10 +208,11 @@ export default async function FinancePage() {
           <div>
             <p className={kicker}>How much can I actually spend from *2649? · verified cash only</p>
             <div className="mt-3 space-y-1.5 text-sm">
-              <div className="flex justify-between"><span className="text-gray-300">Available now <span className="text-gray-600">(*2649 live, nets pending)</span></span><span className="tabular-nums text-white">{money(s2s.availableCents)}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">− Already committed <span className="text-gray-600">(30d *2649 payroll, tax, rent, debt, reserves)</span></span><span className="tabular-nums text-red-300">−{money((s2s.criticalCents) + (s2s.contractualCents) + (s2s.reservesCents))}</span></div>
+              <div className="flex justify-between"><span className="text-gray-300">Verified cash now <span className="text-gray-600">(*2649 live, nets pending)</span></span><span className="tabular-nums text-white">{money(s2s.availableCents)}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">− Committed over next 30 days <span className="text-gray-600">(*2649 payroll, tax, rent, debt, reserves)</span></span><span className="tabular-nums text-red-300">−{money((s2s.criticalCents) + (s2s.contractualCents) + (s2s.reservesCents))}</span></div>
               <div className="flex justify-between border-t border-gray-700 pt-2 mt-1"><span className="text-white font-bold text-base">Safe-to-Spend today</span><span className={`tabular-nums font-black text-2xl ${(headline.safeToSpendTodayCents ?? 0) > 0 ? 'text-white' : 'text-gray-400'}`}>{big(headline.safeToSpendTodayCents)}</span></div>
-              {headline.liquidityShortfallCents > 0 && <div className="flex justify-between"><span className="text-red-300 text-xs">Liquidity shortfall <span className="text-gray-600">(committed exceeds current cash — needs expected receipts)</span></span><span className="tabular-nums text-red-400 font-bold">−{big(headline.liquidityShortfallCents)}</span></div>}
+              {headline.liquidityShortfallCents > 0 && <div className="flex justify-between"><span className="text-amber-300/90 text-xs">30-day obligations not covered by today&apos;s cash <span className="text-gray-600">(a horizon gap — NOT an immediate hole; expected receipts fill it)</span></span><span className="tabular-nums text-amber-300 font-bold">{big(headline.liquidityShortfallCents)}</span></div>}
+              {liquidityCushionNeeded > 0 && <div className="flex justify-between"><span className="text-red-300 text-xs">Projected liquidity gap <span className="text-gray-600">(lowest the realistic path dips below $0 · {runway.lowDate})</span></span><span className="tabular-nums text-red-400 font-bold">−{big(liquidityCushionNeeded)}</span></div>}
             </div>
             <div className="mt-4 space-y-1.5 text-sm border-t border-gray-800 pt-3">
               <div className="flex justify-between"><span className="text-gray-400">+ Expected money coming in <span className="text-gray-600">(high-confidence)</span></span><span className="tabular-nums text-emerald-300">+{money(forecast.expectedHighCents)}</span></div>
@@ -257,11 +268,12 @@ export default async function FinancePage() {
           <div className="flex items-baseline justify-between"><h2 className="text-white font-bold">Money coming in</h2><span className="text-emerald-300 text-sm tabular-nums">7d +{big(flow.in7Cents)} · 30d +{big(flow.in30Cents)}</span></div>
           <table className="w-full text-sm mt-3"><tbody>
             {flow.inByCat.slice(0, 6).map((r, i) => (
-              <tr key={i} className="border-b border-gray-800/50"><td className="py-1.5 text-gray-300">{r.label}</td><td className="py-1.5"><span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${r.confidence === 'high' ? 'bg-emerald-950/40 text-emerald-300 border-emerald-900/60' : 'bg-amber-950/40 text-amber-300 border-amber-900/60'}`}>{r.confidence}</span></td><td className="py-1.5 text-right tabular-nums text-emerald-300">+{money(r.cents)}</td></tr>
+              <tr key={i} className="border-b border-gray-800/50"><td className="py-1.5 text-gray-300">{r.label}</td><td className="py-1.5"><span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${r.basis === 'pattern' ? 'bg-amber-950/40 text-amber-300 border-amber-900/60' : 'bg-emerald-950/40 text-emerald-300 border-emerald-900/60'}`}>{r.basis === 'pattern' ? 'pattern' : 'booked'}</span></td><td className="py-1.5 text-right tabular-nums text-emerald-300">+{money(r.cents)}</td></tr>
             ))}
             {flow.inByCat.length === 0 && <tr><td className="py-2 text-gray-500 text-sm">No expected inflows derived — run “Re-derive” below.</td></tr>}
           </tbody></table>
-          <p className="text-gray-600 text-[11px] mt-2">Pipeline: {pipeline.dealerThisWeek} dealer jobs this week · {pipeline.readyRetail} retail ready · {pipeline.activeDealer} active dealer jobs.</p>
+          {flow.patternInCents > 0 && <p className="text-amber-300/70 text-[11px] mt-2">⚠ {money(flow.patternInCents)} of expected-in is a historical deposit <b>pattern / run-rate</b>, NOT booked receivables. QuickBooks A/R actually owed is far smaller. These inform the forecast but are not money owed — do not treat as receivable.</p>}
+          <p className="text-gray-600 text-[11px] mt-1">Pipeline: {pipeline.dealerThisWeek} dealer jobs this week · {pipeline.readyRetail} retail ready · {pipeline.activeDealer} active dealer jobs.</p>
         </div>
         <div className={`${card} border-red-900/20`}>
           <div className="flex items-baseline justify-between"><h2 className="text-white font-bold">Money going out</h2><span className="text-red-300 text-sm tabular-nums">7d −{big(flow.out7Cents)} · 30d −{big(flow.out30Cents)}</span></div>
@@ -413,7 +425,7 @@ export default async function FinancePage() {
           <p className="text-gray-300 text-sm mt-1">American Momentum *2649</p>
           <div className="grid grid-cols-2 gap-3 mt-2">
             <div><p className={kicker}>Bank cash</p><p className="text-lg font-bold text-white tabular-nums">{money(operating?.availableCents)}</p></div>
-            <div><p className={kicker}>Safe-to-Spend today</p><p className={`text-lg font-bold tabular-nums ${(headline.safeToSpendTodayCents ?? 0) > 0 ? 'text-white' : 'text-gray-400'}`}>{big(headline.safeToSpendTodayCents)}</p>{headline.liquidityShortfallCents > 0 && <p className="text-[10px] text-red-400">shortfall −{big(headline.liquidityShortfallCents)}</p>}</div>
+            <div><p className={kicker}>Safe-to-Spend today</p><p className={`text-lg font-bold tabular-nums ${(headline.safeToSpendTodayCents ?? 0) > 0 ? 'text-white' : 'text-gray-400'}`}>{big(headline.safeToSpendTodayCents)}</p>{headline.liquidityShortfallCents > 0 && <p className="text-[10px] text-gray-500">30d committed &gt; cash by {big(headline.liquidityShortfallCents)}</p>}</div>
             <div><p className={kicker}>30-day projected low</p><p className={`text-lg font-bold tabular-nums ${runway.overdraft ? 'text-red-400' : 'text-amber-300'}`}>{big(runway.lowCents)}</p></div>
           </div>
         </div>
@@ -454,25 +466,76 @@ export default async function FinancePage() {
         </div>
       </section>
 
-      {/* ═══ L. DATA QUALITY / CFO CONFIDENCE ═══ */}
-      <section className={`${card} mb-4`}>
-        <div className="flex items-center justify-between">
-          <h2 className="text-white font-bold">CFO confidence</h2>
-          <span className="text-2xl font-black text-white tabular-nums">{confidence.pct}% <span className={`text-sm font-semibold ${confidence.pct >= 85 ? 'text-emerald-300' : confidence.pct >= 70 ? 'text-amber-300' : 'text-orange-300'}`}>{confidence.label}</span></span>
-        </div>
-        <div className="h-2 rounded-full bg-gray-800 mt-3 overflow-hidden"><div className={`h-full ${confidence.pct >= 85 ? 'bg-emerald-500' : confidence.pct >= 70 ? 'bg-amber-500' : 'bg-orange-500'}`} style={{ width: `${confidence.pct}%` }} /></div>
-        <details className="mt-3">
-          <summary className="text-gray-400 text-sm cursor-pointer">Known gaps ({confidence.gaps.length}) ▾</summary>
-          <ul className="space-y-1.5 mt-2">
-            {confidence.gaps.map((g) => (
-              <li key={g.key} className="flex items-start gap-2 text-sm">
-                <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${g.severity === 'high' ? 'bg-red-500' : g.severity === 'medium' ? 'bg-amber-500' : 'bg-gray-500'}`} />
-                <div><p className="text-gray-300">{g.label}</p><p className="text-gray-600 text-xs">{g.why} · Source: {g.source}</p></div>
-              </li>
-            ))}
-          </ul>
-        </details>
-      </section>
+      {/* ═══ L. CFO CONFIDENCE SCORECARD (per-domain data reliability) ═══ */}
+      {(() => {
+        const TIER: Record<Tier, string> = { authoritative: 'text-emerald-300', trustworthy: 'text-emerald-300', useful: 'text-amber-300', directional: 'text-orange-300', unreliable: 'text-red-300' }
+        const bar = (p: number) => p >= 90 ? 'bg-emerald-500' : p >= 75 ? 'bg-amber-500' : p >= 50 ? 'bg-orange-500' : 'bg-red-500'
+        const GROUPS: { key: DomainScore['group']; title: string }[] = [
+          { key: 'cash', title: 'Cash & balances' }, { key: 'obligations', title: 'Obligations (money out)' },
+          { key: 'forecast', title: 'Forecast & expected inflows' }, { key: 'accounting', title: 'Accounting (QuickBooks)' }, { key: 'segment', title: 'Segment & deeper analysis' },
+        ]
+        type DomainScore = (typeof scorecard.domains)[number]
+        return (
+          <section className={`${card} mb-4`}>
+            <div className="flex items-start justify-between gap-6 flex-wrap">
+              <div>
+                <h2 className="text-white font-bold">CFO confidence <span className="text-gray-600 text-sm font-normal">· real per-domain data reliability</span></h2>
+                <p className="text-gray-500 text-xs mt-1 max-w-xl">Two numbers, never merged: how much to trust <b>today&apos;s spend decision</b> (verified cash + committed obligations) versus the <b>full financial picture</b> (which the forecast, accounting and segment layers still weaken).</p>
+              </div>
+              <div className="flex gap-6">
+                <div className="text-right">
+                  <p className={kicker}>Safe-to-Spend decision</p>
+                  <p className={`text-3xl font-black tabular-nums ${TIER[scorecard.decisionTier]}`}>{scorecard.decisionPct}%</p>
+                  <p className="text-gray-500 text-[11px] max-w-[12rem]">{scorecard.decisionLabel}</p>
+                </div>
+                <div className="text-right border-l border-gray-800 pl-6">
+                  <p className={kicker}>Full picture</p>
+                  <p className={`text-3xl font-black tabular-nums ${TIER[scorecard.overallTier]}`}>{scorecard.overallPct}%</p>
+                  <p className="text-gray-500 text-[11px] max-w-[12rem]">{scorecard.label}</p>
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 space-y-3">
+              {GROUPS.map((g) => {
+                const rows = scorecard.domains.filter((dd: DomainScore) => dd.group === g.key)
+                if (rows.length === 0) return null
+                return (
+                  <div key={g.key}>
+                    <p className="text-gray-500 text-[11px] uppercase tracking-widest mb-1">{g.title}</p>
+                    <div className="space-y-1">
+                      {rows.map((dd: DomainScore) => (
+                        <details key={dd.key} className="group">
+                          <summary className="flex items-center gap-3 cursor-pointer list-none text-sm py-0.5">
+                            <span className="w-32 shrink-0 text-gray-300 truncate">{dd.label}</span>
+                            <span className="flex-1 h-1.5 rounded-full bg-gray-800 overflow-hidden max-w-xs"><span className={`block h-full ${bar(dd.confidencePct)}`} style={{ width: `${dd.confidencePct}%` }} /></span>
+                            <span className={`tabular-nums text-xs w-10 text-right ${TIER[dd.tier]}`}>{dd.confidencePct}%</span>
+                            <span className="text-gray-500 text-xs flex-1 truncate">{dd.value} <span className="text-gray-700">· {dd.freshness}</span></span>
+                          </summary>
+                          <p className="text-gray-500 text-xs mt-1 ml-32 pl-3"><span className="text-gray-600">Source:</span> {dd.source}. <span className="text-gray-400">{dd.toImprove}</span></p>
+                        </details>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-gray-600 border-t border-gray-800 pt-2">
+              {scorecard.legend.map((l) => <span key={l.band}><b className="text-gray-500">{l.band}</b> {l.meaning}</span>)}
+            </div>
+            <details className="mt-3">
+              <summary className="text-gray-400 text-sm cursor-pointer">Open data gaps ({scorecard.gaps.length}) — what to fix next ▾</summary>
+              <ul className="space-y-1.5 mt-2">
+                {scorecard.gaps.map((g) => (
+                  <li key={g.key} className="flex items-start gap-2 text-sm">
+                    <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${g.severity === 'high' ? 'bg-red-500' : g.severity === 'medium' ? 'bg-amber-500' : 'bg-gray-500'}`} />
+                    <div><p className="text-gray-300">{g.label}</p><p className="text-gray-600 text-xs">{g.why} · Source: {g.source}</p></div>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          </section>
+        )
+      })()}
 
       {/* ═══ M. ACCOUNTING & ADMIN DETAIL (demoted) ═══ */}
       <details className={`${card} mb-4`}>
@@ -559,10 +622,34 @@ export default async function FinancePage() {
             <form action={payrollAction} className="flex flex-wrap items-end gap-2"><label className="text-xs text-gray-500">Next pay date<br /><input name="nextPayDate" type="date" className={input} required /></label><label className="text-xs text-gray-500">Expected cash ($)<br /><input name="amount" type="number" step="0.01" min="0" className={input} required /></label><button className="bg-green-600 text-white text-sm font-semibold px-4 py-2 rounded-lg">Save</button></form>
           </div>
           <div>
-            <h3 className="text-gray-300 font-semibold text-sm mb-1">Accounting <span className="text-gray-600">(book — not cash)</span></h3>
-            <p className="text-sm text-gray-300">P&amp;L this month: Income {dollars(s.plThisMonth?.income)} · Net {dollars(s.plThisMonth?.net)}</p>
-            <p className="text-sm text-gray-300">Balance sheet: Assets {dollars(s.balanceSheet?.totalAssets)} · Liab {dollars(s.balanceSheet?.totalLiabilities)}</p>
-            <div className="text-gray-600 text-xs mt-1">QuickBooks book understates real cash outflow — do not read as cash. <form action={refreshAction} className="inline"><button className="text-indigo-400 underline">Refresh from QuickBooks</button></form></div>
+            <h3 className="text-gray-300 font-semibold text-sm mb-1">Accounting <span className="text-gray-600">(QuickBooks book — profitability, not cash)</span></h3>
+            {(() => {
+              // Full P&L waterfall so it RECONCILES: Income − COGS = Gross Profit − Operating Expenses = Net.
+              // (Income − Expenses alone never equals Net when COGS exists — e.g. vehicle cost of sales.)
+              const wf = (pl: any, title: string) => {
+                if (!pl || pl.income == null) return <p className="text-gray-500 text-xs">{title}: not synced yet.</p>
+                const cogs = pl.cogs ?? (pl.grossProfit != null ? Math.round((pl.income - pl.grossProfit) * 100) / 100 : null)
+                const gp = pl.grossProfit ?? (cogs != null ? Math.round((pl.income - cogs) * 100) / 100 : null)
+                return (
+                  <div className="text-xs mb-2">
+                    <p className="text-gray-400 font-semibold">{title}</p>
+                    <div className="flex justify-between"><span className="text-gray-500">Income</span><span className="tabular-nums text-gray-300">{dollars(pl.income)}</span></div>
+                    {cogs != null && <div className="flex justify-between"><span className="text-gray-500">− Cost of goods sold</span><span className="tabular-nums text-gray-400">−{dollars(cogs)}</span></div>}
+                    {gp != null && <div className="flex justify-between border-t border-gray-800/70"><span className="text-gray-400">= Gross profit</span><span className="tabular-nums text-gray-300">{dollars(gp)}</span></div>}
+                    <div className="flex justify-between"><span className="text-gray-500">− Operating expenses</span><span className="tabular-nums text-gray-400">−{dollars(pl.expenses)}</span></div>
+                    <div className="flex justify-between border-t border-gray-700"><span className="text-gray-300 font-semibold">= Net income</span><span className={`tabular-nums font-bold ${(pl.net ?? 0) < 0 ? 'text-red-300' : 'text-emerald-300'}`}>{dollars(pl.net)}</span></div>
+                  </div>
+                )
+              }
+              return (<>
+                {wf(s.plThisMonth, `This month (${s.plThisMonth?.periodStart ?? ''} → ${s.plThisMonth?.periodEnd ?? 'today'})`)}
+                {wf(s.plLastMonth, 'Last month')}
+                <div className="flex justify-between text-xs"><span className="text-gray-500">A/R outstanding (QB)</span><span className="tabular-nums text-gray-300">{s.arTotal != null ? dollars(s.arTotal) : '—'}</span></div>
+                <div className="flex justify-between text-xs"><span className="text-gray-500">Balance sheet</span><span className="tabular-nums text-gray-400">Assets {dollars(s.balanceSheet?.totalAssets)} · Liab {dollars(s.balanceSheet?.totalLiabilities)}</span></div>
+              </>)
+            })()}
+            <p className="text-amber-300/60 text-[11px] mt-2">⚠ This P&amp;L BLENDS Detail + Auto-Sales (the large last-month COGS is mostly vehicle cost of sales). It is company-level profitability, not Detail-only — segmentation is a pending owner/accounting decision.</p>
+            <div className="text-gray-600 text-xs mt-1">Book profit ≠ cash: debt principal, owner draws & receivable timing consume cash the P&amp;L doesn&apos;t show. <form action={refreshAction} className="inline"><button className="text-indigo-400 underline">Refresh from QuickBooks</button></form></div>
           </div>
         </div>
 

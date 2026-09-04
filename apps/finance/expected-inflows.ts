@@ -65,7 +65,7 @@ export async function deriveExpectedInflows(actor: string | null, horizonDays = 
   if (dealerWeeklyCents > 0) {
     for (let d = nextWeekday(now, depositDow); d <= end; d.setUTCDate(d.getUTCDate() + 7)) {
       await db.insert(finExpectedInflows).values({
-        source: 'dealer_weekly', label: 'Dealer/deposit receivable (Sterling + checks)', amountCents: dealerWeeklyCents,
+        source: 'dealer_weekly', label: 'Dealer/deposit run-rate (deposit-history pattern)', amountCents: dealerWeeklyCents,
         expectedDate: iso(d), confidence: 'high', refType: 'pattern',
         evidence: { basis: 'trailing median of weekly non-card deposits (60d)', weeklyVals, depositDow } as any,
         dedupeKey: `dealer_weekly:${iso(d)}`, derived: true, status: 'projected',
@@ -78,7 +78,7 @@ export async function deriveExpectedInflows(actor: string | null, horizonDays = 
     for (let d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
       const dw = d.getUTCDay(); if (dw === 0) continue // skip Sunday
       await db.insert(finExpectedInflows).values({
-        source: 'card_baseline', label: 'Retail card settlements (baseline)', amountCents: cardDailyCents,
+        source: 'card_baseline', label: 'Retail card run-rate (settlement-history pattern)', amountCents: cardDailyCents,
         expectedDate: iso(d), confidence: 'high', refType: 'pattern',
         evidence: { basis: 'trailing daily-average card (MER BNKCD) settlement (60d)', cardDailyCents } as any,
         dedupeKey: `card_baseline:${iso(d)}`, derived: true, status: 'projected',
