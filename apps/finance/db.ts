@@ -302,9 +302,9 @@ export async function getDataGaps(): Promise<DataGap[]> {
   const payrollObls = await db.select().from(finObligations).where(and(eq(finObligations.category, 'payroll'), eq(finObligations.status, 'confirmed')))
   if (payrollObls.length === 0) gaps.push({ key: 'payroll', label: 'Employee payroll not confirmed', why: 'Cannot answer “can we make payroll?” without it.', source: 'QuickBooks Payroll (verified)', blocks: ['safe_to_spend', 'forecast'], severity: 'high' })
 
-  // ── Reserve policy unconfigured → strict Safe-to-Spend can’t be “fully trustworthy” ──
+  // ── Long-term reserve TARGET unconfigured (payroll FLOOR is already protected dynamically) ──
   const reserves = await getReservePolicy()
-  if (!reserves.configured) gaps.push({ key: 'reserves', label: 'Reserve policy not configured ($0 assumed)', why: 'No payroll/tax/operating buffer is protected; Safe-to-Spend can’t be fully trusted.', source: 'Owner decision (Reserve policy panel)', blocks: ['safe_to_spend', 'debt_optimization'], severity: 'medium' })
+  if (!reserves.configured) gaps.push({ key: 'reserves', label: 'Long-term reserve target not set (payroll floor IS protected)', why: 'Safe-to-Spend already protects a one-week payroll liquidity floor. A broader reserve TARGET (e.g. $50k) is an optional savings goal, not a blocker.', source: 'Owner decision (Reserve policy panel)', blocks: ['debt_optimization'], severity: 'low' })
 
   // ── Debt terms unverified — grouped by lender; only when real principal exists ──
   const debts = await getDebts()

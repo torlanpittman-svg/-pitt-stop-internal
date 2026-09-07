@@ -22,9 +22,10 @@ export type Health = 'HEALTHY' | 'WATCH' | 'TIGHT' | 'CRITICAL'
 // ── A. CFO headline ──────────────────────────────────────────────────────────
 export interface CfoHeadline {
   operatingAvailableCents: number | null
-  strictSafeToSpendCents: number | null           // may be negative (verified cash − committed)
+  strictSafeToSpendCents: number | null           // may be negative (verified cash − committed − payroll floor)
   safeToSpendTodayCents: number | null            // floored at $0 for display
   liquidityShortfallCents: number                 // = −strict when strict < 0, else 0
+  payrollFloorCents: number                       // protected one-week payroll cushion (NOT a bill)
   forecastSafeToSpendCents: number | null
   next7InCents: number; next7OutCents: number; next7ProjectedEndingCents: number | null
   status: Health
@@ -63,7 +64,7 @@ export async function getCfoHeadline(): Promise<CfoHeadline> {
   const stmt = buildStatement({ status, avail, strict, forecastS2s, next7In, next7Out, cal, s2s, highCovered: highScn?.firstPayrollCovered, verifiedCovered: verifiedScn?.firstPayrollCovered, payrollDate: verifiedScn?.firstPayrollDate })
   const safeToday = strict == null ? null : Math.max(0, strict)          // Safe-to-Spend floors at $0
   const shortfall = strict != null && strict < 0 ? -strict : 0            // deficit shown separately
-  return { operatingAvailableCents: avail, strictSafeToSpendCents: strict, safeToSpendTodayCents: safeToday, liquidityShortfallCents: shortfall, forecastSafeToSpendCents: forecastS2s, next7InCents: next7In, next7OutCents: next7Out, next7ProjectedEndingCents: next7Ending, status, statement: stmt }
+  return { operatingAvailableCents: avail, strictSafeToSpendCents: strict, safeToSpendTodayCents: safeToday, liquidityShortfallCents: shortfall, payrollFloorCents: s2s.payrollFloorCents, forecastSafeToSpendCents: forecastS2s, next7InCents: next7In, next7OutCents: next7Out, next7ProjectedEndingCents: next7Ending, status, statement: stmt }
 }
 
 function buildStatement(a: { status: Health; avail: number | null; strict: number | null; forecastS2s: number | null; next7In: number; next7Out: number; cal: any; s2s: SafeToSpend; highCovered?: boolean | null; verifiedCovered?: boolean | null; payrollDate?: string | null }): string {
@@ -147,11 +148,13 @@ export interface ReserveStatus {
 }
 
 export async function getReserveStatus(): Promise<ReserveStatus> {
-  const [op, cal, reserves] = await Promise.all([getOperatingCash(), getObligationCalendar(30), getReservePolicy()])
+  const { getPayrollFloorCents } = await import('./safe-to-spend')
+  const [op, cal, reserves, payrollFloor] = await Promise.all([getOperatingCash(), getObligationCalendar(30), getReservePolicy(), getPayrollFloorCents()])
   const raw = op?.availableCents ?? null
   const oblig30 = operatingWindows(cal).w30   // *2649 only — auto-sales obligations never reduce operating reserve
   const target = 5_000_000, next = 10_000_000 // $50k first milestone, $100k long-term
-  const trueReserve = raw == null ? 0 : Math.max(0, raw - oblig30)
+  // Free reserve = cash above BOTH the next 30 days of obligations AND the protected payroll floor.
+  const trueReserve = raw == null ? 0 : Math.max(0, raw - oblig30 - payrollFloor)
   const pct = Math.round((trueReserve / target) * 100)
   return {
     rawCashCents: raw, obligations30Cents: oblig30, trueReserveCents: trueReserve, targetCents: target, nextTargetCents: next, pct,

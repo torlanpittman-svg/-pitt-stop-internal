@@ -111,6 +111,68 @@ function RunwayChart({ points, low, lowDate, startCents }: { points: { date: str
   )
 }
 
+// ── 30-day bill calendar (server-rendered; operating *2649 obligations by day) ──
+type CalEvt = { due: string; label: string; category: string; cents: number; priority: string; variable: boolean; needsConfirmation: boolean; confidence: string }
+function BillCalendar({ events, days = 30 }: { events: CalEvt[]; days?: number }) {
+  const today = new Date()
+  const todayUTC = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
+  const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+  const byDay = new Map<string, CalEvt[]>()
+  for (const e of events) { const a = byDay.get(e.due) ?? []; a.push(e); byDay.set(e.due, a) }
+  // Grid spans the Sunday on/before today through the Saturday on/after today+days.
+  const start = todayUTC - new Date(todayUTC).getUTCDay() * 86400_000
+  const endTarget = todayUTC + days * 86400_000
+  const endDow = new Date(endTarget).getUTCDay()
+  const end = endTarget + (6 - endDow) * 86400_000
+  const cells: { d: string; inRange: boolean; isToday: boolean; evs: CalEvt[] }[] = []
+  for (let ms = start; ms <= end; ms += 86400_000) {
+    const d = iso(ms)
+    cells.push({ d, inRange: ms >= todayUTC && ms <= endTarget, isToday: ms === todayUTC, evs: (byDay.get(d) ?? []).sort((a, b) => b.cents - a.cents) })
+  }
+  const short = (label: string) => label.replace(/\s*\(.*?\)\s*/g, ' ').replace(/—.*$/, '').replace(/ Pittman/, '').trim().slice(0, 16)
+  const amt = (e: CalEvt) => e.needsConfirmation ? '?' : (e.variable ? '~' : '') + big(e.cents)
+  const pc = (p: string) => p === 'critical' ? 'text-red-300' : p === 'contractual' ? 'text-amber-300' : 'text-gray-400'
+  const monthLabel = (d: string) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' })
+  return (
+    <div>
+      <div className="grid grid-cols-7 gap-1 text-[10px] text-gray-600 uppercase tracking-wider mb-1">
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((w) => <div key={w} className="px-1">{w}</div>)}
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {cells.map((c) => {
+          const dayNum = Number(c.d.slice(8, 10))
+          const total = c.evs.reduce((t, e) => t + e.cents, 0)
+          return (
+            <div key={c.d} className={`min-h-[68px] rounded-lg border p-1 ${c.isToday ? 'border-sky-700 bg-sky-950/20' : c.inRange ? 'border-gray-800 bg-gray-900/40' : 'border-gray-900 bg-gray-950/40 opacity-40'}`}>
+              <div className="flex items-baseline justify-between">
+                <span className={`text-[10px] ${c.isToday ? 'text-sky-300 font-bold' : 'text-gray-500'}`}>{dayNum === 1 || c.d === cells[0].d ? `${monthLabel(c.d)} ` : ''}{dayNum}</span>
+                {total > 0 && <span className="text-[9px] text-gray-600 tabular-nums">{big(total)}</span>}
+              </div>
+              <div className="mt-0.5 space-y-0.5">
+                {c.evs.slice(0, 4).map((e, i) => (
+                  <div key={i} className="leading-tight" title={`${e.label}${e.needsConfirmation ? ' · amount needs confirmation' : e.variable ? ' · variable/estimated' : ''}`}>
+                    <span className={`text-[9px] ${pc(e.priority)}`}>{short(e.label)}</span>
+                    <span className="text-[9px] text-gray-400 tabular-nums"> {amt(e)}</span>
+                    {e.needsConfirmation && <span className="text-[8px] text-purple-300"> ⚠</span>}
+                  </div>
+                ))}
+                {c.evs.length > 4 && <div className="text-[8px] text-gray-600">+{c.evs.length - 4} more</div>}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-gray-600 mt-2">
+        <span><b className="text-red-300">●</b> critical (payroll/tax/debt)</span>
+        <span><b className="text-amber-300">●</b> contractual (rent/utilities/bills)</span>
+        <span><b className="text-gray-400">●</b> planned (owner/subscriptions)</span>
+        <span><b>~</b> variable estimate</span>
+        <span><b className="text-purple-300">⚠</b> amount needs confirmation</span>
+      </div>
+    </div>
+  )
+}
+
 export default async function FinancePage() {
   const [enabled, headline, reserve, danger, recs, debt, runway, flow, scorecard, needsVerify, s2s, forecast, calendar, expectedInflows, pipeline, operating, autoSales, reserves] = await Promise.all([
     financeEnabled(), getCfoHeadline(), getReserveStatus(), getNextDanger(), getRecommendations(), getDebtSummary(), getCashRunway(30), getMoneyFlow(), getConfidenceScorecard(), getNeedsVerification(),
@@ -190,7 +252,7 @@ export default async function FinancePage() {
             <div>
               <p className={kicker}>Safe-to-Spend today</p>
               <p className={`text-xl font-bold tabular-nums ${(headline.safeToSpendTodayCents ?? 0) > 0 ? 'text-white' : 'text-gray-400'}`}>{big(headline.safeToSpendTodayCents)}</p>
-              {headline.liquidityShortfallCents > 0 && <p className="text-[11px] text-gray-500">today&apos;s cash is {big(headline.liquidityShortfallCents)} under 30-day committed obligations</p>}
+              {headline.liquidityShortfallCents > 0 && <p className="text-[11px] text-gray-500">today&apos;s cash is {big(headline.liquidityShortfallCents)} under 30-day committed obligations + the {big(headline.payrollFloorCents)} payroll floor</p>}
             </div>
             <div>
               <p className={kicker}>Projected low (30d) · realistic path</p>
@@ -209,7 +271,8 @@ export default async function FinancePage() {
             <p className={kicker}>How much can I actually spend from *2649? · verified cash only</p>
             <div className="mt-3 space-y-1.5 text-sm">
               <div className="flex justify-between"><span className="text-gray-300">Verified cash now <span className="text-gray-600">(*2649 live, nets pending)</span></span><span className="tabular-nums text-white">{money(s2s.availableCents)}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">− Committed over next 30 days <span className="text-gray-600">(*2649 payroll, tax, rent, debt, reserves)</span></span><span className="tabular-nums text-red-300">−{money((s2s.criticalCents) + (s2s.contractualCents) + (s2s.reservesCents))}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">− Committed over next 30 days <span className="text-gray-600">(*2649 payroll, tax, rent, debt)</span></span><span className="tabular-nums text-red-300">−{money((s2s.criticalCents) + (s2s.contractualCents) + (s2s.reservesCents))}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">− Protected payroll floor <span className="text-gray-600">(1 normal week — always keep, NOT a bill)</span></span><span className="tabular-nums text-sky-300">−{money(s2s.payrollFloorCents)}</span></div>
               <div className="flex justify-between border-t border-gray-700 pt-2 mt-1"><span className="text-white font-bold text-base">Safe-to-Spend today</span><span className={`tabular-nums font-black text-2xl ${(headline.safeToSpendTodayCents ?? 0) > 0 ? 'text-white' : 'text-gray-400'}`}>{big(headline.safeToSpendTodayCents)}</span></div>
               {headline.liquidityShortfallCents > 0 && <div className="flex justify-between"><span className="text-amber-300/90 text-xs">30-day obligations not covered by today&apos;s cash <span className="text-gray-600">(a horizon gap — NOT an immediate hole; expected receipts fill it)</span></span><span className="tabular-nums text-amber-300 font-bold">{big(headline.liquidityShortfallCents)}</span></div>}
               {liquidityCushionNeeded > 0 && <div className="flex justify-between"><span className="text-red-300 text-xs">Projected liquidity gap <span className="text-gray-600">(lowest the realistic path dips below $0 · {runway.lowDate})</span></span><span className="tabular-nums text-red-400 font-bold">−{big(liquidityCushionNeeded)}</span></div>}
@@ -343,6 +406,19 @@ export default async function FinancePage() {
           <div><p className={kicker}>Claimed by 30d obligations</p><p className="text-red-300 tabular-nums">−{money(reserve.obligations30Cents)}</p></div>
           <div><p className={kicker}>True free reserve</p><p className="text-emerald-300 tabular-nums">{money(reserve.trueReserveCents)}</p></div>
         </div>
+      </section>
+
+      {/* ═══ G2. 30-DAY BILL CALENDAR ═══ */}
+      <section className={`${card} mb-4`}>
+        <div className="flex items-baseline justify-between mb-3">
+          <div>
+            <h2 className="text-white font-bold">Bill calendar <span className="text-gray-600 text-sm font-normal">· next 30 days · *2649 operating</span></h2>
+            <p className="text-gray-600 text-xs">What leaves the operating account, and when. Exact amounts show as-is; variable bills show a <b>~estimate</b>; unconfirmed amounts show <b className="text-purple-300">⚠</b>.</p>
+          </div>
+          <span className="text-sm tabular-nums text-gray-400">30d total <b className="text-red-300">−{big(opWin.window30)}</b></span>
+        </div>
+        <BillCalendar events={opEvents} days={30} />
+        <p className="text-gray-600 text-[11px] mt-2">Monthly/weekly recurring coverage is good. Quarterly/annual bills may be missing — bank history only spans ~3 months, so anything that bills less often than monthly isn&apos;t discoverable yet. The protected one-week payroll floor is a liquidity cushion and is intentionally NOT shown here as a bill.</p>
       </section>
 
       {/* ═══ H. UPCOMING OBLIGATIONS ═══ */}

@@ -55,8 +55,9 @@ export interface Scorecard {
 
 export async function getConfidenceScorecard(): Promise<Scorecard> {
   const db = getDb()
-  const [op, sync, debts, reserves, gaps] = await Promise.all([
-    getOperatingCash(), getSyncHealth(), getDebts(), getReservePolicy(), getDataGaps(),
+  const { getPayrollFloorCents } = await import('./safe-to-spend')
+  const [op, sync, debts, reserves, gaps, payrollFloor] = await Promise.all([
+    getOperatingCash(), getSyncHealth(), getDebts(), getReservePolicy(), getDataGaps(), getPayrollFloorCents(),
   ])
 
   // Verified/active live accounts.
@@ -114,7 +115,7 @@ export async function getConfidenceScorecard(): Promise<Scorecard> {
   add({ key: 'variable_spend', label: 'Variable operating spend', group: 'obligations', source: 'Plaid transactions (classified)', value: 'tracked, not forecast', freshness: freshLabel, confidencePct: round(60 * cashFresh), weight: 1, influencesDecisions: false, toImprove: 'Discretionary spend is observed historically but not projected forward as an obligation.' })
   add({ key: 'debt_bal', label: 'Debt balances', group: 'obligations', source: 'QuickBooks book + verified statements', value: `${d(debtTotal)} (${Math.round(debtVerShare * 100)}% verified)`, freshness: qbFresh, confidencePct: round(70 + 28 * debtVerShare), weight: 2, influencesDecisions: true, toImprove: debtVerShare < 1 ? 'Verify remaining loan statements to lift book balances to statement-verified.' : 'Fully statement-verified.' })
   add({ key: 'debt_pay', label: 'Debt payments / service', group: 'obligations', source: 'Bank-observed payments + statements', value: `${Math.round(debtAprShare * 100)}% have APR`, freshness: qbFresh, confidencePct: round(72 + 20 * debtAprShare), weight: 1.5, influencesDecisions: true, toImprove: debtAprShare < 1 ? 'QB Capital APRs are estimated — payoff-ranking sharpens with the real agreements.' : 'Terms verified.' })
-  add({ key: 'reserves', label: 'Reserve position', group: 'obligations', source: 'Owner reserve policy', value: reserves.configured ? d(reserves.totalCents) : '$0 (unconfigured)', freshness: 'policy', confidencePct: reserves.configured ? 90 : 60, weight: 1, influencesDecisions: true, toImprove: reserves.configured ? 'Policy set.' : 'Set a reserve policy (payroll/tax buffer) so Safe-to-Spend protects a real floor. Value is KNOWN ($0), the POLICY is what is unset.' })
+  add({ key: 'reserves', label: 'Protected payroll floor', group: 'obligations', source: 'One normal week of payroll (dynamic)', value: payrollFloor > 0 ? `${d(payrollFloor)} floor` : '$0 (no payroll modeled)', freshness: 'policy', confidencePct: payrollFloor > 0 ? 90 : 55, weight: 1, influencesDecisions: true, toImprove: payrollFloor > 0 ? 'Safe-to-Spend protects one week of payroll as a liquidity floor. A broader reserve TARGET ($50k) is a separate savings goal.' : 'No weekly payroll modeled — cannot derive the payroll floor.' })
 
   // ── FORECAST (medium weight — tiered honesty is what matters here) ──
   const fcBase = round((85 - 35 * patternShare) * cashFresh)  // pattern-heavy forecast → lower reliability

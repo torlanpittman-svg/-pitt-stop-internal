@@ -25,12 +25,36 @@ function nextWeekday(from: Date, dow: number): Date { const d = new Date(Date.UT
 function nextDom(from: Date, dom: number): Date { const d = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), dom)); const t = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate())); if (d < t) d.setUTCMonth(d.getUTCMonth() + 1); return d }
 
 export type Priority = 'critical' | 'contractual' | 'planned'
-export interface DueEvent { label: string; category: string; cents: number; due: string; priority: Priority; committedOnIssue: boolean; accountId: string | null }
+export interface DueEvent {
+  label: string; category: string; cents: number; due: string; priority: Priority; committedOnIssue: boolean; accountId: string | null
+  // Evidence for the bill calendar: variable bills show a range/estimate, not false precision.
+  amountMinCents: number | null; amountMaxCents: number | null; variable: boolean
+  needsConfirmation: boolean          // amount not yet authoritative (e.g. active IRS plan, amount unknown)
+  confidence: string                  // manual | manual_verified | strongly_inferred | predicted | estimated | …
+}
 
 /** The operating (*2649) fin_account id — obligations paid from here reduce operating Safe-to-Spend.
  *  Obligations paid from *5600 (auto-sales) do NOT reduce operating cash. */
 async function operatingAccountId(): Promise<string | null> {
   const op = await getOperatingCash(); return op?.finAccountId ?? null
+}
+
+/**
+ * PROTECTED PAYROLL FLOOR — one normal week of employee payroll, derived DYNAMICALLY from the
+ * confirmed weekly payroll obligations (Torlan + Tony + Darryl = $3,040.32 today). This is NOT a
+ * bill and never appears on the obligation calendar; it is a liquidity floor held IN ADDITION to
+ * the scheduled Friday payroll so that, after every known obligation, Pitt Stop can still run one
+ * more payroll. Because it is a separate constant (not a re-listing of the dated payroll event),
+ * it does not double-count the scheduled payroll. Owner-confirmed policy.
+ */
+export async function getPayrollFloorCents(): Promise<number> {
+  const db = getDb()
+  const rows = await db.select().from(finObligations).where(and(
+    eq(finObligations.status, 'confirmed'),
+    eq(finObligations.category, 'payroll'),
+    eq(finObligations.frequency, 'weekly'),
+  ))
+  return rows.reduce((t, o) => t + (o.amountCents ?? o.avgAmountCents ?? 0), 0)
 }
 
 /** Expand confirmed obligations into concrete dated due-events within [now, now+horizon].
@@ -42,10 +66,17 @@ async function upcomingEvents(horizonDays: number, accountId?: string | null): P
   const events: DueEvent[] = []
   for (const o of confirmed) {
     if (accountId !== undefined && accountId !== null && o.paymentAccountId !== accountId) continue
+    // needsConfirmation: an active obligation whose amount is not yet authoritative (amountCents
+    // null but we still forecast a conservative predicted value from avgAmountCents).
+    const needsConfirmation = o.amountCents == null && (o.avgAmountCents ?? 0) > 0
     const cents = o.amountCents ?? o.avgAmountCents ?? 0
     if (!cents) continue
     const priority = (o.priority as Priority) ?? 'contractual'
-    const base = { label: o.vendor, category: o.category ?? 'other', cents, priority, committedOnIssue: o.committedOnIssue, accountId: o.paymentAccountId }
+    const variable = o.amountMinCents != null && o.amountMaxCents != null && o.amountMinCents !== o.amountMaxCents
+    const base = {
+      label: o.vendor, category: o.category ?? 'other', cents, priority, committedOnIssue: o.committedOnIssue, accountId: o.paymentAccountId,
+      amountMinCents: o.amountMinCents ?? null, amountMaxCents: o.amountMaxCents ?? null, variable, needsConfirmation, confidence: o.confidence,
+    }
     if (o.frequency === 'weekly' && o.dayOfWeek != null) {
       for (let d = nextWeekday(now, o.dayOfWeek); d <= end; d.setUTCDate(d.getUTCDate() + 7)) events.push({ ...base, due: iso(d) })
     } else if (o.frequency === 'biweekly' && o.dayOfWeek != null) {
@@ -61,7 +92,10 @@ async function upcomingEvents(horizonDays: number, accountId?: string | null): P
 }
 
 // ── Upcoming-obligations CALENDAR (per account, 7/14/30-day) ──
-export interface CalendarEvent { due: string; label: string; category: string; cents: number; priority: Priority; account: string }
+export interface CalendarEvent {
+  due: string; label: string; category: string; cents: number; priority: Priority; account: string
+  amountMinCents: number | null; amountMaxCents: number | null; variable: boolean; needsConfirmation: boolean; confidence: string
+}
 export interface ObligationCalendar {
   events: CalendarEvent[]
   window7Cents: number; window14Cents: number; window30Cents: number
@@ -75,7 +109,7 @@ export async function getObligationCalendar(days = 30): Promise<ObligationCalend
   const all = await upcomingEvents(days) // all accounts
   const now = Date.now()
   const within = (e: CalendarEvent, d: number) => new Date(e.due + 'T00:00:00Z').getTime() <= now + d * 86400_000
-  const events: CalendarEvent[] = all.map((e) => ({ due: e.due, label: e.label, category: e.category, cents: e.cents, priority: e.priority, account: e.accountId ? (nameById.get(e.accountId) ?? '—') : 'unassigned' }))
+  const events: CalendarEvent[] = all.map((e) => ({ due: e.due, label: e.label, category: e.category, cents: e.cents, priority: e.priority, account: e.accountId ? (nameById.get(e.accountId) ?? '—') : 'unassigned', amountMinCents: e.amountMinCents, amountMaxCents: e.amountMaxCents, variable: e.variable, needsConfirmation: e.needsConfirmation, confidence: e.confidence }))
   const sum = (xs: CalendarEvent[]) => xs.reduce((t, e) => t + e.cents, 0)
   const acctNames = [...new Set(events.map((e) => e.account))]
   return {
@@ -95,13 +129,28 @@ export interface SafeToSpend {
   availableCents: number | null; asOf: string | null; stale: boolean; horizonDays: number
   critical: Deduction[]; contractual: Deduction[]; planned: Deduction[]
   criticalCents: number; contractualCents: number; plannedCents: number; reservesCents: number
+  payrollFloorCents: number      // protected one-week payroll floor (separate from reserves; NOT a bill)
   coreSafeToSpendCents: number | null; afterPlannedCents: number | null
   trustworthy: boolean; disclosures: string[]
+}
+
+/**
+ * PURE core Safe-to-Spend arithmetic (unit-tested without a DB). CORE = verified cash − critical −
+ * contractual − reserves − protected payroll floor. The scheduled Friday payroll is already inside
+ * `criticalCents`; `payrollFloorCents` is a SEPARATE one-week cushion, so the same payroll is only
+ * ever subtracted once as an obligation and the floor is an independent liquidity guarantee.
+ */
+export function computeCoreSafeToSpendCents(input: {
+  availableCents: number | null; criticalCents: number; contractualCents: number; reservesCents: number; payrollFloorCents: number
+}): number | null {
+  if (input.availableCents == null) return null
+  return input.availableCents - input.criticalCents - input.contractualCents - input.reservesCents - input.payrollFloorCents
 }
 
 export async function computeSafeToSpend(horizonDays = 14): Promise<SafeToSpend> {
   const op = await getOperatingCash()
   const reserves = await getReservePolicy()
+  const payrollFloorCents = await getPayrollFloorCents()
   const events = await upcomingEvents(horizonDays, await operatingAccountId())
   const toDed = (e: DueEvent): Deduction => ({ label: e.label, cents: e.cents, due: e.due, priority: e.priority })
   const critical = events.filter((e) => e.priority === 'critical').map(toDed)
@@ -111,20 +160,26 @@ export async function computeSafeToSpend(horizonDays = 14): Promise<SafeToSpend>
   const criticalCents = sum(critical), contractualCents = sum(contractual), plannedCents = sum(planned)
 
   const available = op?.availableCents ?? null
-  const core = available == null ? null : available - criticalCents - contractualCents - reserves.totalCents
+  // CORE Safe-to-Spend = verified cash − critical − contractual − reserves − PROTECTED PAYROLL FLOOR.
+  // The payroll floor is a SEPARATE one-week-payroll cushion held on top of the scheduled payroll
+  // obligations (which are already inside `critical`); it is a constant, not a re-listing of the
+  // dated payroll event, so the same payroll is never subtracted twice.
+  const core = computeCoreSafeToSpendCents({ availableCents: available, criticalCents, contractualCents, reservesCents: reserves.totalCents, payrollFloorCents })
   const afterPlanned = core == null ? null : core - plannedCents
 
   const disclosures: string[] = []
   disclosures.push('This is STRICT Safe-to-Spend: verified bank cash minus confirmed obligations only. Expected customer/dealer inflows are modeled separately below and are NOT counted here until they land.')
-  if (!reserves.configured) disclosures.push('Reserve policy is UNCONFIGURED ($0 assumed) — no payroll/tax/operating buffer is protected yet.')
-  if ((core ?? 0) < 0) disclosures.push('A negative strict number means committed obligations exceed CURRENT verified cash — NOT that payroll cannot be met. See the expected-inflow forecast for whether incoming cash covers it.')
+  if (payrollFloorCents > 0) disclosures.push(`A one-week payroll floor of $${(payrollFloorCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })} is protected: Safe-to-Spend is only positive when spending it still leaves enough to run one normal payroll after known bills. The floor is a liquidity cushion, NOT a bill on the calendar, and does not double-count the scheduled Friday payroll.`)
+  if (!reserves.configured) disclosures.push('Long-term reserve TARGET ($50k) is separate and unfunded — that is a savings goal, not the protected payroll floor.')
+  if ((core ?? 0) < 0) disclosures.push('A negative strict number means committed obligations + payroll floor exceed CURRENT verified cash — NOT that payroll cannot be met. See the expected-inflow forecast for whether incoming cash covers it.')
   if (op?.stale) disclosures.push('Operating balance is stale (>24h) — run a sync for a current figure.')
   if (!op) disclosures.push('No verified operating account.')
 
-  const trustworthy = Boolean(reserves.configured && op && !op.stale && critical.length > 0)
+  const trustworthy = Boolean(op && !op.stale && payrollFloorCents > 0 && critical.length > 0)
   return {
     availableCents: available, asOf: op?.asOf ?? null, stale: op?.stale ?? true, horizonDays,
     critical, contractual, planned, criticalCents, contractualCents, plannedCents, reservesCents: reserves.totalCents,
+    payrollFloorCents,
     coreSafeToSpendCents: core, afterPlannedCents: afterPlanned, trustworthy, disclosures,
   }
 }
