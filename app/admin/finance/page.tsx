@@ -14,6 +14,8 @@ import { ingestTransactions, getRecentTransactions, getClassificationSummary } f
 import { discoverObligations, getObligationsByStatus, setObligationStatus } from '@/apps/finance/obligations-discovery'
 import { computeSafeToSpend, forecastWithInflows, getObligationCalendar } from '@/apps/finance/safe-to-spend'
 import { getExpectedInflows, getPipelineContext, addManualInflow, dismissInflow, deriveExpectedInflows } from '@/apps/finance/expected-inflows'
+import { getInflowForecast } from '@/apps/finance/inflow-forecast'
+import { getArSnapshot } from '@/apps/finance/ar'
 import { getCfoHeadline, getNextDanger, getRecommendations, getReserveStatus, getDebtSummary, getCashRunway, getMoneyFlow, getCfoConfidence, getNeedsVerification, type Health } from '@/apps/finance/cfo'
 import { getConfidenceScorecard, type Tier } from '@/apps/finance/confidence'
 import { getReservePolicy } from '@/apps/settings/db'
@@ -181,6 +183,8 @@ export default async function FinancePage() {
   // Runway lows at 7/14/30-day horizons — the REAL operational liquidity read (lowest projected
   // *2649 balance and when), distinct from the "30-day committed vs today's cash" gap.
   const [rw7, rw14] = await Promise.all([getCashRunway(7), getCashRunway(14)])
+  // Money-IN evidence hierarchy (real A/R + Sterling dated + cleaned baseline, anti-double-counted).
+  const [inflow7, inflow30, ar] = await Promise.all([getInflowForecast(7), getInflowForecast(30), getArSnapshot()])
   const projGap = (r: { lowCents: number | null }) => (r.lowCents != null && r.lowCents < 0 ? -r.lowCents : 0)
   const liquidityCushionNeeded = Math.max(projGap(rw7), projGap(rw14), projGap(runway))
   // Detail/admin data (lower on page)
@@ -328,15 +332,22 @@ export default async function FinancePage() {
       {/* ═══ D. MONEY IN / MONEY OUT ═══ */}
       <section className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
         <div className={`${card} border-emerald-900/30`}>
-          <div className="flex items-baseline justify-between"><h2 className="text-white font-bold">Money coming in</h2><span className="text-emerald-300 text-sm tabular-nums">7d +{big(flow.in7Cents)} · 30d +{big(flow.in30Cents)}</span></div>
-          <table className="w-full text-sm mt-3"><tbody>
-            {flow.inByCat.slice(0, 6).map((r, i) => (
-              <tr key={i} className="border-b border-gray-800/50"><td className="py-1.5 text-gray-300">{r.label}</td><td className="py-1.5"><span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${r.basis === 'pattern' ? 'bg-amber-950/40 text-amber-300 border-amber-900/60' : 'bg-emerald-950/40 text-emerald-300 border-emerald-900/60'}`}>{r.basis === 'pattern' ? 'pattern' : 'booked'}</span></td><td className="py-1.5 text-right tabular-nums text-emerald-300">+{money(r.cents)}</td></tr>
-            ))}
-            {flow.inByCat.length === 0 && <tr><td className="py-2 text-gray-500 text-sm">No expected inflows derived — run “Re-derive” below.</td></tr>}
-          </tbody></table>
-          {flow.patternInCents > 0 && <p className="text-amber-300/70 text-[11px] mt-2">⚠ {money(flow.patternInCents)} of expected-in is a historical deposit <b>pattern / run-rate</b>, NOT booked receivables. QuickBooks A/R actually owed is far smaller. These inform the forecast but are not money owed — do not treat as receivable.</p>}
-          <p className="text-gray-600 text-[11px] mt-1">Pipeline: {pipeline.dealerThisWeek} dealer jobs this week · {pipeline.readyRetail} retail ready · {pipeline.activeDealer} active dealer jobs.</p>
+          <div className="flex items-baseline justify-between mb-1"><h2 className="text-white font-bold">Money coming in</h2><span className="text-gray-600 text-xs">evidence-based · no double-count</span></div>
+          <p className="text-gray-600 text-[11px] mb-2">Specifically identified money is kept separate from normal run-rate. Run-rate is <b>expected activity</b>, never money owed.</p>
+          {[{ n: 'Next 7 days', f: inflow7 }, { n: 'Next 30 days', f: inflow30 }].map(({ n, f }) => (
+            <div key={n} className="mb-3 last:mb-0">
+              <p className={kicker}>{n}</p>
+              <div className="mt-1 space-y-1 text-sm">
+                {f.verifiedSettlingCents > 0 && <div className="flex justify-between"><span className="text-emerald-200">Verified / settling</span><span className="tabular-nums text-emerald-300">+{big(f.verifiedSettlingCents)}</span></div>}
+                <div className="flex justify-between"><span className="text-gray-300">Specifically identified <span className="text-gray-600">(dated receivables)</span></span><span className="tabular-nums text-emerald-300">+{big(f.specificDatedCents)}</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">+ Normal run-rate <span className="text-gray-600">(historical, residual)</span></span><span className="tabular-nums text-amber-300">~+{big(f.baselineResidualCents)}</span></div>
+                <div className="flex justify-between border-t border-gray-800 pt-1"><span className="text-emerald-200 font-semibold">Expected total</span><span className="tabular-nums text-emerald-300 font-bold">~{big(f.expectedTotalCents)}</span></div>
+                {f.amountKnownDateUnknownCents > 0 && <div className="flex justify-between"><span className="text-sky-300/90 text-xs">Known receivables · date unknown <span className="text-gray-600">(not in total above)</span></span><span className="tabular-nums text-sky-300">{big(f.amountKnownDateUnknownCents)}</span></div>}
+                {f.earnedUninvoicedCents > 0 && <div className="flex justify-between"><span className="text-gray-500 text-xs">Earned, not yet invoiced <span className="text-gray-600">(priced retail)</span></span><span className="tabular-nums text-gray-400">{big(f.earnedUninvoicedCents)}</span></div>}
+              </div>
+            </div>
+          ))}
+          <p className="text-gray-600 text-[11px] mt-1">Pipeline: {pipeline.dealerThisWeek} dealer jobs this week · {pipeline.readyRetail} retail ready · {pipeline.activeDealer} active dealer jobs (dealer $ unpriced).</p>
         </div>
         <div className={`${card} border-red-900/20`}>
           <div className="flex items-baseline justify-between"><h2 className="text-white font-bold">Money going out</h2><span className="text-red-300 text-sm tabular-nums">7d −{big(flow.out7Cents)} · 30d −{big(flow.out30Cents)}</span></div>
@@ -347,6 +358,36 @@ export default async function FinancePage() {
           </tbody></table>
           <p className="text-gray-600 text-[11px] mt-2">Operating (*2649) obligations only. Auto-sales (*5600) debts don't reduce operating cash.</p>
         </div>
+      </section>
+
+      {/* ═══ D2. REAL A/R (production QuickBooks) ═══ */}
+      <section className={`${card} mb-4`}>
+        <div className="flex items-baseline justify-between mb-2">
+          <div>
+            <h2 className="text-white font-bold">Accounts receivable <span className="text-gray-600 text-sm font-normal">· real production QuickBooks · who owes us</span></h2>
+            <p className="text-gray-600 text-[11px]">Open invoices with a balance. {ar.asOf ? `Snapshot ${freshnessLabel(ar.asOf)}.` : 'Awaiting first production A/R sync.'} Sandbox sample data is never shown.</p>
+          </div>
+          <div className="text-right"><p className={kicker}>Total A/R</p><p className="text-xl font-bold text-white tabular-nums">{big(ar.totalCents)}</p><p className="text-[11px] text-gray-500">{ar.count} open invoices</p></div>
+        </div>
+        {ar.asOf ? (<>
+          <div className="grid grid-cols-5 gap-2 mb-3">
+            {(['current', '1-30', '31-60', '61-90', '90+'] as const).map((b) => (
+              <div key={b} className={`rounded-lg border p-2 text-center ${b === 'current' ? 'border-emerald-900/40 bg-emerald-950/10' : b === '90+' ? 'border-red-900/40 bg-red-950/10' : 'border-gray-800 bg-gray-900/40'}`}>
+                <p className="text-[10px] text-gray-500 uppercase">{b === 'current' ? 'Current' : b + 'd'}</p>
+                <p className="text-sm font-bold tabular-nums text-gray-200">{big(ar.aging[b])}</p>
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-3 gap-3 text-sm mb-2">
+            <div><p className={kicker}>Dealer</p><p className="text-gray-200 tabular-nums">{big(ar.dealerCents)}</p></div>
+            <div><p className={kicker}>Retail</p><p className="text-gray-200 tabular-nums">{big(ar.retailCents)}</p></div>
+            <div><p className={kicker}>Unknown</p><p className="text-gray-400 tabular-nums">{big(ar.unknownCents)}</p></div>
+          </div>
+          {ar.byDealer.length > 0 && <p className="text-gray-500 text-[11px]">Dealer A/R: {ar.byDealer.map((d) => `${d.dealer} ${big(d.cents)} (${d.count})`).join(' · ')}</p>}
+          <p className="text-gray-600 text-[11px] mt-1">Sterling receivables in the current Tue→Fri cycle are the dated evidence in the forecast above; other open invoices are shown as “known · date unknown”.</p>
+        </>) : (
+          <p className="text-amber-300/70 text-sm">No A/R snapshot yet. It populates on the next production QuickBooks sync (fail-closed to the authoritative company; the sandbox connection is ignored).</p>
+        )}
       </section>
 
       {/* ═══ E. NEXT CASH-FLOW RISK ═══ */}

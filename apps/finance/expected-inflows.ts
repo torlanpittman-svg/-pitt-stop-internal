@@ -18,6 +18,22 @@ const iso = (d: Date) => d.toISOString().slice(0, 10)
 function nextWeekday(from: Date, dow: number): Date { const d = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate())); const diff = (dow - d.getUTCDay() + 7) % 7; d.setUTCDate(d.getUTCDate() + diff); return d }
 const median = (xs: number[]) => { if (!xs.length) return 0; const s = [...xs].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2) }
 
+// ── Baseline classification (pure, tested) ────────────────────────────────────
+// The historical baseline must model OPERATING BUSINESS INFLOW, not every credit to *2649.
+export type InflowKind = 'card' | 'qb_payments' | 'transfer' | 'refund' | 'deposit'
+export function classifyInflow(name: string | null): InflowKind {
+  const n = (name ?? '').toLowerCase()
+  if (/from checking|to checking|\btransfer\b|xfer/.test(n)) return 'transfer'                       // internal moves — NOT revenue
+  if (/\brefund|reversal|\breturn\b|pos cre|o'?\s?reilly|napa|autozone|advance auto/.test(n)) return 'refund' // vendor credits/returns — NOT new sales
+  if (/mer bnkcd|bankcard|merch/.test(n)) return 'card'                                               // Clover/card settlement (revenue)
+  if (/intuit.*pymt|pymt soln|intuitpmts|deposit intuit/.test(n)) return 'qb_payments'               // QB Payments settlement (revenue)
+  return 'deposit'                                                                                    // dealer checks / cash / generic (revenue)
+}
+export const isOperatingRevenue = (k: InflowKind) => k === 'card' || k === 'qb_payments' || k === 'deposit'
+/** Card weekly run-rate → per-business-day. Denominator is the 6 operating days (Mon–Sat), NOT the
+ *  count of days that happened to settle — the old bug that overstated card inflow. */
+export function cardDailyFromWeekly(weeklyCardCents: number): number { return Math.round(weeklyCardCents / 6) }
+
 /**
  * Regenerate DERIVED expected inflows from evidence. Manual rows (derived=false) are left untouched.
  *  - dealer_weekly (HIGH): trailing median of weekly NON-card deposits, placed on the modal deposit
@@ -30,33 +46,40 @@ export async function deriveExpectedInflows(actor: string | null, horizonDays = 
   const opId = (await opAccountId()) // operating *2649 fin_account id
   const now = new Date(); const end = new Date(Date.now() + horizonDays * 86400_000)
 
-  // Trailing 60d deposits on *2649, split card vs non-card.
+  // Trailing 60d inflows on *2649 — raw rows so we can classify OPERATING REVENUE vs non-revenue.
   const since = iso(new Date(Date.now() - 60 * 86400_000))
-  const rows = opId ? await db.select({
+  const raw = opId ? await db.select({
     dow: sql<number>`extract(dow from ${finTransactions.txnDate})::int`,
     wk: sql<string>`to_char(date_trunc('week', ${finTransactions.txnDate}), 'IYYY-IW')`,
     cents: sql<number>`(-${finTransactions.amountCents})::int`,
-    isCard: sql<boolean>`(lower(${finTransactions.name}) ~ 'mer bnkcd|bankcard|merch')`,
+    name: finTransactions.name,
   }).from(finTransactions).where(and(eq(finTransactions.finAccountId, opId), eq(finTransactions.direction, 'in'), eq(finTransactions.removed, false), gte(finTransactions.txnDate, since))) : []
 
-  // Non-card weekly totals → dealer/deposit weekly estimate (median of complete weeks).
-  const nonCard = rows.filter((r) => !r.isCard)
-  const weekTotals = new Map<string, number>()
-  for (const r of nonCard) weekTotals.set(r.wk, (weekTotals.get(r.wk) ?? 0) + r.cents)
-  const weeklyVals = [...weekTotals.values()].sort((a, b) => b - a)
-  // Drop the current (partial) week — it understates — by removing the smallest if we have ≥3 weeks.
-  const dealerWeeklyCents = weeklyVals.length >= 3 ? median(weeklyVals.slice(0, -1)) : median(weeklyVals)
+  // Classify; EXCLUDE internal transfers + refunds/vendor-credits. Keep card + QB Payments + generic
+  // deposits as operating revenue (QB Payments ARE real customer revenue — not removed).
+  const rows = raw.map((r) => ({ ...r, kind: classifyInflow(r.name) })).filter((r) => isOperatingRevenue(r.kind))
+
+  // NON-CARD operating-revenue weekly totals → dealer/deposit weekly run-rate (median of complete weeks).
+  const nonCard = rows.filter((r) => r.kind !== 'card')
+  const nonCardWeek = new Map<string, number>()
+  for (const r of nonCard) nonCardWeek.set(r.wk, (nonCardWeek.get(r.wk) ?? 0) + r.cents)
+  const nonCardWeekly = [...nonCardWeek.values()].sort((a, b) => b - a)
+  const dealerWeeklyCents = nonCardWeekly.length >= 3 ? median(nonCardWeekly.slice(0, -1)) : median(nonCardWeekly) // drop partial current week
   // Modal non-card deposit weekday (fallback Friday=5).
   const dowCount: Record<number, number> = {}
   for (const r of nonCard) dowCount[r.dow] = (dowCount[r.dow] ?? 0) + 1
   const modalDow = Object.entries(dowCount).sort((a, b) => b[1] - a[1])[0]?.[0]
   const depositDow = modalDow != null ? Number(modalDow) : 5
 
-  // Card daily average (per business day) from trailing card settlements.
-  const card = rows.filter((r) => r.isCard)
-  const cardTotal = card.reduce((t, r) => t + r.cents, 0)
-  const cardDays = new Set(card.map((r) => `${r.wk}-${r.dow}`)).size || 1
-  const cardDailyCents = Math.round(cardTotal / Math.max(cardDays, 1))
+  // CARD weekly totals → median weekly card run-rate → per BUSINESS-DAY over the 6 operating days
+  // (Mon–Sat). Using a robust weekly median (not a per-settlement-day average) fixes the prior
+  // overstatement that divided by only the days that happened to settle.
+  const card = rows.filter((r) => r.kind === 'card')
+  const cardWeek = new Map<string, number>()
+  for (const r of card) cardWeek.set(r.wk, (cardWeek.get(r.wk) ?? 0) + r.cents)
+  const cardWeekly = [...cardWeek.values()].sort((a, b) => b - a)
+  const cardWeeklyCents = cardWeekly.length >= 3 ? median(cardWeekly.slice(0, -1)) : median(cardWeekly)
+  const cardDailyCents = cardDailyFromWeekly(cardWeeklyCents)
 
   // Clear prior derived rows, re-insert fresh ones across the horizon.
   await db.delete(finExpectedInflows).where(eq(finExpectedInflows.derived, true))
@@ -67,7 +90,7 @@ export async function deriveExpectedInflows(actor: string | null, horizonDays = 
       await db.insert(finExpectedInflows).values({
         source: 'dealer_weekly', label: 'Dealer/deposit run-rate (deposit-history pattern)', amountCents: dealerWeeklyCents,
         expectedDate: iso(d), confidence: 'high', refType: 'pattern',
-        evidence: { basis: 'trailing median of weekly non-card deposits (60d)', weeklyVals, depositDow } as any,
+        evidence: { basis: 'trailing median of weekly NON-CARD operating-revenue deposits (60d); internal transfers + refunds EXCLUDED, QB Payments included', nonCardWeekly, depositDow } as any,
         dedupeKey: `dealer_weekly:${iso(d)}`, derived: true, status: 'projected',
       }).onConflictDoNothing()
       inserted++
@@ -80,7 +103,7 @@ export async function deriveExpectedInflows(actor: string | null, horizonDays = 
       await db.insert(finExpectedInflows).values({
         source: 'card_baseline', label: 'Retail card run-rate (settlement-history pattern)', amountCents: cardDailyCents,
         expectedDate: iso(d), confidence: 'high', refType: 'pattern',
-        evidence: { basis: 'trailing daily-average card (MER BNKCD) settlement (60d)', cardDailyCents } as any,
+        evidence: { basis: 'median weekly card (MER BNKCD) settlement (60d) ÷ 6 operating days', cardWeeklyCents, cardDailyCents } as any,
         dedupeKey: `card_baseline:${iso(d)}`, derived: true, status: 'projected',
       }).onConflictDoNothing()
       inserted++

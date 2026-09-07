@@ -260,6 +260,36 @@ export const finExpectedInflows = pgTable('fin_expected_inflows', {
   updatedAt:       timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index('fin_expected_inflows_date_idx').on(t.expectedDate)])
 
+// Real production QuickBooks A/R detail — a snapshot of OPEN invoices per sync (append-only history,
+// keyed by capturedAt). Each row is tagged with realm + environment so sandbox/sample-company data
+// can NEVER be read as CFO production truth (the read model filters to the authoritative prod realm).
+// Aging bucket + age are computed at capture time from invoice/due dates. Dealer/retail classification
+// uses the authoritative dealerships QB mapping + retail estimate links — never a name guess.
+export const finArInvoices = pgTable('fin_ar_invoices', {
+  id:              uuid('id').primaryKey().defaultRandom(),
+  realmId:         varchar('realm_id', { length: 32 }).notNull(),          // Intuit company id (provenance)
+  environment:     varchar('environment', { length: 12 }).notNull(),       // production|sandbox
+  qbInvoiceId:     varchar('qb_invoice_id', { length: 32 }).notNull(),      // QB Invoice.Id
+  docNumber:       varchar('doc_number', { length: 32 }),                   // QB DocNumber
+  customerId:      varchar('customer_id', { length: 32 }),                  // QB CustomerRef.value
+  customerName:    varchar('customer_name', { length: 200 }),
+  txnDate:         date('txn_date'),
+  dueDate:         date('due_date'),
+  totalCents:      integer('total_cents').notNull().default(0),
+  balanceCents:    integer('balance_cents').notNull().default(0),           // remaining owed
+  partial:         boolean('partial').notNull().default(false),             // 0 < balance < total
+  classification:  varchar('classification', { length: 12 }).notNull().default('unknown'), // dealer|retail|unknown
+  dealerName:      varchar('dealer_name', { length: 200 }),                 // when classification=dealer
+  linkedEstimateId:uuid('linked_estimate_id'),                             // retail Job/estimate link (if any)
+  agingBucket:     varchar('aging_bucket', { length: 8 }).notNull(),        // current|1-30|31-60|61-90|90+
+  ageDays:         integer('age_days').notNull().default(0),                // days past due (or since txn if no due)
+  capturedAt:      timestamp('captured_at', { withTimezone: true }).notNull(), // snapshot key (all rows of a sync share this)
+  createdAt:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('fin_ar_captured_idx').on(t.capturedAt),
+  index('fin_ar_realm_idx').on(t.realmId),
+])
+
 // Append-only audit for manual finance edits.
 export const finEvents = pgTable('fin_events', {
   id:        uuid('id').primaryKey().defaultRandom(),

@@ -138,6 +138,14 @@ export async function syncFromQbo(actor: string | null): Promise<{ ok: boolean; 
     summary.plLastMonth = { income: pick(plL, 'Total Income'), cogs: cogsOf(plL), grossProfit: pick(plL, 'Gross Profit'), expenses: pick(plL, 'Total Expenses'), net: pick(plL, 'Net Income'), periodStart: ymd(lastStart), periodEnd: ymd(lastEnd) }
     summary.balanceSheet = { totalAssets: pick(bsM, 'TOTAL ASSETS', 'Total Assets'), totalBank: pick(bsM, 'Total Bank Accounts'), totalLiabilities: pick(bsM, 'Total Liabilities'), totalEquity: pick(bsM, 'Total Equity'), totalCreditCards: pick(bsM, 'Total Credit Cards') }
     summary.arTotal = pick(arM, 'TOTAL', 'Total')
+    // Persist REAL open-invoice A/R detail (aging + dealer/retail) — fail-closed to the production
+    // realm so sandbox sample data can never become CFO truth. Isolated: never fails the QB sync.
+    try {
+      const { persistArSnapshot } = await import('./ar')
+      summary.arDetail = await persistArSnapshot(actor)
+    } catch (e) {
+      summary.arDetail = { ok: false, skipped: (e instanceof Error ? e.message : String(e)).slice(0, 200) }
+    }
     summary.employeesCount = (empRes.Employee ?? []).length
     summary.employees = (empRes.Employee ?? []).map((e: any) => e.DisplayName)
     summary.payrollLiabilities = payrollLiab
