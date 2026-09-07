@@ -57,25 +57,27 @@ export function classifyReceivable(
 
 // ── Owner-confirmed Sterling Tuesday→Friday payment cycle ──────────────────────
 const iso = (d: Date) => d.toISOString().slice(0, 10)
-/** The Friday of the submission cycle a Sterling invoice belongs to (its week's Tuesday + 3 days). */
-function cycleFridayFor(txnDate: string): Date {
-  const d = new Date(txnDate + 'T00:00:00Z')
-  const monday = new Date(d); monday.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)) // Monday of the invoice's week
-  const fri = new Date(monday); fri.setUTCDate(monday.getUTCDate() + 4)                     // Mon + 4 = Friday
-  return fri
+/** The next Friday on/after a date (UTC). */
+function nextFridayOnOrAfter(from: Date): Date {
+  const d = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()))
+  d.setUTCDate(d.getUTCDate() + ((5 - d.getUTCDay() + 7) % 7)) // Fri = 5
+  return d
 }
 /**
- * Owner-confirmed rule: Sterling work → invoice submitted Tuesday → Sterling check on FRIDAY of that
- * week. Assign the cycle Friday ONLY when it is defensible: the Friday is not in the past and is within
- * the near window (the invoice plausibly belongs to the CURRENT pay cycle). Otherwise return null —
- * the amount is known but the cash date is NOT (an overdue/ambiguous invoice, shown as date-unknown).
+ * Owner-confirmed rule: Sterling work is completed through a week, the invoices are turned in on
+ * TUESDAY (for the prior week's work), and Sterling pays by CHECK the FRIDAY of that submission week.
+ * QB invoice dates track the WORK/creation date (e.g. a Thursday), not the submission Tuesday, so we
+ * cannot prove the exact submission Tuesday from QB alone. Defensible implementation: a RECENT Sterling
+ * invoice (within `recentWindowDays`, i.e. plausibly this cycle's work) is expected on the COMING
+ * Friday. An older still-open invoice is an exception — amount known, cash date UNKNOWN (return null),
+ * never blindly assigned to Friday.
  */
-export function sterlingExpectedFriday(txnDate: string | null, today: Date, windowDays = 10): string | null {
+export function sterlingExpectedFriday(txnDate: string | null, today: Date, recentWindowDays = 9): string | null {
   if (!txnDate) return null
-  const fri = cycleFridayFor(txnDate)
+  const txn = new Date(txnDate + 'T00:00:00Z').getTime()
   const todayUTC = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
-  const days = Math.round((fri.getTime() - todayUTC) / 86400_000)
-  if (days < 0) return null            // that Friday already passed → not defensibly this cycle
-  if (days > windowDays) return null   // too far out to attribute to the current cycle
-  return iso(fri)
+  const ageDays = Math.round((todayUTC - txn) / 86400_000)
+  if (ageDays < 0) return null                 // future-dated invoice — cannot attribute to this cycle
+  if (ageDays > recentWindowDays) return null  // too old to be the current cycle → cash date unknown
+  return iso(nextFridayOnOrAfter(today))
 }
