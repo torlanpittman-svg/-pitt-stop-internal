@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useState, useCallback } from 'react'
 import type { OrderWithContext } from '@/apps/workflow/db'
+import type { RemovalPreview } from '@/apps/workflow/order-removal'
 import { isDealerOrder, orderSourceKind } from '@/apps/workflow/fees'
 import CustomerContactModal from '@/app/components/CustomerContactModal'
 import SwipeRow from '@/app/components/SwipeRow'
@@ -14,14 +15,65 @@ function stockFromNotes(notes: string | null | undefined): string | null {
   return s && s.toLowerCase() !== 'n/a' ? s : null
 }
 
-/** Dealer QB invoice #, read from the same Job notes ("… | Invoice: X | …"). Used to WARN before
- *  removal that a QuickBooks invoice is linked — never to change QB. Skips placeholders. */
-function invoiceFromNotes(notes: string | null | undefined): string | null {
-  const m = (notes ?? '').match(/Invoice:\s*([^|]+?)\s*(?:\||$)/i)
-  const s = m?.[1]?.trim()
-  if (!s) return null
-  const low = s.toLowerCase()
-  return low === 'n/a' || low === 'pending sync' ? null : s
+/** Remove-button label — spells out the QB effect when there is one. */
+function removeButtonLabel(preview: RemovalPreview | null): string {
+  if (preview?.kind === 'line_remove' || preview?.kind === 'void_standalone') return 'Remove Vehicle'
+  return 'Remove'
+}
+
+/** The QuickBooks consequence copy shown in the confirm sheet, driven by the live preview. */
+function renderQbConsequence(preview: RemovalPreview) {
+  const inv = preview.invoiceNumber ? `#${preview.invoiceNumber}` : ''
+  if (preview.kind === 'blocked_paid') {
+    return (
+      <div className="rounded-xl border border-red-900/60 bg-red-950/30 px-4 py-3 mb-4">
+        <p className="text-red-300 text-sm">This invoice {inv} has payment activity and cannot be automatically removed. Review the invoice in QuickBooks.</p>
+      </div>
+    )
+  }
+  if (preview.kind === 'ambiguous') {
+    return (
+      <div className="rounded-xl border border-red-900/60 bg-red-950/30 px-4 py-3 mb-4">
+        <p className="text-red-300 text-sm">This vehicle couldn’t be safely matched to an exact QuickBooks invoice line, so QuickBooks will not be changed. Review the invoice in QuickBooks.</p>
+      </div>
+    )
+  }
+  if (preview.kind === 'qb_unreachable') {
+    return (
+      <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 px-4 py-3 mb-4">
+        <p className="text-amber-300 text-sm">Couldn’t reach QuickBooks to check the invoice. You can try again — nothing is changed unless the invoice can be verified.</p>
+      </div>
+    )
+  }
+  if (preview.kind === 'line_remove') {
+    return (
+      <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 px-4 py-3 mb-4">
+        <p className="text-amber-200 text-sm mb-1">It is currently on QuickBooks Invoice {inv}. Removing it will:</p>
+        <ul className="text-amber-200/90 text-sm list-disc pl-5 space-y-0.5">
+          <li>remove this vehicle from the Work Board</li>
+          <li>remove this vehicle’s line from Invoice {inv}</li>
+        </ul>
+        <p className="text-amber-200/70 text-xs mt-1.5">Other vehicles on the invoice will not be changed.</p>
+      </div>
+    )
+  }
+  if (preview.kind === 'void_standalone') {
+    return (
+      <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 px-4 py-3 mb-4">
+        <p className="text-amber-200 text-sm mb-1">It has its own QuickBooks Invoice {inv}. Removing it will:</p>
+        <ul className="text-amber-200/90 text-sm list-disc pl-5 space-y-0.5">
+          <li>remove this vehicle from the Work Board</li>
+          <li>void the standalone QuickBooks invoice {inv}</li>
+        </ul>
+        <p className="text-amber-200/70 text-xs mt-1.5">This cannot be undone from the Work Board.</p>
+      </div>
+    )
+  }
+  if (preview.kind === 'idempotent_qb_done') {
+    return <p className="text-gray-500 text-xs mb-4">The QuickBooks invoice was already corrected. This just clears the vehicle from the Work Board.</p>
+  }
+  // no_qb / already_removed
+  return <p className="text-gray-500 text-xs mb-4">This vehicle has not been added to QuickBooks. It is removed from the Work Board only (cancelled, not deleted) — history is kept.</p>
 }
 
 // Employee-facing card status: is the Job still active, or finished? The detailed
@@ -52,7 +104,9 @@ export default function VehicleCard({
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [removing, setRemoving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const [qbInvoice, setQbInvoice] = useState<string | null>(null)  // linked QB invoice # (warning)
+  // What removal will do to QuickBooks — fetched live from the preview endpoint when the sheet opens.
+  const [preview, setPreview] = useState<RemovalPreview | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
 
   // Year Make Model, plus the existing authoritative color (helps tell apart same-YMM
   // vehicles at the shop). Color is appended only when present — no empty separator, no
@@ -70,21 +124,18 @@ export default function VehicleCard({
   // (an accidental check-in of either kind can be corrected). The confirm + tap are still required.
   const canRemove = removable
 
-  // Open the confirmation; look up any linked QB invoice so we can warn it stays intact. Dealer
-  // linkage is carried in the Job notes ("… | Invoice: X | …"); retail linkage comes from the draft.
+  // Open the confirmation and ask the server exactly what removal will do to QuickBooks (remove one
+  // line from a multi-vehicle invoice, void a standalone invoice, nothing, or block on payment).
   const openConfirm = useCallback(async () => {
-    setErr(null); setQbInvoice(null); setConfirmOpen(true)
-    if (isDealer) {
-      const inv = invoiceFromNotes(order.notes)
-      if (inv) setQbInvoice(inv)
-      return
-    }
+    setErr(null); setPreview(null); setPreviewLoading(true); setConfirmOpen(true)
     try {
-      const r = await fetch(`/api/workflow/orders/${order.id}/invoice`, { cache: 'no-store' })
+      const r = await fetch(`/api/workflow/orders/${order.id}/remove`, { cache: 'no-store' })
       const d = await r.json().catch(() => null)
-      if (d?.draft?.qb?.linked) setQbInvoice(d.draft.qb.invoiceNumber ?? '')
-    } catch { /* warning is best-effort; removal still works */ }
-  }, [order.id, isDealer, order.notes])
+      if (r.ok && d?.ok && d.preview) setPreview(d.preview as RemovalPreview)
+      else if (d?.error) setErr(d.error)
+    } catch { /* preview is best-effort; the POST re-checks and fails closed if needed */ }
+    finally { setPreviewLoading(false) }
+  }, [order.id])
 
   const doRemove = useCallback(async () => {
     if (removing) return
@@ -92,7 +143,7 @@ export default function VehicleCard({
     try {
       const r = await fetch(`/api/workflow/orders/${order.id}/remove`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
       const d = await r.json().catch(() => ({}))
-      if (!r.ok || !d.ok) { setErr(d.error ?? 'Could not remove this Job.'); return }
+      if (!r.ok || !d.ok) { setErr(d.error ?? 'Could not remove this vehicle.'); return }
       setConfirmOpen(false)
       onRemoved?.(order.id)   // parent drops it from the board immediately
     } catch { setErr('Network error — please try again.') }
@@ -174,7 +225,8 @@ export default function VehicleCard({
 
       {contactOpen && <CustomerContactModal orderId={order.id} customerName={title} onClose={() => setContactOpen(false)} />}
 
-      {/* Confirmation — required before anything is removed. Warns if a QB invoice is linked. */}
+      {/* Confirmation — required before anything is removed. Shows the LIVE QuickBooks consequence
+          (no link / remove one line / void standalone / blocked by payment / ambiguous). */}
       {confirmOpen && (
         <div className="fixed inset-0 z-[70] flex flex-col justify-end bg-black/70" onClick={() => !removing && setConfirmOpen(false)}>
           <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10" onClick={(e) => e.stopPropagation()}>
@@ -183,18 +235,24 @@ export default function VehicleCard({
             <p className="text-gray-400 text-sm">{title}</p>
             {stock && <p className="text-gray-500 text-sm mb-3">Stock #{stock}</p>}
             {!stock && <div className="mb-3" />}
-            {qbInvoice !== null && (
-              <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 px-4 py-3 mb-3">
-                <p className="text-amber-300 text-sm">
-                  This Job has QuickBooks Invoice{qbInvoice ? ` #${qbInvoice}` : ''}. Removing the Job from the Work Board will <b>not</b> remove or void the QuickBooks invoice.
-                </p>
-              </div>
+
+            {/* Live QuickBooks consequence — what this removal will actually do. */}
+            {previewLoading && <p className="text-gray-500 text-sm mb-4">Checking QuickBooks…</p>}
+            {!previewLoading && preview && renderQbConsequence(preview)}
+            {!previewLoading && !preview && !err && (
+              <p className="text-gray-500 text-xs mb-4">The vehicle is removed from the Work Board (cancelled, not deleted) — customer, vehicle, and history are kept.</p>
             )}
-            <p className="text-gray-500 text-xs mb-4">The Job is cancelled (not deleted) — the customer, vehicle, and history are kept.</p>
+
             {err && <p className="text-red-400 text-sm mb-3">{err}</p>}
             <div className="flex gap-3">
-              <button onClick={() => setConfirmOpen(false)} disabled={removing} className="flex-1 py-3.5 rounded-2xl border border-gray-700 text-gray-300 font-semibold active:opacity-70 disabled:opacity-40">Cancel</button>
-              <button onClick={doRemove} disabled={removing} className="flex-1 py-3.5 rounded-2xl bg-red-600 text-white font-bold active:bg-red-700 disabled:opacity-50">{removing ? 'Removing…' : 'Remove'}</button>
+              <button onClick={() => setConfirmOpen(false)} disabled={removing} className="flex-1 py-3.5 rounded-2xl border border-gray-700 text-gray-300 font-semibold active:opacity-70 disabled:opacity-40">
+                {preview?.blocked ? 'Close' : 'Cancel'}
+              </button>
+              {!preview?.blocked && (
+                <button onClick={doRemove} disabled={removing || previewLoading} className="flex-1 py-3.5 rounded-2xl bg-red-600 text-white font-bold active:bg-red-700 disabled:opacity-50">
+                  {removing ? 'Removing…' : removeButtonLabel(preview)}
+                </button>
+              )}
             </div>
           </div>
         </div>
