@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import type { OrderWithContext } from '@/apps/workflow/db'
 import { sortWorkBoard } from '@/apps/workflow/work-board-order'
+import { isActiveWorkStatus } from '@/apps/workflow/removal'
 import VehicleCard from './VehicleCard'
 import IdentityBar, { useIdentity } from '@/app/components/IdentityBar'
 import NavHeader from '@/app/components/NavHeader'
@@ -13,17 +14,16 @@ const HIGHLIGHT_MS  = 4_000
 
 type FilterTab = 'active' | 'ready'
 
-// Jobs that still require shop work — the DEFAULT board view. A Job leaves this view
-// the instant it completes (becomes Ready); it is not deleted and still counts in
-// Daily Production. Ready Jobs move to the "Ready" tab (pickup/delivery/reopen).
-const ACTIVE_WORK_STATUSES = new Set(['arrived', 'in_progress', 'paused', 'drying', 'qc_ready'])
-
+// Jobs that still require shop work — the DEFAULT board view. A Job leaves this view the instant
+// it completes (becomes Ready) OR is removed (becomes cancelled). The active-work set lives in
+// apps/workflow/removal (shared with removeOrder), so a removed/cancelled Job is never shown here.
+//
 // Board DISPLAY priority (canonical comparator in apps/workflow/work-board-order): URGENT (any source)
 // first, then non-urgent RETAIL, then non-urgent DEALER — stable, so existing arrivedAt (age) order is
 // preserved within each group. Priority is visual/display only — it never moves a Job between statuses.
 function filterOrders(orders: OrderWithContext[], tab: FilterTab): OrderWithContext[] {
   if (tab === 'ready') return sortWorkBoard(orders.filter(o => o.status === 'ready'))
-  return sortWorkBoard(orders.filter(o => ACTIVE_WORK_STATUSES.has(o.status)))
+  return sortWorkBoard(orders.filter(o => isActiveWorkStatus(o.status)))
 }
 
 export default function WorkBoardClient({
@@ -79,7 +79,7 @@ export default function WorkBoardClient({
   }, [refresh])
 
   const counts = {
-    active: orders.filter(o => ACTIVE_WORK_STATUSES.has(o.status)).length,
+    active: orders.filter(o => isActiveWorkStatus(o.status)).length,
     ready:  orders.filter(o => o.status === 'ready').length,
   }
 

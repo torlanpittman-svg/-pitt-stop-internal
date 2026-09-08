@@ -12,6 +12,8 @@ import {
 import { partitionServices } from './services'
 import { effectiveProductionDate, shopToday } from './production'
 import { shopTimezone } from './completion'
+import { removalEligibility, scanSyncStatusAfterRemoval } from './removal'
+import { getScanByServiceOrderId, updateScan, logScanEvent } from '@/apps/dealer-checkin/db'
 
 export type EmployeeRow             = typeof employees.$inferSelect
 export type LocationRow             = typeof locations.$inferSelect
@@ -450,26 +452,24 @@ export async function transitionOrder(params: {
 
 /**
  * Manager/admin: REMOVE a mistaken/duplicate Job from the Work Board (soft cancel). Sets
- * status='cancelled' + cancelledAt so it drops from listActiveOrders immediately. SOFT only —
- * customer, vehicle, estimate, services, completion history and any QuickBooks linkage are all
- * left intact and recoverable. RETAIL + ACTIVE only: refuses dealer Jobs and any Ready/
- * Delivered/Cancelled Job (server-enforced, not just hidden in the UI). Never touches
- * completed_at. Writes a 'removed' audit event (actor, prior status, QB-invoice note).
+ * status='cancelled' + cancelledAt so it drops from listActiveOrders, Production, and the CFO
+ * earned/uninvoiced queries immediately. SOFT only — customer, vehicle, estimate, services,
+ * completion history and any QuickBooks linkage are all left intact and recoverable. Works for
+ * RETAIL and DEALER Jobs (both can be an accidental check-in); refuses any Ready/Delivered/
+ * Cancelled Job (server-enforced lifecycle gate — see removalEligibility). Never touches
+ * completed_at and NEVER calls QuickBooks — for a dealer Job whose check-in scan is still queued
+ * for QB, it flips the scan out of the queue so it can never re-batch. Writes a 'removed' audit
+ * event (actor, prior status, whether QB linkage existed).
  */
-const REMOVABLE_STATUSES = ['arrived', 'in_progress', 'paused', 'drying', 'qc_ready']
-export async function removeOrder(params: { orderId: string; actor: string | null }): Promise<{ ok: boolean; error?: string; order?: ServiceOrderRow }> {
+export async function removeOrder(params: { orderId: string; actor: string | null }): Promise<{ ok: boolean; error?: string; order?: ServiceOrderRow; qbLinked?: boolean }> {
   const db = getDb()
   const [order] = await db.select().from(serviceOrders).where(eq(serviceOrders.id, params.orderId)).limit(1)
   if (!order) return { ok: false, error: 'Job not found' }
-  // Dealer isolation — dealer Jobs are managed in Dealer Check-In, never removed from here.
+  // Lifecycle gate only — retail AND dealer are both removable (accidental check-in correction).
+  const gate = removalEligibility(order)
+  if (!gate.ok) return { ok: false, error: gate.error }
   const src = (order.source ?? '').toLowerCase(), typ = (order.serviceType ?? '').toLowerCase()
-  if (src === 'dealer' || src === 'dealer_checkin' || typ.startsWith('dealer')) {
-    return { ok: false, error: 'Dealer Jobs are managed in Dealer Check-In.' }
-  }
-  // Active only — a Ready/Delivered/Cancelled Job cannot be swipe-removed (production-safe).
-  if (!REMOVABLE_STATUSES.includes(order.status)) {
-    return { ok: false, error: `Only an active Job can be removed (this Job is ${order.status}).` }
-  }
+  const isDealer = src === 'dealer' || src === 'dealer_checkin' || typ.startsWith('dealer')
 
   const now = new Date()
   // Stop any active tech assignments (same as a normal cancel transition).
@@ -479,15 +479,32 @@ export async function removeOrder(params: { orderId: string; actor: string | nul
     .set({ status: 'cancelled', cancelledAt: now, updatedAt: now })   // never touches completed_at
     .where(eq(serviceOrders.id, params.orderId)).returning()
 
-  // QB linkage is LEFT INTACT — record it in the audit note (we never void/delete the invoice).
-  const [est] = await db.select({ qbInvoiceNumber: jobEstimates.qbInvoiceNumber })
-    .from(jobEstimates).where(eq(jobEstimates.serviceOrderId, params.orderId)).limit(1)
-  const qbNote = est?.qbInvoiceNumber ? ` · QuickBooks Invoice #${est.qbInvoiceNumber} left intact` : ''
+  // QB linkage is LEFT INTACT — we only RECORD it (never void/delete the invoice). Retail linkage
+  // lives on the job estimate; dealer linkage lives on the check-in scan.
+  let qbInvoice: string | null = null
+  if (isDealer) {
+    const scan = await getScanByServiceOrderId(params.orderId)
+    if (scan) {
+      qbInvoice = scan.qbInvoiceNumber ?? null
+      // Mark the scan removed + drop it from the QB queue drain so it can never re-batch (no QB call).
+      await updateScan(scan.id, { status: 'removed', qbSyncStatus: scanSyncStatusAfterRemoval(scan.qbSyncStatus) })
+      await logScanEvent({
+        scanId: scan.id, eventType: 'removed', actor: params.actor,
+        note: `Work Board Job removed${qbInvoice ? ` · QuickBooks Invoice #${qbInvoice} left intact` : ''}`,
+      })
+    }
+  } else {
+    const [est] = await db.select({ qbInvoiceNumber: jobEstimates.qbInvoiceNumber })
+      .from(jobEstimates).where(eq(jobEstimates.serviceOrderId, params.orderId)).limit(1)
+    qbInvoice = est?.qbInvoiceNumber ?? null
+  }
+  const qbNote = qbInvoice ? ` · QuickBooks Invoice #${qbInvoice} left intact` : ''
   await logEvent({
     serviceOrderId: params.orderId, eventType: 'removed', employeeName: params.actor,
-    oldStatus: order.status, newStatus: 'cancelled', note: `Removed from Work Board${qbNote}`,
+    oldStatus: order.status, newStatus: 'cancelled',
+    note: `Removed from Work Board (${isDealer ? 'dealer' : 'retail'})${qbNote}`,
   })
-  return { ok: true, order: updated }
+  return { ok: true, order: updated, qbLinked: qbInvoice != null }
 }
 
 /**

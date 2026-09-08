@@ -14,6 +14,16 @@ function stockFromNotes(notes: string | null | undefined): string | null {
   return s && s.toLowerCase() !== 'n/a' ? s : null
 }
 
+/** Dealer QB invoice #, read from the same Job notes ("… | Invoice: X | …"). Used to WARN before
+ *  removal that a QuickBooks invoice is linked — never to change QB. Skips placeholders. */
+function invoiceFromNotes(notes: string | null | undefined): string | null {
+  const m = (notes ?? '').match(/Invoice:\s*([^|]+?)\s*(?:\||$)/i)
+  const s = m?.[1]?.trim()
+  if (!s) return null
+  const low = s.toLowerCase()
+  return low === 'n/a' || low === 'pending sync' ? null : s
+}
+
 // Employee-facing card status: is the Job still active, or finished? The detailed
 // lifecycle (in_progress/paused/drying/qc_ready) stays in the data model + manager
 // views — employees just see Active vs Ready.
@@ -56,18 +66,25 @@ export default function VehicleCard({
   const isDealer = kind === 'dealer'
   const isUrgent = order.isUrgent === true
   const stock = isDealer ? stockFromNotes(order.notes) : null
-  // Swipe-to-remove is RETAIL + manager/admin only (dealer cards never get the gesture).
-  const canRemove = removable && !isDealer
+  // Swipe-to-remove is offered to manager/admin on any active card — RETAIL and DEALER alike
+  // (an accidental check-in of either kind can be corrected). The confirm + tap are still required.
+  const canRemove = removable
 
-  // Open the confirmation; look up any linked QB invoice so we can warn it stays intact.
+  // Open the confirmation; look up any linked QB invoice so we can warn it stays intact. Dealer
+  // linkage is carried in the Job notes ("… | Invoice: X | …"); retail linkage comes from the draft.
   const openConfirm = useCallback(async () => {
     setErr(null); setQbInvoice(null); setConfirmOpen(true)
+    if (isDealer) {
+      const inv = invoiceFromNotes(order.notes)
+      if (inv) setQbInvoice(inv)
+      return
+    }
     try {
       const r = await fetch(`/api/workflow/orders/${order.id}/invoice`, { cache: 'no-store' })
       const d = await r.json().catch(() => null)
       if (d?.draft?.qb?.linked) setQbInvoice(d.draft.qb.invoiceNumber ?? '')
     } catch { /* warning is best-effort; removal still works */ }
-  }, [order.id])
+  }, [order.id, isDealer, order.notes])
 
   const doRemove = useCallback(async () => {
     if (removing) return
@@ -149,8 +166,8 @@ export default function VehicleCard({
 
   return (
     <>
-      {/* Manager/admin on a retail Active Job → swipe-left reveals Remove (tap + confirm required;
-          a swipe alone never removes). Everyone else / dealer cards keep the plain card. */}
+      {/* Manager/admin on any Active Job (retail OR dealer) → swipe-left reveals Remove (tap +
+          confirm required; a swipe alone never removes). Everyone else keeps the plain card. */}
       {canRemove
         ? <SwipeRow onRemove={openConfirm} busy={removing}>{card}</SwipeRow>
         : card}
@@ -161,9 +178,11 @@ export default function VehicleCard({
       {confirmOpen && (
         <div className="fixed inset-0 z-[70] flex flex-col justify-end bg-black/70" onClick={() => !removing && setConfirmOpen(false)}>
           <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-white font-bold text-lg mb-2">Remove this Job from the Work Board?</h3>
-            <p className="text-white text-base font-semibold">{title}</p>
-            <p className="text-gray-400 text-sm mb-3">{vehicleName}</p>
+            <h3 className="text-white font-bold text-lg mb-2">Remove this vehicle from the Work Board?</h3>
+            <p className="text-white text-base font-semibold">{vehicleName}</p>
+            <p className="text-gray-400 text-sm">{title}</p>
+            {stock && <p className="text-gray-500 text-sm mb-3">Stock #{stock}</p>}
+            {!stock && <div className="mb-3" />}
             {qbInvoice !== null && (
               <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 px-4 py-3 mb-3">
                 <p className="text-amber-300 text-sm">
