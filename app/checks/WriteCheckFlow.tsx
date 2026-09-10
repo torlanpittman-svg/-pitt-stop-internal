@@ -10,7 +10,8 @@ import { useRouter } from 'next/navigation'
 import type { CheckView } from '@/apps/checks/types'
 
 type Bank = { key: 'operating' | 'auto_sales'; qboAccountId: string; label: string }
-type Cat = { key: string; label: string; entity: 'operating' | 'auto_sales'; hint: string }
+type Cat = { key: string; label: string; entity: 'operating' | 'auto_sales'; hint: string; linksJob: boolean; linksVehicle: boolean }
+type LinkOption = { id: string; label: string; sub?: string | null }
 type Readiness = { ready: boolean; enabled: boolean; operatingBankConfigured: boolean; autoSalesBankConfigured: boolean; missingCategoryAccounts: string[] }
 type VendorMatch = { id: string; displayName: string }
 type Preview = { decision: 'use' | 'create' | 'ambiguous'; vendorId?: string; displayName?: string; matches: VendorMatch[]; suggestions: VendorMatch[] }
@@ -41,6 +42,12 @@ export default function WriteCheckFlow(props: Props) {
   const [purpose, setPurpose] = useState('')
   const [category, setCategory] = useState('shop_general')
 
+  // Optional soft link to a Work Board job (Customer Vehicle) or Auto Sales vehicle.
+  const [linkId, setLinkId] = useState<string | null>(null)
+  const [linkLabel, setLinkLabel] = useState<string | null>(null)
+  const [linkOptions, setLinkOptions] = useState<LinkOption[]>([])
+  const [linkLoading, setLinkLoading] = useState(false)
+
   const [preview, setPreview] = useState<Preview | null>(null)
   const [chosenVendorId, setChosenVendorId] = useState<string | null>(null)
   const [confirmCreate, setConfirmCreate] = useState(false)
@@ -58,6 +65,21 @@ export default function WriteCheckFlow(props: Props) {
   const amountValid = Number.isInteger(amountCents) && amountCents > 0
   const categoryConfigured = !props.readiness.missingCategoryAccounts.includes(category)
   const bankConfigured = entity === 'operating' ? props.readiness.operatingBankConfigured : props.readiness.autoSalesBankConfigured
+  const linkKind: 'job' | 'vehicle' | null = cat.linksJob ? 'job' : cat.linksVehicle ? 'vehicle' : null
+
+  async function selectCategory(key: string) {
+    setCategory(key)
+    const next = props.categories.find((c) => c.key === key)!
+    const kind = next.linksJob ? 'job' : next.linksVehicle ? 'vehicle' : null
+    setLinkId(null); setLinkLabel(null); setLinkOptions([])
+    if (!kind) return
+    setLinkLoading(true)
+    try {
+      const res = await fetch(`/api/checks/links?kind=${kind}`)
+      const data = await res.json()
+      if (res.ok) setLinkOptions(data.options ?? [])
+    } catch { /* picker is optional — ignore load failure */ } finally { setLinkLoading(false) }
+  }
 
   // ── Not configured yet ──
   if (!props.enabled || !props.readiness.operatingBankConfigured) {
@@ -115,6 +137,8 @@ export default function WriteCheckFlow(props: Props) {
           vendorId: chosenVendorId,
           allowCreateVendor: preview?.decision === 'create' ? confirmCreate : false,
           amountCents, memo: purpose.trim() || null, category,
+          linkedJobId: linkKind === 'job' ? linkId : null,
+          linkedVehicleId: linkKind === 'vehicle' ? linkId : null,
           idempotencyKey: idemKey,
         }),
       })
@@ -175,6 +199,7 @@ export default function WriteCheckFlow(props: Props) {
             {purpose.trim() && <Row label="For">{purpose.trim()}</Row>}
             <Row label="From">{bank.label}</Row>
             <Row label="Category">{cat.label}{entity === 'auto_sales' && <span className="ml-2 rounded bg-purple-100 px-1.5 py-0.5 text-xs text-purple-700">Auto Sales — separate</span>}</Row>
+            {linkKind && <Row label={linkKind === 'job' ? 'Customer vehicle' : 'Auto Sales vehicle'}>{linkLabel ?? 'Not specified'}</Row>}
             <Row label="Check #">{nextNumber != null ? `${nextNumber} (next)` : '—'}</Row>
           </dl>
 
@@ -231,7 +256,7 @@ export default function WriteCheckFlow(props: Props) {
         <Field label="Category">
           <div className="grid grid-cols-2 gap-2">
             {props.categories.map((c) => (
-              <button key={c.key} onClick={() => setCategory(c.key)}
+              <button key={c.key} onClick={() => selectCategory(c.key)}
                 className={`rounded-xl border px-3 py-3 text-left text-sm ${category === c.key ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-300 bg-white'}`}>
                 <div className="font-medium">{c.label}</div>
                 {c.entity === 'auto_sales' && <div className={`text-xs ${category === c.key ? 'text-purple-200' : 'text-purple-600'}`}>separate books</div>}
@@ -240,6 +265,29 @@ export default function WriteCheckFlow(props: Props) {
           </div>
           {!categoryConfigured && <p className="mt-1 text-xs text-amber-600">No expense account mapped for this category yet.</p>}
         </Field>
+
+        {/* Optional attribution: Customer Vehicle → Work Board job; Auto Sales → inventory vehicle. */}
+        {linkKind && (
+          <Field label={linkKind === 'job' ? 'Which customer vehicle? (optional)' : 'Which Auto Sales vehicle? (optional)'}>
+            {linkLoading ? (
+              <p className="text-sm text-neutral-400">Loading…</p>
+            ) : linkOptions.length === 0 ? (
+              <p className="text-sm text-neutral-400">{linkKind === 'job' ? 'No vehicles on the Work Board right now.' : 'No inventory vehicles found.'}</p>
+            ) : (
+              <div className="max-h-56 space-y-1 overflow-y-auto rounded-xl border border-neutral-200 p-1">
+                <button onClick={() => { setLinkId(null); setLinkLabel(null) }}
+                  className={`w-full rounded-lg px-3 py-2 text-left text-sm ${linkId === null ? 'bg-neutral-900 text-white' : 'bg-white'}`}>None / not vehicle-specific</button>
+                {linkOptions.map((o) => (
+                  <button key={o.id} onClick={() => { setLinkId(o.id); setLinkLabel(o.label) }}
+                    className={`w-full rounded-lg px-3 py-2 text-left text-sm ${linkId === o.id ? 'bg-neutral-900 text-white' : 'bg-white'}`}>
+                    <div className="font-medium">{o.label}</div>
+                    {o.sub && <div className={`text-xs ${linkId === o.id ? 'text-neutral-300' : 'text-neutral-500'}`}>{o.sub}</div>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </Field>
+        )}
 
         {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
         <button disabled={busy} onClick={goReview} className="w-full rounded-xl bg-neutral-900 py-4 text-lg font-semibold text-white disabled:opacity-50">{busy ? 'Checking…' : 'Review →'}</button>
@@ -252,14 +300,17 @@ export default function WriteCheckFlow(props: Props) {
 
         {props.recent.length > 0 && (
           <div className="pt-4">
-            <p className="mb-2 text-xs uppercase tracking-wide text-neutral-400">Recent checks</p>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-xs uppercase tracking-wide text-neutral-400">Recent checks</p>
+              <a href="/checks/history" className="text-xs font-medium text-neutral-600 underline">Full history →</a>
+            </div>
             <div className="divide-y divide-neutral-100 rounded-xl border border-neutral-200">
               {props.recent.map((c) => (
                 <div key={c.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                  <div>
+                  <a href={`/checks/${c.id}`} className="min-w-0">
                     <span className="font-medium">#{c.checkNumber}</span> · {c.payeeName}
                     <div className="text-xs text-neutral-500">{c.categoryLabel} · {c.qbStatus}{c.printStatus !== 'not_printed' ? ` · ${c.printStatus}` : ''}</div>
-                  </div>
+                  </a>
                   <div className="flex items-center gap-2">
                     <span className="tabular-nums">{fmt(c.amountCents)}</span>
                     {c.qbStatus === 'recorded' && <button onClick={() => sendToShopPrinter(c.id, true)} className="rounded border border-neutral-300 px-2 py-1 text-xs">Reprint</button>}
@@ -337,6 +388,7 @@ export default function WriteCheckFlow(props: Props) {
 
   function resetAll() {
     setPayee(''); setAmount(''); setPurpose(''); setCategory('shop_general')
+    setLinkId(null); setLinkLabel(null); setLinkOptions([])
     setPreview(null); setChosenVendorId(null); setConfirmCreate(false); setIdemKey(''); setResult(null); setError(null); setStep('form')
   }
 }

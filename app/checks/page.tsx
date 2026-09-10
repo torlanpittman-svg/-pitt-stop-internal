@@ -32,7 +32,7 @@ export default async function ChecksPage() {
       enabled={cfg.enabled}
       readiness={readiness}
       banks={cfg.banks}
-      categories={CHECK_CATEGORIES.map((c) => ({ key: c.key, label: c.label, entity: c.entity, hint: c.hint }))}
+      categories={CHECK_CATEGORIES.map((c) => ({ key: c.key, label: c.label, entity: c.entity, hint: c.hint, linksJob: 'linksJob' in c ? !!c.linksJob : false, linksVehicle: 'linksVehicle' in c ? !!c.linksVehicle : false }))}
       nextNumbers={{ operating: nextOperating, auto_sales: nextAutoSales }}
       recent={recent}
     />

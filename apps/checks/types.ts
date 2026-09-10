@@ -7,7 +7,7 @@
  */
 
 export const CHECK_CATEGORIES = [
-  { key: 'customer_job',  label: 'Customer Job',    entity: 'operating',  linksJob: true,     hint: 'A cost tied to a specific customer vehicle/job' },
+  { key: 'customer_job',  label: 'Customer Vehicle',entity: 'operating',  linksJob: true,     hint: 'A cost tied to a specific customer vehicle/job' },
   { key: 'shop_general',  label: 'Shop / General',  entity: 'operating',  linksJob: false,    hint: 'Everyday shop operating expense' },
   { key: 'equipment',     label: 'Equipment',       entity: 'operating',  linksJob: false,    hint: 'Tools / equipment purchase' },
   { key: 'auto_sales',    label: 'Auto Sales',      entity: 'auto_sales', linksVehicle: true, hint: 'Auto Sales expense — kept separate from operating' },
