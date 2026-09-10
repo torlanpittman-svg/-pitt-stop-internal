@@ -24,7 +24,7 @@ import {
   setPrintStatus, logCheckEvent, toView, getCheckView,
 } from './db'
 import { enqueuePrintJob, getJob, markJobPrinted, markJobFailed } from './print-queue'
-import { buildCheckPayload } from './render'
+import { buildCheckPayload, buildFields, testValues, PAGE_WIDTH_IN, PAGE_HEIGHT_IN, type CheckPrintPayload } from './render'
 import { assembleCheckTemplate } from './template-server'
 import type { BankKey } from './types'
 import { logger } from '@/platform/logger'
@@ -209,6 +209,23 @@ export async function queueCheckPrint(checkId: string, actor: Actor, opts: { rep
   const payload = buildCheckPayload(view, cfg.layout, template)
   const job = await enqueuePrintJob({ checkId, kind: opts.reprint ? 'reprint' : 'check', payload, createdBy: actor.name })
   await logCheckEvent(checkId, opts.reprint ? 'reprint_queued' : 'print_queued', actor.name, { jobId: job.id })
+  return { jobId: job.id }
+}
+
+/**
+ * Enqueue a NON-NEGOTIABLE VOID test page to the shop printer via the queue — proves the full
+ * phone → cloud → bridge → Brother path and is the calibration tool. Creates NO check record and NO
+ * QuickBooks transaction; the bridge stamps a VOID watermark and the MICR band is a placeholder.
+ */
+export async function enqueueTestPrint(actor: Actor): Promise<{ jobId: string }> {
+  const cfg = await getCheckConfig()
+  const template = assembleCheckTemplate(cfg, cfg.layout, { test: true })
+  const fields = buildFields(testValues(), cfg.layout)
+  const payload: CheckPrintPayload = {
+    pageWidthIn: PAGE_WIDTH_IN, pageHeightIn: PAGE_HEIGHT_IN, fields, template,
+    watermark: 'VOID - TEST - NOT NEGOTIABLE',
+  }
+  const job = await enqueuePrintJob({ checkId: null, kind: 'check', payload, createdBy: actor.name })
   return { jobId: job.id }
 }
 

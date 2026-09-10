@@ -10,7 +10,8 @@ import type { CheckView } from './types'
 import type { CheckTemplate } from './template'
 
 export interface RenderedField { key: string; value: string; xIn: number; yIn: number; widthIn: number; align: 'left' | 'right'; sizePt: number }
-export interface CheckPrintPayload { pageWidthIn: number; pageHeightIn: number; fields: RenderedField[]; template?: CheckTemplate | null }
+// `watermark` is set ONLY for non-negotiable test pages (the bridge stamps a VOID watermark on the PDF).
+export interface CheckPrintPayload { pageWidthIn: number; pageHeightIn: number; fields: RenderedField[]; template?: CheckTemplate | null; watermark?: string | null }
 
 function usDate(iso: string): string {
   const [y, m, d] = (iso ?? '').slice(0, 10).split('-')

@@ -12,7 +12,7 @@ import type { CheckPrintPayload } from './render'
 export type PrintJobRow = typeof printJobs.$inferSelect
 
 export async function enqueuePrintJob(params: {
-  checkId: string
+  checkId: string | null
   kind?: 'check' | 'reprint'
   payload: CheckPrintPayload
   printerTarget?: string | null

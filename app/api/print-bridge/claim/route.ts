@@ -29,7 +29,8 @@ export async function POST(req: Request) {
   if (!job) return NextResponse.json({ job: null })
 
   try {
-    const pdf = renderCheckPdf(job.payload as unknown as CheckPrintPayload)
+    const payload = job.payload as unknown as CheckPrintPayload
+    const pdf = renderCheckPdf(payload, payload.watermark ? { watermark: payload.watermark } : {})
     return NextResponse.json({
       job: { id: job.id, kind: job.kind, printerTarget: job.printerTarget },
       pdfBase64: pdf.toString('base64'),

@@ -245,7 +245,8 @@ export default function WriteCheckFlow(props: Props) {
         <button disabled={busy} onClick={goReview} className="w-full rounded-xl bg-neutral-900 py-4 text-lg font-semibold text-white disabled:opacity-50">{busy ? 'Checking…' : 'Review →'}</button>
 
         <div className="pt-2">
-          <a href="/checks/print?test=1" className="block w-full rounded-xl border border-dashed border-neutral-400 py-3 text-center text-sm font-medium text-neutral-600">Test print (plain paper — no check recorded)</a>
+          <button disabled={busy} onClick={sendTestToShopPrinter} className="block w-full rounded-xl border border-dashed border-neutral-400 py-3 text-center text-sm font-medium text-neutral-600 disabled:opacity-50">Send VOID test page to shop printer (no check recorded)</button>
+          <a href="/checks/print?test=1" className="block w-full py-2 text-center text-xs text-neutral-400">or preview/print on this device</a>
         </div>
         {jobStatus && <p className="rounded-lg bg-neutral-100 p-2 text-center text-sm text-neutral-700">Printer: {jobStatus}</p>}
 
@@ -271,6 +272,31 @@ export default function WriteCheckFlow(props: Props) {
       </div>
     </Shell>
   )
+
+  async function sendTestToShopPrinter() {
+    setBusy(true); setError(null); setJobStatus('queuing test page…')
+    try {
+      const res = await fetch('/api/checks/test-print', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.message || 'Could not queue the test page.')
+      setJobStatus('test page queued — waiting for shop printer…')
+      pollTestJob(data.jobId)
+    } catch (e) { setError(String((e as Error).message)); setJobStatus(null) } finally { setBusy(false) }
+  }
+
+  function pollTestJob(jobId: string, tries = 0) {
+    if (tries > 40) { setJobStatus('still queued — is the shop bridge running?'); return }
+    setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/checks/jobs/${jobId}`)
+        const data = await res.json()
+        if (data.status === 'printed') { setJobStatus('test page printed ✓'); return }
+        if (data.status === 'failed') { setJobStatus(`test print failed: ${data.error || 'unknown'}`); return }
+        setJobStatus(data.status === 'claimed' ? 'printing test page…' : 'test page queued…')
+        pollTestJob(jobId, tries + 1)
+      } catch { pollTestJob(jobId, tries + 1) }
+    }, 2000)
+  }
 
   async function sendToShopPrinter(checkId: string, reprint: boolean) {
     setBusy(true); setError(null); setJobStatus('queuing…')
