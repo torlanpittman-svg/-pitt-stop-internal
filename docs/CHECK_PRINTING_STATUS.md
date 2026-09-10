@@ -19,23 +19,25 @@ Proven by physical VOID test. Do NOT modify:
 
 **MICR vertical position only.**
 
-The latest physical VOID test showed the MICR placeholder line
-(`NON-NEGOTIABLE TEST - MICR LINE PRINTS HERE`) prints **too LOW** — essentially on top of the blue
-security border at the bottom of the negotiable check section on the Blue Summit stock.
+An earlier physical VOID test showed the MICR placeholder line printing **too LOW** — on the blue bottom
+security border of the Blue Summit stock (12pt baseline was ~0.53" above the perforation, `micrPos`
+clearance `0.70`).
 
-Do **not** treat MICR positioning as verified. Only the MICR band is reopened; the rest of the layout
-stays locked.
+**Calibration applied 2026-09-10 (commit `71a4317`), AWAITING owner physical verification:** raised the
+band to `micrPos` clearance **`0.86`** ⇒ 12pt **baseline ~0.69" above the perforation** (digits ~0.69–
+0.81"). Rationale: ANSI X9.100‑160 requires the bottom‑5/8" MICR clear band be free of any border; this
+stock's blue border intrudes there, so the band rides just above it. **0.69" is the maximum MICR‑only
+raise** — the ceiling is the LOCKED memo VALUE (bottom ~0.895" above the perforation), leaving a ~0.085"
+gap. One VOID/non‑negotiable test was queued → claimed once → printed once (no retry/dupe); no check row,
+no QuickBooks, no #20000, no real MICR data.
 
-Exact code location: `apps/checks/layout.ts` → `micrPos()` (`yIn: sectionHeightIn - 0.70`). The band must
-move **UP** (increase the clearance subtracted from the section bottom). No other field changes.
+Owner must **physically inspect that VOID print** against the Blue Summit stock:
+- If the band now clears the blue border → MICR vertical position can be marked APPROVED.
+- If it still contacts the border → the border extends higher than ~0.6" above the perforation, and the
+  only further fix requires owner approval to also raise the (currently LOCKED) memo/signature block.
 
-### Next steps when we return to check printing
-
-1. Verify proper U.S. MICR clear-band / baseline positioning requirements.
-2. Move **only** the MICR band upward.
-3. Generate a VOID preview.
-4. Print **one** VOID test.
-5. Physically verify against the Blue Summit stock.
+Only the MICR band was reopened; the rest of the layout stays locked (page size, offsets, 3.5" section,
+all non‑MICR field positions unchanged). Exact code location: `apps/checks/layout.ts` → `micrPos()`.
 
 Constraints for this work: **No QuickBooks transaction. No real check. No negotiable MICR data.**
 
