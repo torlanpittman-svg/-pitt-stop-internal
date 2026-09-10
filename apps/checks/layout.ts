@@ -68,15 +68,16 @@ export const DEFAULT_LAYOUT: CheckLayout = {
 
 /** MICR band geometry for a given section height — anchored to the BOTTOM of the top check section.
  *
- *  ⚠️ MICR VERTICAL POSITION IS NOT YET APPROVED (reopened 2026-09-10). Overall check geometry is
- *  approved & LOCKED, but the physical VOID test showed this band prints too LOW — on top of the blue
- *  security border at the bottom of the negotiable section on Blue Summit BSS-92588-301 stock. The
- *  `- 0.70` clearance below must be INCREASED (band moved UP) — do NOT touch any other field. Next steps
- *  before changing: (1) verify U.S. MICR clear-band/baseline requirements, (2) raise this band only,
- *  (3) VOID preview, (4) one VOID test print, (5) physically verify. No QuickBooks / real check / real
- *  MICR data. See docs/CHECK_PRINTING_STATUS.md. */
+ *  MICR VERTICAL CALIBRATION (2026-09-10): raised the band from a 0.70" to a 0.86" clearance above the
+ *  first perforation. The prior 0.70" put the 12pt baseline ~0.53" above the perforation, which on Blue
+ *  Summit BSS-92588-301 landed ON the preprinted blue bottom security border. Per ANSI X9.100-160 the
+ *  MICR clear band (bottom 5/8") must be free of any border; this stock's border intrudes there, so the
+ *  band is ridden just ABOVE it. 0.86" clearance ⇒ baseline ~0.69" above the perforation (digits ~0.69–
+ *  0.81"), the highest the band can sit while keeping a clean gap below the LOCKED memo VALUE (its bottom
+ *  ≈ 0.895" above the perforation ⇒ ~0.085" gap) and fully inside the 3.5" section. MICR-ONLY change; no
+ *  other field moved. Pending owner physical VOID-print verification. See docs/CHECK_PRINTING_STATUS.md. */
 export function micrPos(sectionHeightIn: number) {
-  return { startXIn: 0.9, yIn: sectionHeightIn - 0.70, sizePt: 12 }
+  return { startXIn: 0.9, yIn: sectionHeightIn - 0.86, sizePt: 12 }
 }
 
 /** The y-origin (inches from page top) of a check slot (only 'top' is used for this stock). */

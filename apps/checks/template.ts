@@ -53,7 +53,8 @@ export function buildCheckTemplate(display: CheckFaceDisplay, layout: CheckLayou
   )
   if (display.bankAddr) texts.push(T(display.bankAddr, 0.35, 2.03, 7))
   // ── Lower block (bottom-anchored) — compressed UP so memo/signature clear the first perforation and
-  //    the MICR band (micrPos, ~0.7" above the perforation) sits fully inside the top section. MEMO label
+  //    the MICR band (micrPos, 0.86" clearance ⇒ baseline ~0.69" above the perforation) sits fully inside
+  //    the top section, just below this block. MEMO label
   //    sits above its line; AUTHORIZED SIGNATURE label sits below its line (both above the MICR band).
   texts.push(
     T('MEMO', 0.35, fb(1.06), 7),
