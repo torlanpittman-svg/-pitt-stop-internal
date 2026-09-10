@@ -12,6 +12,8 @@ import { NextResponse } from 'next/server'
 import { bridgeAuthorized, bridgeAuthConfigured } from '@/apps/checks/bridge-auth'
 import { claimNextJob, markJobFailed } from '@/apps/checks/print-queue'
 import { renderCheckPdf } from '@/apps/checks/pdf'
+import { resolveDeferredMicr } from '@/apps/checks/template-server'
+import { getCheckConfig } from '@/apps/checks/config'
 import type { CheckPrintPayload } from '@/apps/checks/render'
 
 export const runtime = 'nodejs'
@@ -30,6 +32,12 @@ export async function POST(req: Request) {
 
   try {
     const payload = job.payload as unknown as CheckPrintPayload
+    // SECRET-SAFETY: build the real routing/account MICR line HERE (server-only env), never from the DB
+    // payload. No-op unless the job carries a deferred check number AND negotiable printing is fully ready;
+    // otherwise the stored non-negotiable placeholder prints (fail closed).
+    if (payload.template?.micr?.deferCheckNumber != null) {
+      payload.template = resolveDeferredMicr(payload.template, await getCheckConfig())
+    }
     const pdf = renderCheckPdf(payload, payload.watermark ? { watermark: payload.watermark } : {})
     return NextResponse.json({
       job: { id: job.id, kind: job.kind, printerTarget: job.printerTarget },

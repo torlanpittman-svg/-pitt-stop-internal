@@ -26,9 +26,16 @@ export interface MicrRender {
   text: string
   /** 'e13b' = render with the MICR font (negotiable). 'placeholder' = plain, clearly non-negotiable. */
   mode: 'e13b' | 'placeholder'
+  /**
+   * SECRET-SAFETY: for a REAL check the routing/account MICR line is NOT built at enqueue (it would then
+   * persist in the DB print-job payload). Instead we store this (non-secret) check number as a marker and
+   * a non-negotiable placeholder; the print-bridge CLAIM route rebuilds the real line from server-only env
+   * at print time (resolveDeferredMicr). null ⇒ nothing to defer (test/void or unconfigured).
+   */
+  deferCheckNumber?: string | number | null
 }
 
-export interface CheckTemplate { texts: TplText[]; lines: TplLine[]; boxes: TplBox[]; micr?: (TplText & { mode: 'e13b' | 'placeholder' }) | null }
+export interface CheckTemplate { texts: TplText[]; lines: TplLine[]; boxes: TplBox[]; micr?: (TplText & { mode: 'e13b' | 'placeholder'; deferCheckNumber?: string | number | null }) | null }
 
 /** Build the static face elements for a blank top/middle/bottom check under a layout. */
 export function buildCheckTemplate(display: CheckFaceDisplay, layout: CheckLayout, micr?: MicrRender | null): CheckTemplate {
@@ -73,7 +80,7 @@ export function buildCheckTemplate(display: CheckFaceDisplay, layout: CheckLayou
   let micrEl: CheckTemplate['micr'] = null
   if (micr) {
     const m = micrPos(S)
-    micrEl = { value: micr.text, xIn: m.startXIn + ox, yIn: m.yIn + oy, sizePt: m.sizePt, align: 'left', mode: micr.mode }
+    micrEl = { value: micr.text, xIn: m.startXIn + ox, yIn: m.yIn + oy, sizePt: m.sizePt, align: 'left', mode: micr.mode, deferCheckNumber: micr.deferCheckNumber ?? null }
   }
   return { texts, lines, boxes, micr: micrEl }
 }
