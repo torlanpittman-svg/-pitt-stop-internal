@@ -23,6 +23,31 @@ export async function GET(req: Request) {
   // Read-only account-ledger investigation: ?tx=<accountId>&months=N → GeneralLedger rows for
   // that account (age / accumulation / whether balances are stale). SELECT/report GET only.
   const url = new URL(req.url)
+
+  // Read-only check-number investigation: ?docnums=1 → every existing DocNumber on a Purchase
+  // (checks live here as PaymentType=Check) so a NEW physical check-number sequence can be started
+  // without colliding with an existing QuickBooks check number. Single SELECT, no writes. Returns
+  // numeric DocNumbers + max so the owner setup can pick a clean starting number.
+  if (url.searchParams.get('docnums') === '1') {
+    const q = await safe(() => queryQBO<{ Purchase?: any[] }>(
+      "SELECT * FROM Purchase WHERE PaymentType = 'Check' MAXRESULTS 1000",
+    ))
+    const rows = (q.data?.Purchase ?? [])
+      .map((p: any) => ({ docNumber: p.DocNumber ?? null, txnDate: p.TxnDate, amount: p.TotalAmt, payee: p.EntityRef?.name ?? null, account: p.AccountRef?.name ?? null }))
+    const numeric = rows.map((r) => Number(r.docNumber)).filter((n) => Number.isInteger(n) && n > 0)
+    return NextResponse.json({
+      ok: q.ok, error: q.error,
+      checkPurchases: rows.length,
+      withNumericDocNumber: numeric.length,
+      maxDocNumber: numeric.length ? Math.max(...numeric) : null,
+      minDocNumber: numeric.length ? Math.min(...numeric) : null,
+      distinctNumbers: [...new Set(numeric)].sort((a, b) => a - b),
+      sampleNonNumeric: [...new Set(rows.map((r) => r.docNumber).filter((d) => d && !Number.isInteger(Number(d))))].slice(0, 20),
+    })
+  }
+
+  // Read-only account-ledger investigation: ?tx=<accountId>&months=N → GeneralLedger rows for
+  // that account (age / accumulation / whether balances are stale). SELECT/report GET only.
   const txAccount = url.searchParams.get('tx')
   if (txAccount) {
     const months = Math.min(60, Math.max(1, parseInt(url.searchParams.get('months') ?? '24', 10) || 24))
