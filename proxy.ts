@@ -22,9 +22,9 @@ function adminOk(request: NextRequest): boolean {
  * /production, etc. and carry no AI/write). /admin/* is NEVER here (it stays on ADMIN_PASSWORD).
  */
 function isEmployeeSurface(pathname: string): boolean {
-  const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in', '/orders', '/production', '/estimator']
+  const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in', '/orders', '/production', '/estimator', '/checks']
   if (pages.some((p) => pathname === p || pathname.startsWith(p + '/'))) return true
-  const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/']
+  const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/', '/api/checks/']
   if (apis.some((p) => pathname.startsWith(p)) || pathname === '/api/dealer-checkin') return true
   if (pathname === '/api/estimator/vin' || pathname === '/api/workflow/vin') return true
   return false
@@ -91,6 +91,9 @@ export const config = {
     '/orders/:path*',
     '/production/:path*',
     '/estimator/:path*',
+    // Write-a-Check everyday surface (manager-gated inside the handlers; employee-PIN gate here).
+    '/checks/:path*',
+    '/api/checks/:path*',
     '/api/dealer-checkin/:path*',
     '/api/quick-entry/:path*',
     '/api/estimator/vin',
@@ -102,6 +105,9 @@ export const config = {
     '/api/quickbooks/discover',
     // CFO finance APIs (admin-only; read-only QuickBooks + read-only Plaid; never move money)
     '/api/admin/finance/:path*',
+    // Check-writing OWNER setup (admin-only): lists QB bank/expense accounts, sets the operating
+    // bank + category account map + starting check number + print calibration.
+    '/api/admin/checks/:path*',
     // manual write / setup tools (owner-run; not part of any automated flow)
     '/api/quickbooks/selftest-invoice',
     '/api/quickbooks/set-invoice-number',

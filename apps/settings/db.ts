@@ -58,6 +58,20 @@ export const SETTINGS: Record<string, SettingDef> = {
   // anything earlier may be historically incomplete (kept clearly separated).
   auto_sales_enabled:         { key: 'auto_sales_enabled',         type: 'bool',   def: false,        env: 'AUTO_SALES_ENABLED' },
   auto_sales_cutover_date:    { key: 'auto_sales_cutover_date',    type: 'string', def: '2026-08-27', env: 'AUTO_SALES_CUTOVER_DATE' },
+  // Write-a-Check (physical business checks → QuickBooks Purchase/Check + Brother printer).
+  // Ships DARK. checks_enabled must be turned on AND the bank/expense accounts configured (owner picks
+  // the real QBO accounts via the setup screen — never guessed) before any real check can be recorded.
+  checks_enabled:             { key: 'checks_enabled',             type: 'bool',   def: false,        env: 'CHECKS_ENABLED' },
+  // QBO Bank Account.Id money is drawn from, per bank. Empty until the owner confirms via setup.
+  // (Operating is American Momentum *2649; lead: QBO Account.Id 31 — CONFIRM, do not assume.)
+  check_operating_bank_qbo_id:  { key: 'check_operating_bank_qbo_id',  type: 'string', def: '', env: 'CHECK_OPERATING_BANK_QBO_ID' },
+  check_operating_bank_label:   { key: 'check_operating_bank_label',   type: 'string', def: 'Pitt Stop Operating *2649', env: 'CHECK_OPERATING_BANK_LABEL' },
+  check_autosales_bank_qbo_id:  { key: 'check_autosales_bank_qbo_id',  type: 'string', def: '', env: 'CHECK_AUTOSALES_BANK_QBO_ID' },
+  check_autosales_bank_label:   { key: 'check_autosales_bank_label',   type: 'string', def: 'Auto Sales *5600', env: 'CHECK_AUTOSALES_BANK_LABEL' },
+  // business-category -> QBO expense Account.Id map, e.g. {"shop_general":"7","equipment":"12"}. JSON string.
+  check_category_accounts:      { key: 'check_category_accounts',      type: 'json',   def: '{}', env: 'CHECK_CATEGORY_ACCOUNTS' },
+  // Saved print calibration (position + global offset + optional per-field overrides). JSON string.
+  check_layout:                 { key: 'check_layout',                 type: 'json',   def: '{}', env: 'CHECK_LAYOUT' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
