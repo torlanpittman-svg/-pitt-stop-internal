@@ -65,11 +65,12 @@ function execP(cmd, args) {
 async function printPdf(pdfPath) {
   if (isWin) {
     if (!existsSync(C.sumatra)) throw new Error(`SumatraPDF not found at ${C.sumatra}. Install it (free) or set SUMATRA_PATH.`)
-    // Silent, no UI. -print-to <printer> selects the dedicated Brother.
-    await execP(C.sumatra, ['-print-to', C.printer, '-silent', '-exit-when-done', pdfPath])
+    // Silent, no UI. -print-to selects the dedicated Brother. `noscale` forces ACTUAL SIZE (100%) —
+    // never Fit/Shrink — so the check geometry prints at true inches on the check stock.
+    await execP(C.sumatra, ['-print-to', C.printer, '-print-settings', 'noscale', '-silent', '-exit-when-done', pdfPath])
   } else {
-    // macOS / Linux: CUPS. lp is built in on macOS.
-    await execP('lp', ['-d', C.printer, pdfPath])
+    // macOS / Linux: CUPS. lp is built in on macOS. -o fit-to-page=false / scaling=100 keep actual size.
+    await execP('lp', ['-d', C.printer, '-o', 'fit-to-page=false', '-o', 'scaling=100', pdfPath])
   }
 }
 

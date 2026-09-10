@@ -8,7 +8,7 @@
  * calibration offset (same model as the value fields). No sensitive data here — routing/account come only
  * from micr.ts. This module contains ONLY the non-sensitive check-face design + the MICR band placement.
  */
-import { slotOriginY, DEFAULT_MICR_POS, type CheckLayout } from './layout'
+import { slotOriginY, micrPos, type CheckLayout } from './layout'
 
 export interface TplText { value: string; xIn: number; yIn: number; sizePt: number; align: 'left' | 'right'; bold?: boolean }
 export interface TplLine { x1In: number; y1In: number; x2In: number; y2In: number; widthPt?: number }
@@ -34,42 +34,43 @@ export interface CheckTemplate { texts: TplText[]; lines: TplLine[]; boxes: TplB
 export function buildCheckTemplate(display: CheckFaceDisplay, layout: CheckLayout, micr?: MicrRender | null): CheckTemplate {
   const oy = slotOriginY(layout.position) + layout.offsetY
   const ox = layout.offsetX
+  const S = layout.sectionHeightIn                 // top check-section height (top edge → first perforation)
+  const fb = (fromBottomIn: number) => S - fromBottomIn  // y anchored above the first perforation
   const T = (value: string, xIn: number, yIn: number, sizePt: number, align: 'left' | 'right' = 'left', bold = false): TplText => ({ value, xIn: xIn + ox, yIn: yIn + oy, sizePt, align, bold })
   const L = (x1In: number, y1In: number, x2In: number, y2In: number, widthPt = 0.75): TplLine => ({ x1In: x1In + ox, y1In: y1In + oy, x2In: x2In + ox, y2In: y2In + oy, widthPt })
   const B = (xIn: number, yIn: number, wIn: number, hIn: number, widthPt = 1): TplBox => ({ xIn: xIn + ox, yIn: yIn + oy, wIn, hIn, widthPt })
 
-  const texts: TplText[] = [
-    T(display.companyName, 0.35, 0.30, 12, 'left', true),
-  ]
+  // ── Upper block (top-anchored) ──
+  const texts: TplText[] = [ T(display.companyName, 0.35, 0.30, 12, 'left', true) ]
   if (display.companyAddr) texts.push(T(display.companyAddr, 0.35, 0.52, 8))
   texts.push(
     T('DATE', 5.70, 0.40, 7),
     T('PAY TO THE', 0.35, 1.02, 7),
     T('ORDER OF', 0.35, 1.16, 7),
-    T('$', 6.35, 1.10, 14, 'left', true),
-    T('DOLLARS', 7.55, 1.60, 8, 'right', true),
-    T(display.bankName, 0.35, 2.05, 9, 'left', true),
+    T('$', 6.35, 1.06, 14, 'left', true),
+    T('DOLLARS', 7.55, 1.50, 8, 'right', true),
+    T(display.bankName, 0.35, 1.86, 9, 'left', true),
   )
-  if (display.bankAddr) texts.push(T(display.bankAddr, 0.35, 2.22, 7))
+  if (display.bankAddr) texts.push(T(display.bankAddr, 0.35, 2.03, 7))
+  // ── Lower block (bottom-anchored to the first perforation) ──
   texts.push(
-    T('MEMO', 0.35, 2.92, 7),
-    T('AUTHORIZED SIGNATURE', 5.30, 3.02, 7),
+    T('MEMO', 0.35, fb(0.72), 7),
+    T('AUTHORIZED SIGNATURE', 5.30, fb(0.60), 7),
   )
 
   const lines: TplLine[] = [
-    L(5.55, 0.72, 8.10, 0.72),   // date line
-    L(1.55, 1.28, 6.30, 1.28),   // payee line
-    L(0.30, 1.75, 7.55, 1.75),   // amount-in-words line
-    L(0.90, 3.00, 3.30, 3.00),   // memo line
-    L(5.30, 2.98, 8.10, 2.98),   // signature line
+    L(5.55, 0.68, 8.10, 0.68),                 // date line
+    L(1.55, 1.20, 6.30, 1.20),                 // payee line
+    L(0.30, 1.66, 7.55, 1.66),                 // amount-in-words line
+    L(0.90, fb(0.58), 3.30, fb(0.58)),         // memo line
+    L(5.30, fb(0.64), 8.10, fb(0.64)),         // signature line
   ]
-  const boxes: TplBox[] = [
-    B(6.50, 1.00, 1.62, 0.40),   // amount numeric box
-  ]
+  const boxes: TplBox[] = [ B(6.50, 0.96, 1.62, 0.38) ]  // amount numeric box
 
   let micrEl: CheckTemplate['micr'] = null
   if (micr) {
-    micrEl = { value: micr.text, xIn: DEFAULT_MICR_POS.startXIn + ox, yIn: DEFAULT_MICR_POS.yIn + oy, sizePt: DEFAULT_MICR_POS.sizePt, align: 'left', mode: micr.mode }
+    const m = micrPos(S)
+    micrEl = { value: micr.text, xIn: m.startXIn + ox, yIn: m.yIn + oy, sizePt: m.sizePt, align: 'left', mode: micr.mode }
   }
   return { texts, lines, boxes, micr: micrEl }
 }

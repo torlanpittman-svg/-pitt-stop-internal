@@ -13,13 +13,21 @@ describe('check layout math — single source of truth for positions', () => {
     const base = DEFAULT_LAYOUT.perField.payee
     const p = resolveFieldPosition(layout, 'payee')
     expect(p.xIn).toBeCloseTo(base.xIn + 0.1, 5)
-    expect(p.yIn).toBeCloseTo(base.yIn + 0.2, 5)
+    expect(p.yIn).toBeCloseTo(base.yIn! + 0.2, 5)
   })
 
   it('adds the slot origin for middle/bottom checks', () => {
     const mid = buildLayout({ position: 'middle' })
     const p = resolveFieldPosition(mid, 'payee')
-    expect(p.yIn).toBeCloseTo(DEFAULT_LAYOUT.perField.payee.yIn + CHECK_HEIGHT_IN, 5)
+    expect(p.yIn).toBeCloseTo(DEFAULT_LAYOUT.perField.payee.yIn! + CHECK_HEIGHT_IN, 5)
+  })
+
+  it('bottom-anchors the memo to the section height (tracks the first perforation)', () => {
+    const short = buildLayout({ sectionHeightIn: 2.8 })
+    const tall = buildLayout({ sectionHeightIn: 3.5 })
+    // memo has fromBottomIn 0.62 → y = sectionHeight - 0.62; a shorter section moves memo UP.
+    expect(resolveFieldPosition(short, 'memo').yIn).toBeCloseTo(2.8 - 0.62, 5)
+    expect(resolveFieldPosition(tall, 'memo').yIn).toBeCloseTo(3.5 - 0.62, 5)
   })
 
   it('buildLayout ignores non-finite offsets and empty field lists', () => {
