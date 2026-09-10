@@ -18,6 +18,7 @@ import { buildLayout, type CheckLayout, type MicrGeom } from './layout'
 
 const KEYS = [
   'checks_enabled',
+  'checks_live_enabled',
   'check_operating_bank_qbo_id', 'check_operating_bank_label',
   'check_autosales_bank_qbo_id', 'check_autosales_bank_label',
   'check_category_accounts', 'check_layout',
@@ -41,7 +42,10 @@ function asObject(v: unknown): Record<string, unknown> {
 export interface BankConfig { key: BankKey; qboAccountId: string; label: string }
 export interface CheckFaceDisplay { companyName: string; companyAddr: string | null; bankName: string; bankAddr: string | null }
 export interface CheckConfig {
-  enabled: boolean
+  enabled: boolean          // feature visible/usable (form + workflow render)
+  liveEnabled: boolean      // OWNER authorization to record REAL checks (QB Purchase + consume a number).
+                            // Default OFF: the workflow is fully walkable/testable, but the final
+                            // "Record & Print" action is disabled until the owner flips this on (going live).
   banks: Record<BankKey, BankConfig>
   categoryAccounts: Record<string, string>   // categoryKey -> QBO expense Account.Id
   layout: CheckLayout
@@ -57,6 +61,7 @@ export async function getCheckConfig(): Promise<CheckConfig> {
   const str = (k: string, d = '') => { const v = g(k); return v == null ? d : String(v) }
   return {
     enabled: g('checks_enabled') === true || g('checks_enabled') === 'true',
+    liveEnabled: g('checks_live_enabled') === true || g('checks_live_enabled') === 'true',
     banks: {
       operating:  { key: 'operating',  qboAccountId: String(g('check_operating_bank_qbo_id') ?? '').trim(),  label: String(g('check_operating_bank_label') ?? 'Operating') },
       auto_sales: { key: 'auto_sales', qboAccountId: String(g('check_autosales_bank_qbo_id') ?? '').trim(), label: String(g('check_autosales_bank_label') ?? 'Auto Sales') },

@@ -15,7 +15,7 @@ afterEach(() => {
 
 function cfg(micrEnabled: boolean): CheckConfig {
   return {
-    enabled: true, templateMode: 'blank_full', micrEnabled,
+    enabled: true, liveEnabled: false, templateMode: 'blank_full', micrEnabled,
     banks: { operating: { key: 'operating', qboAccountId: '31', label: 'Op' }, auto_sales: { key: 'auto_sales', qboAccountId: '48', label: 'AS' } },
     categoryAccounts: {}, layout: buildLayout(null),
     display: { companyName: 'Pitt Stop', companyAddr: null, bankName: 'AMB', bankAddr: null },

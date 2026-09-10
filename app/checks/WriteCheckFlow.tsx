@@ -19,6 +19,7 @@ type Preview = { decision: 'use' | 'create' | 'ambiguous'; vendorId?: string; di
 interface Props {
   actorName: string
   enabled: boolean
+  liveEnabled: boolean
   readiness: Readiness
   banks: Record<'operating' | 'auto_sales', Bank>
   categories: Cat[]
@@ -123,6 +124,7 @@ export default function WriteCheckFlow(props: Props) {
 
   async function record() {
     setError(null)
+    if (!props.liveEnabled) return setError('Live check recording is disabled until MICR/hardware setup is complete. Use the VOID test to preview.')
     // Payee must be resolvable: an exact existing vendor, an explicit pick, or a confirmed create.
     const needsPick = preview?.decision === 'ambiguous' && !chosenVendorId
     const needsCreateConfirm = preview?.decision === 'create' && !confirmCreate
@@ -229,10 +231,22 @@ export default function WriteCheckFlow(props: Props) {
         </div>
 
         {error && <p className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-        <button disabled={busy} onClick={record} className="mt-4 w-full rounded-xl bg-emerald-600 py-4 text-lg font-semibold text-white disabled:opacity-50">
-          {busy ? 'Recording…' : 'Record & Print Check'}
-        </button>
-        <button onClick={() => setStep('form')} className="mt-2 w-full rounded-xl border border-neutral-300 py-3 font-medium">Cancel</button>
+        {props.liveEnabled ? (
+          <button disabled={busy} onClick={record} className="mt-4 w-full rounded-xl bg-emerald-600 py-4 text-lg font-semibold text-white disabled:opacity-50">
+            {busy ? 'Recording…' : 'Record & Print Check'}
+          </button>
+        ) : (
+          <div className="mt-4">
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+              <p className="font-semibold">Preview only — negotiable check printing isn’t enabled yet.</p>
+              <p className="mt-1">Recording a real check (QuickBooks + check number) is disabled until MICR/hardware setup is finished and the owner turns on live checks. Everything above is exactly what a real check will record.</p>
+            </div>
+            <button disabled className="mt-3 w-full cursor-not-allowed rounded-xl bg-neutral-300 py-4 text-lg font-semibold text-white">Record &amp; Print Check — disabled</button>
+            <button disabled={busy} onClick={sendTestToShopPrinter} className="mt-2 w-full rounded-xl border border-dashed border-neutral-400 py-3 text-sm font-medium text-neutral-600 disabled:opacity-50">Send a VOID (non-negotiable) test print instead</button>
+            {jobStatus && <p className="mt-2 text-center text-sm text-neutral-600">Printer: {jobStatus}</p>}
+          </div>
+        )}
+        <button onClick={() => setStep('form')} className="mt-2 w-full rounded-xl border border-neutral-300 py-3 font-medium">{props.liveEnabled ? 'Cancel' : 'Back'}</button>
       </Shell>
     )
   }
@@ -241,6 +255,11 @@ export default function WriteCheckFlow(props: Props) {
   return (
     <Shell actorName={props.actorName}>
       <div className="space-y-5">
+        {!props.liveEnabled && (
+          <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+            <span className="font-semibold">Preview mode.</span> Walk the full workflow and send VOID (non‑negotiable) test prints. Recording a real check is off until MICR/hardware setup is finished.
+          </div>
+        )}
         <Field label="Pay to">
           <input value={payee} onChange={(e) => setPayee(e.target.value)} placeholder="Vendor / payee name" className="w-full rounded-xl border border-neutral-300 px-4 py-3 text-lg" />
         </Field>

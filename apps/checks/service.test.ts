@@ -42,6 +42,7 @@ vi.mock('./db', () => ({
 vi.mock('./config', () => ({
   getCheckConfig: vi.fn(async () => ({
     enabled: true,
+    liveEnabled: true, // record-path tests exercise recording as if the owner has gone live
     banks: { operating: { key: 'operating', qboAccountId: '31', label: 'Op' }, auto_sales: { key: 'auto_sales', qboAccountId: '99', label: 'AS' } },
     categoryAccounts: { shop_general: '7', customer_job: '7', equipment: '7', owner_personal: '7', other: '7', auto_sales: '8' },
     layout: {},
@@ -59,6 +60,7 @@ vi.mock('@/apps/quickbooks/connection', () => ({ getValidAccessToken: vi.fn(asyn
 vi.mock('@/platform/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 
 import { createAndRecordCheck, retryQbWrite, recordPrintResult, queueCheckPrint, applyBridgeResult, CheckValidationError } from './service'
+import { getCheckConfig } from './config'
 
 // Aliases to the hoisted mocks for readable assertions.
 const createCheckInQB = h.createCheckInQB
@@ -181,6 +183,17 @@ describe('print + reprint idempotency (never re-writes QuickBooks)', () => {
     expect(jobId).toBeTruthy()
     expect(enqueuePrintJob).toHaveBeenCalledTimes(1)
     expect(createCheckInQB).not.toHaveBeenCalled()
+  })
+})
+
+describe('live gate — no real side effects until the owner goes live', () => {
+  it('refuses to record (no QB Purchase, no number consumed) when liveEnabled is false', async () => {
+    const base = await (getCheckConfig as any)()
+    ;(getCheckConfig as any).mockResolvedValueOnce({ ...base, liveEnabled: false })
+    createCheckInQB.mockClear(); reserveNextNumber.mockClear()
+    await expect(createAndRecordCheck(baseInput(), ACTOR)).rejects.toMatchObject({ code: 'live_not_enabled' })
+    expect(createCheckInQB).not.toHaveBeenCalled()   // no QuickBooks Purchase
+    expect(reserveNextNumber).not.toHaveBeenCalled() // no check number consumed
   })
 })
 

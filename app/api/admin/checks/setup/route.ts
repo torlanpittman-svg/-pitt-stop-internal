@@ -23,6 +23,7 @@ export async function GET(req: Request) {
   return NextResponse.json({
     config: {
       enabled: cfg.enabled,
+      liveEnabled: cfg.liveEnabled,
       banks: cfg.banks,
       categoryAccounts: cfg.categoryAccounts,
       layout: cfg.layout,
@@ -44,6 +45,7 @@ export async function GET(req: Request) {
 
 interface SetupBody {
   enabled?: boolean
+  liveEnabled?: boolean   // OWNER authorization to record REAL checks (default off)
   operatingBankQboId?: string
   operatingBankLabel?: string
   autoSalesBankQboId?: string
@@ -69,6 +71,7 @@ export async function POST(req: Request) {
 
   const ops: Promise<void>[] = []
   if (typeof body.enabled === 'boolean') ops.push(updateSetting('checks_enabled', body.enabled, who))
+  if (typeof body.liveEnabled === 'boolean') ops.push(updateSetting('checks_live_enabled', body.liveEnabled, who))
   if (typeof body.operatingBankQboId === 'string') ops.push(updateSetting('check_operating_bank_qbo_id', body.operatingBankQboId.trim(), who))
   if (typeof body.operatingBankLabel === 'string') ops.push(updateSetting('check_operating_bank_label', body.operatingBankLabel.trim(), who))
   if (typeof body.autoSalesBankQboId === 'string') ops.push(updateSetting('check_autosales_bank_qbo_id', body.autoSalesBankQboId.trim(), who))
@@ -92,7 +95,7 @@ export async function POST(req: Request) {
   const cfg = await getCheckConfig()
   return NextResponse.json({
     ok: true,
-    config: { enabled: cfg.enabled, banks: cfg.banks, categoryAccounts: cfg.categoryAccounts, layout: cfg.layout, templateMode: cfg.templateMode, display: cfg.display, micrEnabled: cfg.micrEnabled },
+    config: { enabled: cfg.enabled, liveEnabled: cfg.liveEnabled, banks: cfg.banks, categoryAccounts: cfg.categoryAccounts, layout: cfg.layout, templateMode: cfg.templateMode, display: cfg.display, micrEnabled: cfg.micrEnabled },
     readiness: checkConfigReadiness(cfg),
     micr: micrReadiness(cfg.micrEnabled),
   })

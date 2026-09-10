@@ -1,5 +1,9 @@
 import Link from 'next/link'
 import IdentityBar, { AdminLink } from '@/app/components/IdentityBar'
+import { managerActor } from '@/apps/checks/authz'
+
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 
 // Retail Estimator is intentionally hidden from the homepage — its route/code/data are untouched.
 const MODULES = [
@@ -25,7 +29,15 @@ const MODULES = [
   },
 ]
 
-export default function Home() {
+export default async function Home() {
+  // "Write a Check" is a MANAGER tool — show its tile only to a signed-in manager/admin (Torlan/Darryl/
+  // Tony). Not authorization (the /checks routes are independently gated); just visibility so it's easy
+  // to find without exposing it to ordinary employees.
+  const manager = await managerActor()
+  const modules = manager
+    ? [...MODULES, { href: '/checks', label: 'Write a Check', sub: 'Pay a vendor by check — QuickBooks + shop printer. Manager only.' }]
+    : MODULES
+
   return (
     <main className="min-h-screen bg-gray-950 flex flex-col">
 
@@ -40,7 +52,7 @@ export default function Home() {
       </div>
 
       <div className="flex-1 px-6 space-y-4 pb-10">
-        {MODULES.map(mod => (
+        {modules.map(mod => (
           <Link
             key={mod.href}
             href={mod.href}

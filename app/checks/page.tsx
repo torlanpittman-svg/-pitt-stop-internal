@@ -30,6 +30,7 @@ export default async function ChecksPage() {
     <WriteCheckFlow
       actorName={actor.name}
       enabled={cfg.enabled}
+      liveEnabled={cfg.liveEnabled}
       readiness={readiness}
       banks={cfg.banks}
       categories={CHECK_CATEGORIES.map((c) => ({ key: c.key, label: c.label, entity: c.entity, hint: c.hint, linksJob: 'linksJob' in c ? !!c.linksJob : false, linksVehicle: 'linksVehicle' in c ? !!c.linksVehicle : false }))}

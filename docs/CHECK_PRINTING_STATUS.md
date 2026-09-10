@@ -3,6 +3,20 @@
 Stock: **Blue Summit BSS-92588-301** (genuinely blank, 3-part perforated, TOP position, no preprinted MICR).
 Path: Pitt Stop OS → cloud print queue → Windows shop-laptop bridge → Brother HL-L2420DW.
 
+## Current status (2026-09-10)
+
+- **Replacement, MICR-compliant check stock has been ordered.** The Blue Summit stock's bottom security
+  border falls in/near the MICR clear band; a stock with a clear bottom 5/8" band is on the way.
+- **Physical MICR completion is PENDING** stock delivery + licensed E-13B font + MICR magnetic toner
+  (TN830 MICR for HL-L2420DW) + American Momentum MICR field/order verification.
+- **The app-side check-writing workflow is complete and can be tested independently** of the physical MICR
+  work: it's live in production, reachable from the home screen ("Write a Check", manager-only), and fully
+  walkable (payee → amount → purpose → category → optional vehicle/job → review → confirmation with the
+  next check number). The final "Record & Print" action is **gated behind `checks_live_enabled` (default
+  OFF)** — no QuickBooks Purchase, no check-number consumption, no negotiable print until the owner turns
+  it on. A VOID/non-negotiable test print stays available for preview.
+- **Negotiable MICR remains DISABLED** (`micr_enabled` off, no secrets, fail-closed).
+
 ## ✅ APPROVED & LOCKED — do not change
 
 The OVERALL non‑MICR check geometry is approved and locked. Do NOT modify:

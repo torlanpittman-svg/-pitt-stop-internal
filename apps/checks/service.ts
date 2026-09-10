@@ -77,6 +77,10 @@ export async function createAndRecordCheck(input: WriteCheckInput, actor: Actor)
   const cfg = await getCheckConfig()
   const readiness = checkConfigReadiness(cfg)
   if (!readiness.ready) throw new CheckValidationError('Check-writing is not configured yet (bank account not set). Complete setup first.', 'not_configured')
+  // Fail-closed on REAL side effects: no QuickBooks Purchase and no check-number consumption until the
+  // owner explicitly turns on live recording (going live). The whole workflow is still walkable/testable
+  // (and a VOID/non-negotiable test print stays available) — this only blocks the final money mutation.
+  if (!cfg.liveEnabled) throw new CheckValidationError('Live check recording is not enabled yet — hardware/MICR setup is pending. You can preview the full workflow and send a VOID test; recording a real check is disabled.', 'live_not_enabled')
 
   const entity = categoryEntity(input.category)
   const bank = bankForCategory(cfg, input.category)
