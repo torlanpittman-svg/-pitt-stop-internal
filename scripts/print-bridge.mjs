@@ -33,7 +33,9 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 function loadConfig() {
   const cfg = {}
   const file = join(HERE, 'print-bridge.config.json')
-  if (existsSync(file)) { try { Object.assign(cfg, JSON.parse(readFileSync(file, 'utf8'))) } catch (e) { console.error('bad config json:', e.message) } }
+  // Strip a leading UTF-8 BOM — Windows PowerShell's Set-Content -Encoding UTF8 writes one, and
+  // JSON.parse rejects it. Without this the config silently fails to load and the bridge exits.
+  if (existsSync(file)) { try { Object.assign(cfg, JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, ''))) } catch (e) { console.error('bad config json:', e.message) } }
   const get = (k, d) => process.env[k] ?? cfg[k] ?? d
   return {
     baseUrl: (get('PITTSTOP_BASE_URL', '') || '').replace(/\/$/, ''),
