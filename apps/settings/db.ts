@@ -72,6 +72,23 @@ export const SETTINGS: Record<string, SettingDef> = {
   check_category_accounts:      { key: 'check_category_accounts',      type: 'json',   def: '{}', env: 'CHECK_CATEGORY_ACCOUNTS' },
   // Saved print calibration (position + global offset + optional per-field overrides). JSON string.
   check_layout:                 { key: 'check_layout',                 type: 'json',   def: '{}', env: 'CHECK_LAYOUT' },
+  // Stock template. 'blank_full' = genuinely blank stock (Blue Summit BSS): we draw the whole check
+  // face (labels/lines/company/bank blocks + MICR). 'preprinted' = only fill values onto pre-printed
+  // stock. Blue Summit blank stock ⇒ blank_full.
+  check_template:               { key: 'check_template',               type: 'string', def: 'blank_full', env: 'CHECK_TEMPLATE' },
+  // NON-SENSITIVE check-face text (safe to store): appears printed on the check. NOT routing/account.
+  check_company_name:           { key: 'check_company_name',           type: 'string', def: 'Pitt Stop Detail & Auto Sales', env: 'CHECK_COMPANY_NAME' },
+  check_company_addr:           { key: 'check_company_addr',           type: 'string', def: '', env: 'CHECK_COMPANY_ADDR' },
+  check_bank_name:              { key: 'check_bank_name',              type: 'string', def: 'American Momentum Bank', env: 'CHECK_BANK_NAME' },
+  check_bank_addr:              { key: 'check_bank_addr',              type: 'string', def: '', env: 'CHECK_BANK_ADDR' },
+  // MICR kill-switch. Default OFF. A negotiable MICR line prints ONLY when this is on AND the SECRET
+  // routing/account are present in SERVER-ONLY env (MICR_ROUTING / MICR_ACCOUNT — never stored here,
+  // never returned to a client, never logged) AND a licensed E-13B font is installed. TEST/VOID never
+  // print MICR. See apps/checks/micr.ts.
+  micr_enabled:                 { key: 'micr_enabled',                 type: 'bool',   def: false, env: 'MICR_ENABLED' },
+  // NON-SENSITIVE MICR geometry (safe): y position of the MICR band + left start, inches. Field ORDER
+  // and the actual numbers come from micr.ts (secure). Tuned during calibration against the bank spec.
+  micr_layout:                  { key: 'micr_layout',                  type: 'json',   def: '{}', env: 'MICR_LAYOUT' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {

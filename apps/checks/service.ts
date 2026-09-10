@@ -25,6 +25,7 @@ import {
 } from './db'
 import { enqueuePrintJob, getJob, markJobPrinted, markJobFailed } from './print-queue'
 import { buildCheckPayload } from './render'
+import { assembleCheckTemplate } from './template-server'
 import type { BankKey } from './types'
 import { logger } from '@/platform/logger'
 
@@ -204,7 +205,8 @@ export async function queueCheckPrint(checkId: string, actor: Actor, opts: { rep
   if (row.qbStatus !== 'recorded') throw new CheckValidationError('This check is not recorded in QuickBooks yet — resolve the accounting record before printing.', 'not_recorded')
   const cfg = await getCheckConfig()
   const view = (await getCheckView(checkId))!
-  const payload = buildCheckPayload(view, cfg.layout)
+  const template = assembleCheckTemplate(cfg, cfg.layout, { test: false, checkNumber: view.checkNumber })
+  const payload = buildCheckPayload(view, cfg.layout, template)
   const job = await enqueuePrintJob({ checkId, kind: opts.reprint ? 'reprint' : 'check', payload, createdBy: actor.name })
   await logCheckEvent(checkId, opts.reprint ? 'reprint_queued' : 'print_queued', actor.name, { jobId: job.id })
   return { jobId: job.id }

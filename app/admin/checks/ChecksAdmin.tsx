@@ -15,7 +15,11 @@ type Config = {
   banks: Record<'operating' | 'auto_sales', { key: string; qboAccountId: string; label: string }>
   categoryAccounts: Record<string, string>
   layout: { position: string; offsetX: number; offsetY: number; fields: string[] }
+  templateMode?: string
+  display?: { companyName: string; companyAddr: string | null; bankName: string; bankAddr: string | null }
+  micrEnabled?: boolean
 }
+type Micr = { enabledFlagOn: boolean; secretsPresent: boolean; routingValid: boolean; accountValid: boolean; fontInstalled: boolean; ready: boolean; routingMask: string; accountMask: string }
 
 async function jget(url: string) { const r = await fetch(url); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message || `GET ${url} failed`); return r.json() }
 async function jpost(url: string, body: unknown) { const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.message || `POST ${url} failed`); return d }
@@ -41,15 +45,23 @@ export default function ChecksAdmin() {
   const [position, setPosition] = useState('top')
   const [opStart, setOpStart] = useState('')
   const [asStart, setAsStart] = useState('')
+  const [micr, setMicr] = useState<Micr | null>(null)
+  const [companyName, setCompanyName] = useState('')
+  const [companyAddr, setCompanyAddr] = useState('')
+  const [bankName, setBankName] = useState('')
+  const [bankAddr, setBankAddr] = useState('')
+  const [micrEnabled, setMicrEnabled] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null)
     try {
       const s = await jget('/api/admin/checks/setup')
-      setConfig(s.config); setCategories(s.categories); setReadiness(s.readiness); setSequences(s.sequences)
+      setConfig(s.config); setCategories(s.categories); setReadiness(s.readiness); setSequences(s.sequences); setMicr(s.micr)
       setEnabled(s.config.enabled); setOpBank(s.config.banks.operating.qboAccountId); setAsBank(s.config.banks.auto_sales.qboAccountId)
       setCatMap(s.config.categoryAccounts || {})
       setOffsetX(String(s.config.layout.offsetX ?? 0)); setOffsetY(String(s.config.layout.offsetY ?? 0)); setPosition(s.config.layout.position ?? 'top')
+      setCompanyName(s.config.display?.companyName ?? ''); setCompanyAddr(s.config.display?.companyAddr ?? '')
+      setBankName(s.config.display?.bankName ?? ''); setBankAddr(s.config.display?.bankAddr ?? ''); setMicrEnabled(!!s.config.micrEnabled)
     } catch (e) { setErr(String((e as Error).message)) } finally { setLoading(false) }
   }, [])
 
@@ -70,8 +82,9 @@ export default function ChecksAdmin() {
         enabled, operatingBankQboId: opBank, autoSalesBankQboId: asBank,
         categoryAccounts: catMap,
         layout: { position, offsetX: parseFloat(offsetX) || 0, offsetY: parseFloat(offsetY) || 0 },
+        companyName, companyAddr, bankName, bankAddr, micrEnabled,
       })
-      setReadiness(res.readiness); setConfig(res.config); setMsg('Saved ✓')
+      setReadiness(res.readiness); setConfig(res.config); setMicr(res.micr); setMsg('Saved ✓')
     } catch (e) { setErr(String((e as Error).message)); setMsg(null) }
   }
 
@@ -147,6 +160,32 @@ export default function ChecksAdmin() {
         <p className="text-xs text-neutral-500">Positive X = right, positive Y = down. Tune against a plain-paper test held behind the check, then Save.</p>
       </section>
 
+      {/* Check face (blank stock) */}
+      <section className="space-y-3 rounded-xl border border-neutral-200 p-4">
+        <h2 className="font-semibold">Check face (Blue Summit BLANK stock — we print the whole check)</h2>
+        <label className="block text-sm">Company name<input value={companyName} onChange={(e) => setCompanyName(e.target.value)} className="mt-1 w-full rounded border px-2 py-2" /></label>
+        <label className="block text-sm">Company address (one line)<input value={companyAddr} onChange={(e) => setCompanyAddr(e.target.value)} className="mt-1 w-full rounded border px-2 py-2" /></label>
+        <label className="block text-sm">Bank name<input value={bankName} onChange={(e) => setBankName(e.target.value)} className="mt-1 w-full rounded border px-2 py-2" /></label>
+        <label className="block text-sm">Bank address (one line)<input value={bankAddr} onChange={(e) => setBankAddr(e.target.value)} className="mt-1 w-full rounded border px-2 py-2" /></label>
+        <p className="text-xs text-neutral-500">Non-sensitive text printed on the check face. Routing/account are NOT entered here.</p>
+      </section>
+
+      {/* MICR status */}
+      <section className="space-y-3 rounded-xl border border-neutral-200 p-4">
+        <h2 className="font-semibold">MICR line (negotiable-check magnetic encoding)</h2>
+        {micr && (
+          <ul className="space-y-1 text-sm">
+            <Chk ok={micr.secretsPresent} label={`Routing/account set in secure server env ${micr.secretsPresent ? `(${micr.routingMask} / ${micr.accountMask})` : '(MICR_ROUTING / MICR_ACCOUNT on Vercel)'}`} />
+            <Chk ok={micr.routingValid} label="Routing passes ABA checksum" />
+            <Chk ok={micr.accountValid} label="Account number valid" />
+            <Chk ok={micr.fontInstalled} label="E-13B MICR font installed (MICR_FONT_PATH)" />
+            <Chk ok={micr.enabledFlagOn} label="MICR enabled toggle on" />
+            <li className={`mt-1 font-medium ${micr.ready ? 'text-emerald-700' : 'text-amber-700'}`}>{micr.ready ? 'MICR READY — negotiable checks can print.' : 'MICR NOT READY — checks print NON-NEGOTIABLE until all above are met + MICR toner loaded.'}</li>
+          </ul>
+        )}
+        <label className="flex items-center gap-2"><input type="checkbox" checked={micrEnabled} onChange={(e) => setMicrEnabled(e.target.checked)} /> <span>Enable MICR printing (still requires secure routing/account + font + toner)</span></label>
+      </section>
+
       {/* Enable + save */}
       <section className="space-y-3 rounded-xl border border-neutral-200 p-4">
         <label className="flex items-center gap-2"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> <span className="font-medium">Enable check writing</span></label>
@@ -170,6 +209,10 @@ function AccountSelect({ label, value, onChange, accounts, placeholder }: { labe
       )}
     </label>
   )
+}
+
+function Chk({ ok, label }: { ok: boolean; label: string }) {
+  return <li className={ok ? 'text-emerald-700' : 'text-neutral-500'}>{ok ? '✓' : '○'} {label}</li>
 }
 
 function SeqRow({ label, current, value, setValue, onSave }: { label: string; current: number | null; value: string; setValue: (v: string) => void; onSave: () => void }) {

@@ -21,6 +21,8 @@ const KEYS = [
   'check_operating_bank_qbo_id', 'check_operating_bank_label',
   'check_autosales_bank_qbo_id', 'check_autosales_bank_label',
   'check_category_accounts', 'check_layout',
+  'check_template', 'check_company_name', 'check_company_addr', 'check_bank_name', 'check_bank_addr',
+  'micr_enabled', 'micr_layout',
 ] as const
 
 function resolveRaw(key: string, dbVal: unknown): unknown {
@@ -37,17 +39,22 @@ function asObject(v: unknown): Record<string, unknown> {
 }
 
 export interface BankConfig { key: BankKey; qboAccountId: string; label: string }
+export interface CheckFaceDisplay { companyName: string; companyAddr: string | null; bankName: string; bankAddr: string | null }
 export interface CheckConfig {
   enabled: boolean
   banks: Record<BankKey, BankConfig>
   categoryAccounts: Record<string, string>   // categoryKey -> QBO expense Account.Id
   layout: CheckLayout
+  templateMode: 'blank_full' | 'preprinted'   // Blue Summit blank stock ⇒ blank_full (we draw the face)
+  display: CheckFaceDisplay                    // NON-SENSITIVE check-face text (never routing/account)
+  micrEnabled: boolean                         // kill-switch; real MICR still requires secure env + font
 }
 
 export async function getCheckConfig(): Promise<CheckConfig> {
   const rows = await getDb().select().from(appSettings).where(inArray(appSettings.key, [...KEYS]))
   const map = new Map(rows.map((r) => [r.key, r.value]))
   const g = (k: string) => resolveRaw(k, map.get(k))
+  const str = (k: string, d = '') => { const v = g(k); return v == null ? d : String(v) }
   return {
     enabled: g('checks_enabled') === true || g('checks_enabled') === 'true',
     banks: {
@@ -56,6 +63,14 @@ export async function getCheckConfig(): Promise<CheckConfig> {
     },
     categoryAccounts: Object.fromEntries(Object.entries(asObject(g('check_category_accounts'))).map(([k, v]) => [k, String(v)])),
     layout: buildLayout(asObject(g('check_layout')) as Partial<CheckLayout>),
+    templateMode: str('check_template', 'blank_full') === 'preprinted' ? 'preprinted' : 'blank_full',
+    display: {
+      companyName: str('check_company_name', 'Pitt Stop Detail & Auto Sales'),
+      companyAddr: str('check_company_addr') || null,
+      bankName: str('check_bank_name', 'American Momentum Bank'),
+      bankAddr: str('check_bank_addr') || null,
+    },
+    micrEnabled: g('micr_enabled') === true || g('micr_enabled') === 'true',
   }
 }
 

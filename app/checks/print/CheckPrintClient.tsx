@@ -11,10 +11,15 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface Field { key: string; value: string; xIn: number; yIn: number; widthIn: number; align: 'left' | 'right'; sizePt: number }
+interface TplText { value: string; xIn: number; yIn: number; sizePt: number; align: 'left' | 'right'; bold?: boolean; mode?: 'e13b' | 'placeholder' }
+interface TplLine { x1In: number; y1In: number; x2In: number; y2In: number; widthPt?: number }
+interface TplBox { xIn: number; yIn: number; wIn: number; hIn: number; widthPt?: number }
+interface Template { texts: TplText[]; lines: TplLine[]; boxes: TplBox[]; micr?: (TplText & { mode: 'e13b' | 'placeholder' }) | null }
 interface Props {
   pageWidthIn: number
   pageHeightIn: number
   fields: Field[]
+  template: Template | null
   isTest: boolean
   checkId: string | null
   checkNumber: number | null
@@ -92,6 +97,23 @@ export default function CheckPrintClient(props: Props) {
       {/* The printable check page */}
       <div className="check-page" style={{ width: `${props.pageWidthIn}in`, height: `${props.pageHeightIn}in` }}>
         {props.isTest && <div className="void-watermark">VOID — TEST — NOT NEGOTIABLE</div>}
+
+        {/* Blank-stock face template: boxes, lines, labels, MICR band */}
+        {props.template?.boxes.map((b, i) => (
+          <div key={`box${i}`} style={{ position: 'absolute', left: `${b.xIn}in`, top: `${b.yIn}in`, width: `${b.wIn}in`, height: `${b.hIn}in`, border: `${b.widthPt ?? 1}px solid #111` }} />
+        ))}
+        {props.template?.lines.map((l, i) => (
+          <div key={`ln${i}`} style={{ position: 'absolute', left: `${Math.min(l.x1In, l.x2In)}in`, top: `${Math.min(l.y1In, l.y2In)}in`, width: `${Math.abs(l.x2In - l.x1In)}in`, height: 0, borderTop: `${l.widthPt ?? 0.75}px solid #111` }} />
+        ))}
+        {props.template?.texts.map((t, i) => (
+          <div key={`tt${i}`} style={{ position: 'absolute', left: `${t.xIn}in`, top: `${t.yIn}in`, width: '3in', textAlign: t.align, fontSize: `${t.sizePt}pt`, fontWeight: t.bold ? 700 : 400, fontFamily: 'Georgia, "Times New Roman", serif', whiteSpace: 'nowrap' }}>{t.value}</div>
+        ))}
+        {props.template?.micr && (
+          <div style={{ position: 'absolute', left: `${props.template.micr.xIn}in`, top: `${props.template.micr.yIn}in`, fontSize: `${props.template.micr.sizePt}pt`, letterSpacing: '2px', fontFamily: props.template.micr.mode === 'e13b' ? 'MICRE13B, monospace' : 'monospace', color: props.template.micr.mode === 'e13b' ? '#000' : '#b00', whiteSpace: 'nowrap' }}>
+            {props.template.micr.value}
+          </div>
+        )}
+
         {props.fields.map((f) => (
           <div
             key={f.key}

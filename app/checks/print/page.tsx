@@ -13,6 +13,7 @@ import { managerActor } from '@/apps/checks/authz'
 import { getCheckConfig } from '@/apps/checks/config'
 import { buildLayout, PAGE_WIDTH_IN, PAGE_HEIGHT_IN, type CheckPosition } from '@/apps/checks/layout'
 import { buildFields, checkValues, testValues } from '@/apps/checks/render'
+import { assembleCheckTemplate } from '@/apps/checks/template-server'
 import { getCheckView } from '@/apps/checks/db'
 import CheckPrintClient from './CheckPrintClient'
 
@@ -57,12 +58,16 @@ export default async function CheckPrintPage({ searchParams }: { searchParams: P
 
   // Positioned fields for the client (inches → the client converts to CSS).
   const fields = buildFields(values, layout)
+  // Full blank-stock face (labels/lines/company/bank + MICR band). TEST always shows a non-negotiable
+  // MICR placeholder; real checks show a real MICR line only when securely configured.
+  const template = assembleCheckTemplate(cfg, layout, { test: isTest || !id, checkNumber })
 
   return (
     <CheckPrintClient
       pageWidthIn={PAGE_WIDTH_IN}
       pageHeightIn={PAGE_HEIGHT_IN}
       fields={fields}
+      template={template}
       isTest={isTest || !id}
       checkId={checkId}
       checkNumber={checkNumber}

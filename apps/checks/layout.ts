@@ -17,20 +17,25 @@
 
 export const PAGE_WIDTH_IN = 8.5
 export const PAGE_HEIGHT_IN = 11
-export const CHECK_HEIGHT_IN = 3.5 // one check slot on a standard 3-up business check sheet
+// Blue Summit BSS 3-part perforated stock: each check section is exactly 11/3 ≈ 3.667" tall.
+export const CHECK_HEIGHT_IN = 11 / 3
 
 export type CheckPosition = 'top' | 'middle' | 'bottom'
 
 export interface FieldPos { xIn: number; yIn: number; widthIn?: number; align?: 'left' | 'right'; sizePt?: number }
 
-/** Default field coordinates relative to the check's own top-left corner (inches). */
+/**
+ * Default field coordinates relative to the check's own top-left corner (inches), tuned for Blue Summit
+ * BLANK top-position business-check stock (we draw the whole face — see template.ts). Values sit just
+ * above their template lines. checkNumber IS drawn on blank stock (top-right). MICR is separate (micr.ts).
+ */
 export const DEFAULT_FIELDS = {
-  date:          { xIn: 6.55, yIn: 0.42, widthIn: 1.6, align: 'left'  as const, sizePt: 10 },
-  payee:         { xIn: 1.05, yIn: 1.02, widthIn: 4.9, align: 'left'  as const, sizePt: 11 },
-  amountBox:     { xIn: 6.75, yIn: 0.98, widthIn: 1.4, align: 'right' as const, sizePt: 11 }, // "$1,500.34"
-  amountWords:   { xIn: 0.30, yIn: 1.46, widthIn: 7.4, align: 'left'  as const, sizePt: 10 }, // "One Thousand … and 34/100"
-  memo:          { xIn: 0.65, yIn: 2.62, widthIn: 3.2, align: 'left'  as const, sizePt: 9  },
-  checkNumber:   { xIn: 7.05, yIn: 0.12, widthIn: 1.2, align: 'right' as const, sizePt: 11 }, // usually PRE-PRINTED; off by default
+  date:          { xIn: 5.70, yIn: 0.55, widthIn: 2.3, align: 'left'  as const, sizePt: 10 },
+  payee:         { xIn: 1.65, yIn: 1.10, widthIn: 4.6, align: 'left'  as const, sizePt: 11 },
+  amountBox:     { xIn: 6.55, yIn: 1.12, widthIn: 1.55,align: 'right' as const, sizePt: 12 }, // "$1,500.34" inside the box
+  amountWords:   { xIn: 0.35, yIn: 1.58, widthIn: 6.9, align: 'left'  as const, sizePt: 11 }, // "One Thousand … and 34/100"
+  memo:          { xIn: 0.95, yIn: 2.86, widthIn: 2.3, align: 'left'  as const, sizePt: 9  },
+  checkNumber:   { xIn: 7.05, yIn: 0.28, widthIn: 1.2, align: 'right' as const, sizePt: 13 }, // WE print it on blank stock
 } satisfies Record<string, FieldPos>
 
 export type CheckFieldKey = keyof typeof DEFAULT_FIELDS
@@ -48,9 +53,15 @@ export const DEFAULT_LAYOUT: CheckLayout = {
   position: 'top',
   offsetX: 0,
   offsetY: 0,
-  fields: ['date', 'payee', 'amountBox', 'amountWords', 'memo'],
+  // Blank stock ⇒ we also print the check number (top-right); MICR is handled separately.
+  fields: ['date', 'payee', 'amountBox', 'amountWords', 'memo', 'checkNumber'],
   perField: DEFAULT_FIELDS,
 }
+
+// MICR band default geometry (inches from the check's own top-left). The magnetic line sits ~5/8" up
+// from the bottom edge of the check. `startXIn` is where the leftmost symbol begins. Non-sensitive;
+// tuned during calibration against the American Momentum spec. The digits themselves live in micr.ts.
+export const DEFAULT_MICR_POS = { startXIn: 0.9, yIn: CHECK_HEIGHT_IN - 0.55, sizePt: 12 }
 
 /** The y-origin (inches from page top) of a check slot. */
 export function slotOriginY(position: CheckPosition): number {

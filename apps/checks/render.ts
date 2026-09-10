@@ -7,9 +7,10 @@
 import { resolveFieldPosition, buildLayout, PAGE_WIDTH_IN, PAGE_HEIGHT_IN, type CheckLayout, type CheckFieldKey } from './layout'
 import { amountToWords, formatAmount } from './amount-words'
 import type { CheckView } from './types'
+import type { CheckTemplate } from './template'
 
 export interface RenderedField { key: string; value: string; xIn: number; yIn: number; widthIn: number; align: 'left' | 'right'; sizePt: number }
-export interface CheckPrintPayload { pageWidthIn: number; pageHeightIn: number; fields: RenderedField[] }
+export interface CheckPrintPayload { pageWidthIn: number; pageHeightIn: number; fields: RenderedField[]; template?: CheckTemplate | null }
 
 function usDate(iso: string): string {
   const [y, m, d] = (iso ?? '').slice(0, 10).split('-')
@@ -41,9 +42,9 @@ export function buildFields(values: Record<string, string>, layout: CheckLayout)
   })
 }
 
-/** Full print payload (page size + fields) for a real check under a layout — the enqueue snapshot. */
-export function buildCheckPayload(view: CheckView, layout: CheckLayout): CheckPrintPayload {
-  return { pageWidthIn: PAGE_WIDTH_IN, pageHeightIn: PAGE_HEIGHT_IN, fields: buildFields(checkValues(view), layout) }
+/** Full print payload (page size + fields + optional blank-stock template) — the enqueue snapshot. */
+export function buildCheckPayload(view: CheckView, layout: CheckLayout, template?: CheckTemplate | null): CheckPrintPayload {
+  return { pageWidthIn: PAGE_WIDTH_IN, pageHeightIn: PAGE_HEIGHT_IN, fields: buildFields(checkValues(view), layout), template: template ?? null }
 }
 
 export { buildLayout, PAGE_WIDTH_IN, PAGE_HEIGHT_IN }

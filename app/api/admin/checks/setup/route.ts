@@ -11,6 +11,7 @@ import { getCheckConfig, checkConfigReadiness } from '@/apps/checks/config'
 import { updateSetting } from '@/apps/settings/db'
 import { peekNextNumber } from '@/apps/checks/numbering'
 import { CHECK_CATEGORIES } from '@/apps/checks/types'
+import { micrReadiness } from '@/apps/checks/micr'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -25,9 +26,15 @@ export async function GET(req: Request) {
       banks: cfg.banks,
       categoryAccounts: cfg.categoryAccounts,
       layout: cfg.layout,
+      templateMode: cfg.templateMode,
+      display: cfg.display,
+      micrEnabled: cfg.micrEnabled,
     },
     categories: CHECK_CATEGORIES,
     readiness: checkConfigReadiness(cfg),
+    // MICR status — MASKS ONLY (never the routing/account numbers). Tells the owner what's still needed
+    // before a negotiable check can print.
+    micr: micrReadiness(cfg.micrEnabled),
     sequences: {
       operating: await peekNextNumber('operating'),
       auto_sales: await peekNextNumber('auto_sales'),
@@ -43,6 +50,14 @@ interface SetupBody {
   autoSalesBankLabel?: string
   categoryAccounts?: Record<string, string>
   layout?: unknown
+  // Non-sensitive check-face display + stock/MICR toggles. Routing/account are NEVER accepted here —
+  // they live only in server-only env (MICR_ROUTING/MICR_ACCOUNT).
+  companyName?: string
+  companyAddr?: string
+  bankName?: string
+  bankAddr?: string
+  templateMode?: 'blank_full' | 'preprinted'
+  micrEnabled?: boolean
 }
 
 export async function POST(req: Request) {
@@ -66,8 +81,19 @@ export async function POST(req: Request) {
     ops.push(updateSetting('check_category_accounts', clean, who))
   }
   if (body.layout && typeof body.layout === 'object') ops.push(updateSetting('check_layout', body.layout, who))
+  if (typeof body.companyName === 'string') ops.push(updateSetting('check_company_name', body.companyName.trim(), who))
+  if (typeof body.companyAddr === 'string') ops.push(updateSetting('check_company_addr', body.companyAddr.trim(), who))
+  if (typeof body.bankName === 'string') ops.push(updateSetting('check_bank_name', body.bankName.trim(), who))
+  if (typeof body.bankAddr === 'string') ops.push(updateSetting('check_bank_addr', body.bankAddr.trim(), who))
+  if (body.templateMode === 'blank_full' || body.templateMode === 'preprinted') ops.push(updateSetting('check_template', body.templateMode, who))
+  if (typeof body.micrEnabled === 'boolean') ops.push(updateSetting('micr_enabled', body.micrEnabled, who))
 
   await Promise.all(ops)
   const cfg = await getCheckConfig()
-  return NextResponse.json({ ok: true, config: { enabled: cfg.enabled, banks: cfg.banks, categoryAccounts: cfg.categoryAccounts, layout: cfg.layout }, readiness: checkConfigReadiness(cfg) })
+  return NextResponse.json({
+    ok: true,
+    config: { enabled: cfg.enabled, banks: cfg.banks, categoryAccounts: cfg.categoryAccounts, layout: cfg.layout, templateMode: cfg.templateMode, display: cfg.display, micrEnabled: cfg.micrEnabled },
+    readiness: checkConfigReadiness(cfg),
+    micr: micrReadiness(cfg.micrEnabled),
+  })
 }

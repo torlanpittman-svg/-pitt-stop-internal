@@ -28,7 +28,7 @@ describe('check layout math — single source of truth for positions', () => {
     expect(l.fields.length).toBeGreaterThan(0)
   })
 
-  it('checkNumber is OFF by default (pre-printed on most stock)', () => {
-    expect(DEFAULT_LAYOUT.fields).not.toContain('checkNumber')
+  it('checkNumber IS drawn by default (Blue Summit blank stock — we print the whole face)', () => {
+    expect(DEFAULT_LAYOUT.fields).toContain('checkNumber')
   })
 })
