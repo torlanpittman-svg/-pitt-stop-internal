@@ -14,36 +14,30 @@ Proven by physical VOID test. Do NOT modify:
 - Letter page size
 - Sumatra `noscale` / 100% (actual-size) printing
 - Brother print path
+- **MICR vertical position** — `micrPos` clearance **`0.86`** ⇒ 12pt **baseline ~0.69" above the perforation**
+  (digits ~0.69–0.81"). ✅ Owner physically verified 2026-09-10 that the VOID print clears the Blue Summit
+  blue bottom security border. Do NOT change without owner re-approval.
 
-## ❌ NOT YET APPROVED — reopened 2026-09-10
+## MICR vertical calibration — history (RESOLVED 2026-09-10)
 
-**MICR vertical position only.**
+An earlier physical VOID test showed the MICR line printing **too LOW** — on the blue bottom security
+border of the Blue Summit stock (12pt baseline ~0.53" above the perforation, `micrPos` clearance `0.70`).
 
-An earlier physical VOID test showed the MICR placeholder line printing **too LOW** — on the blue bottom
-security border of the Blue Summit stock (12pt baseline was ~0.53" above the perforation, `micrPos`
-clearance `0.70`).
-
-**Calibration applied 2026-09-10 (commit `71a4317`), AWAITING owner physical verification:** raised the
-band to `micrPos` clearance **`0.86`** ⇒ 12pt **baseline ~0.69" above the perforation** (digits ~0.69–
-0.81"). Rationale: ANSI X9.100‑160 requires the bottom‑5/8" MICR clear band be free of any border; this
-stock's blue border intrudes there, so the band rides just above it. **0.69" is the maximum MICR‑only
-raise** — the ceiling is the LOCKED memo VALUE (bottom ~0.895" above the perforation), leaving a ~0.085"
-gap. One VOID/non‑negotiable test was queued → claimed once → printed once (no retry/dupe); no check row,
-no QuickBooks, no #20000, no real MICR data.
-
-Owner must **physically inspect that VOID print** against the Blue Summit stock:
-- If the band now clears the blue border → MICR vertical position can be marked APPROVED.
-- If it still contacts the border → the border extends higher than ~0.6" above the perforation, and the
-  only further fix requires owner approval to also raise the (currently LOCKED) memo/signature block.
-
-Only the MICR band was reopened; the rest of the layout stays locked (page size, offsets, 3.5" section,
-all non‑MICR field positions unchanged). Exact code location: `apps/checks/layout.ts` → `micrPos()`.
-
-Constraints for this work: **No QuickBooks transaction. No real check. No negotiable MICR data.**
+Fix (commit `71a4317`): raised the band MICR-ONLY to `micrPos` clearance **`0.86`** ⇒ baseline **~0.69"
+above the perforation**. Rationale: ANSI X9.100‑160 requires the bottom‑5/8" MICR clear band be free of
+any border; this stock's blue border intrudes there, so the band rides just above it. 0.69" is the maximum
+MICR‑only raise — the ceiling is the LOCKED memo VALUE (bottom ~0.895" above the perforation), leaving a
+~0.085" gap. One VOID/non‑negotiable test was queued → claimed once → printed once (no retry/dupe), and the
+owner **physically confirmed the band now clears the blue border** ⇒ APPROVED & LOCKED (above). No other
+field moved. No QuickBooks, no check row, no #20000 consumed, no real MICR data.
 
 ## Real negotiable printing — still FAIL-CLOSED
 
-Independent of the above, the 6-item gate before the first real negotiable check remains outstanding:
-MICR magnetic toner, licensed E-13B font, secure routing/account env, MICR field/order/spec verified
-against American Momentum, MICR positioning verified (blocked by the item above), and explicit owner
-authorization of the first controlled live check.
+Independent of the above, the negotiable-check gate still has outstanding items:
+- ✅ MICR **positioning** verified (VOID print, 2026-09-10).
+- ⬜ MICR magnetic toner installed in the Brother.
+- ⬜ Licensed E-13B font installed + embedded (`MICR_FONT_PATH`).
+- ⬜ Secure routing/account in server-only env (`MICR_ROUTING` / `MICR_ACCOUNT`).
+- ⬜ MICR field/order/spec verified against American Momentum (or an authoritative AMB sample).
+- ⬜ `micr_enabled` turned on.
+- ⬜ Explicit owner authorization of the first controlled live check.

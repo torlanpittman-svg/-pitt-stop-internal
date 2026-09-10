@@ -75,7 +75,9 @@ export const DEFAULT_LAYOUT: CheckLayout = {
  *  band is ridden just ABOVE it. 0.86" clearance ⇒ baseline ~0.69" above the perforation (digits ~0.69–
  *  0.81"), the highest the band can sit while keeping a clean gap below the LOCKED memo VALUE (its bottom
  *  ≈ 0.895" above the perforation ⇒ ~0.085" gap) and fully inside the 3.5" section. MICR-ONLY change; no
- *  other field moved. Pending owner physical VOID-print verification. See docs/CHECK_PRINTING_STATUS.md. */
+ *  other field moved. ✅ APPROVED & LOCKED 2026-09-10 — owner physically verified the VOID print clears the
+ *  Blue Summit blue bottom security border. Do NOT change without owner re-approval. See
+ *  docs/CHECK_PRINTING_STATUS.md. */
 export function micrPos(sectionHeightIn: number) {
   return { startXIn: 0.9, yIn: sectionHeightIn - 0.86, sizePt: 12 }
 }
