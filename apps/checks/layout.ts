@@ -42,7 +42,7 @@ export const DEFAULT_FIELDS = {
   payee:         { xIn: 1.65, yIn: 1.02, widthIn: 4.6, align: 'left'  as const, sizePt: 11 },
   amountBox:     { xIn: 6.55, yIn: 1.04, widthIn: 1.55,align: 'right' as const, sizePt: 12 }, // "$1,500.34" inside the box
   amountWords:   { xIn: 0.35, yIn: 1.48, widthIn: 6.9, align: 'left'  as const, sizePt: 11 }, // "One Thousand … and 34/100"
-  memo:          { xIn: 0.95, fromBottomIn: 0.62, widthIn: 2.3, align: 'left'  as const, sizePt: 9 },
+  memo:          { xIn: 0.95, fromBottomIn: 1.02, widthIn: 2.3, align: 'left'  as const, sizePt: 9 },
   checkNumber:   { xIn: 7.05, yIn: 0.24, widthIn: 1.2, align: 'right' as const, sizePt: 13 },
 } satisfies Record<string, FieldPos>
 
@@ -66,10 +66,11 @@ export const DEFAULT_LAYOUT: CheckLayout = {
   perField: DEFAULT_FIELDS,
 }
 
-/** MICR band geometry for a given section height — anchored to the BOTTOM of the top check section
- *  (~0.42" above the first perforation), never near the bottom of the Letter sheet. */
+/** MICR band geometry for a given section height — anchored to the BOTTOM of the top check section,
+ *  with a comfortable ~0.7" clearance above the first perforation (band fully inside the top section),
+ *  never near the bottom of the Letter sheet. */
 export function micrPos(sectionHeightIn: number) {
-  return { startXIn: 0.9, yIn: sectionHeightIn - 0.42, sizePt: 12 }
+  return { startXIn: 0.9, yIn: sectionHeightIn - 0.70, sizePt: 12 }
 }
 
 /** The y-origin (inches from page top) of a check slot (only 'top' is used for this stock). */

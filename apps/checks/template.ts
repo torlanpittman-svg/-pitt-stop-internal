@@ -52,18 +52,20 @@ export function buildCheckTemplate(display: CheckFaceDisplay, layout: CheckLayou
     T(display.bankName, 0.35, 1.86, 9, 'left', true),
   )
   if (display.bankAddr) texts.push(T(display.bankAddr, 0.35, 2.03, 7))
-  // ── Lower block (bottom-anchored to the first perforation) ──
+  // ── Lower block (bottom-anchored) — compressed UP so memo/signature clear the first perforation and
+  //    the MICR band (micrPos, ~0.7" above the perforation) sits fully inside the top section. MEMO label
+  //    sits above its line; AUTHORIZED SIGNATURE label sits below its line (both above the MICR band).
   texts.push(
-    T('MEMO', 0.35, fb(0.72), 7),
-    T('AUTHORIZED SIGNATURE', 5.30, fb(0.60), 7),
+    T('MEMO', 0.35, fb(1.06), 7),
+    T('AUTHORIZED SIGNATURE', 5.30, fb(0.90), 7),
   )
 
   const lines: TplLine[] = [
     L(5.55, 0.68, 8.10, 0.68),                 // date line
     L(1.55, 1.20, 6.30, 1.20),                 // payee line
     L(0.30, 1.66, 7.55, 1.66),                 // amount-in-words line
-    L(0.90, fb(0.58), 3.30, fb(0.58)),         // memo line
-    L(5.30, fb(0.64), 8.10, fb(0.64)),         // signature line
+    L(0.90, fb(1.00), 3.30, fb(1.00)),         // memo line (both memo + signature share this baseline)
+    L(5.30, fb(1.00), 8.10, fb(1.00)),         // signature line
   ]
   const boxes: TplBox[] = [ B(6.50, 0.96, 1.62, 0.38) ]  // amount numeric box
 

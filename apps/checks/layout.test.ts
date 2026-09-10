@@ -25,9 +25,9 @@ describe('check layout math — single source of truth for positions', () => {
   it('bottom-anchors the memo to the section height (tracks the first perforation)', () => {
     const short = buildLayout({ sectionHeightIn: 2.8 })
     const tall = buildLayout({ sectionHeightIn: 3.5 })
-    // memo has fromBottomIn 0.62 → y = sectionHeight - 0.62; a shorter section moves memo UP.
-    expect(resolveFieldPosition(short, 'memo').yIn).toBeCloseTo(2.8 - 0.62, 5)
-    expect(resolveFieldPosition(tall, 'memo').yIn).toBeCloseTo(3.5 - 0.62, 5)
+    // memo has fromBottomIn 1.02 → y = sectionHeight - 1.02; a shorter section moves memo UP.
+    expect(resolveFieldPosition(short, 'memo').yIn).toBeCloseTo(2.8 - 1.02, 5)
+    expect(resolveFieldPosition(tall, 'memo').yIn).toBeCloseTo(3.5 - 1.02, 5)
   })
 
   it('buildLayout ignores non-finite offsets and empty field lists', () => {
