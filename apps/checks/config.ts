@@ -14,7 +14,7 @@ import { appSettings } from '@/apps/settings/schema'
 import { inArray } from 'drizzle-orm'
 import { SETTINGS } from '@/apps/settings/db'
 import { CHECK_CATEGORIES, categoryEntity, type BankKey, type CheckCategoryKey } from './types'
-import { buildLayout, type CheckLayout } from './layout'
+import { buildLayout, type CheckLayout, type MicrGeom } from './layout'
 
 const KEYS = [
   'checks_enabled',
@@ -62,7 +62,9 @@ export async function getCheckConfig(): Promise<CheckConfig> {
       auto_sales: { key: 'auto_sales', qboAccountId: String(g('check_autosales_bank_qbo_id') ?? '').trim(), label: String(g('check_autosales_bank_label') ?? 'Auto Sales') },
     },
     categoryAccounts: Object.fromEntries(Object.entries(asObject(g('check_category_accounts'))).map(([k, v]) => [k, String(v)])),
-    layout: buildLayout(asObject(g('check_layout')) as Partial<CheckLayout>),
+    // MICR geometry lives in its OWN setting (`micr_layout`) so MICR-only calibration never risks the
+    // locked non-MICR fields in `check_layout`. Merge it in as the layout's `micr` override.
+    layout: buildLayout({ ...(asObject(g('check_layout')) as Omit<Partial<CheckLayout>, 'micr'>), micr: asObject(g('micr_layout')) as Partial<MicrGeom> }),
     templateMode: str('check_template', 'blank_full') === 'preprinted' ? 'preprinted' : 'blank_full',
     display: {
       companyName: str('check_company_name', 'Pitt Stop Detail & Auto Sales'),

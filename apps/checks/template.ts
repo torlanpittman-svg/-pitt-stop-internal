@@ -8,7 +8,7 @@
  * calibration offset (same model as the value fields). No sensitive data here — routing/account come only
  * from micr.ts. This module contains ONLY the non-sensitive check-face design + the MICR band placement.
  */
-import { slotOriginY, micrPos, type CheckLayout } from './layout'
+import { slotOriginY, micrPlacement, PAGE_WIDTH_IN, type CheckLayout } from './layout'
 
 export interface TplText { value: string; xIn: number; yIn: number; sizePt: number; align: 'left' | 'right'; bold?: boolean }
 export interface TplLine { x1In: number; y1In: number; x2In: number; y2In: number; widthPt?: number }
@@ -35,7 +35,10 @@ export interface MicrRender {
   deferCheckNumber?: string | number | null
 }
 
-export interface CheckTemplate { texts: TplText[]; lines: TplLine[]; boxes: TplBox[]; micr?: (TplText & { mode: 'e13b' | 'placeholder'; deferCheckNumber?: string | number | null }) | null }
+// The MICR element carries its own fixed-pitch geometry: `yIn` is the character BASELINE (not the text
+// top), `xIn` is the RIGHTMOST character (right-anchored per ANSI), and `pitchIn` is the fixed advance
+// (8 CPI). The renderer positions each character individually — never proportional font metrics.
+export interface CheckTemplate { texts: TplText[]; lines: TplLine[]; boxes: TplBox[]; micr?: (TplText & { mode: 'e13b' | 'placeholder'; deferCheckNumber?: string | number | null; pitchIn: number }) | null }
 
 /** Build the static face elements for a blank top/middle/bottom check under a layout. */
 export function buildCheckTemplate(display: CheckFaceDisplay, layout: CheckLayout, micr?: MicrRender | null): CheckTemplate {
@@ -59,9 +62,9 @@ export function buildCheckTemplate(display: CheckFaceDisplay, layout: CheckLayou
     T(display.bankName, 0.35, 1.86, 9, 'left', true),
   )
   if (display.bankAddr) texts.push(T(display.bankAddr, 0.35, 2.03, 7))
-  // ── Lower block (bottom-anchored) — compressed UP so memo/signature clear the first perforation and
-  //    the MICR band (micrPos, 0.86" clearance ⇒ baseline ~0.69" above the perforation) sits fully inside
-  //    the top section, just below this block. MEMO label
+  // ── Lower block (bottom-anchored) — compressed UP so memo/signature clear the first perforation. The
+  //    MICR band is placed separately by micrPlacement (standards-based: baseline 3/16" above the bottom
+  //    edge, right-anchored, 8 CPI), which sits below this block. MEMO label
   //    sits above its line; AUTHORIZED SIGNATURE label sits below its line (both above the MICR band).
   texts.push(
     T('MEMO', 0.35, fb(1.06), 7),
@@ -79,8 +82,13 @@ export function buildCheckTemplate(display: CheckFaceDisplay, layout: CheckLayou
 
   let micrEl: CheckTemplate['micr'] = null
   if (micr) {
-    const m = micrPos(S)
-    micrEl = { value: micr.text, xIn: m.startXIn + ox, yIn: m.yIn + oy, sizePt: m.sizePt, align: 'left', mode: micr.mode, deferCheckNumber: micr.deferCheckNumber ?? null }
+    // Standards-based placement: baseline `baselineFromBottomIn` above the perforation, right-anchored,
+    // fixed 8 CPI pitch. Global offsets still apply (they're locked at 0 today but honored for consistency).
+    const p = micrPlacement(S, PAGE_WIDTH_IN, layout.micr)
+    micrEl = {
+      value: micr.text, xIn: p.rightAnchorXIn + ox, yIn: p.baselineYIn + oy, sizePt: p.sizePt,
+      align: 'right', mode: micr.mode, deferCheckNumber: micr.deferCheckNumber ?? null, pitchIn: p.pitchIn,
+    }
   }
   return { texts, lines, boxes, micr: micrEl }
 }

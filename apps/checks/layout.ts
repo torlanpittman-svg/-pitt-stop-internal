@@ -26,6 +26,58 @@ export const CHECK_HEIGHT_IN = 11 / 3
 // the check is fit within this height.
 export const CHECK_SECTION_HEIGHT_IN = 3.5
 
+// ── MICR geometry — STANDARDS-BASED (ANSI X9.100-160 / X9.13). ────────────────────────────────────────
+// These are the authoritative defaults; every value is overridable via the `micr_layout` setting so the
+// exact landing is finalized by physical VOID test against the actual stock WITHOUT a code change and
+// WITHOUT touching any non-MICR field.
+export const MICR_PITCH_IN = 0.125                 // fixed 8 characters/inch
+export const MICR_SIZE_PT = 10                     // E-13B meets ABA/ISO at 10pt @ 8 CPI
+export const MICR_CLEAR_BAND_IN = 0.625            // bottom 5/8" clear band (must be free of any border)
+export const MICR_BASELINE_FROM_BOTTOM_IN = 0.1875 // 3/16" — character baseline above the bottom (aligning) edge
+export const MICR_RIGHT_MARGIN_IN = 0.25           // inset of MICR position 1 from the right paper edge
+export const MICR_AMOUNT_FIELD_IN = 1.5            // positions 1-12 (Amount) left blank — the bank prints it
+
+export interface MicrGeom {
+  baselineFromBottomIn: number  // character baseline distance above the bottom (aligning) edge
+  rightMarginIn: number         // inset of MICR position 1 from the right paper edge
+  amountFieldIn: number         // blank Amount field width reserved at the far right (positions 1-12)
+  pitchIn: number               // fixed character pitch (8 CPI = 0.125")
+  sizePt: number                // E-13B point size (10pt)
+}
+export const DEFAULT_MICR_GEOM: MicrGeom = {
+  baselineFromBottomIn: MICR_BASELINE_FROM_BOTTOM_IN, rightMarginIn: MICR_RIGHT_MARGIN_IN,
+  amountFieldIn: MICR_AMOUNT_FIELD_IN, pitchIn: MICR_PITCH_IN, sizePt: MICR_SIZE_PT,
+}
+const posNum = (v: unknown, d: number) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : d)
+export function micrGeom(override?: Partial<MicrGeom> | null): MicrGeom {
+  if (!override) return DEFAULT_MICR_GEOM
+  return {
+    baselineFromBottomIn: posNum(override.baselineFromBottomIn, DEFAULT_MICR_GEOM.baselineFromBottomIn),
+    rightMarginIn: posNum(override.rightMarginIn, DEFAULT_MICR_GEOM.rightMarginIn),
+    amountFieldIn: posNum(override.amountFieldIn, DEFAULT_MICR_GEOM.amountFieldIn),
+    pitchIn: posNum(override.pitchIn, DEFAULT_MICR_GEOM.pitchIn) || MICR_PITCH_IN,
+    sizePt: posNum(override.sizePt, DEFAULT_MICR_GEOM.sizePt) || MICR_SIZE_PT,
+  }
+}
+
+export interface MicrPlacement { baselineYIn: number; rightAnchorXIn: number; pitchIn: number; sizePt: number }
+/**
+ * Standards-based MICR band placement (inches from the check's top-left):
+ *   - baselineYIn  = the CHARACTER BASELINE, `baselineFromBottomIn` above the bottom (aligning) edge, which
+ *                    for the top check is the first perforation at `sectionHeightIn`.
+ *   - rightAnchorXIn = x of the RIGHTMOST printed MICR character. ANSI positions are counted from the RIGHT
+ *                    edge, and the Amount field (positions 1-12) is left blank for the bank, so the right
+ *                    anchor is inset from the right paper edge by the right margin + the Amount field.
+ * Fixed pitch (8 CPI) — the renderer advances every character by exactly `pitchIn`.
+ */
+export function micrPlacement(sectionHeightIn: number, pageWidthIn: number, g: MicrGeom = DEFAULT_MICR_GEOM): MicrPlacement {
+  return {
+    baselineYIn: sectionHeightIn - g.baselineFromBottomIn,
+    rightAnchorXIn: pageWidthIn - g.rightMarginIn - g.amountFieldIn,
+    pitchIn: g.pitchIn, sizePt: g.sizePt,
+  }
+}
+
 export type CheckPosition = 'top' | 'middle' | 'bottom'
 
 // `fromBottomIn`, when set, anchors the field's baseline that many inches ABOVE the section's bottom edge
@@ -55,6 +107,7 @@ export interface CheckLayout {
   sectionHeightIn: number
   fields: CheckFieldKey[]
   perField: Record<string, FieldPos>
+  micr: MicrGeom            // standards-based MICR geometry (overridable via micr_layout for calibration)
 }
 
 export const DEFAULT_LAYOUT: CheckLayout = {
@@ -64,22 +117,7 @@ export const DEFAULT_LAYOUT: CheckLayout = {
   sectionHeightIn: CHECK_SECTION_HEIGHT_IN,
   fields: ['date', 'payee', 'amountBox', 'amountWords', 'memo', 'checkNumber'],
   perField: DEFAULT_FIELDS,
-}
-
-/** MICR band geometry for a given section height — anchored to the BOTTOM of the top check section.
- *
- *  MICR VERTICAL CALIBRATION (2026-09-10): raised the band from a 0.70" to a 0.86" clearance above the
- *  first perforation. The prior 0.70" put the 12pt baseline ~0.53" above the perforation, which on Blue
- *  Summit BSS-92588-301 landed ON the preprinted blue bottom security border. Per ANSI X9.100-160 the
- *  MICR clear band (bottom 5/8") must be free of any border; this stock's border intrudes there, so the
- *  band is ridden just ABOVE it. 0.86" clearance ⇒ baseline ~0.69" above the perforation (digits ~0.69–
- *  0.81"), the highest the band can sit while keeping a clean gap below the LOCKED memo VALUE (its bottom
- *  ≈ 0.895" above the perforation ⇒ ~0.085" gap) and fully inside the 3.5" section. MICR-ONLY change; no
- *  other field moved. ✅ APPROVED & LOCKED 2026-09-10 — owner physically verified the VOID print clears the
- *  Blue Summit blue bottom security border. Do NOT change without owner re-approval. See
- *  docs/CHECK_PRINTING_STATUS.md. */
-export function micrPos(sectionHeightIn: number) {
-  return { startXIn: 0.9, yIn: sectionHeightIn - 0.86, sizePt: 12 }
+  micr: DEFAULT_MICR_GEOM,
 }
 
 /** The y-origin (inches from page top) of a check slot (only 'top' is used for this stock). */
@@ -103,8 +141,10 @@ export function resolveFieldPosition(layout: CheckLayout, key: CheckFieldKey): R
   return { xIn: base.xIn + layout.offsetX, yIn: fieldY(base, layout), widthIn: base.widthIn, align: base.align, sizePt: base.sizePt }
 }
 
-/** Merge a partial override (from saved calibration settings) onto the defaults. Unknown keys ignored. */
-export function buildLayout(override?: Partial<CheckLayout> | null): CheckLayout {
+/** Merge a partial override (from saved calibration settings) onto the defaults. Unknown keys ignored.
+ *  `micr` accepts a partial MICR-geometry override (from the `micr_layout` setting) — MICR-only calibration
+ *  that never touches the locked non-MICR fields. */
+export function buildLayout(override?: (Omit<Partial<CheckLayout>, 'micr'> & { micr?: Partial<MicrGeom> | null }) | null): CheckLayout {
   if (!override) return DEFAULT_LAYOUT
   const sh = Number(override.sectionHeightIn)
   return {
@@ -114,5 +154,6 @@ export function buildLayout(override?: Partial<CheckLayout> | null): CheckLayout
     sectionHeightIn: Number.isFinite(sh) && sh > 1 ? sh : CHECK_SECTION_HEIGHT_IN,
     fields: override.fields?.length ? override.fields : DEFAULT_LAYOUT.fields,
     perField: { ...DEFAULT_FIELDS, ...(override.perField ?? {}) },
+    micr: micrGeom(override.micr),
   }
 }
