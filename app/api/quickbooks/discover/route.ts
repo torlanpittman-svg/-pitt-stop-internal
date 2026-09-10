@@ -29,20 +29,35 @@ export async function GET(req: Request) {
   // without colliding with an existing QuickBooks check number. Single SELECT, no writes. Returns
   // numeric DocNumbers + max so the owner setup can pick a clean starting number.
   if (url.searchParams.get('docnums') === '1') {
-    const q = await safe(() => queryQBO<{ Purchase?: any[] }>(
-      "SELECT * FROM Purchase WHERE PaymentType = 'Check' MAXRESULTS 1000",
-    ))
-    const rows = (q.data?.Purchase ?? [])
-      .map((p: any) => ({ docNumber: p.DocNumber ?? null, txnDate: p.TxnDate, amount: p.TotalAmt, payee: p.EntityRef?.name ?? null, account: p.AccountRef?.name ?? null }))
-    const numeric = rows.map((r) => Number(r.docNumber)).filter((n) => Number.isInteger(n) && n > 0)
+    // Paginate the FULL set of Purchase/Check DocNumbers (STARTPOSITION) so the max/gap analysis is
+    // complete, not a capped sample. Read-only.
+    const PAGE = 1000
+    const all: any[] = []
+    let start = 1, ok = true, error: string | undefined
+    for (let i = 0; i < 25; i++) { // hard cap 25k rows
+      const q = await safe(() => queryQBO<{ Purchase?: any[] }>(
+        `SELECT * FROM Purchase WHERE PaymentType = 'Check' STARTPOSITION ${start} MAXRESULTS ${PAGE}`,
+      ))
+      if (!q.ok) { ok = false; error = q.error; break }
+      const batch = q.data?.Purchase ?? []
+      all.push(...batch)
+      if (batch.length < PAGE) break
+      start += PAGE
+    }
+    const numeric = all.map((p: any) => Number(p.DocNumber)).filter((n) => Number.isInteger(n) && n > 0)
+    const distinct = [...new Set(numeric)].sort((a, b) => a - b)
+    // Empty gaps (>=1000 wide) between used numbers, so the owner can pick a clean starting band.
+    const gaps: Array<{ from: number; to: number; size: number }> = []
+    for (let i = 1; i < distinct.length; i++) { const lo = distinct[i - 1], hi = distinct[i]; if (hi - lo > 1000) gaps.push({ from: lo, to: hi, size: hi - lo }) }
     return NextResponse.json({
-      ok: q.ok, error: q.error,
-      checkPurchases: rows.length,
+      ok, error,
+      checkPurchases: all.length,
       withNumericDocNumber: numeric.length,
       maxDocNumber: numeric.length ? Math.max(...numeric) : null,
       minDocNumber: numeric.length ? Math.min(...numeric) : null,
-      distinctNumbers: [...new Set(numeric)].sort((a, b) => a - b),
-      sampleNonNumeric: [...new Set(rows.map((r) => r.docNumber).filter((d) => d && !Number.isInteger(Number(d))))].slice(0, 20),
+      largeGaps: gaps,
+      distinctNumbers: distinct,
+      sampleNonNumeric: [...new Set(all.map((p: any) => p.DocNumber).filter((d: any) => d && !Number.isInteger(Number(d))))].slice(0, 20),
     })
   }
 
