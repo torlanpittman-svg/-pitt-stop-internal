@@ -31,7 +31,7 @@ const MODULES = [
 
 export default async function Home() {
   // "Write a Check" is a MANAGER tool — show its tile only to a signed-in manager/admin (Torlan/Darryl/
-  // Tony). Not authorization (the /checks routes are independently gated); just visibility so it's easy
+  // Tony/Bart). Not authorization (the /checks routes are independently gated); just visibility so it's easy
   // to find without exposing it to ordinary employees.
   const manager = await managerActor()
   const modules = manager

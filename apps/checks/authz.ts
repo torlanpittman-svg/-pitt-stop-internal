@@ -1,5 +1,5 @@
 /**
- * Authorization for Write-a-Check. Only operational MANAGERS (Darryl / Tony / Torlan — role 'manager')
+ * Authorization for Write-a-Check. Only operational MANAGERS (Darryl / Tony / Torlan / Bart — role 'manager')
  * and admin may write/print checks; ordinary employees are denied any financial-write capability. Reuses
  * the existing signed-identity model (authenticatedActorFromRequest) — no new auth system, no
  * ADMIN_PASSWORD requirement. This is defense-in-depth: proxy.ts already gates the surface.

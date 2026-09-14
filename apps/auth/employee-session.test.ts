@@ -5,7 +5,7 @@ import {
 } from './employee-session'
 
 // Throwaway TEST PINs — NOT the production values. Real PINs live only in the deploy env.
-const TEST_PINS = { darryl: '4001', tony: '4002', torlan: '4003' }
+const TEST_PINS = { darryl: '4001', tony: '4002', torlan: '4003', bart: '4004' }
 
 const OLD = { ...process.env }
 function clearAuthEnv() {
@@ -18,6 +18,7 @@ beforeEach(() => {
   process.env.PIN_DARRYL = TEST_PINS.darryl
   process.env.PIN_TONY = TEST_PINS.tony
   process.env.PIN_TORLAN = TEST_PINS.torlan
+  process.env.PIN_BART = TEST_PINS.bart
 })
 afterEach(() => { process.env = { ...OLD } })
 
@@ -26,16 +27,28 @@ describe('resolveIdentityByPin — a PIN identifies WHO (server-side)', () => {
     expect(resolveIdentityByPin(TEST_PINS.darryl)).toEqual({ key: 'darryl', name: 'Darryl', role: 'manager' })
     expect(resolveIdentityByPin(TEST_PINS.tony)).toEqual({ key: 'tony', name: 'Tony', role: 'manager' })
     expect(resolveIdentityByPin(TEST_PINS.torlan)).toEqual({ key: 'torlan', name: 'Torlan', role: 'manager' })
+    expect(resolveIdentityByPin(TEST_PINS.bart)).toEqual({ key: 'bart', name: 'Bart', role: 'manager' })
   })
-  it('Darryl, Tony, and Torlan are ALL managers with identical role (no manager tiers)', () => {
+  it('Bart authenticates as his OWN identity (not mapped to another manager)', () => {
+    const bart = resolveIdentityByPin(TEST_PINS.bart)!
+    expect(bart).toEqual({ key: 'bart', name: 'Bart', role: 'manager' })
+    // Bart's PIN never resolves to any other manager's identity.
+    expect(bart.key).not.toBe('torlan')
+    expect(bart.key).not.toBe('darryl')
+    expect(bart.key).not.toBe('tony')
+  })
+  it('Darryl, Tony, Torlan, and Bart are ALL managers with identical role (no manager tiers)', () => {
     const darryl = resolveIdentityByPin(TEST_PINS.darryl)!
     const tony = resolveIdentityByPin(TEST_PINS.tony)!
     const torlan = resolveIdentityByPin(TEST_PINS.torlan)!
+    const bart = resolveIdentityByPin(TEST_PINS.bart)!
     expect(darryl.role).toBe('manager')
     expect(tony.role).toBe('manager')
     expect(torlan.role).toBe('manager')
+    expect(bart.role).toBe('manager')
     expect(darryl.role).toBe(torlan.role)
     expect(tony.role).toBe(torlan.role)
+    expect(bart.role).toBe(torlan.role) // Bart === existing managers' operational role
   })
   it('manager is NEVER admin — no PIN resolves to the admin role', () => {
     for (const p of Object.values(TEST_PINS)) {

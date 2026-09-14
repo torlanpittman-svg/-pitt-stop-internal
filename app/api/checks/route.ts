@@ -4,7 +4,7 @@
  *   POST — create + record a check in QuickBooks (the money mutation). Idempotent via idempotencyKey.
  *          Returns { recorded } so the client only proceeds to print after a real QB recording.
  *
- * Manager-gated (Darryl/Tony/Torlan) — never ordinary employees. Node runtime (QB client uses node:crypto).
+ * Manager-gated (Darryl/Tony/Torlan/Bart) — never ordinary employees. Node runtime (QB client uses node:crypto).
  */
 import { NextResponse } from 'next/server'
 import { managerFromRequest } from '@/apps/checks/authz'

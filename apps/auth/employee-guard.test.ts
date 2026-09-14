@@ -46,6 +46,7 @@ describe('manager is NEVER admin — a manager PIN session grants no admin autho
       { key: 'darryl', name: 'Darryl', role: 'manager' as const },
       { key: 'tony', name: 'Tony', role: 'manager' as const },
       { key: 'torlan', name: 'Torlan', role: 'manager' as const },
+      { key: 'bart', name: 'Bart', role: 'manager' as const },
     ]) {
       const actor = await authenticatedActorFromRequest(await reqWithSession(m))
       expect(actor?.role).toBe('manager')
