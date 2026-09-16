@@ -24,7 +24,7 @@ function adminOk(request: NextRequest): boolean {
 function isEmployeeSurface(pathname: string): boolean {
   const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in', '/orders', '/production', '/estimator', '/checks']
   if (pages.some((p) => pathname === p || pathname.startsWith(p + '/'))) return true
-  const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/', '/api/checks/']
+  const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/', '/api/checks/', '/api/search']
   if (apis.some((p) => pathname.startsWith(p)) || pathname === '/api/dealer-checkin') return true
   if (pathname === '/api/estimator/vin' || pathname === '/api/workflow/vin') return true
   return false
@@ -96,6 +96,8 @@ export const config = {
     '/api/checks/:path*',
     '/api/dealer-checkin/:path*',
     '/api/quick-entry/:path*',
+    // Global operational search — employee-session gated (role scope enforced in the handler).
+    '/api/search',
     '/api/estimator/vin',
     '/api/workflow/vin',
     // read-only diagnostics (expose customer email / memo / invoice data)

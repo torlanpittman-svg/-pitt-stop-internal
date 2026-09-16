@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import IdentityBar, { AdminLink } from '@/app/components/IdentityBar'
+import GlobalSearch from '@/app/components/GlobalSearch'
 import { managerActor } from '@/apps/checks/authz'
 
 export const runtime = 'nodejs'
@@ -42,7 +43,11 @@ export default async function Home() {
     <main className="min-h-screen bg-gray-950 flex flex-col">
 
       {/* Active employee identity (Phase 1) — renders nothing when IDENTITY_ENABLED is off */}
-      <div className="px-6 pt-5"><IdentityBar /></div>
+      <div className="px-6 pt-5 flex items-center gap-3">
+        <div className="flex-1 min-w-0"><IdentityBar /></div>
+        {/* Discreet global search — small trigger only; opens a command-palette overlay. */}
+        <GlobalSearch />
+      </div>
 
       <div className="px-6 pt-8 pb-10 text-center">
         <div className="inline-flex items-center justify-center w-14 h-14 bg-blue-600 rounded-2xl mb-4 shadow-lg shadow-blue-900/40">

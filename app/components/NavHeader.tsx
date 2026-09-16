@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
 import BackLink from './BackLink'
+import GlobalSearch from './GlobalSearch'
 
 function HomeIcon() {
   return (
@@ -27,6 +28,7 @@ export default function NavHeader({ back, title, right }: {
       {title && <span className="text-gray-300 font-medium truncate">{title}</span>}
       <div className="ml-auto flex items-center gap-3">
         {right}
+        <GlobalSearch />
         <Link href="/" aria-label="Home" className="flex items-center gap-1.5 text-gray-300 hover:text-white font-medium">
           <HomeIcon /><span>Home</span>
         </Link>
