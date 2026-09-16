@@ -1,4 +1,5 @@
-import { put, del, get, head } from '@vercel/blob'
+import { put, del, get } from '@vercel/blob'
+import { createHash } from 'node:crypto'
 import { logger } from '@/platform/logger'
 import { sanitizeFilename } from '@/platform/image'
 
@@ -46,17 +47,48 @@ function receiptsBlobToken(): string {
   return t
 }
 
+async function toBuffer(data: Buffer | Blob | ArrayBuffer): Promise<Buffer> {
+  if (Buffer.isBuffer(data)) return data
+  if (data instanceof ArrayBuffer) return Buffer.from(new Uint8Array(data))
+  return Buffer.from(new Uint8Array(await (data as Blob).arrayBuffer()))
+}
+
+/**
+ * Fetch a private object's bytes with a BOUNDED size + time budget, using the dedicated receipt-store
+ * credential, restricted to the receipt namespace. Short-circuits (returns null) if the object's advertised
+ * or streamed length exceeds `maxBytes`, so we never download an unexpectedly large object. Never logs.
+ */
+async function fetchPrivateBounded(pathname: string, token: string, maxBytes: number, timeoutMs = 5000): Promise<Buffer | null> {
+  if (!pathname.startsWith('business-receipts/')) return null
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), timeoutMs)
+  try {
+    const res = await get(pathname, { access: 'private', token, abortSignal: ac.signal })
+    if (!res || res.statusCode !== 200 || !res.stream) return null
+    if (typeof res.blob.size === 'number' && res.blob.size > maxBytes) return null // advertised-size bound
+    const chunks: Uint8Array[] = []
+    let total = 0
+    const reader = res.stream.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) { total += value.length; if (total > maxBytes) return null; chunks.push(value) }
+    }
+    return Buffer.concat(chunks)
+  } finally { clearTimeout(timer) }
+}
+
 /**
  * Upload a PRIVATE receipt blob (not anonymously accessible). Returns ONLY the store PATHNAME/key — the
  * server-side reference we persist. No reusable URL or token ever reaches the client; retrieval is via an
  * authenticated server route that streams bytes with {@link getPrivateBlob}.
  *
- * IMMUTABLE creation: `allowOverwrite:false` + `addRandomSuffix:false` means the ORIGINAL bytes are never
- * overwritten. The key is content-hash-derived, so an object already at this exact pathname IS the same
- * bytes (a sha-256 collision is infeasible). On a write CONFLICT (a concurrent create, or a re-upload of
- * previously-stored bytes), we DETERMINISTICALLY confirm the object exists via head() (status-based, from
- * the SDK — not a brittle error-message match) and reuse its pathname; otherwise the original error was a
- * real failure and is rethrown. Uses the dedicated private-store token.
+ * IMMUTABLE creation: `allowOverwrite:false` + `addRandomSuffix:false` — the ORIGINAL bytes are never
+ * overwritten. On a write CONFLICT (a concurrent create, or a re-upload of previously-stored bytes) we do
+ * NOT trust existence alone: we fetch the existing object (bounded, dedicated receipt credential, namespace
+ * restricted) and reuse the pathname ONLY when its byte LENGTH and SHA-256 EXACTLY match the incoming
+ * original. Any mismatch / missing object / retrieval failure → fail safe (rethrow the original write
+ * error; never overwrite or delete evidence). No message-matching; never logs bytes/tokens/URLs/SDK errors.
  * @returns the blob pathname (store key), e.g. "business-receipts/<sha256>.jpg"
  */
 export async function uploadPrivatePhoto(
@@ -70,16 +102,16 @@ export async function uploadPrivatePhoto(
     logger.info(MODULE, 'upload.private.success', { ok: true }) // never log pathname/URL/token/bytes
     return blob.pathname
   } catch (err) {
-    // Deterministic conflict handling: confirm the EXPECTED object already exists at this exact key.
-    // head() throws BlobNotFoundError when absent, so a confirmed hit means the immutable content-addressed
-    // object is present → safe to reuse. Any other head outcome → the original write error was real.
+    // Byte-verified reuse: existence is not enough — the stored object must be byte-for-byte identical.
     try {
-      const existing = await head(key, { token })
-      if (existing && existing.pathname === key) {
+      const incoming = await toBuffer(data)
+      const existing = await fetchPrivateBounded(key, token, incoming.length)
+      if (existing && existing.length === incoming.length
+        && createHash('sha256').update(existing).digest('hex') === createHash('sha256').update(incoming).digest('hex')) {
         logger.info(MODULE, 'upload.private.reused', { ok: true })
         return key
       }
-    } catch { /* not found / head error → fall through to rethrow the original write error */ }
+    } catch { /* retrieval/verify failure → fail safe (rethrow the original write error below) */ }
     throw err
   }
 }

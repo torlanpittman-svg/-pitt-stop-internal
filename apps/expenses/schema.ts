@@ -16,7 +16,7 @@
  *
  * Applied via drizzle/migrations/manual/0038_business_receipts.sql (additive; new table only).
  */
-import { pgTable, uuid, text, varchar, integer, date, timestamp, jsonb, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, varchar, integer, date, timestamp, jsonb, index, uniqueIndex, primaryKey } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { inventoryVehicles } from '@/apps/auto-sales/schema'
 
@@ -99,15 +99,17 @@ export const businessReceipts = pgTable(
   ]
 )
 
-// Durable, server-enforced rate-limit events (cross-instance). One row per consumed unit; a windowed
-// count per bucket bounds expensive work (uploads, AI extraction attempts) independent of the per-receipt
-// extraction lock. Bucketed by the SERVER-VERIFIED actor (not a forwarded header alone). Migration 0040.
-export const expenseRateEvents = pgTable(
-  'expense_rate_events',
+// Durable, server-enforced rate limiting (cross-instance). ATOMIC fixed-window COUNTER: one row per
+// (bucket, window_start); a single INSERT … ON CONFLICT DO UPDATE … WHERE count < limit both increments
+// and enforces the cap in ONE statement (the ON CONFLICT row lock serializes concurrent independent
+// connections — no separate count/insert race). Bucketed by the SERVER-VERIFIED actor (not a forwarded
+// header alone). Distinct from the per-receipt extraction lock. Migration 0040.
+export const expenseRateCounters = pgTable(
+  'expense_rate_counters',
   {
-    id:        uuid('id').primaryKey().defaultRandom(),
-    bucket:    varchar('bucket', { length: 120 }).notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    bucket:      varchar('bucket', { length: 120 }).notNull(),
+    windowStart: timestamp('window_start', { withTimezone: true }).notNull(),
+    count:       integer('count').notNull().default(0),
   },
-  (t) => [index('expense_rate_events_bucket_idx').on(t.bucket, t.createdAt)],
+  (t) => [primaryKey({ columns: [t.bucket, t.windowStart] })],
 )

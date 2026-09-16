@@ -7,12 +7,12 @@
  * atomically and existing entries are never rewritten. Approval is idempotent (a conditional update
  * that only fires when the row is not already approved).
  */
-import { and, desc, eq, ne, or, sql, inArray, gte, lt } from 'drizzle-orm'
+import { and, desc, eq, ne, or, sql, inArray, lt } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
 import { getDb } from '@/platform/db'
 import { inventoryVehicles } from '@/apps/auto-sales/schema'
 import { vehicles } from '@/apps/workflow/schema'
-import { businessReceipts, expenseRateEvents } from './schema'
+import { businessReceipts, expenseRateCounters } from './schema'
 import {
   auditEntry, decideApproval, diffFields, inBusinessMonth, isBusinessEntity, isExpenseCategory, isPaymentMethod,
   type AuditEntry, type BusinessEntity, type ExpenseCategory, type PaymentMethod, type ReceiptStatus,
@@ -356,28 +356,45 @@ export const RATE_LIMITS = {
 
 export interface RateResult { ok: boolean; retryAfterSec?: number }
 /**
- * Consume one unit from a windowed rate bucket. Counts events in [now-windowMs, now); if already at the
- * limit → reject with a retry-after (seconds until the oldest event ages out); else record one event and
- * allow. Durable across instances (backed by expense_rate_events). Best-effort atomicity: under extreme
- * concurrency the count-then-insert may admit a few extra, but it is hard-bounded to ~limit. Old events
- * are opportunistically pruned. Callers bucket by the SERVER-VERIFIED actor (never a forwarded header alone).
+ * Consume one unit from a fixed-window rate bucket — ATOMIC. A single statement both increments the
+ * (bucket, window_start) counter AND enforces the cap:
+ *
+ *   INSERT ... VALUES (bucket, wStart, 1)
+ *   ON CONFLICT (bucket, window_start) DO UPDATE SET count = count + 1 WHERE count < limit
+ *   RETURNING count
+ *
+ * The ON CONFLICT DO UPDATE takes a ROW LOCK on the counter row, so concurrent independent connections
+ * serialize on it and cannot both pass the check — exactly `limit` succeed per window. A row is returned
+ * only when admitted (first-in-window insert, or an under-limit increment); an empty result means the cap
+ * is reached → reject. A rejected attempt does NOT consume budget (the guarded UPDATE is a no-op). Prior
+ * windows for this bucket are pruned opportunistically (bounded, O(few) per call). Callers bucket by the
+ * SERVER-VERIFIED actor (never a forwarded header alone).
+ *
+ * Fixed window (aligned to the epoch): bursts of up to `limit` can occur on either side of a boundary
+ * (≤ 2× across the boundary) — a standard, well-understood trade-off for atomicity without interactive
+ * transactions (the Neon HTTP driver has none). retry-after points at the next window boundary.
  */
 export async function consumeRateLimit(bucket: string, limit: number, windowMs: number): Promise<RateResult> {
   const db = getDb()
   const now = Date.now()
-  const windowStart = new Date(now - windowMs)
-  const rows = await db.select({ createdAt: expenseRateEvents.createdAt }).from(expenseRateEvents)
-    .where(and(eq(expenseRateEvents.bucket, bucket), gte(expenseRateEvents.createdAt, windowStart)))
-    .orderBy(expenseRateEvents.createdAt)
-  if (rows.length >= limit) {
-    const oldest = rows[0].createdAt as unknown as Date
-    const retryAfterSec = Math.max(1, Math.ceil((oldest.getTime() + windowMs - now) / 1000))
-    return { ok: false, retryAfterSec }
+  const windowStart = new Date(Math.floor(now / windowMs) * windowMs)
+  const res = await db.execute(sql`
+    INSERT INTO ${expenseRateCounters} (bucket, window_start, count)
+    VALUES (${bucket}, ${windowStart.toISOString()}::timestamptz, 1)
+    ON CONFLICT (bucket, window_start)
+    DO UPDATE SET count = ${expenseRateCounters.count} + 1
+    WHERE ${expenseRateCounters.count} < ${limit}
+    RETURNING count
+  `)
+  const admitted = (res as unknown as { rows?: unknown[] }).rows ?? (res as unknown as unknown[])
+  const ok = Array.isArray(admitted) && admitted.length > 0
+  if (ok) {
+    // Opportunistic bounded prune of this bucket's earlier windows (keeps the table small).
+    await db.delete(expenseRateCounters).where(and(eq(expenseRateCounters.bucket, bucket), lt(expenseRateCounters.windowStart, windowStart))).catch(() => {})
+    return { ok: true }
   }
-  await db.insert(expenseRateEvents).values({ bucket })
-  // Opportunistic prune of this bucket's aged-out rows (bounded work; keeps the table small).
-  await db.delete(expenseRateEvents).where(and(eq(expenseRateEvents.bucket, bucket), lt(expenseRateEvents.createdAt, windowStart))).catch(() => {})
-  return { ok: true }
+  const retryAfterSec = Math.max(1, Math.ceil((windowStart.getTime() + windowMs - now) / 1000))
+  return { ok: false, retryAfterSec }
 }
 
 // ── Reporting / accountant-package readiness (internal; nothing is "booked" or "synced") ──────────────

@@ -62,7 +62,7 @@ beforeAll(async () => {
 })
 
 beforeEach(async () => {
-  await client.exec(`TRUNCATE business_receipts, expense_rate_events, inventory_vehicles, vehicles CASCADE;`)
+  await client.exec(`TRUNCATE business_receipts, expense_rate_counters, inventory_vehicles, vehicles CASCADE;`)
 })
 
 describe('migrations apply + are idempotent (real Postgres)', () => {
@@ -73,7 +73,7 @@ describe('migrations apply + are idempotent (real Postgres)', () => {
     expect(names).toContain('image_hash')
     const idx = await client.query<{ indexname: string }>(`SELECT indexname FROM pg_indexes WHERE tablename='business_receipts'`)
     expect(idx.rows.map((r) => r.indexname)).toContain('business_receipts_hash_active_uniq')
-    const t = await client.query(`SELECT 1 FROM information_schema.tables WHERE table_name='expense_rate_events'`)
+    const t = await client.query(`SELECT 1 FROM information_schema.tables WHERE table_name='expense_rate_counters'`)
     expect(t.rows.length).toBe(1)
   })
 })
@@ -246,16 +246,36 @@ describe('business-month filtering uses plain dates (no UTC drift)', () => {
   })
 })
 
-describe('durable rate limiter (real Postgres)', () => {
-  it('bounds a bucket and recovers after the window', async () => {
+describe('durable ATOMIC rate limiter (real Postgres)', () => {
+  it('admits exactly `limit`, rejects with retry-after, and a rejected attempt does NOT consume budget', async () => {
     const bucket = 'upload:actor:darryl'
     expect((await consumeRateLimit(bucket, 2, 10_000)).ok).toBe(true)
     expect((await consumeRateLimit(bucket, 2, 10_000)).ok).toBe(true)
     const blocked = await consumeRateLimit(bucket, 2, 10_000)
     expect(blocked.ok).toBe(false)
     expect(blocked.retryAfterSec).toBeGreaterThan(0)
-    // Age the events out of the window → allowed again (recovery).
-    await client.query(`UPDATE expense_rate_events SET created_at = now() - interval '20 seconds' WHERE bucket=$1`, [bucket])
-    expect((await consumeRateLimit(bucket, 2, 10_000)).ok).toBe(true)
+    // The stored counter is exactly the limit — the rejected 3rd attempt did not increment it.
+    const c = await client.query<{ count: number }>(`SELECT count FROM expense_rate_counters WHERE bucket=$1`, [bucket])
+    expect(c.rows[0].count).toBe(2)
+  })
+
+  it('a new window (window boundary) admits again — recovery', async () => {
+    const bucket = 'upload:actor:recover'
+    await consumeRateLimit(bucket, 1, 10_000)
+    expect((await consumeRateLimit(bucket, 1, 10_000)).ok).toBe(false)
+    // Simulate the window rolling over (its counter row ages away) → allowed again.
+    await client.query(`DELETE FROM expense_rate_counters WHERE bucket=$1`, [bucket])
+    expect((await consumeRateLimit(bucket, 1, 10_000)).ok).toBe(true)
+  })
+
+  it('overlapping (Promise.all) consumers never exceed the limit', async () => {
+    // NOTE: PGlite serializes execution, so this exercises the atomic statement under overlapping promises
+    // but NOT independent OS-level connections. The atomicity guarantee is the ON CONFLICT row lock (a
+    // single-statement Postgres property); see docs for the precise limitation.
+    const bucket = 'upload:actor:burst'
+    const results = await Promise.all(Array.from({ length: 10 }, () => consumeRateLimit(bucket, 3, 10_000)))
+    expect(results.filter((r) => r.ok).length).toBe(3)
+    const c = await client.query<{ count: number }>(`SELECT count FROM expense_rate_counters WHERE bucket=$1`, [bucket])
+    expect(c.rows[0].count).toBe(3)
   })
 })

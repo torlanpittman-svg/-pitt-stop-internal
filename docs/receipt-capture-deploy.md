@@ -30,7 +30,7 @@ node scripts/apply-qb-migration.mjs drizzle/migrations/manual/0040_business_rece
 
 - `0038` — `business_receipts` table (+ inline FK to `inventory_vehicles`, `ON DELETE SET NULL`).
 - `0039` — partial UNIQUE index on `image_hash WHERE status <> 'rejected'` (upload idempotency).
-- `0040` — `processing_token` column (extraction-attempt ownership) + `expense_rate_events` table (durable rate limiting).
+- `0040` — `processing_token` column (extraction-attempt ownership) + `expense_rate_counters` table (durable ATOMIC rate limiting).
 
 All three are re-runnable (verified against real Postgres in `apps/expenses/*.integration.test.ts`).
 
@@ -88,7 +88,7 @@ To roll back, **revert the application code** (redeploy the prior build). Do **N
 that would destroy receipts + audit history + stored evidence references.
 
 The schema is purely additive, so the prior application build simply ignores the new tables/columns.
-Leave `business_receipts`, `expense_rate_events`, the FK, the unique index, and `processing_token` in
+Leave `business_receipts`, `expense_rate_counters`, the FK, the unique index, and `processing_token` in
 place. No data migration is needed to roll back.
 
 If (and only if) a specific additive object must be removed for an unrelated reason, these are safe and
@@ -97,7 +97,7 @@ do not touch receipt rows:
 ```sql
 -- optional, additive-object removal only — NOT part of a normal rollback:
 DROP INDEX IF EXISTS business_receipts_hash_active_uniq;   -- reverts upload-idempotency (0039)
-DROP TABLE IF EXISTS expense_rate_events;                  -- reverts rate limiting (0040)
+DROP TABLE IF EXISTS expense_rate_counters;                -- reverts rate limiting (0040)
 -- Do NOT drop business_receipts or the processing_token column: they hold receipts/evidence/attribution.
 ```
 
@@ -110,7 +110,7 @@ After re-running, verify:
 ```sql
 SELECT 1 FROM information_schema.columns WHERE table_name='business_receipts' AND column_name='processing_token';
 SELECT indexname FROM pg_indexes WHERE tablename='business_receipts' AND indexname='business_receipts_hash_active_uniq';
-SELECT 1 FROM information_schema.tables WHERE table_name='expense_rate_events';
+SELECT 1 FROM information_schema.tables WHERE table_name='expense_rate_counters';
 SELECT conname FROM pg_constraint WHERE conname LIKE 'business_receipts_%veh%';
 ```
 
@@ -118,15 +118,47 @@ A stuck extraction lock (a receipt left in `status='processing'` by a crashed re
 next retry reclaims it after a 3-minute stale window (with a fresh attempt token), and the old attempt's
 late result is dropped by the token guard. No manual intervention needed.
 
-## Rate limits (scope · window)
+## Rate limits (scope · window · atomicity)
 
-Durable, server-enforced (table `expense_rate_events`), bucketed by the **server-verified actor**
-(shared devices fall back to a hashed IP — never a forwarded header as the sole identity for an
-authenticated user):
+Durable, server-enforced, **ATOMIC** (table `expense_rate_counters`), bucketed by the **server-verified
+actor** (shared devices fall back to a hashed IP — never a forwarded header as the sole identity for an
+authenticated user). Checked **after authentication, before any Blob/AI work**.
 
-- Upload: **60 / 10 min** per actor.
-- AI extraction (retry) per manager: **30 / 10 min**.
-- AI extraction (retry) per receipt: **10 / hour**.
+- Upload: **60 / 10 min** per actor. Bucket `upload:actor:<key>` (or `upload:shared:<ip-hash>`).
+- AI extraction (retry) per manager: **30 / 10 min**. Bucket `extract:actor:<key>`.
+- AI extraction (retry) per receipt: **10 / hour**. Bucket `extract:rcpt:<receiptId>`.
 
-These are distinct from the per-receipt extraction ownership lock (which prevents *concurrent* AI calls;
-the limits prevent *repeated* ones). Exceeding a limit returns a clear `429` / retry-after message.
+**Mechanism (atomic):** one row per `(bucket, window_start)`; a single statement both increments and
+enforces the cap —
+
+```sql
+INSERT INTO expense_rate_counters (bucket, window_start, count) VALUES ($bucket, $wStart, 1)
+ON CONFLICT (bucket, window_start) DO UPDATE SET count = count + 1 WHERE count < $limit
+RETURNING count;
+```
+
+The `ON CONFLICT DO UPDATE` takes a **row lock**, so concurrent independent connections serialize on the
+counter row and exactly `limit` succeed per window (a rejected attempt returns no row and does **not**
+consume budget). This needs **no interactive transaction** — the Neon HTTP driver has none.
+
+**Window:** fixed windows aligned to the epoch (`floor(now/window)*window`). A burst can reach `limit` on
+either side of a boundary (≤ 2× across it) — the standard trade-off for single-statement atomicity.
+`retry-after` points at the next boundary. Bounded cleanup: each admitted call prunes this bucket's earlier
+window rows (`window_start < current`), so the table stays small.
+
+**Test limitation (important):** the integration tests run on **PGlite**, an in-process Postgres that
+**serializes** execution — they validate the atomic SQL + `ON CONFLICT` semantics and that a burst of
+overlapping calls never exceeds the limit, but they do **not** exercise independent OS-level parallel
+connections. The concurrency guarantee rests on Postgres's documented single-statement `ON CONFLICT` row
+locking (not on the test harness). A future check with a real multi-connection Postgres server (docker/
+Neon branch) could demonstrate parallel-connection safety directly.
+
+## Storage integrity (private receipt blob)
+
+Uploads are **immutable** (`allowOverwrite:false`, `addRandomSuffix:false`) to a private store via the
+dedicated `RECEIPTS_BLOB_READ_WRITE_TOKEN`. On a write conflict (concurrent create, or a re-upload of
+already-stored bytes) the pathname is reused **only after byte verification**: the existing object is
+fetched server-side (bounded size + 5 s timeout, namespace-restricted) and its **length + SHA-256 must
+exactly match** the incoming original. Any mismatch / missing object / retrieval failure fails safe — the
+original write error is rethrown and **no evidence is overwritten or deleted**. No error-message matching;
+bytes, tokens, URLs, and SDK errors are never logged.
