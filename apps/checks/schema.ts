@@ -125,6 +125,23 @@ export const printJobs = pgTable(
 // One row per bank's physical check sequence. `nextNumber` is the number of the NEXT blank check in
 // the tray. Reserved atomically (UPDATE … RETURNING) so concurrent managers never get the same number.
 // A row exists ONLY after the owner initializes the starting number — the system never invents one.
+// Append-only audit of MICR-only calibration changes (the `micr_layout` setting). Isolated from the
+// locked non-MICR geometry: every change records who/when, the old + new MICR coordinates, and an
+// explicit reason. Writing here NEVER enables MICR, touches a check, a check number, or QuickBooks.
+// DDL: drizzle/migrations/manual/0037_micr_layout_audit.sql.
+export const micrLayoutAudit = pgTable(
+  'micr_layout_audit',
+  {
+    id:        uuid('id').primaryKey().defaultRandom(),
+    actor:     varchar('actor', { length: 120 }),
+    reason:    text('reason').notNull(),
+    oldValue:  jsonb('old_value'),
+    newValue:  jsonb('new_value').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('micr_layout_audit_created_idx').on(t.createdAt)],
+)
+
 export const checkSequence = pgTable('check_sequence', {
   bankKey:    varchar('bank_key', { length: 16 }).primaryKey(),              // operating | auto_sales
   nextNumber: integer('next_number').notNull(),
