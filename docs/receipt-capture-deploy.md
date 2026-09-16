@@ -34,22 +34,32 @@ node scripts/apply-qb-migration.mjs drizzle/migrations/manual/0040_business_rece
 
 All three are re-runnable (verified against real Postgres in `apps/expenses/*.integration.test.ts`).
 
-## 2. Preflight checks (run BEFORE 0039)
+## 2. Preflight checks (run BEFORE applying anything)
 
-`0039` builds a UNIQUE index and **will fail if pre-existing active duplicates exist**. On a fresh
-install there are no rows, so it passes. If `business_receipts` already has data, run this preflight and
-STOP if it returns any row — do **not** delete or merge rows to force the index:
+Run the **read-only** preflight — it modifies nothing, detects fresh-vs-existing, reports which additive
+objects are missing, and STOPS (exit 2) if pre-existing active duplicates would make `0039` fail:
+
+```
+node scripts/receipts-migrate-preflight.mjs
+```
+
+It prints a `GO` / `NO-GO` plan. On a fresh install it confirms "apply 0038 → 0039 → 0040". On an existing
+table it lists exactly the missing items and runs the duplicate check only after confirming the table
+exists. It reports **counts only** (never receipt contents) and never runs DDL.
+
+`0039` builds a UNIQUE index and **will fail if pre-existing active duplicates exist**. On a fresh install
+there are no rows, so it passes. The equivalent manual query (what the preflight runs) is:
 
 ```sql
 SELECT image_hash, count(*) AS n
 FROM business_receipts
-WHERE status <> 'rejected'
+WHERE status <> 'rejected' AND image_hash IS NOT NULL
 GROUP BY image_hash
 HAVING count(*) > 1;
 ```
 
 Resolution if it returns rows: a manager reviews the duplicates and **rejects** all but one per hash
-(rejected rows are excluded from the index), then re-run `0039`. Never auto-delete historical rows.
+(rejected rows are excluded from the index), then re-run the preflight. Never auto-delete/merge rows.
 
 ## 3. Upgrade path — table already created WITHOUT the FK
 
@@ -81,6 +91,45 @@ Prevent automatic deploy before prerequisites: keep the feature on `receipt-capt
 the deploy branch **after** migrations + env are in place. The code itself fails closed if a prerequisite
 is missing (private token unset → uploads 502; no phantom success), so a premature deploy degrades safely
 rather than corrupting data — but the intended gate is "migrate + configure, then merge/deploy."
+
+## 4b. Isolated preview validation (do this FIRST, before production)
+
+Goal: exercise the real routes end-to-end in a deployed environment that **cannot read or write
+production data**. Nothing here is a production step.
+
+**Isolation requirements (all four must hold):**
+1. **Separate database** — a throwaway Postgres (e.g., a new Neon *branch* or a fresh dev database), NOT
+   the production `DATABASE_URL`. Apply 0038→0039→0040 to it.
+2. **Separate private Blob store** — a distinct `RECEIPTS_BLOB_READ_WRITE_TOKEN` for a preview-only private
+   store, NOT the production private store and NOT the public `BLOB_READ_WRITE_TOKEN`.
+3. **Scoped env** — set these on the **Preview** environment only (Vercel env scope = Preview), never
+   Production. Confirm the Preview scope does not inherit production `DATABASE_URL` / Blob tokens.
+4. **No live externals** — leave QuickBooks disabled (`QB_LIVE`/`QUICKBOOKS_ENABLED` off in Preview); this
+   module never calls QuickBooks regardless. Use synthetic receipt images only.
+
+Preview environment variables (NAMES only — set real values in Vercel's Preview scope, never in the repo):
+
+```
+DATABASE_URL                     # → throwaway/branch DB (NOT production)
+RECEIPTS_BLOB_READ_WRITE_TOKEN   # → preview-only private Blob store
+OPENAI_API_KEY                   # extraction (a test key or the existing one; usage is metered)
+IDENTITY_SECRET / ADMIN_PASSWORD # session signing (any preview value)
+PIN_DARRYL / PIN_TONY / ...      # a manager PIN so review/approve is reachable in preview
+```
+
+**Test plan (synthetic only):**
+- Capture: upload a synthetic JPEG at `/expenses` as an employee session → lands in the review queue.
+- Fail-closed: hit `/expenses/review` and `/api/expenses/receipt/[id]/image` with no session → 401/403.
+- Review: as a manager, correct fields, associate a vehicle, **approve** → appears in the monthly summary
+  (labeled export-ready, not synced).
+- Evidence: the review image loads only via the gated route; the original bytes/hash are preserved.
+- Idempotency: re-upload the same synthetic bytes → one receipt (duplicate response).
+- Rate limit: exceed the upload/retry limits → clear 429/retry-after.
+- Retry ownership: trigger a retry; confirm it does not overwrite a manager correction.
+- Confirm no QuickBooks/network side effects occur.
+
+Automated equivalents of all the above already pass in CI-free local tests (unit + real-Postgres
+integration); the preview run validates the deployed wiring + env scoping specifically.
 
 ## 5. Application rollback (RETAINS receipts, evidence, audit history)
 
