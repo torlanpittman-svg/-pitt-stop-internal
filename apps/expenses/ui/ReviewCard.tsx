@@ -12,15 +12,9 @@ import {
   BUSINESS_ENTITIES, EXPENSE_CATEGORIES, PAYMENT_METHODS, ACCOUNT_REFS, centsToDollars, formatMoney,
 } from '@/apps/expenses/types'
 import { saveReviewAction, approveReceiptAction, rejectReceiptAction, reopenReceiptAction, retryExtractionAction, type ReviewForm } from '@/apps/expenses/actions'
+import type { ReviewCardData } from '@/apps/expenses/view'
 
-export interface ReviewCardData {
-  id: string; status: string; imageUrl: string | null; aiStatus: string
-  entity: string; category: string; vendor: string | null; receiptDate: string | null
-  subtotalCents: number | null; taxCents: number | null; totalCents: number | null
-  paymentMethod: string | null; accountRef: string | null; paymentLast4: string | null; memo: string | null
-  uploadedBy: string | null; createdAt: string; approvedBy: string | null; rejectedReason: string | null
-  present: Record<string, boolean> | null
-}
+export type { ReviewCardData }
 const box = 'bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-base text-white w-full'
 const lbl = 'text-xs text-gray-500'
 

@@ -17,6 +17,7 @@
  * Applied via drizzle/migrations/manual/0038_business_receipts.sql (additive; new table only).
  */
 import { pgTable, uuid, text, varchar, integer, date, timestamp, jsonb, index } from 'drizzle-orm/pg-core'
+import { inventoryVehicles } from '@/apps/auto-sales/schema'
 
 export const businessReceipts = pgTable(
   'business_receipts',
@@ -38,8 +39,11 @@ export const businessReceipts = pgTable(
     accountRef:    varchar('account_ref', { length: 40 }),     // which bank/card (allowlist ref)
     memo:          text('memo'),
 
-    // Optional canonical inventory-vehicle association (general expenses leave this null).
-    inventoryVehicleId: uuid('inventory_vehicle_id'),
+    // Optional canonical inventory-vehicle association (general expenses leave this null). Additive FK
+    // with ON DELETE SET NULL: an expense may reference an inventory vehicle, but deleting/merging a
+    // vehicle must NOT delete the receipt — the link simply clears. App-level validation (db.
+    // inventoryVehicleExists) rejects a nonexistent id at review/approve time as well.
+    inventoryVehicleId: uuid('inventory_vehicle_id').references(() => inventoryVehicles.id, { onDelete: 'set null' }),
 
     // Original evidence (preserved; deduped by hash; never overwritten).
     storage:       varchar('storage', { length: 16 }).notNull().default('blob_public'), // blob_public|blob_private|none

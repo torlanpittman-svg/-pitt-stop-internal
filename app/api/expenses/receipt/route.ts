@@ -12,17 +12,16 @@
  */
 import { NextResponse } from 'next/server'
 import { createHash } from 'node:crypto'
-import { uploadPhoto } from '@/platform/blob'
-import { isAcceptedMimeType } from '@/platform/image'
+import { uploadPrivatePhoto } from '@/platform/blob'
 import { extractExpense } from '@/apps/expenses/ai'
 import { createReceipt, findReceiptByHash } from '@/apps/expenses/db'
+import { validateReceiptUpload, extForMime, MAX_UPLOAD_BYTES, MAX_DECLARED_OVERHEAD } from '@/apps/expenses/upload-validation'
 import { employeeAuthorizedFromRequest, authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 const APP = 'expenses:receipt'
-const MAX_BYTES = 12 * 1024 * 1024 // 12 MB — generous for a phone photo, rejects abuse
 
 // Generous in-memory rate limit (per instance): normal shop use never hits it.
 const hits = new Map<string, number[]>()
@@ -44,29 +43,31 @@ export async function POST(req: Request) {
 
     // 3) Reject oversized uploads early (before buffering the multipart body).
     const declaredLen = parseInt(req.headers.get('content-length') || '0', 10)
-    if (Number.isFinite(declaredLen) && declaredLen > MAX_BYTES + 512 * 1024) return NextResponse.json({ ok: false, error: 'Image too large' }, { status: 413 })
+    if (Number.isFinite(declaredLen) && declaredLen > MAX_UPLOAD_BYTES + MAX_DECLARED_OVERHEAD) return NextResponse.json({ ok: false, error: 'Image too large' }, { status: 413 })
 
     // 4) Validate request.
     const form = await req.formData()
     const image = (form.get('receipt') || form.get('image')) as File | null
     if (!image) return NextResponse.json({ ok: false, error: 'No image provided' }, { status: 400 })
-    const contentType = image.type || 'image/jpeg'
-    if (!isAcceptedMimeType(contentType)) return NextResponse.json({ ok: false, error: 'Unsupported image type' }, { status: 400 })
-    if (image.size > MAX_BYTES) return NextResponse.json({ ok: false, error: 'Image too large' }, { status: 413 })
 
     const bytes = Buffer.from(await image.arrayBuffer())
-    if (bytes.length > MAX_BYTES) return NextResponse.json({ ok: false, error: 'Image too large' }, { status: 413 })
+    // Authoritative type comes from MAGIC BYTES (not the declared MIME or extension). Rejects SVG/HTML/
+    // scripts/PDF/mismatched content, and enforces the size cap.
+    const v = validateReceiptUpload(image.type, bytes.length, bytes.subarray(0, 16))
+    if (!v.ok) return NextResponse.json({ ok: false, error: v.error }, { status: v.status })
+    const contentType = v.mime
     const imageHash = createHash('sha256').update(bytes).digest('hex')
 
     // 5) Duplicate protection: same content hash already captured?
     const prior = await findReceiptByHash(imageHash).catch(() => null)
     const duplicateWarning = prior ? { receiptId: prior.id, when: prior.createdAt, status: prior.status } : null
 
-    // 6) Store the original image (reuse the existing Blob URL for identical bytes → no duplicate copies).
-    let storageRef: string | null = prior?.storageRef ?? null
-    let storage: 'blob_public' | 'none' = storageRef ? 'blob_public' : 'none'
+    // 6) Store the ORIGINAL image PRIVATELY (not anonymously accessible). We persist only the Blob
+    //    pathname; retrieval is through the gated route. Identical bytes reuse the prior pathname.
+    let storageRef: string | null = prior?.storage === 'blob_private' ? prior.storageRef : null
+    let storage: 'blob_private' | 'none' = storageRef ? 'blob_private' : 'none'
     if (!storageRef) {
-      try { storageRef = await uploadPhoto('business-receipts', `${imageHash.slice(0, 12)}.jpg`, bytes, contentType); storage = 'blob_public' }
+      try { storageRef = await uploadPrivatePhoto(`business-receipts/${imageHash}.${extForMime(contentType)}`, bytes, contentType); storage = 'blob_private' }
       catch (err) { logger.warn(APP, 'blob_skipped', { error: String(err) }); storage = 'none' }
     }
 

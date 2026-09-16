@@ -8,27 +8,16 @@
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { authorizedManager } from '@/apps/auth/employee-guard'
-import { listReceipts, queueCounts, monthlyExpenseReport, type ReceiptRow } from '@/apps/expenses/db'
+import { listReceipts, queueCounts, monthlyExpenseReport } from '@/apps/expenses/db'
+import { toReviewCard } from '@/apps/expenses/view'
 import { currentReportMonth } from '@/apps/auto-sales/report-db'
 import { EXPENSE_CATEGORIES, BUSINESS_ENTITIES, formatMoney, isReceiptStatus, isBusinessMonth, type ReceiptStatus } from '@/apps/expenses/types'
-import ReviewCard, { type ReviewCardData } from '@/apps/expenses/ui/ReviewCard'
+import ReviewCard from '@/apps/expenses/ui/ReviewCard'
 
 export const dynamic = 'force-dynamic'
 
 const entityLabel = (k: string) => BUSINESS_ENTITIES.find((b) => b.key === k)?.label ?? k
 const categoryLabel = (k: string) => EXPENSE_CATEGORIES.find((c) => c.key === k)?.label ?? k
-
-function toCard(r: ReceiptRow): ReviewCardData {
-  const present = (r.confidence && typeof r.confidence === 'object' ? r.confidence : null) as Record<string, boolean> | null
-  return {
-    id: r.id, status: r.status, imageUrl: r.storage === 'blob_public' ? r.storageRef : null, aiStatus: r.aiStatus,
-    entity: r.entity, category: r.category, vendor: r.vendor, receiptDate: r.receiptDate,
-    subtotalCents: r.subtotalCents, taxCents: r.taxCents, totalCents: r.totalCents,
-    paymentMethod: r.paymentMethod, accountRef: r.accountRef, paymentLast4: r.paymentLast4, memo: r.memo,
-    uploadedBy: r.uploadedBy, createdAt: (r.createdAt as unknown as Date).toISOString?.() ?? String(r.createdAt),
-    approvedBy: r.approvedBy, rejectedReason: r.rejectedReason, present,
-  }
-}
 
 export default async function ReviewQueuePage({ searchParams }: { searchParams: Promise<{ status?: string; month?: string }> }) {
   if (!(await authorizedManager())) redirect('/expenses')
@@ -96,7 +85,7 @@ export default async function ReviewQueuePage({ searchParams }: { searchParams: 
 
       {rows.length === 0
         ? <p className="text-gray-500 text-sm text-center py-12">Nothing here.</p>
-        : <div className="space-y-4">{rows.map((r) => <ReviewCard key={r.id} r={toCard(r)} />)}</div>}
+        : <div className="space-y-4">{rows.map((r) => <ReviewCard key={r.id} r={toReviewCard(r)} />)}</div>}
     </main>
   )
 }

@@ -9,6 +9,7 @@
  */
 import { and, desc, eq, ne, sql, inArray } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
+import { inventoryVehicles } from '@/apps/auto-sales/schema'
 import { businessReceipts } from './schema'
 import {
   auditEntry, decideApproval, diffFields, inBusinessMonth, isBusinessEntity, isExpenseCategory, isPaymentMethod,
@@ -60,6 +61,14 @@ export async function createReceipt(input: CreateReceiptInput): Promise<string> 
     uploadedBy: input.uploadedBy, auditLog: audit as unknown as object,
   }).returning({ id: businessReceipts.id })
   return row.id
+}
+
+/** Does this canonical inventory-vehicle id exist? App-level guard so an arbitrary/nonexistent id can
+ *  never be attached to a receipt at review/approve time (the FK is the DB-level backstop). */
+export async function inventoryVehicleExists(id: string): Promise<boolean> {
+  if (!id) return false
+  const [row] = await getDb().select({ id: inventoryVehicles.id }).from(inventoryVehicles).where(eq(inventoryVehicles.id, id)).limit(1)
+  return !!row
 }
 
 // ── Read models ────────────────────────────────────────────────────────────────

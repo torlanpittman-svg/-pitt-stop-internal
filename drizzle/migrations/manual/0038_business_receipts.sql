@@ -1,8 +1,10 @@
 -- Business Receipts / Expense Capture — general business-wide expense receipts.
 -- ADDITIVE ONLY (new table; no existing table touched). Idempotent (IF NOT EXISTS everywhere).
 -- The GENERAL expense path (Detail AND Auto Sales). A general shop expense needs no vehicle;
--- inventory_vehicle_id is a plain nullable uuid (no hard FK) so this module stays decoupled from the
--- auto-sales lifecycle while still allowing an optional canonical link.
+-- inventory_vehicle_id is a nullable FK to inventory_vehicles with ON DELETE SET NULL (an optional
+-- canonical link that clears — never cascades a delete — if a vehicle is removed/merged).
+-- Applied via the generic manual runner (scripts/apply-qb-migration.mjs <this file>): statements are
+-- split on ';' and each is idempotent, so there are NO multi-statement DO blocks here.
 -- NOTE: no inline column comments — the manual applier strips only full-line comments.
 
 CREATE TABLE IF NOT EXISTS business_receipts (
@@ -19,7 +21,7 @@ CREATE TABLE IF NOT EXISTS business_receipts (
   payment_last4         varchar(4),
   account_ref           varchar(40),
   memo                  text,
-  inventory_vehicle_id  uuid,
+  inventory_vehicle_id  uuid REFERENCES inventory_vehicles(id) ON DELETE SET NULL,
   storage               varchar(16) NOT NULL DEFAULT 'blob_public',
   storage_ref           text,
   filename              varchar(300),

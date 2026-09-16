@@ -9,10 +9,17 @@
  */
 import { revalidatePath } from 'next/cache'
 import { authorizedManager } from '@/apps/auth/employee-guard'
-import { saveReview, approveReceipt, rejectReceipt, reopenReceipt, getReceipt, applyRetryExtraction, type ReviewFields } from './db'
+import { saveReview, approveReceipt, rejectReceipt, reopenReceipt, getReceipt, applyRetryExtraction, inventoryVehicleExists, type ReviewFields } from './db'
 import { parseCents, isBusinessEntity, isExpenseCategory, isPaymentMethod, type BusinessEntity, type ExpenseCategory, type PaymentMethod } from './types'
 
 const revalidate = () => { revalidatePath('/expenses/review'); revalidatePath('/expenses') }
+
+/** If a vehicle association is being SET (non-empty), it must be a real canonical inventory vehicle.
+ *  Clearing the association ('' → null) is always allowed. Returns an error string, or null when OK. */
+async function validateVehicle(fields: ReviewFields): Promise<string | null> {
+  if (fields.inventoryVehicleId === undefined || fields.inventoryVehicleId === null || fields.inventoryVehicleId === '') return null
+  return (await inventoryVehicleExists(fields.inventoryVehicleId)) ? null : 'That vehicle no longer exists — pick a current inventory vehicle or leave it unassigned.'
+}
 
 /** Shape posted from the review form (all strings; parsed + validated here). */
 export interface ReviewForm {
@@ -45,7 +52,10 @@ export async function saveReviewAction(f: ReviewForm): Promise<{ ok: boolean; er
   const actor = await authorizedManager()
   if (!actor) return { ok: false, error: 'Manager sign-in required.' }
   if (!f.id) return { ok: false, error: 'Missing receipt.' }
-  const r = await saveReview(f.id, reviewFieldsFrom(f), actor.name)
+  const fields = reviewFieldsFrom(f)
+  const vErr = await validateVehicle(fields)
+  if (vErr) return { ok: false, error: vErr }
+  const r = await saveReview(f.id, fields, actor.name)
   if (r.ok) revalidate()
   return r
 }
@@ -54,7 +64,10 @@ export async function approveReceiptAction(f: ReviewForm): Promise<{ ok: boolean
   const actor = await authorizedManager()
   if (!actor) return { ok: false, error: 'Manager sign-in required.' }
   if (!f.id) return { ok: false, error: 'Missing receipt.' }
-  const r = await approveReceipt(f.id, reviewFieldsFrom(f), actor.name)
+  const fields = reviewFieldsFrom(f)
+  const vErr = await validateVehicle(fields)
+  if (vErr) return { ok: false, error: vErr }
+  const r = await approveReceipt(f.id, fields, actor.name)
   if (r.ok) revalidate()
   return r
 }
@@ -84,11 +97,14 @@ export async function retryExtractionAction(f: { id: string }): Promise<{ ok: bo
   if (!actor) return { ok: false, error: 'Manager sign-in required.' }
   const row = await getReceipt(f.id)
   if (!row) return { ok: false, error: 'Receipt not found.' }
-  if (!row.storageRef || row.storage === 'none') return { ok: false, error: 'No stored image to re-read.' }
+  if (!row.storageRef || row.storage !== 'blob_private') return { ok: false, error: 'No stored image to re-read.' }
   try {
-    const res = await fetch(row.storageRef)
-    if (!res.ok) return { ok: false, error: 'Could not load the stored image.' }
-    const bytes = Buffer.from(await res.arrayBuffer())
+    // Read the ORIGINAL bytes from PRIVATE storage server-side (never a public URL). Idempotent: this
+    // only refreshes the proposal on the existing row — it never creates a new receipt or expense.
+    const { getPrivateBlob } = await import('@/platform/blob')
+    const blob = await getPrivateBlob(row.storageRef)
+    if (!blob) return { ok: false, error: 'Could not load the stored image.' }
+    const bytes = blob.bytes
     const { extractExpense } = await import('./ai')
     const ai = await extractExpense(bytes.toString('base64'), row.contentType || 'image/jpeg')
     const e = ai.extraction
