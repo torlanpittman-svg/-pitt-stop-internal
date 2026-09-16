@@ -71,6 +71,7 @@ export const inventoryVehicles = pgTable(
     salesperson:          varchar('salesperson', { length: 200 }),         // manager/salesperson completing the sale
     saleFinalizedAt:      timestamp('sale_finalized_at', { withTimezone: true }), // set once on confirm (idempotency)
     saleVersion:          integer('sale_version').notNull().default(0),     // 0 = never sold; bumped by edits/reversals
+    preSaleStatus:        varchar('pre_sale_status', { length: 20 }),       // status held immediately before the sale (for faithful reversal)
 
     // Go-forward cutover + completeness (facts-first; historical uncertainty stays visible)
     origin:        varchar('origin', { length: 24 }).notNull().default('quick_entry'), // quick_entry | spreadsheet_backfill | trade_in

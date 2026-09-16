@@ -6,7 +6,7 @@
  * no QuickBooks posting; taxes/fees separately stated; missing data flagged (never silently zeroed).
  */
 import Link from 'next/link'
-import { loadMonthlyReport, reportStatus, currentReportMonth, isValidMonth, reportingTimezone } from '@/apps/auto-sales/report-db'
+import { loadMonthlyReport, reportStatus, currentReportMonth, isValidMonth } from '@/apps/auto-sales/report-db'
 import { authorizedManager } from '@/apps/auth/employee-guard'
 import FinalizeReport from './FinalizeReport'
 
@@ -45,7 +45,7 @@ export default async function MonthlyReportView({ month: rawMonth, print = false
       {/* Header + controls */}
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          {!print && <Link href="/admin/auto-sales" className="text-gray-500 text-sm print:hidden">← Auto Sales</Link>}
+          {!print && <Link href="/auto-sales" className="text-gray-500 text-sm print:hidden">← Auto Sales</Link>}
           <h1 className={`text-2xl font-bold ${print ? 'text-black' : 'text-white'}`}>Auto Sales — Monthly Report</h1>
           <p className={print ? 'text-gray-700' : 'text-gray-400'}>{month} · timezone {report.tz}</p>
           <p className="text-gray-500 text-xs mt-0.5">Generated {report.generatedAt.slice(0, 16).replace('T', ' ')} UTC · management/estimated figures · not posted to QuickBooks</p>
@@ -55,14 +55,14 @@ export default async function MonthlyReportView({ month: rawMonth, print = false
           {finalizedAt && <span className="text-gray-500 text-[11px]">finalized {finalizedAt} by {status.latest?.generatedBy ?? '—'}{status.finalizedCount > 1 ? ` · ${status.finalizedCount} versions` : ''}</span>}
           {!print && (
             <div className="flex items-center gap-2 print:hidden">
-              <Link href={`/admin/auto-sales/report?month=${shiftMonth(month, -1)}`} className="text-gray-400 text-sm px-2 py-1 rounded border border-gray-700">← {shiftMonth(month, -1)}</Link>
-              <Link href={`/admin/auto-sales/report?month=${shiftMonth(month, 1)}`} className="text-gray-400 text-sm px-2 py-1 rounded border border-gray-700">{shiftMonth(month, 1)} →</Link>
+              <Link href={`/auto-sales/report?month=${shiftMonth(month, -1)}`} className="text-gray-400 text-sm px-2 py-1 rounded border border-gray-700">← {shiftMonth(month, -1)}</Link>
+              <Link href={`/auto-sales/report?month=${shiftMonth(month, 1)}`} className="text-gray-400 text-sm px-2 py-1 rounded border border-gray-700">{shiftMonth(month, 1)} →</Link>
             </div>
           )}
           {!print && (
             <div className="flex items-center gap-2 print:hidden">
               <a href={`/api/auto-sales/report/csv?month=${month}`} className="text-indigo-300 text-sm underline">CSV</a>
-              <Link href={`/admin/auto-sales/report/print?month=${month}`} className="text-indigo-300 text-sm underline" target="_blank">Print</Link>
+              <Link href={`/auto-sales/report/print?month=${month}`} className="text-indigo-300 text-sm underline" target="_blank">Print</Link>
               <FinalizeReport month={month} canFinalize={!!manager} state={status.state} />
             </div>
           )}
@@ -167,7 +167,7 @@ export default async function MonthlyReportView({ month: rawMonth, print = false
         )}
       </section>
 
-      <p className="text-gray-500 text-[11px] mt-2">Estimated gross profit = (selling price − discount) − acquisition price − acquisition-related − reconditioning. Taxes &amp; customer fees are excluded and shown separately. Report is reproducible from stored source data (content hash {report.contentHash}).</p>
+      <p className="text-gray-500 text-[11px] mt-2">Management/estimated figures. Estimated gross profit = (selling price − discount) − acquisition price − acquisition-related − reconditioning. Sales taxes are excluded from revenue and shown separately. Document/title/registration &amp; other customer fees are reported separately; their final accounting treatment (income vs pass-through liability) requires accountant approval and is not assumed here. Report is reproducible from stored source data (content hash {report.contentHash}).</p>
     </main>
   )
 }

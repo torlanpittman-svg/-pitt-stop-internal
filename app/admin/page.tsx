@@ -78,7 +78,7 @@ const ADMIN_SECTIONS: AdminSection[] = [
       {
         label: 'Monthly Report',
         description: 'Auto Sales accountant package · acquired / sold / month-end inventory · CSV & print · finalize snapshot',
-        href: '/admin/auto-sales/report',
+        href: '/auto-sales/report',
       },
     ],
   },

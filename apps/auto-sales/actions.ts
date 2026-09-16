@@ -121,7 +121,7 @@ export async function finalizeReportAction(f: { month: string; note?: string }):
   const { finalizeMonthlyReport, isValidMonth } = await import('./report-db')
   if (!isValidMonth(f.month)) return { ok: false, error: 'Invalid month.' }
   const r = await finalizeMonthlyReport(f.month, actor.name, f.note)
-  if (r.ok) { revalidatePath('/admin/auto-sales/report'); revalidatePath('/admin/auto-sales') }
+  if (r.ok) { revalidatePath('/auto-sales/report'); revalidatePath('/auto-sales'); revalidatePath('/admin/auto-sales') }
   return { ok: r.ok, error: r.error, superseded: r.superseded }
 }
 

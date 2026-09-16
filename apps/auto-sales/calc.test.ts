@@ -114,6 +114,23 @@ describe('computeEstimatedGrossProfit — taxes & fees excluded', () => {
     const gp = computeEstimatedGrossProfit(800000 - 50000, basis)
     expect(gp).toBe(150000)
   })
+
+  it('an acquisition-price edit immediately changes total invested AND estimated gross profit', () => {
+    const recon = e({ economicCategory: 'mechanic', amountCents: 40000 })
+    const before = computeCostBasis([e({ id: 'a1', economicCategory: 'acquisition', amountCents: 500000 }), recon])
+    // Same ledger after editAcquisitionPrice(620000): reverse old acquisition, append the corrected one.
+    const after = computeCostBasis([
+      e({ id: 'a1', economicCategory: 'acquisition', amountCents: 500000 }),
+      e({ economicCategory: 'adjustment', amountCents: 500000, reversesEventId: 'a1' }),
+      e({ economicCategory: 'acquisition', amountCents: 620000 }),
+      recon,
+    ])
+    expect(before.totalInvestedCents).toBe(540000)
+    expect(after.totalInvestedCents).toBe(660000)                       // +120,000 flows through immediately
+    const saleNet = 800000
+    expect(computeEstimatedGrossProfit(saleNet, before)).toBe(260000)
+    expect(computeEstimatedGrossProfit(saleNet, after)).toBe(140000)    // gross profit drops by the same 120,000
+  })
 })
 
 describe('dollarsToCents — integer-cents money, no floating point', () => {

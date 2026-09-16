@@ -6,6 +6,7 @@
  */
 import Link from 'next/link'
 import { autoSalesEnabled } from '@/apps/settings/db'
+import { authorizedManager } from '@/apps/auth/employee-guard'
 import { getInventoryList } from '@/apps/auto-sales/db'
 import { IN_SCOPE_ACCOUNTS } from '@/apps/auto-sales/types'
 import { acquireAction } from '@/apps/auto-sales/actions'
@@ -23,7 +24,8 @@ const STATUS: Record<string, { c: string; label: string }> = {
 const box = 'bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-base text-white w-full'
 
 export default async function InventoryView({ admin }: { admin: boolean }) {
-  const [enabled, list] = await Promise.all([autoSalesEnabled(), getInventoryList()])
+  const [enabled, list, manager] = await Promise.all([autoSalesEnabled(), getInventoryList(), authorizedManager()])
+  const isManager = !!manager
   const today = new Date().toISOString().slice(0, 10)
   const SOLD = ['sold', 'delivered', 'wholesaled']
   const active = list.filter((r) => !SOLD.includes(r.status))
@@ -67,7 +69,7 @@ export default async function InventoryView({ admin }: { admin: boolean }) {
       {/* Inventory cards — active (available-for-sale) only; sold vehicles move to the history section. */}
       <div className="flex items-baseline justify-between mb-3">
         <h2 className="text-white font-bold">Inventory <span className="text-gray-500 font-normal text-sm">({active.length} on lot)</span></h2>
-        {admin && <Link href="/admin/auto-sales/report" className="text-gray-500 text-xs underline">Monthly report</Link>}
+        {isManager && <Link href="/auto-sales/report" className="text-indigo-300 text-xs underline">Monthly report</Link>}
       </div>
       {active.length === 0 ? <p className="text-gray-500 text-sm">{list.length === 0 ? 'No vehicles yet. Tap “+ Add a vehicle” to scan one in.' : 'No vehicles on the lot — all sold.'}</p> : (
         <div className="space-y-3">

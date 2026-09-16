@@ -148,7 +148,7 @@ export default function SellVehicle({
             {commissionCents > 0 && <Row label="Selling commission (separate)" value={money(commissionCents)} accent="muted" />}
             <Row label="Estimated gross profit" value={money(gross)} strong accent={gross < 0 ? 'neg' : 'pos'} />
           </div>
-          <p className="text-gray-600 text-[11px]">Management estimate — taxes &amp; customer fees are excluded from gross profit and shown separately. Nothing posts to QuickBooks.{basis.hasUnverified ? ` ⚠ ${money(basis.unverifiedCents)} of costs are unverified and not counted.` : ''}</p>
+          <p className="text-gray-600 text-[11px]">Management estimate — sales tax and customer document/title/registration fees are excluded from gross profit and shown separately; their final accounting treatment requires accountant approval. Nothing posts to QuickBooks.{basis.hasUnverified ? ` ⚠ ${money(basis.unverifiedCents)} of costs are unverified and not counted.` : ''}</p>
           {err && <p className="text-red-400 text-sm">{err}</p>}
           <div className="flex gap-2">
             <button disabled={busy} onClick={() => setStep('form')} className="flex-1 bg-gray-800 active:bg-gray-700 text-gray-200 font-semibold py-4 rounded-2xl">← Back</button>

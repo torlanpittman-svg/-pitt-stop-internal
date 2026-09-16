@@ -481,9 +481,11 @@ export async function recordSale(input: SaleInput): Promise<{ ok: boolean; error
   const db = getDb()
   if (!Number.isFinite(input.salePriceCents) || input.salePriceCents < 0) return { ok: false, error: 'Enter a valid selling price.' }
   const status = input.markDelivered ? 'delivered' : 'sold'
-  // Atomic idempotency claim — first finalize wins.
+  // Atomic idempotency claim — first finalize wins. `pre_sale_status = status` captures the PRE-update
+  // status (Postgres evaluates SET right-hand sides against the old row) so a later reversal can restore
+  // the vehicle's true prior status instead of assuming 'listed'.
   const claimed = await db.update(inventoryVehicles)
-    .set({ ...saleColumns(input, status), saleFinalizedAt: new Date(), saleVersion: sql`sale_version + 1` })
+    .set({ ...saleColumns(input, status), preSaleStatus: sql`status`, saleFinalizedAt: new Date(), saleVersion: sql`sale_version + 1` })
     .where(and(eq(inventoryVehicles.id, input.inventoryVehicleId), isNull(inventoryVehicles.saleFinalizedAt)))
     .returning({ id: inventoryVehicles.id })
   if (claimed.length === 0) {
@@ -527,8 +529,10 @@ export async function reverseSale(input: { inventoryVehicleId: string; reason?: 
   if (!inv) return { ok: false, error: 'Vehicle not found.' }
   if (!inv.saleFinalizedAt) return { ok: false, error: 'This vehicle is not marked sold.' }
   await reverseSaleSideEvents(db, input.inventoryVehicleId, 'saleReversal', input.reason, input.actor)
-  const restore = input.restoreStatus ?? 'listed'
-  const note = `SALE REVERSED ${iso(new Date())} by ${input.actor ?? 'manager'}${input.reason ? `: ${input.reason}` : ''} (prior sale price $${((inv.salePriceCents ?? 0) / 100).toLocaleString()})`
+  // Restore the RECORDED pre-sale status (captured at finalize); explicit override wins; 'listed' only as
+  // a last-resort fallback for legacy rows with no captured prior status.
+  const restore = input.restoreStatus ?? inv.preSaleStatus ?? 'listed'
+  const note = `SALE REVERSED ${iso(new Date())} by ${input.actor ?? 'manager'}${input.reason ? `: ${input.reason}` : ''} (prior sale price $${((inv.salePriceCents ?? 0) / 100).toLocaleString()}, restored to '${restore}')`
   await db.update(inventoryVehicles).set({
     status: restore, disposition: null, soldAt: null, deliveredAt: null, saleFinalizedAt: null,
     saleVersion: sql`sale_version + 1`,
