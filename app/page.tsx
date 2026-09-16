@@ -28,6 +28,11 @@ const MODULES = [
     label: 'Auto Sales Inventory',
     sub:   'Owned vehicles — scan a VIN, track costs, record the sale.',
   },
+  {
+    href:  '/expenses',
+    label: 'Receipts',
+    sub:   'Snap a business receipt — a manager reviews and files it.',
+  },
 ]
 
 export default async function Home() {

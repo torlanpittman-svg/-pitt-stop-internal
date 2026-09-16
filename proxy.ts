@@ -22,9 +22,9 @@ function adminOk(request: NextRequest): boolean {
  * /production, etc. and carry no AI/write). /admin/* is NEVER here (it stays on ADMIN_PASSWORD).
  */
 function isEmployeeSurface(pathname: string): boolean {
-  const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in', '/orders', '/production', '/estimator', '/checks']
+  const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in', '/orders', '/production', '/estimator', '/checks', '/expenses']
   if (pages.some((p) => pathname === p || pathname.startsWith(p + '/'))) return true
-  const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/', '/api/checks/', '/api/search']
+  const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/', '/api/checks/', '/api/search', '/api/expenses/']
   if (apis.some((p) => pathname.startsWith(p)) || pathname === '/api/dealer-checkin') return true
   if (pathname === '/api/estimator/vin' || pathname === '/api/workflow/vin') return true
   return false
@@ -94,6 +94,9 @@ export const config = {
     // Write-a-Check everyday surface (manager-gated inside the handlers; employee-PIN gate here).
     '/checks/:path*',
     '/api/checks/:path*',
+    // Business-expense receipt capture (employee-PIN gate here; manager gate on approve/reject inside actions).
+    '/expenses/:path*',
+    '/api/expenses/:path*',
     '/api/dealer-checkin/:path*',
     '/api/quick-entry/:path*',
     // Global operational search — employee-session gated (role scope enforced in the handler).
