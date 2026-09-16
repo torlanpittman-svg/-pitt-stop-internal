@@ -74,6 +74,11 @@ export const businessReceipts = pgTable(
 
     uploadedBy:    varchar('uploaded_by', { length: 200 }),
 
+    // Extraction-attempt ownership token. Set on a retry claim (status='processing'); a completion or
+    // failure-release only takes effect while the CURRENT token still matches — so a stale/expired attempt
+    // that finishes late can never overwrite a newer attempt's state or a manager's correction.
+    processingToken: varchar('processing_token', { length: 40 }),
+
     // RESERVED for a future accountant export / QuickBooks sync. No live mutation happens here.
     qbSyncStatus:  varchar('qb_sync_status', { length: 16 }).notNull().default('none'), // none|export_ready|synced
     qbEntityRef:   varchar('qb_entity_ref', { length: 60 }),
@@ -92,4 +97,17 @@ export const businessReceipts = pgTable(
     // identical uploads collapse to one receipt (no duplicate expense). Migration 0039.
     uniqueIndex('business_receipts_hash_active_uniq').on(t.imageHash).where(sql`status <> 'rejected'`),
   ]
+)
+
+// Durable, server-enforced rate-limit events (cross-instance). One row per consumed unit; a windowed
+// count per bucket bounds expensive work (uploads, AI extraction attempts) independent of the per-receipt
+// extraction lock. Bucketed by the SERVER-VERIFIED actor (not a forwarded header alone). Migration 0040.
+export const expenseRateEvents = pgTable(
+  'expense_rate_events',
+  {
+    id:        uuid('id').primaryKey().defaultRandom(),
+    bucket:    varchar('bucket', { length: 120 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('expense_rate_events_bucket_idx').on(t.bucket, t.createdAt)],
 )

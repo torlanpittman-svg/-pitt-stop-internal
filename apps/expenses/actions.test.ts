@@ -12,10 +12,12 @@ vi.mock('./db', () => ({
   approveReceipt: vi.fn(async () => ({ ok: true })),
   rejectReceipt: vi.fn(async () => ({ ok: true })),
   reopenReceipt: vi.fn(async () => ({ ok: true })),
-  claimRetryExtraction: vi.fn(async () => ({ ok: true, row: { id: 'r1', storage: 'blob_private', storageRef: 'business-receipts/x.jpg', contentType: 'image/jpeg' } })),
+  claimRetryExtraction: vi.fn(async () => ({ ok: true, row: { id: 'r1', storage: 'blob_private', storageRef: 'business-receipts/x.jpg', contentType: 'image/jpeg' }, token: 'tok-1' })),
   applyRetryExtraction: vi.fn(async () => ({ ok: true })),
   releaseRetryClaim: vi.fn(async () => {}),
   inventoryVehicleExists: vi.fn(async () => true),
+  consumeRateLimit: vi.fn(async () => ({ ok: true })),
+  RATE_LIMITS: { upload: { limit: 60, windowMs: 600000 }, extractActor: { limit: 30, windowMs: 600000 }, extractReceipt: { limit: 10, windowMs: 3600000 } },
 }))
 
 import { receiptManager } from './authz'
@@ -28,7 +30,8 @@ const manager = { key: 'darryl', name: 'Darryl', role: 'manager' }
 beforeEach(() => {
   vi.clearAllMocks()
   asMock(db.inventoryVehicleExists).mockResolvedValue(true)
-  asMock(db.claimRetryExtraction).mockResolvedValue({ ok: true, row: { id: 'r1', storage: 'blob_private', storageRef: 'business-receipts/x.jpg', contentType: 'image/jpeg' } })
+  asMock(db.consumeRateLimit).mockResolvedValue({ ok: true })
+  asMock(db.claimRetryExtraction).mockResolvedValue({ ok: true, row: { id: 'r1', storage: 'blob_private', storageRef: 'business-receipts/x.jpg', contentType: 'image/jpeg' }, token: 'tok-1' })
 })
 
 describe('action-layer authorization (fails closed)', () => {
@@ -130,12 +133,23 @@ describe('retry extraction — manager-only + concurrency lock', () => {
     expect(asMock(db.applyRetryExtraction)).not.toHaveBeenCalled()
   })
 
-  it('a successful retry claims the lock, extracts, and applies the result once', async () => {
+  it('a rate-limited manager is refused BEFORE claiming the lock or calling AI', async () => {
+    asMock(receiptManager).mockResolvedValue(manager)
+    asMock(db.consumeRateLimit).mockResolvedValue({ ok: false, retryAfterSec: 30 })
+    const r = await retryExtractionAction({ id: 'r1' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/try again/i)
+    expect(asMock(db.claimRetryExtraction)).not.toHaveBeenCalled()
+  })
+
+  it('a successful retry claims the lock (with its token), extracts, and applies once', async () => {
     asMock(receiptManager).mockResolvedValue(manager)
     const r = await retryExtractionAction({ id: 'r1' })
     expect(r.ok).toBe(true)
     expect(asMock(db.claimRetryExtraction)).toHaveBeenCalledTimes(1)
     expect(asMock(db.applyRetryExtraction)).toHaveBeenCalledTimes(1)
+    // the owned attempt token flows from claim → apply
+    expect(asMock(db.applyRetryExtraction).mock.calls[0][1]).toBe('tok-1')
     expect(asMock(db.releaseRetryClaim)).not.toHaveBeenCalled()
   })
 

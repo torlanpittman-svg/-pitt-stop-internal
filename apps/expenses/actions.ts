@@ -9,7 +9,7 @@
  */
 import { revalidatePath } from 'next/cache'
 import { receiptManager } from './authz'
-import { saveReview, approveReceipt, rejectReceipt, reopenReceipt, claimRetryExtraction, applyRetryExtraction, releaseRetryClaim, inventoryVehicleExists, type ReviewFields } from './db'
+import { saveReview, approveReceipt, rejectReceipt, reopenReceipt, claimRetryExtraction, applyRetryExtraction, releaseRetryClaim, inventoryVehicleExists, consumeRateLimit, RATE_LIMITS, type ReviewFields } from './db'
 import { parseCents, isBusinessEntity, isExpenseCategory, isPaymentMethod, type BusinessEntity, type ExpenseCategory, type PaymentMethod } from './types'
 import { errorCode } from './errors'
 import { logger } from '@/platform/logger'
@@ -102,18 +102,24 @@ export async function retryExtractionAction(f: { id: string }): Promise<{ ok: bo
   const actor = await receiptManager()
   if (!actor) return { ok: false, error: 'Manager sign-in required.' }
   if (!f.id) return { ok: false, error: 'Missing receipt.' }
+  // Durable rate limits (distinct from the extraction lock): bound repeated AI attempts per manager AND
+  // per receipt, so hammering "Retry" cannot burn unbounded AI cost even across app instances.
+  const perActor = await consumeRateLimit(`extract:actor:${actor.key}`, RATE_LIMITS.extractActor.limit, RATE_LIMITS.extractActor.windowMs)
+  if (!perActor.ok) return { ok: false, error: `Too many re-reads — try again in ${perActor.retryAfterSec}s.` }
+  const perReceipt = await consumeRateLimit(`extract:rcpt:${f.id}`, RATE_LIMITS.extractReceipt.limit, RATE_LIMITS.extractReceipt.windowMs)
+  if (!perReceipt.ok) return { ok: false, error: `This receipt was re-read too many times — try again in ${perReceipt.retryAfterSec}s.` }
   const claim = await claimRetryExtraction(f.id)
   if (!claim.ok) return { ok: false, error: claim.error }
-  const row = claim.row
+  const { row, token } = claim
   try {
     // Read the ORIGINAL bytes from PRIVATE storage server-side (never a public URL).
     const { getPrivateBlob } = await import('@/platform/blob')
     const blob = await getPrivateBlob(row.storageRef!)
-    if (!blob) { await releaseRetryClaim(f.id); return { ok: false, error: 'Could not load the stored image.' } }
+    if (!blob) { await releaseRetryClaim(f.id, token); return { ok: false, error: 'Could not load the stored image.' } }
     const { extractExpense } = await import('./ai')
     const ai = await extractExpense(blob.bytes.toString('base64'), row.contentType || 'image/jpeg')
     const e = ai.extraction
-    const r = await applyRetryExtraction(f.id, {
+    const r = await applyRetryExtraction(f.id, token, {
       aiStatus: ai.status, aiModel: ai.model, aiRaw: ai.raw, aiExtracted: e, confidence: e.present,
       vendor: e.vendor, receiptDate: e.date, subtotalCents: e.subtotalCents, taxCents: e.taxCents,
       totalCents: e.totalCents, category: e.categoryKey, paymentMethod: e.paymentMethod, paymentLast4: e.paymentLast4,
@@ -121,7 +127,7 @@ export async function retryExtractionAction(f: { id: string }): Promise<{ ok: bo
     if (r.ok) revalidate()
     return r.ok ? r : { ok: false, error: r.error ?? 'Could not update — refresh and try again.' }
   } catch (err) {
-    await releaseRetryClaim(f.id).catch(() => {})
+    await releaseRetryClaim(f.id, token).catch(() => {})
     logger.error('expenses:retry', 'failed', { code: errorCode(err) })
     return { ok: false, error: 'Could not re-read the image — enter the details manually.' }
   }

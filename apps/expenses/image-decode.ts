@@ -32,3 +32,18 @@ export async function decodeImageMeta(bytes: Buffer): Promise<DecodedMeta | null
     return null
   }
 }
+
+/**
+ * Produce a DERIVED, downscaled JPEG for the AI extraction call ONLY — never stored, never hashed. The
+ * ORIGINAL bytes remain the sole preserved evidence. Falls back to the original bytes if sharp fails, so
+ * extraction is best-effort and never blocks on this optimization.
+ */
+export async function derivedForExtraction(bytes: Buffer, maxDim = 1600): Promise<{ bytes: Buffer; contentType: string }> {
+  try {
+    const sharp = (await import('sharp')).default
+    const out = await sharp(bytes).rotate().resize({ width: maxDim, height: maxDim, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer()
+    return { bytes: out, contentType: 'image/jpeg' }
+  } catch {
+    return { bytes, contentType: 'image/jpeg' }
+  }
+}

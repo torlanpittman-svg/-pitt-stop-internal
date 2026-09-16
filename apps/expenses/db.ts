@@ -7,11 +7,12 @@
  * atomically and existing entries are never rewritten. Approval is idempotent (a conditional update
  * that only fires when the row is not already approved).
  */
-import { and, desc, eq, ne, or, sql, inArray } from 'drizzle-orm'
+import { and, desc, eq, ne, or, sql, inArray, gte, lt } from 'drizzle-orm'
+import { randomUUID } from 'node:crypto'
 import { getDb } from '@/platform/db'
 import { inventoryVehicles } from '@/apps/auto-sales/schema'
 import { vehicles } from '@/apps/workflow/schema'
-import { businessReceipts } from './schema'
+import { businessReceipts, expenseRateEvents } from './schema'
 import {
   auditEntry, decideApproval, diffFields, inBusinessMonth, isBusinessEntity, isExpenseCategory, isPaymentMethod,
   type AuditEntry, type BusinessEntity, type ExpenseCategory, type PaymentMethod, type ReceiptStatus,
@@ -55,10 +56,13 @@ export async function storedPathnameForHash(hash: string): Promise<string | null
   return d?.ref ?? null
 }
 
-/** True for a Postgres unique-violation (23505), from either a `.code` field or the message text. */
+/** True for a Postgres unique-violation (23505). Drizzle wraps the driver error, so check the error, its
+ *  `.cause`, and the message text (covers neon-http, pglite, and node-postgres shapes). */
 function isUniqueViolation(err: unknown): boolean {
-  const code = (err as { code?: unknown })?.code
-  return code === '23505' || /duplicate key value|unique constraint/i.test(String((err as { message?: unknown })?.message ?? err))
+  const e = err as { code?: unknown; cause?: { code?: unknown }; message?: unknown }
+  if (e?.code === '23505' || e?.cause?.code === '23505') return true
+  const text = `${String(e?.message ?? '')} ${String((e?.cause as { message?: unknown })?.message ?? '')} ${String(err)}`
+  return /duplicate key value|unique constraint|23505/i.test(text)
 }
 
 /**
@@ -271,14 +275,17 @@ const RETRY_STALE_MS = 3 * 60 * 1000
  * a second concurrent retry loses the claim and is told it is busy. Returns the claimed row (for its
  * stored image reference) or a reason it could not claim.
  */
-export async function claimRetryExtraction(id: string): Promise<{ ok: true; row: ReceiptRow } | { ok: false; error: string; busy?: boolean }> {
+export async function claimRetryExtraction(id: string): Promise<{ ok: true; row: ReceiptRow; token: string } | { ok: false; error: string; busy?: boolean }> {
   const db = getDb()
   const before = await getReceipt(id)
   if (!before) return { ok: false, error: 'Receipt not found.' }
   if (before.storage !== 'blob_private' || !before.storageRef) return { ok: false, error: 'No stored image to re-read.' }
+  const token = randomUUID()
   const staleCutoff = new Date(Date.now() - RETRY_STALE_MS)
+  // Atomic claim: a fresh token is written with the 'processing' status. Any prior in-flight attempt now
+  // holds a DIFFERENT token, so its late completion/release (guarded by token) will no-op.
   const claimed = await db.update(businessReceipts)
-    .set({ status: 'processing', updatedAt: new Date() })
+    .set({ status: 'processing', processingToken: token, updatedAt: new Date() })
     .where(and(
       eq(businessReceipts.id, id),
       or(
@@ -288,15 +295,15 @@ export async function claimRetryExtraction(id: string): Promise<{ ok: true; row:
     ))
     .returning({ id: businessReceipts.id })
   if (claimed.length === 0) return { ok: false, busy: true, error: 'This receipt is already being re-read — try again in a moment.' }
-  return { ok: true, row: before }
+  return { ok: true, row: before, token }
 }
 
 /** Release a claim WITHOUT applying a result (blob/AI error) — restores the row to needs_review. Guarded
- *  so it only affects a row we still own ('processing'). */
-export async function releaseRetryClaim(id: string): Promise<void> {
+ *  by status='processing' AND the owned token, so a stale attempt cannot release a newer attempt's lock. */
+export async function releaseRetryClaim(id: string, token: string): Promise<void> {
   await getDb().update(businessReceipts)
-    .set({ status: 'needs_review', updatedAt: new Date() })
-    .where(and(eq(businessReceipts.id, id), eq(businessReceipts.status, 'processing')))
+    .set({ status: 'needs_review', processingToken: null, updatedAt: new Date() })
+    .where(and(eq(businessReceipts.id, id), eq(businessReceipts.status, 'processing'), eq(businessReceipts.processingToken, token)))
 }
 
 export interface RetryExtractionUpdate {
@@ -311,14 +318,16 @@ export interface RetryExtractionUpdate {
  * EMPTY proposal fields (never clobbers a manager edit); ai_raw is refreshed for the new proposal. Returns
  * the row to needs_review. No new row, no expense.
  */
-export async function applyRetryExtraction(id: string, u: RetryExtractionUpdate, actor: string | null): Promise<{ ok: boolean; error?: string; stale?: boolean }> {
+export async function applyRetryExtraction(id: string, token: string, u: RetryExtractionUpdate, actor: string | null): Promise<{ ok: boolean; error?: string; stale?: boolean }> {
   const db = getDb()
   const before = await getReceipt(id)
   if (!before) return { ok: false, error: 'Receipt not found.' }
-  if (before.status !== 'processing') return { ok: false, stale: true, error: 'Receipt is no longer processing.' }
+  // Ownership check: only THIS attempt (matching token) while still processing may write. A stale attempt
+  // whose token was superseded — or a receipt already moved on by a manager — is a no-op.
+  if (before.status !== 'processing' || before.processingToken !== token) return { ok: false, stale: true, error: 'This extraction attempt is no longer current.' }
   const set: Record<string, unknown> = {
     aiStatus: u.aiStatus, aiModel: u.aiModel, aiRaw: u.aiRaw as object, aiExtracted: u.aiExtracted as object, confidence: u.confidence as object,
-    status: 'needs_review', updatedAt: new Date(),
+    status: 'needs_review', processingToken: null, updatedAt: new Date(),
   }
   // Fill empty proposal fields only (respect prior manager edits).
   if (!before.vendor && u.vendor) set.vendor = u.vendor
@@ -331,9 +340,43 @@ export async function applyRetryExtraction(id: string, u: RetryExtractionUpdate,
   if (!before.paymentLast4 && u.paymentLast4) set.paymentLast4 = u.paymentLast4
   const done = await db.update(businessReceipts)
     .set({ ...set, auditLog: appendAudit(auditEntry('retried', actor, undefined, u.aiStatus)) })
-    .where(and(eq(businessReceipts.id, id), eq(businessReceipts.status, 'processing')))
+    .where(and(eq(businessReceipts.id, id), eq(businessReceipts.status, 'processing'), eq(businessReceipts.processingToken, token)))
     .returning({ id: businessReceipts.id })
-  if (done.length === 0) return { ok: false, stale: true, error: 'Receipt is no longer processing.' }
+  if (done.length === 0) return { ok: false, stale: true, error: 'This extraction attempt is no longer current.' }
+  return { ok: true }
+}
+
+// ── Durable, server-enforced rate limiting (cross-instance; distinct from the extraction lock) ────────
+// Concrete limits (scope · window). Tuned generously for real shop use; they cap abuse/runaway AI cost.
+export const RATE_LIMITS = {
+  upload:         { limit: 60, windowMs: 10 * 60_000 },  // 60 uploads / 10 min per actor
+  extractActor:   { limit: 30, windowMs: 10 * 60_000 },  // 30 AI extraction attempts / 10 min per actor
+  extractReceipt: { limit: 10, windowMs: 60 * 60_000 },  // 10 AI extraction attempts / hour per receipt
+} as const
+
+export interface RateResult { ok: boolean; retryAfterSec?: number }
+/**
+ * Consume one unit from a windowed rate bucket. Counts events in [now-windowMs, now); if already at the
+ * limit → reject with a retry-after (seconds until the oldest event ages out); else record one event and
+ * allow. Durable across instances (backed by expense_rate_events). Best-effort atomicity: under extreme
+ * concurrency the count-then-insert may admit a few extra, but it is hard-bounded to ~limit. Old events
+ * are opportunistically pruned. Callers bucket by the SERVER-VERIFIED actor (never a forwarded header alone).
+ */
+export async function consumeRateLimit(bucket: string, limit: number, windowMs: number): Promise<RateResult> {
+  const db = getDb()
+  const now = Date.now()
+  const windowStart = new Date(now - windowMs)
+  const rows = await db.select({ createdAt: expenseRateEvents.createdAt }).from(expenseRateEvents)
+    .where(and(eq(expenseRateEvents.bucket, bucket), gte(expenseRateEvents.createdAt, windowStart)))
+    .orderBy(expenseRateEvents.createdAt)
+  if (rows.length >= limit) {
+    const oldest = rows[0].createdAt as unknown as Date
+    const retryAfterSec = Math.max(1, Math.ceil((oldest.getTime() + windowMs - now) / 1000))
+    return { ok: false, retryAfterSec }
+  }
+  await db.insert(expenseRateEvents).values({ bucket })
+  // Opportunistic prune of this bucket's aged-out rows (bounded work; keeps the table small).
+  await db.delete(expenseRateEvents).where(and(eq(expenseRateEvents.bucket, bucket), lt(expenseRateEvents.createdAt, windowStart))).catch(() => {})
   return { ok: true }
 }
 

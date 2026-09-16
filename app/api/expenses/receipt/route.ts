@@ -5,17 +5,18 @@
  * it requires a SERVER-VERIFIED session (receiptUploaderFromRequest) — an anonymous caller is rejected even
  * when no PIN is configured. Approval is a separate manager act; capturing never books or approves anything.
  *
- * Order: authorize → rate-limit → validate (magic bytes + decode + size) → hash → PRESERVE ORIGINAL
- * (private Blob) → AI → create row. Storage is preserved BEFORE extraction; if it fails we DO NOT report
- * success (no phantom "sent to review"). No money movement; no QuickBooks mutation.
+ * Order: authorize → durable rate-limit → validate (magic bytes + decode + size) → hash ORIGINAL bytes →
+ * PRESERVE ORIGINAL (private Blob) → AI on a DERIVED downscaled copy → create row. The stored blob + the
+ * evidence hash are the employee's ORIGINAL bytes; the downscale is a throwaway used only for extraction.
+ * If storage fails we DO NOT report success. No money movement; no QuickBooks mutation.
  */
 import { NextResponse } from 'next/server'
 import { createHash } from 'node:crypto'
 import { uploadPrivatePhoto } from '@/platform/blob'
 import { extractExpense } from '@/apps/expenses/ai'
-import { createReceipt, storedPathnameForHash } from '@/apps/expenses/db'
+import { createReceipt, storedPathnameForHash, consumeRateLimit, RATE_LIMITS } from '@/apps/expenses/db'
 import { validateReceiptUpload, extForMime, MAX_UPLOAD_BYTES, MAX_DECLARED_OVERHEAD } from '@/apps/expenses/upload-validation'
-import { decodeImageMeta, validateDecodedMeta } from '@/apps/expenses/image-decode'
+import { decodeImageMeta, validateDecodedMeta, derivedForExtraction } from '@/apps/expenses/image-decode'
 import { receiptUploaderFromRequest } from '@/apps/expenses/authz'
 import { errorCode } from '@/apps/expenses/errors'
 import { logger } from '@/platform/logger'
@@ -24,14 +25,12 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 const APP = 'expenses:receipt'
 
-// Best-effort in-memory per-IP limit (per instance). Not a durable cross-instance control; the durable
-// guards are the DB unique-hash idempotency (no duplicate expense) and the per-receipt retry lock.
-const hits = new Map<string, number[]>()
-const RL_WINDOW_MS = 60_000, RL_MAX = 20
-function rateLimited(ip: string): boolean {
-  const now = Date.now(); const arr = (hits.get(ip) ?? []).filter((t) => now - t < RL_WINDOW_MS)
-  arr.push(now); hits.set(ip, arr)
-  return arr.length > RL_MAX
+/** Rate-limit bucket for an uploader: the SERVER-VERIFIED actor key when known; otherwise a shared-device
+ *  bucket keyed by a hashed client IP (a fallback for anonymous shared-PIN devices — never the sole
+ *  identity for an authenticated user). */
+function uploadBucket(actorKey: string | null, ip: string): string {
+  if (actorKey) return `upload:actor:${actorKey}`
+  return `upload:shared:${createHash('sha256').update(ip).digest('hex').slice(0, 16)}`
 }
 
 export async function POST(req: Request) {
@@ -40,15 +39,17 @@ export async function POST(req: Request) {
     const uploader = await receiptUploaderFromRequest(req)
     if (!uploader) return NextResponse.json({ ok: false, error: 'Sign in required' }, { status: 401 })
 
-    // 2) Rate limit (best-effort).
+    // 2) Durable, server-enforced rate limit (bucketed by verified actor; IP only for shared devices).
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
-    if (rateLimited(ip)) return NextResponse.json({ ok: false, error: 'Slow down a moment and try again.' }, { status: 429 })
+    const rl = await consumeRateLimit(uploadBucket(uploader.actor?.key ?? null, ip), RATE_LIMITS.upload.limit, RATE_LIMITS.upload.windowMs)
+    if (!rl.ok) return NextResponse.json({ ok: false, error: `Too many uploads — try again in ${rl.retryAfterSec}s.` }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec ?? 60) } })
 
     // 3) Reject oversized uploads early (before buffering the multipart body).
     const declaredLen = parseInt(req.headers.get('content-length') || '0', 10)
     if (Number.isFinite(declaredLen) && declaredLen > MAX_UPLOAD_BYTES + MAX_DECLARED_OVERHEAD) return NextResponse.json({ ok: false, error: 'Image too large' }, { status: 413 })
 
-    // 4) Validate request: magic bytes (authoritative type), size, then a real image DECODE.
+    // 4) Validate: magic bytes (authoritative type) + size, then a real image DECODE. The ORIGINAL bytes
+    //    are what we hash + store — never a re-encoded copy.
     const form = await req.formData()
     const image = (form.get('receipt') || form.get('image')) as File | null
     if (!image) return NextResponse.json({ ok: false, error: 'No image provided' }, { status: 400 })
@@ -58,11 +59,10 @@ export async function POST(req: Request) {
     const decoded = validateDecodedMeta(await decodeImageMeta(bytes))
     if (!decoded.ok) return NextResponse.json({ ok: false, error: decoded.error }, { status: 415 })
     const contentType = v.mime
-    const imageHash = createHash('sha256').update(bytes).digest('hex')
+    const imageHash = createHash('sha256').update(bytes).digest('hex') // hash of the ORIGINAL bytes
 
-    // 5) PRESERVE THE ORIGINAL FIRST (private Blob). Reuse the immutable pathname if these exact bytes were
-    //    ever stored (any prior receipt, incl. rejected) — avoids a re-upload conflict. If the upload fails
-    //    we HARD-FAIL — never report a saved receipt when its evidence was lost.
+    // 5) PRESERVE THE ORIGINAL FIRST (private Blob), immutable. Reuse the pathname if these exact bytes were
+    //    ever stored (any prior receipt). A storage failure HARD-FAILS — never a phantom "sent to review".
     let storageRef = await storedPathnameForHash(imageHash).catch(() => null)
     if (!storageRef) {
       try {
@@ -73,9 +73,9 @@ export async function POST(req: Request) {
       }
     }
 
-    // 6) AI extraction (never throws; failed → empty proposal → manual entry). Uploader identity is the
-    //    SERVER-VERIFIED session name (never a client header/body).
-    const ai = await extractExpense(bytes.toString('base64'), contentType)
+    // 6) AI extraction on a DERIVED downscaled copy (never stored/hashed). Never throws; failed → manual.
+    const derived = await derivedForExtraction(bytes)
+    const ai = await extractExpense(derived.bytes.toString('base64'), derived.contentType)
     const e = ai.extraction
 
     // 7) Create the row — DB-idempotent (unique hash). Concurrent identical uploads collapse to one row.

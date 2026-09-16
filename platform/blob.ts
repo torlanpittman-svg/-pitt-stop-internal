@@ -1,4 +1,4 @@
-import { put, del, get } from '@vercel/blob'
+import { put, del, get, head } from '@vercel/blob'
 import { logger } from '@/platform/logger'
 import { sanitizeFilename } from '@/platform/image'
 
@@ -52,9 +52,11 @@ function receiptsBlobToken(): string {
  * authenticated server route that streams bytes with {@link getPrivateBlob}.
  *
  * IMMUTABLE creation: `allowOverwrite:false` + `addRandomSuffix:false` means the ORIGINAL bytes are never
- * overwritten. The key is content-hash-derived, so a concurrent identical upload that hits "already
- * exists" is treated as success — the identical bytes are already stored — and the deterministic pathname
- * is returned. Uses the dedicated private-store token.
+ * overwritten. The key is content-hash-derived, so an object already at this exact pathname IS the same
+ * bytes (a sha-256 collision is infeasible). On a write CONFLICT (a concurrent create, or a re-upload of
+ * previously-stored bytes), we DETERMINISTICALLY confirm the object exists via head() (status-based, from
+ * the SDK — not a brittle error-message match) and reuse its pathname; otherwise the original error was a
+ * real failure and is rethrown. Uses the dedicated private-store token.
  * @returns the blob pathname (store key), e.g. "business-receipts/<sha256>.jpg"
  */
 export async function uploadPrivatePhoto(
@@ -68,8 +70,16 @@ export async function uploadPrivatePhoto(
     logger.info(MODULE, 'upload.private.success', { ok: true }) // never log pathname/URL/token/bytes
     return blob.pathname
   } catch (err) {
-    // Identical content already stored (immutable) → reuse the deterministic pathname (== key).
-    if (/already exists/i.test(String((err as { message?: unknown })?.message ?? err))) return key
+    // Deterministic conflict handling: confirm the EXPECTED object already exists at this exact key.
+    // head() throws BlobNotFoundError when absent, so a confirmed hit means the immutable content-addressed
+    // object is present → safe to reuse. Any other head outcome → the original write error was real.
+    try {
+      const existing = await head(key, { token })
+      if (existing && existing.pathname === key) {
+        logger.info(MODULE, 'upload.private.reused', { ok: true })
+        return key
+      }
+    } catch { /* not found / head error → fall through to rethrow the original write error */ }
     throw err
   }
 }

@@ -9,22 +9,11 @@ import { useRef, useState } from 'react'
 
 type Phase = 'idle' | 'preview' | 'uploading' | 'done' | 'error'
 
-// Dependency-free client compression (canvas). Downscales to <= maxDim and re-encodes JPEG so uploads
-// stay well under the platform's request-body limit. Falls back to the original file if anything fails.
-async function compressImage(file: File, maxDim = 1600, quality = 0.82): Promise<File> {
-  try {
-    if (!file.type.startsWith('image/')) return file
-    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' } as ImageBitmapOptions)
-    const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height))
-    const w = Math.max(1, Math.round(bitmap.width * scale)), h = Math.max(1, Math.round(bitmap.height * scale))
-    const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h
-    const ctx = canvas.getContext('2d'); if (!ctx) return file
-    ctx.drawImage(bitmap, 0, 0, w, h)
-    const blob: Blob | null = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality))
-    if (!blob) return file
-    return new File([blob], (file.name.replace(/\.[^.]+$/, '') || 'receipt') + '.jpg', { type: 'image/jpeg' })
-  } catch { return file }
-}
+// The server preserves the ORIGINAL uploaded bytes as evidence, so the client must NOT re-encode/compress
+// the file it sends. The hosting platform caps request bodies (~4.5 MB), so we reject an oversized ORIGINAL
+// up front with a clear message instead of silently shrinking the only stored copy. Kept a touch below the
+// server cap for multipart overhead. (Server derives its own downscale for extraction.)
+const MAX_ORIGINAL_BYTES = 4 * 1024 * 1024
 
 export default function CaptureExpense() {
   const camRef = useRef<HTMLInputElement>(null)
@@ -38,8 +27,10 @@ export default function CaptureExpense() {
 
   function pick(f: File | null) {
     if (!f) return
-    setFile(f); setErr(null); setDup(false)
+    setFile(f); setDup(false)
     setPreviewUrl((u) => { if (u) URL.revokeObjectURL(u); return URL.createObjectURL(f) })
+    // Reject an oversized ORIGINAL before submission (never silently compress the stored evidence).
+    setErr(f.size > MAX_ORIGINAL_BYTES ? 'This photo is too large to send. Retake it at a lower resolution (under 4 MB).' : null)
     setPhase('preview')
   }
   function reset() {
@@ -52,10 +43,11 @@ export default function CaptureExpense() {
 
   async function submit() {
     if (!file || phase === 'uploading') return // double-submit guard
+    if (file.size > MAX_ORIGINAL_BYTES) { setErr('This photo is too large to send. Retake it at a lower resolution (under 4 MB).'); return }
     setPhase('uploading'); setErr(null)
     try {
-      const toSend = await compressImage(file)
-      const fd = new FormData(); fd.set('receipt', toSend)
+      // Send the ORIGINAL bytes unchanged — the server stores + hashes these as the preserved evidence.
+      const fd = new FormData(); fd.set('receipt', file)
       const res = await fetch('/api/expenses/receipt', { method: 'POST', body: fd })
       const j = await res.json().catch(() => ({}))
       if (!res.ok || !j.ok) { setErr(j.error || 'Could not send — try again.'); setPhase('error'); return }
@@ -82,7 +74,8 @@ export default function CaptureExpense() {
         {phase === 'preview' && (
           <div className="space-y-3">
             {previewUrl && <img src={previewUrl} alt="receipt" className="w-full rounded-xl max-h-96 object-contain bg-black/40" />}
-            <button type="button" onClick={submit} className="w-full bg-green-600 active:bg-green-700 text-white text-lg font-bold py-4 rounded-2xl">Send Receipt</button>
+            {err && <p className="text-amber-400 text-sm">{err}</p>}
+            <button type="button" onClick={submit} disabled={!!err} className="w-full bg-green-600 active:bg-green-700 text-white text-lg font-bold py-4 rounded-2xl disabled:opacity-40">Send Receipt</button>
             <button type="button" onClick={reset} className="w-full text-gray-400 py-2">Retake / cancel</button>
           </div>
         )}
