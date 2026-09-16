@@ -131,6 +131,86 @@ PIN_DARRYL / PIN_TONY / ...      # a manager PIN so review/approve is reachable 
 Automated equivalents of all the above already pass in CI-free local tests (unit + real-Postgres
 integration); the preview run validates the deployed wiring + env scoping specifically.
 
+## 4c. Isolated preview — provisioning status & exact procedure
+
+Verified against the live Vercel project (read-only): project `pitt-stop-internal` (team `pitt-stop`),
+**production branch = `main`**, GitHub `torlanpittman-svg/-pitt-stop-internal`. Branch pushes/PRs create
+**SSO-protected** Preview deployments (team-login gated); pushing `receipt-capture-work` does NOT deploy
+production. A preview can also be deployed **without pushing** via `vercel deploy` from this worktree.
+Plan = **Hobby, no payment method** (so nothing can silently incur cost). **Critical:** the Neon
+`DATABASE_URL` and public `BLOB_READ_WRITE_TOKEN` are scoped to Production **and** Preview — i.e. previews
+currently SHARE the production DB + public store — so the preview MUST override these per-branch.
+
+**Already done (zero production impact):**
+- Created a dedicated **private** Blob store `receipts-preview-priv` (id `store_XMF59Z0yiQ5DKXWA`), created
+  **unconnected** to any project/environment (no env vars added; the production public store is untouched).
+- Generated isolated test credentials, stored ONLY in the macOS Keychain (service `pittstop-receipt-preview`,
+  accounts `ADMIN_PASSWORD` / `IDENTITY_SECRET` / `PIN_TONY`). Retrieve locally (never in chat):
+  `security find-generic-password -a <ACCOUNT> -s pittstop-receipt-preview -w`.
+
+**Blocked prerequisite (needs a human/interactive step):** an isolated **empty** Postgres. A Neon *branch*
+copies the parent's data (production records) → disallowed. Provisioning a fresh **empty Neon project** via
+the Vercel Marketplace requires interactive terms/browser confirmation (`vercel integration add`), which
+cannot be automated safely. **Action for the owner:** in Vercel → Storage → Create Database → Neon (a NEW,
+empty project — NOT a branch of the existing DB). It starts empty (schema-only); no production data.
+
+**Then (once the empty DB exists) — set BRANCH-SCOPED Preview env for `receipt-capture-work` only** (so
+other previews are unaffected; branch-scoped values take precedence over the shared Preview values):
+
+```
+# DB — point ALL vars the app reads at the new empty DB (override the shared production DB):
+vercel env add DATABASE_URL          preview receipt-capture-work   # (paste in the secure prompt, not chat)
+# (also override POSTGRES_URL / POSTGRES_URL_NON_POOLING / DATABASE_URL_UNPOOLED if used by the runner)
+# Private receipt storage — the dedicated store's RW token (connect the store to Preview→branch, or set):
+vercel env add RECEIPTS_BLOB_READ_WRITE_TOKEN preview receipt-capture-work
+# Isolated identity/admin (override production ADMIN_PASSWORD/IDENTITY_SECRET for this branch):
+vercel env add ADMIN_PASSWORD        preview receipt-capture-work   # value: keychain ADMIN_PASSWORD
+vercel env add IDENTITY_SECRET       preview receipt-capture-work   # value: keychain IDENTITY_SECRET
+vercel env add PIN_TONY              preview receipt-capture-work   # value: keychain PIN_TONY (test manager)
+vercel env add OPENAI_API_KEY        preview receipt-capture-work   # a restricted TEST key, or omit (manual fallback)
+```
+
+Apply the schema to the empty DB. **IMPORTANT — do NOT run only 0038–0040 on an empty DB:** `0038`'s FK
+references `inventory_vehicles(id)` and the review picker joins `vehicles`, which are created by EARLIER
+migrations. Two cases:
+
+- **Preview (empty DB):** apply the FULL app schema first, in order — the drizzle base migration
+  (`drizzle-kit migrate`, which creates `vehicles` and the core tables) then every manual file
+  `0001 … 0037` (which includes `0029_auto_sales_b0.sql` → `inventory_vehicles`), THEN `0038 → 0039 → 0040`.
+  (Minimal alternative for a receipts-only preview: create `vehicles` + `inventory_vehicles` from the
+  workflow/auto-sales schema, then 0038–0040.)
+- **Production (existing DB):** the app schema already exists — apply ONLY `0038 → 0039 → 0040`.
+
+```
+node scripts/receipts-migrate-preflight.mjs        # confirms fresh vs existing; GO / NO-GO
+node scripts/apply-qb-migration.mjs drizzle/migrations/manual/0038_business_receipts.sql
+node scripts/apply-qb-migration.mjs drizzle/migrations/manual/0039_business_receipts_dedup.sql
+node scripts/apply-qb-migration.mjs drizzle/migrations/manual/0040_business_receipts_hardening.sql
+```
+
+**Deploy the preview WITHOUT pushing** (SSO-gated; uses the branch/Preview-scoped env):
+
+```
+vercel deploy --scope pitt-stop        # preview URL; NOT production (main only)
+```
+
+**VERIFY EFFECTIVE ISOLATION BEFORE ANY WRITE** (do not trust that CLI git metadata picked the branch
+config): on the deployed preview, confirm it points at the empty DB and the private store — e.g. the review
+queue is empty (no production receipts), and a health/echo of the resolved `BLOB_STORE_ID` / DB host (never
+the secret) differs from production. Only then run the write tests. Run the §4b synthetic test plan.
+
+**Cleanup (after validation):**
+```
+# delete the private test store:
+curl -s -X DELETE -H "Authorization: Bearer <cli-token>" \
+  "https://api.vercel.com/v1/storage/stores/blob/store_XMF59Z0yiQ5DKXWA?teamId=<team>"   # or: vercel blob delete-store store_XMF59Z0yiQ5DKXWA
+# remove the branch-scoped preview env vars:
+vercel env rm DATABASE_URL preview receipt-capture-work   # (repeat for each var added)
+# remove keychain test creds:
+security delete-generic-password -s pittstop-receipt-preview   # (repeat per account)
+# delete the throwaway Neon project in Vercel → Storage. Remove the local link: rm -rf .vercel
+```
+
 ## 5. Application rollback (RETAINS receipts, evidence, audit history)
 
 To roll back, **revert the application code** (redeploy the prior build). Do **NOT** drop the tables —
