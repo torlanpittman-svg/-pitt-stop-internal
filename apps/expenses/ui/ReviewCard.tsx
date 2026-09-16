@@ -15,10 +15,11 @@ import { saveReviewAction, approveReceiptAction, rejectReceiptAction, reopenRece
 import type { ReviewCardData } from '@/apps/expenses/view'
 
 export type { ReviewCardData }
+export interface VehicleOption { id: string; label: string }
 const box = 'bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-base text-white w-full'
 const lbl = 'text-xs text-gray-500'
 
-export default function ReviewCard({ r }: { r: ReviewCardData }) {
+export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; vehicles?: VehicleOption[] }) {
   const router = useRouter()
   const [entity, setEntity] = useState(r.entity)
   const [category, setCategory] = useState(r.category)
@@ -29,12 +30,13 @@ export default function ReviewCard({ r }: { r: ReviewCardData }) {
   const [total, setTotal] = useState(centsToDollars(r.totalCents))
   const [paymentMethod, setPaymentMethod] = useState(r.paymentMethod ?? '')
   const [accountRef, setAccountRef] = useState(r.accountRef ?? '')
+  const [inventoryVehicleId, setInventoryVehicleId] = useState(r.inventoryVehicleId ?? '')
   const [memo, setMemo] = useState(r.memo ?? '')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
 
-  const form = (): ReviewForm => ({ id: r.id, entity, category, vendor, receiptDate, subtotal, tax, total, paymentMethod, accountRef, memo })
+  const form = (): ReviewForm => ({ id: r.id, entity, category, vendor, receiptDate, subtotal, tax, total, paymentMethod, accountRef, memo, inventoryVehicleId })
   const suggested = (k: string) => r.present?.[k] ? <span className="text-indigo-400/70"> · suggested</span> : null
 
   async function run(fn: () => Promise<{ ok: boolean; error?: string; alreadyApproved?: boolean }>, okNote: string) {
@@ -100,6 +102,12 @@ export default function ReviewCard({ r }: { r: ReviewCardData }) {
               <label className={lbl}>Paid from<br />
                 <select value={accountRef} onChange={(e) => setAccountRef(e.target.value)} disabled={decided} className={box}>
                   <option value="">—</option>{ACCOUNT_REFS.map((a) => <option key={a.ref} value={a.ref}>{a.ref}</option>)}
+                </select></label>
+              <label className={`${lbl} col-span-2`}>Vehicle (optional — for an Auto Sales vehicle expense)<br />
+                <select value={inventoryVehicleId} onChange={(e) => setInventoryVehicleId(e.target.value)} disabled={decided} className={box}>
+                  <option value="">Not a vehicle expense</option>
+                  {vehicles.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+                  {inventoryVehicleId && !vehicles.some((v) => v.id === inventoryVehicleId) && <option value={inventoryVehicleId}>Current (unavailable)</option>}
                 </select></label>
               <label className={`${lbl} col-span-2`}>Note<br /><input value={memo} onChange={(e) => setMemo(e.target.value)} disabled={decided} className={box} /></label>
             </div>

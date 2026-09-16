@@ -6,6 +6,20 @@
 -- Applied via the generic manual runner (scripts/apply-qb-migration.mjs <this file>): statements are
 -- split on ';' and each is idempotent, so there are NO multi-statement DO blocks here.
 -- NOTE: no inline column comments — the manual applier strips only full-line comments.
+--
+-- FRESH INSTALL: CREATE TABLE below adds the inventory_vehicle_id FK inline (correct on first apply).
+-- ALREADY-CREATED TABLE (rare — 0038 was never applied in prod, but a partial/aborted apply is possible):
+-- CREATE TABLE IF NOT EXISTS is a no-op and will NOT add a missing FK. If the table already exists WITHOUT
+-- the FK, add it once manually (idempotent guard shown; run in psql, not via the ';'-splitting runner):
+--   DO $$ BEGIN
+--     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'business_receipts_inv_veh_fk') THEN
+--       ALTER TABLE business_receipts
+--         ADD CONSTRAINT business_receipts_inv_veh_fk
+--         FOREIGN KEY (inventory_vehicle_id) REFERENCES inventory_vehicles(id) ON DELETE SET NULL;
+--     END IF;
+--   END $$;
+-- Application-level validation (db.inventoryVehicleExists) independently blocks a nonexistent vehicle id
+-- at review/approve time, so an approved receipt can never reference a missing vehicle even without the FK.
 
 CREATE TABLE IF NOT EXISTS business_receipts (
   id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),

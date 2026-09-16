@@ -15,9 +15,11 @@ import { detectImageMime } from '@/platform/image'
 export const EXPENSE_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const
 export type ExpenseImageType = (typeof EXPENSE_IMAGE_TYPES)[number]
 
-// Conservative cap for a phone photo (client compresses first; raw originals are well under this).
-export const MAX_UPLOAD_BYTES = 12 * 1024 * 1024 // 12 MB
-export const MAX_DECLARED_OVERHEAD = 512 * 1024  // slack for multipart headers when checking Content-Length
+// Conservative cap: the hosting platform (Vercel Functions) rejects request bodies over ~4.5 MB before
+// our code runs, so a larger app limit would surface as an opaque platform 413. We cap at 4 MB (under the
+// platform limit) so our own clear error applies; the client compresses to well under this before upload.
+export const MAX_UPLOAD_BYTES = 4 * 1024 * 1024  // 4 MB
+export const MAX_DECLARED_OVERHEAD = 256 * 1024  // slack for multipart headers when checking Content-Length
 
 export type UploadValidation =
   | { ok: true; mime: ExpenseImageType }

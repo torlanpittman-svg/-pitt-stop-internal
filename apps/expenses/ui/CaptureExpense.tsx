@@ -8,7 +8,23 @@
 import { useRef, useState } from 'react'
 
 type Phase = 'idle' | 'preview' | 'uploading' | 'done' | 'error'
-type Dup = { when: string; status: string } | null
+
+// Dependency-free client compression (canvas). Downscales to <= maxDim and re-encodes JPEG so uploads
+// stay well under the platform's request-body limit. Falls back to the original file if anything fails.
+async function compressImage(file: File, maxDim = 1600, quality = 0.82): Promise<File> {
+  try {
+    if (!file.type.startsWith('image/')) return file
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' } as ImageBitmapOptions)
+    const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height))
+    const w = Math.max(1, Math.round(bitmap.width * scale)), h = Math.max(1, Math.round(bitmap.height * scale))
+    const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h
+    const ctx = canvas.getContext('2d'); if (!ctx) return file
+    ctx.drawImage(bitmap, 0, 0, w, h)
+    const blob: Blob | null = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality))
+    if (!blob) return file
+    return new File([blob], (file.name.replace(/\.[^.]+$/, '') || 'receipt') + '.jpg', { type: 'image/jpeg' })
+  } catch { return file }
+}
 
 export default function CaptureExpense() {
   const camRef = useRef<HTMLInputElement>(null)
@@ -17,17 +33,17 @@ export default function CaptureExpense() {
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  const [dup, setDup] = useState<Dup>(null)
+  const [dup, setDup] = useState<boolean>(false)
   const [aiOk, setAiOk] = useState(true)
 
   function pick(f: File | null) {
     if (!f) return
-    setFile(f); setErr(null); setDup(null)
+    setFile(f); setErr(null); setDup(false)
     setPreviewUrl((u) => { if (u) URL.revokeObjectURL(u); return URL.createObjectURL(f) })
     setPhase('preview')
   }
   function reset() {
-    setFile(null); setErr(null); setDup(null); setAiOk(true)
+    setFile(null); setErr(null); setDup(false); setAiOk(true)
     if (previewUrl) URL.revokeObjectURL(previewUrl); setPreviewUrl(null)
     if (camRef.current) camRef.current.value = ''
     if (upRef.current) upRef.current.value = ''
@@ -38,12 +54,13 @@ export default function CaptureExpense() {
     if (!file || phase === 'uploading') return // double-submit guard
     setPhase('uploading'); setErr(null)
     try {
-      const fd = new FormData(); fd.set('receipt', file)
+      const toSend = await compressImage(file)
+      const fd = new FormData(); fd.set('receipt', toSend)
       const res = await fetch('/api/expenses/receipt', { method: 'POST', body: fd })
       const j = await res.json().catch(() => ({}))
       if (!res.ok || !j.ok) { setErr(j.error || 'Could not send — try again.'); setPhase('error'); return }
       setAiOk(j.aiStatus === 'extracted')
-      setDup(j.duplicateWarning ? { when: String(j.duplicateWarning.when).slice(0, 10), status: j.duplicateWarning.status } : null)
+      setDup(!!j.duplicate)
       if (previewUrl) URL.revokeObjectURL(previewUrl)
       setPhase('done')
     } catch { setErr('No connection — try again in a moment.'); setPhase('error') }
@@ -77,7 +94,7 @@ export default function CaptureExpense() {
             <div className="text-4xl">✅</div>
             <p className="text-white font-semibold">Receipt sent to review.</p>
             {!aiOk && <p className="text-amber-400 text-sm">We couldn’t read it automatically — a manager will fill in the details.</p>}
-            {dup && <p className="text-amber-300 text-sm rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2">⚠ Looks like one already captured on {dup.when} ({dup.status.replace('_', ' ')}). It’s saved again — a manager will sort out any duplicate.</p>}
+            {dup && <p className="text-amber-300 text-sm rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2">This receipt was already captured — no need to send it again.</p>}
             <button type="button" onClick={reset} className="w-full bg-indigo-600 active:bg-indigo-700 text-white text-base font-bold py-4 rounded-2xl">Capture Another</button>
           </div>
         )}

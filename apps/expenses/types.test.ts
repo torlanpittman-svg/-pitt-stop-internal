@@ -93,22 +93,26 @@ describe('status machine', () => {
 })
 
 describe('decideApproval — guard + idempotency', () => {
+  const DATE = '2026-09-14'
   it('approves a well-formed needs_review receipt', () => {
-    expect(decideApproval('needs_review', 'detail', 1999)).toEqual({ action: 'approve' })
+    expect(decideApproval('needs_review', 'detail', 1999, DATE)).toEqual({ action: 'approve' })
   })
   it('is idempotent when already approved', () => {
-    expect(decideApproval('approved', 'detail', 1999)).toEqual({ action: 'noop_already_approved' })
+    expect(decideApproval('approved', 'detail', 1999, DATE)).toEqual({ action: 'noop_already_approved' })
   })
   it('blocks an unassigned business', () => {
-    const d = decideApproval('needs_review', 'unassigned', 1999)
-    expect(d.action).toBe('blocked')
+    expect(decideApproval('needs_review', 'unassigned', 1999, DATE).action).toBe('blocked')
   })
   it('blocks a missing or zero total (never books $0)', () => {
-    expect(decideApproval('needs_review', 'detail', null).action).toBe('blocked')
-    expect(decideApproval('needs_review', 'detail', 0).action).toBe('blocked')
+    expect(decideApproval('needs_review', 'detail', null, DATE).action).toBe('blocked')
+    expect(decideApproval('needs_review', 'detail', 0, DATE).action).toBe('blocked')
+  })
+  it('blocks a missing or invalid receipt date (never coerced to today)', () => {
+    expect(decideApproval('needs_review', 'detail', 1999, null).action).toBe('blocked')
+    expect(decideApproval('needs_review', 'detail', 1999, 'not-a-date').action).toBe('blocked')
   })
   it('blocks approving from a non-review status', () => {
-    expect(decideApproval('rejected', 'detail', 1999).action).toBe('blocked')
+    expect(decideApproval('rejected', 'detail', 1999, DATE).action).toBe('blocked')
   })
 })
 

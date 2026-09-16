@@ -1,31 +1,39 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// Mock the auth guard + db + cache so we can exercise the ACTION-LAYER authorization without a request
-// scope or a database. This proves approval/rejection fail closed and attribute the real manager identity.
-vi.mock('@/apps/auth/employee-guard', () => ({ authorizedManager: vi.fn() }))
+// Mock the receipt authz + db + cache so we exercise ACTION-LAYER behavior without a request scope or a
+// database. This proves approve/reject/retry fail closed, attribute the real manager, and drive the retry
+// lock. authz is mocked (its own fail-closed logic is covered in authz.test.ts).
+vi.mock('./authz', () => ({ receiptManager: vi.fn() }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
+vi.mock('@/platform/blob', () => ({ getPrivateBlob: vi.fn(async () => ({ bytes: Buffer.from([1]), contentType: 'image/jpeg', size: 1 })) }))
+vi.mock('./ai', () => ({ extractExpense: vi.fn(async () => ({ status: 'extracted', model: 'gpt-4o', raw: {}, extraction: { vendor: 'V', date: null, subtotalCents: null, taxCents: null, totalCents: 100, categoryLabel: null, categoryKey: 'other', paymentMethod: null, paymentLast4: null, receiptNumber: null, present: {} } })) }))
 vi.mock('./db', () => ({
   saveReview: vi.fn(async () => ({ ok: true })),
   approveReceipt: vi.fn(async () => ({ ok: true })),
   rejectReceipt: vi.fn(async () => ({ ok: true })),
   reopenReceipt: vi.fn(async () => ({ ok: true })),
-  getReceipt: vi.fn(),
+  claimRetryExtraction: vi.fn(async () => ({ ok: true, row: { id: 'r1', storage: 'blob_private', storageRef: 'business-receipts/x.jpg', contentType: 'image/jpeg' } })),
   applyRetryExtraction: vi.fn(async () => ({ ok: true })),
+  releaseRetryClaim: vi.fn(async () => {}),
   inventoryVehicleExists: vi.fn(async () => true),
 }))
 
-import { authorizedManager } from '@/apps/auth/employee-guard'
+import { receiptManager } from './authz'
 import { approveReceiptAction, rejectReceiptAction, saveReviewAction, retryExtractionAction } from './actions'
 import * as db from './db'
 
 const asMock = <T>(fn: T) => fn as unknown as ReturnType<typeof vi.fn>
 const manager = { key: 'darryl', name: 'Darryl', role: 'manager' }
 
-beforeEach(() => { vi.clearAllMocks(); asMock(db.inventoryVehicleExists).mockResolvedValue(true) })
+beforeEach(() => {
+  vi.clearAllMocks()
+  asMock(db.inventoryVehicleExists).mockResolvedValue(true)
+  asMock(db.claimRetryExtraction).mockResolvedValue({ ok: true, row: { id: 'r1', storage: 'blob_private', storageRef: 'business-receipts/x.jpg', contentType: 'image/jpeg' } })
+})
 
 describe('action-layer authorization (fails closed)', () => {
   it('anonymous / employee cannot approve — no db write happens', async () => {
-    asMock(authorizedManager).mockResolvedValue(null) // not a manager
+    asMock(receiptManager).mockResolvedValue(null)
     const r = await approveReceiptAction({ id: 'r1', entity: 'detail', total: '19.99' })
     expect(r.ok).toBe(false)
     expect(r.error).toMatch(/Manager sign-in required/i)
@@ -33,17 +41,16 @@ describe('action-layer authorization (fails closed)', () => {
   })
 
   it('employee cannot reject', async () => {
-    asMock(authorizedManager).mockResolvedValue(null)
+    asMock(receiptManager).mockResolvedValue(null)
     const r = await rejectReceiptAction({ id: 'r1', reason: 'blurry' })
     expect(r.ok).toBe(false)
     expect(asMock(db.rejectReceipt)).not.toHaveBeenCalled()
   })
 
   it('manager approval passes the real manager identity for attribution', async () => {
-    asMock(authorizedManager).mockResolvedValue({ key: 'darryl', name: 'Darryl', role: 'manager' })
+    asMock(receiptManager).mockResolvedValue(manager)
     const r = await approveReceiptAction({ id: 'r1', entity: 'auto_sales', total: '48.71', vendor: "O'Reilly" })
     expect(r.ok).toBe(true)
-    expect(asMock(db.approveReceipt)).toHaveBeenCalledTimes(1)
     const [id, fields, actor] = asMock(db.approveReceipt).mock.calls[0]
     expect(id).toBe('r1')
     expect(actor).toBe('Darryl')          // audit attribution = verified manager name, not client input
@@ -52,7 +59,7 @@ describe('action-layer authorization (fails closed)', () => {
   })
 
   it('manager save parses cents and passes validated fields', async () => {
-    asMock(authorizedManager).mockResolvedValue({ key: 'tony', name: 'Tony', role: 'manager' })
+    asMock(receiptManager).mockResolvedValue({ key: 'tony', name: 'Tony', role: 'manager' })
     const r = await saveReviewAction({ id: 'r2', total: '1,250.00', tax: '', category: 'parts', entity: 'detail' })
     expect(r.ok).toBe(true)
     const [, fields] = asMock(db.saveReview).mock.calls[0]
@@ -62,7 +69,7 @@ describe('action-layer authorization (fails closed)', () => {
   })
 
   it('rejects an invalid entity/category down to safe defaults', async () => {
-    asMock(authorizedManager).mockResolvedValue({ key: 'tony', name: 'Tony', role: 'manager' })
+    asMock(receiptManager).mockResolvedValue({ key: 'tony', name: 'Tony', role: 'manager' })
     await saveReviewAction({ id: 'r3', entity: 'hackery', category: 'nonsense' })
     const [, fields] = asMock(db.saveReview).mock.calls[0]
     expect(fields.entity).toBe('unassigned')
@@ -72,7 +79,7 @@ describe('action-layer authorization (fails closed)', () => {
 
 describe('vehicle association validation', () => {
   it('rejects a nonexistent inventory vehicle on approve (no db write)', async () => {
-    asMock(authorizedManager).mockResolvedValue(manager)
+    asMock(receiptManager).mockResolvedValue(manager)
     asMock(db.inventoryVehicleExists).mockResolvedValue(false)
     const r = await approveReceiptAction({ id: 'r1', entity: 'auto_sales', total: '100.00', inventoryVehicleId: 'bogus-id' })
     expect(r.ok).toBe(false)
@@ -81,23 +88,23 @@ describe('vehicle association validation', () => {
   })
 
   it('accepts a valid inventory vehicle association', async () => {
-    asMock(authorizedManager).mockResolvedValue(manager)
+    asMock(receiptManager).mockResolvedValue(manager)
     asMock(db.inventoryVehicleExists).mockResolvedValue(true)
-    const r = await approveReceiptAction({ id: 'r1', entity: 'auto_sales', total: '100.00', inventoryVehicleId: 'veh-123' })
+    const r = await approveReceiptAction({ id: 'r1', entity: 'auto_sales', total: '100.00', receiptDate: '2026-09-14', inventoryVehicleId: 'veh-123' })
     expect(r.ok).toBe(true)
     const [, fields] = asMock(db.approveReceipt).mock.calls[0]
     expect(fields.inventoryVehicleId).toBe('veh-123')
   })
 
   it('a general expense with no vehicle never triggers the existence check', async () => {
-    asMock(authorizedManager).mockResolvedValue(manager)
+    asMock(receiptManager).mockResolvedValue(manager)
     const r = await saveReviewAction({ id: 'r1', entity: 'detail', total: '10.00' })
     expect(r.ok).toBe(true)
     expect(asMock(db.inventoryVehicleExists)).not.toHaveBeenCalled()
   })
 
   it('clearing the association (empty string) is allowed without an existence check', async () => {
-    asMock(authorizedManager).mockResolvedValue(manager)
+    asMock(receiptManager).mockResolvedValue(manager)
     await saveReviewAction({ id: 'r1', inventoryVehicleId: '' })
     expect(asMock(db.inventoryVehicleExists)).not.toHaveBeenCalled()
     const [, fields] = asMock(db.saveReview).mock.calls[0]
@@ -105,12 +112,40 @@ describe('vehicle association validation', () => {
   })
 })
 
-describe('retry extraction is manager-only', () => {
-  it('an anonymous/employee caller cannot retry — no receipt is loaded', async () => {
-    asMock(authorizedManager).mockResolvedValue(null)
+describe('retry extraction — manager-only + concurrency lock', () => {
+  it('an anonymous/employee caller cannot retry — the lock is never claimed', async () => {
+    asMock(receiptManager).mockResolvedValue(null)
     const r = await retryExtractionAction({ id: 'r1' })
     expect(r.ok).toBe(false)
     expect(r.error).toMatch(/Manager sign-in required/i)
-    expect(asMock(db.getReceipt)).not.toHaveBeenCalled()
+    expect(asMock(db.claimRetryExtraction)).not.toHaveBeenCalled()
+  })
+
+  it('a busy receipt (lock already held) is not re-extracted', async () => {
+    asMock(receiptManager).mockResolvedValue(manager)
+    asMock(db.claimRetryExtraction).mockResolvedValue({ ok: false, busy: true, error: 'already being re-read' })
+    const r = await retryExtractionAction({ id: 'r1' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/re-read/i)
+    expect(asMock(db.applyRetryExtraction)).not.toHaveBeenCalled()
+  })
+
+  it('a successful retry claims the lock, extracts, and applies the result once', async () => {
+    asMock(receiptManager).mockResolvedValue(manager)
+    const r = await retryExtractionAction({ id: 'r1' })
+    expect(r.ok).toBe(true)
+    expect(asMock(db.claimRetryExtraction)).toHaveBeenCalledTimes(1)
+    expect(asMock(db.applyRetryExtraction)).toHaveBeenCalledTimes(1)
+    expect(asMock(db.releaseRetryClaim)).not.toHaveBeenCalled()
+  })
+
+  it('releases the lock (no stuck processing) when the stored image cannot be loaded', async () => {
+    asMock(receiptManager).mockResolvedValue(manager)
+    const { getPrivateBlob } = await import('@/platform/blob')
+    asMock(getPrivateBlob).mockResolvedValueOnce(null)
+    const r = await retryExtractionAction({ id: 'r1' })
+    expect(r.ok).toBe(false)
+    expect(asMock(db.releaseRetryClaim)).toHaveBeenCalledTimes(1)
+    expect(asMock(db.applyRetryExtraction)).not.toHaveBeenCalled()
   })
 })

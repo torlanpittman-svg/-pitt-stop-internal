@@ -2,15 +2,17 @@
 /**
  * Business Receipts — MANAGER-gated server actions (review, correct, approve, reject, reopen, retry).
  *
- * Authorization is enforced at the action layer via authorizedManager() (SEPARATE from ADMIN_PASSWORD —
- * a manager PIN suffices; admin ⊇ manager). This is independent of any hidden UI control: an anonymous
- * or employee-only caller cannot approve/reject. Capture/upload itself is employee-safe and lives in the
- * API route (app/api/expenses/receipt). No money movement; no QuickBooks mutation.
+ * Authorization is enforced at the action layer via receiptManager() (FAIL-CLOSED; SEPARATE from
+ * ADMIN_PASSWORD — a manager PIN suffices, admin ⊇ manager; never dev-opens). Independent of any hidden
+ * UI control: an anonymous or employee-only caller cannot approve/reject. Capture/upload is employee-safe
+ * and lives in the API route (app/api/expenses/receipt). No money movement; no QuickBooks mutation.
  */
 import { revalidatePath } from 'next/cache'
-import { authorizedManager } from '@/apps/auth/employee-guard'
-import { saveReview, approveReceipt, rejectReceipt, reopenReceipt, getReceipt, applyRetryExtraction, inventoryVehicleExists, type ReviewFields } from './db'
+import { receiptManager } from './authz'
+import { saveReview, approveReceipt, rejectReceipt, reopenReceipt, claimRetryExtraction, applyRetryExtraction, releaseRetryClaim, inventoryVehicleExists, type ReviewFields } from './db'
 import { parseCents, isBusinessEntity, isExpenseCategory, isPaymentMethod, type BusinessEntity, type ExpenseCategory, type PaymentMethod } from './types'
+import { errorCode } from './errors'
+import { logger } from '@/platform/logger'
 
 const revalidate = () => { revalidatePath('/expenses/review'); revalidatePath('/expenses') }
 
@@ -49,7 +51,7 @@ function reviewFieldsFrom(f: ReviewForm): ReviewFields {
 }
 
 export async function saveReviewAction(f: ReviewForm): Promise<{ ok: boolean; error?: string }> {
-  const actor = await authorizedManager()
+  const actor = await receiptManager()
   if (!actor) return { ok: false, error: 'Manager sign-in required.' }
   if (!f.id) return { ok: false, error: 'Missing receipt.' }
   const fields = reviewFieldsFrom(f)
@@ -61,7 +63,7 @@ export async function saveReviewAction(f: ReviewForm): Promise<{ ok: boolean; er
 }
 
 export async function approveReceiptAction(f: ReviewForm): Promise<{ ok: boolean; error?: string; alreadyApproved?: boolean }> {
-  const actor = await authorizedManager()
+  const actor = await receiptManager()
   if (!actor) return { ok: false, error: 'Manager sign-in required.' }
   if (!f.id) return { ok: false, error: 'Missing receipt.' }
   const fields = reviewFieldsFrom(f)
@@ -73,7 +75,7 @@ export async function approveReceiptAction(f: ReviewForm): Promise<{ ok: boolean
 }
 
 export async function rejectReceiptAction(f: { id: string; reason?: string }): Promise<{ ok: boolean; error?: string }> {
-  const actor = await authorizedManager()
+  const actor = await receiptManager()
   if (!actor) return { ok: false, error: 'Manager sign-in required.' }
   if (!f.id) return { ok: false, error: 'Missing receipt.' }
   const r = await rejectReceipt(f.id, f.reason?.trim() || null, actor.name)
@@ -82,7 +84,7 @@ export async function rejectReceiptAction(f: { id: string; reason?: string }): P
 }
 
 export async function reopenReceiptAction(f: { id: string }): Promise<{ ok: boolean; error?: string }> {
-  const actor = await authorizedManager()
+  const actor = await receiptManager()
   if (!actor) return { ok: false, error: 'Manager sign-in required.' }
   if (!f.id) return { ok: false, error: 'Missing receipt.' }
   const r = await reopenReceipt(f.id, actor.name)
@@ -90,23 +92,26 @@ export async function reopenReceiptAction(f: { id: string }): Promise<{ ok: bool
   return r
 }
 
-/** Re-run AI extraction on the already-stored image (manager-gated). Never creates a duplicate receipt
- *  or an expense; only refreshes the proposal on the existing row. */
+/**
+ * Re-run AI extraction on the already-stored image (manager-gated). Concurrency-safe: it first CLAIMS a
+ * durable per-receipt lock (status→'processing') so two managers cannot fire concurrent AI calls for the
+ * same receipt; a second caller is told it is busy. The result is applied only while the lock is held, so
+ * a late result can never overwrite a manager correction or a newer status. Never creates a receipt/expense.
+ */
 export async function retryExtractionAction(f: { id: string }): Promise<{ ok: boolean; error?: string }> {
-  const actor = await authorizedManager()
+  const actor = await receiptManager()
   if (!actor) return { ok: false, error: 'Manager sign-in required.' }
-  const row = await getReceipt(f.id)
-  if (!row) return { ok: false, error: 'Receipt not found.' }
-  if (!row.storageRef || row.storage !== 'blob_private') return { ok: false, error: 'No stored image to re-read.' }
+  if (!f.id) return { ok: false, error: 'Missing receipt.' }
+  const claim = await claimRetryExtraction(f.id)
+  if (!claim.ok) return { ok: false, error: claim.error }
+  const row = claim.row
   try {
-    // Read the ORIGINAL bytes from PRIVATE storage server-side (never a public URL). Idempotent: this
-    // only refreshes the proposal on the existing row — it never creates a new receipt or expense.
+    // Read the ORIGINAL bytes from PRIVATE storage server-side (never a public URL).
     const { getPrivateBlob } = await import('@/platform/blob')
-    const blob = await getPrivateBlob(row.storageRef)
-    if (!blob) return { ok: false, error: 'Could not load the stored image.' }
-    const bytes = blob.bytes
+    const blob = await getPrivateBlob(row.storageRef!)
+    if (!blob) { await releaseRetryClaim(f.id); return { ok: false, error: 'Could not load the stored image.' } }
     const { extractExpense } = await import('./ai')
-    const ai = await extractExpense(bytes.toString('base64'), row.contentType || 'image/jpeg')
+    const ai = await extractExpense(blob.bytes.toString('base64'), row.contentType || 'image/jpeg')
     const e = ai.extraction
     const r = await applyRetryExtraction(f.id, {
       aiStatus: ai.status, aiModel: ai.model, aiRaw: ai.raw, aiExtracted: e, confidence: e.present,
@@ -114,8 +119,10 @@ export async function retryExtractionAction(f: { id: string }): Promise<{ ok: bo
       totalCents: e.totalCents, category: e.categoryKey, paymentMethod: e.paymentMethod, paymentLast4: e.paymentLast4,
     }, actor.name)
     if (r.ok) revalidate()
-    return r
-  } catch {
+    return r.ok ? r : { ok: false, error: r.error ?? 'Could not update — refresh and try again.' }
+  } catch (err) {
+    await releaseRetryClaim(f.id).catch(() => {})
+    logger.error('expenses:retry', 'failed', { code: errorCode(err) })
     return { ok: false, error: 'Could not re-read the image — enter the details manually.' }
   }
 }

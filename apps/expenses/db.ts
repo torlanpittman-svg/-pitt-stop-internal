@@ -7,9 +7,10 @@
  * atomically and existing entries are never rewritten. Approval is idempotent (a conditional update
  * that only fires when the row is not already approved).
  */
-import { and, desc, eq, ne, sql, inArray } from 'drizzle-orm'
+import { and, desc, eq, ne, or, sql, inArray } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { inventoryVehicles } from '@/apps/auto-sales/schema'
+import { vehicles } from '@/apps/workflow/schema'
 import { businessReceipts } from './schema'
 import {
   auditEntry, decideApproval, diffFields, inBusinessMonth, isBusinessEntity, isExpenseCategory, isPaymentMethod,
@@ -34,33 +35,67 @@ export interface CreateReceiptInput {
   totalCents?: number | null; category?: ExpenseCategory; paymentMethod?: string | null; paymentLast4?: string | null
   inventoryVehicleId?: string | null
 }
-/** A prior, non-rejected receipt with the same content hash (Blob reuse + duplicate warning). */
-export async function findReceiptByHash(hash: string): Promise<ReceiptRow | null> {
-  const [d] = await getDb().select().from(businessReceipts).where(eq(businessReceipts.imageHash, hash)).orderBy(desc(businessReceipts.createdAt)).limit(1)
+/** A prior, non-rejected receipt with the same content hash — used to return the EXISTING active receipt
+ *  id when a concurrent duplicate insert loses the unique race. Its metadata is never returned to an employee. */
+export async function findActiveReceiptByHash(hash: string): Promise<ReceiptRow | null> {
+  const [d] = await getDb().select().from(businessReceipts)
+    .where(and(eq(businessReceipts.imageHash, hash), ne(businessReceipts.status, 'rejected')))
+    .orderBy(desc(businessReceipts.createdAt)).limit(1)
   return d ?? null
 }
-/** Create the receipt row on upload. Status lands on needs_review (extracted or failed → manager reviews).
- *  The image is preserved even when AI fails, so a receipt is never stranded. */
-export async function createReceipt(input: CreateReceiptInput): Promise<string> {
+
+/** ANY prior receipt (incl. rejected) with the same content hash + a stored private image. Used ONLY to
+ *  REUSE the immutable Blob pathname for identical bytes (never re-uploading), avoiding a put-conflict on a
+ *  re-upload after rejection. Returns just the pathname — never any receipt metadata. */
+export async function storedPathnameForHash(hash: string): Promise<string | null> {
+  const [d] = await getDb().select({ storage: businessReceipts.storage, ref: businessReceipts.storageRef })
+    .from(businessReceipts)
+    .where(and(eq(businessReceipts.imageHash, hash), eq(businessReceipts.storage, 'blob_private')))
+    .orderBy(desc(businessReceipts.createdAt)).limit(1)
+  return d?.ref ?? null
+}
+
+/** True for a Postgres unique-violation (23505), from either a `.code` field or the message text. */
+function isUniqueViolation(err: unknown): boolean {
+  const code = (err as { code?: unknown })?.code
+  return code === '23505' || /duplicate key value|unique constraint/i.test(String((err as { message?: unknown })?.message ?? err))
+}
+
+/**
+ * Create the receipt row on upload — DB-idempotent. A partial UNIQUE index on image_hash (WHERE status
+ * <> 'rejected') means two concurrent identical uploads cannot both insert: the loser hits a unique
+ * violation and we return the EXISTING active receipt's id with duplicate=true (no second row → no second
+ * expense). A re-upload after a rejection is allowed (rejected rows are excluded from the index). Status
+ * lands on needs_review; the image is preserved even when AI failed, so a receipt is never stranded.
+ */
+export async function createReceipt(input: CreateReceiptInput): Promise<{ id: string; duplicate: boolean }> {
   const status: ReceiptStatus = 'needs_review'
   const category: ExpenseCategory = input.category && isExpenseCategory(input.category) ? input.category : 'uncategorized'
   const audit = [
     auditEntry('uploaded', input.uploadedBy),
     input.aiStatus === 'extracted' ? auditEntry('extracted', 'system', undefined, input.aiModel ?? undefined) : auditEntry('extraction_failed', 'system'),
   ]
-  const [row] = await getDb().insert(businessReceipts).values({
-    status, entity: 'unassigned', category,
-    vendor: input.vendor ?? null, receiptDate: input.receiptDate ?? null,
-    subtotalCents: input.subtotalCents ?? null, taxCents: input.taxCents ?? null, totalCents: input.totalCents ?? null,
-    paymentMethod: input.paymentMethod && isPaymentMethod(input.paymentMethod) ? input.paymentMethod : null,
-    paymentLast4: input.paymentLast4 ?? null,
-    inventoryVehicleId: input.inventoryVehicleId ?? null,
-    storage: input.storage, storageRef: input.storageRef, filename: input.filename ?? null, contentType: input.contentType ?? null,
-    imageHash: input.imageHash, byteSize: input.byteSize ?? null,
-    aiStatus: input.aiStatus, aiModel: input.aiModel, aiRaw: input.aiRaw as object, aiExtracted: input.aiExtracted as object, confidence: input.confidence as object,
-    uploadedBy: input.uploadedBy, auditLog: audit as unknown as object,
-  }).returning({ id: businessReceipts.id })
-  return row.id
+  try {
+    const [row] = await getDb().insert(businessReceipts).values({
+      status, entity: 'unassigned', category,
+      vendor: input.vendor ?? null, receiptDate: input.receiptDate ?? null,
+      subtotalCents: input.subtotalCents ?? null, taxCents: input.taxCents ?? null, totalCents: input.totalCents ?? null,
+      paymentMethod: input.paymentMethod && isPaymentMethod(input.paymentMethod) ? input.paymentMethod : null,
+      paymentLast4: input.paymentLast4 ?? null,
+      inventoryVehicleId: input.inventoryVehicleId ?? null,
+      storage: input.storage, storageRef: input.storageRef, filename: input.filename ?? null, contentType: input.contentType ?? null,
+      imageHash: input.imageHash, byteSize: input.byteSize ?? null,
+      aiStatus: input.aiStatus, aiModel: input.aiModel, aiRaw: input.aiRaw as object, aiExtracted: input.aiExtracted as object, confidence: input.confidence as object,
+      uploadedBy: input.uploadedBy, auditLog: audit as unknown as object,
+    }).returning({ id: businessReceipts.id })
+    return { id: row.id, duplicate: false }
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      const existing = await findActiveReceiptByHash(input.imageHash)
+      if (existing) return { id: existing.id, duplicate: true }
+    }
+    throw err
+  }
 }
 
 /** Does this canonical inventory-vehicle id exist? App-level guard so an arbitrary/nonexistent id can
@@ -69,6 +104,20 @@ export async function inventoryVehicleExists(id: string): Promise<boolean> {
   if (!id) return false
   const [row] = await getDb().select({ id: inventoryVehicles.id }).from(inventoryVehicles).where(eq(inventoryVehicles.id, id)).limit(1)
   return !!row
+}
+
+export interface VehiclePickerOption { id: string; label: string }
+/** Active inventory vehicles for the review-screen vehicle selector (id + a short human label). */
+export async function listInventoryVehiclesForPicker(): Promise<VehiclePickerOption[]> {
+  const rows = await getDb()
+    .select({ id: inventoryVehicles.id, stock: inventoryVehicles.stockNumber, year: vehicles.year, make: vehicles.make, model: vehicles.model, vin: vehicles.vin })
+    .from(inventoryVehicles).innerJoin(vehicles, eq(inventoryVehicles.vehicleId, vehicles.id))
+    .orderBy(desc(inventoryVehicles.createdAt))
+  return rows.map((r) => {
+    const ymm = [r.year, r.make, r.model].filter(Boolean).join(' ')
+    const tail = r.vin ? ` · ${r.vin.slice(-6)}` : ''
+    return { id: r.id, label: `${r.stock ? r.stock + ' — ' : ''}${ymm || 'Vehicle'}${tail}` }
+  })
 }
 
 // ── Read models ────────────────────────────────────────────────────────────────
@@ -81,11 +130,11 @@ export async function listReceipts(statuses: ReceiptStatus[] = ['needs_review', 
   if (statuses.length === 0) return []
   return getDb().select().from(businessReceipts).where(inArray(businessReceipts.status, statuses)).orderBy(desc(businessReceipts.createdAt))
 }
-export interface QueueCounts { needs_review: number; approved: number; rejected: number; processing_failed: number }
+export interface QueueCounts { needs_review: number; approved: number; rejected: number; processing: number; processing_failed: number }
 /** Counts by status for the queue header (surfaces incomplete/failed/unreviewed separately). */
 export async function queueCounts(): Promise<QueueCounts> {
   const rows = await getDb().select({ status: businessReceipts.status, n: sql<number>`count(*)::int` }).from(businessReceipts).groupBy(businessReceipts.status)
-  const c: QueueCounts = { needs_review: 0, approved: 0, rejected: 0, processing_failed: 0 }
+  const c: QueueCounts = { needs_review: 0, approved: 0, rejected: 0, processing: 0, processing_failed: 0 }
   for (const r of rows) if (r.status in c) (c as unknown as Record<string, number>)[r.status] = Number(r.n)
   return c
 }
@@ -115,26 +164,36 @@ function sanitizeReview(f: ReviewFields): Record<string, unknown> {
   return set
 }
 
-/** Save manager corrections WITHOUT approving (stays needs_review). Appends an audited field diff. */
-export async function saveReview(id: string, fields: ReviewFields, actor: string | null): Promise<{ ok: boolean; error?: string }> {
+// States from which a manager may still edit/correct a receipt (before a decision).
+const EDITABLE_FROM: ReceiptStatus[] = ['needs_review', 'processing_failed']
+
+/**
+ * Save manager corrections WITHOUT approving (stays in its current review state). ATOMIC + optimistic:
+ * the UPDATE only fires while the row is still editable (needs_review/processing_failed), so a correction
+ * can never overwrite a row that was concurrently approved/rejected/locked-for-processing. Appends an
+ * audited field diff. Returns conflict=true when the row moved on under a concurrent request.
+ */
+export async function saveReview(id: string, fields: ReviewFields, actor: string | null): Promise<{ ok: boolean; error?: string; conflict?: boolean }> {
   const db = getDb()
   const before = await getReceipt(id)
   if (!before) return { ok: false, error: 'Receipt not found.' }
   const set = sanitizeReview(fields)
   const changes = diffFields(before as Record<string, unknown>, set)
-  await db.update(businessReceipts).set({
+  const done = await db.update(businessReceipts).set({
     ...set, reviewedBy: actor, reviewedAt: new Date(), updatedAt: new Date(),
     auditLog: appendAudit(auditEntry('reviewed', actor, changes)),
-  }).where(eq(businessReceipts.id, id))
+  }).where(and(eq(businessReceipts.id, id), inArray(businessReceipts.status, EDITABLE_FROM))).returning({ id: businessReceipts.id })
+  if (done.length === 0) return { ok: false, conflict: true, error: 'This receipt was just updated by someone else — refresh and try again.' }
   return { ok: true }
 }
 
 /**
- * Approve a receipt — IDEMPOTENT. Applies any final corrections, then atomically transitions the row to
- * 'approved' ONLY when it is not already approved (a double-click / retry cannot approve twice or append a
- * duplicate approval). Guards: an entity must be assigned and a total must be present (never approve an
- * unclassified or $0/unknown-total receipt). Sets qb_sync_status='export_ready' (NOT 'synced' — no live QB
- * write happens here). Category may remain 'uncategorized' (stays flagged for the accountant).
+ * Approve a receipt — IDEMPOTENT + ATOMIC. Applies any final corrections, then transitions the row to
+ * 'approved' ONLY when it is still 'needs_review' (a double-click / retry / concurrent reject cannot
+ * approve twice, append a duplicate approval, or clobber a newer status). Guards (pure decideApproval):
+ * entity assigned, a positive total, and a VALID receipt date are all required — never approve an
+ * unclassified, $0/unknown-total, or undated receipt. Sets qb_sync_status='export_ready' (NOT 'synced'
+ * — no live QB write). Category may remain 'uncategorized' (stays flagged for the accountant).
  */
 export async function approveReceipt(id: string, fields: ReviewFields, actor: string | null): Promise<{ ok: boolean; error?: string; alreadyApproved?: boolean }> {
   const db = getDb()
@@ -143,7 +202,8 @@ export async function approveReceipt(id: string, fields: ReviewFields, actor: st
   const set = sanitizeReview(fields)
   const entity = (set.entity ?? before.entity) as string
   const total = (set.totalCents !== undefined ? set.totalCents : before.totalCents) as number | null
-  const decision = decideApproval(before.status as ReceiptStatus, entity, total)
+  const date = (set.receiptDate !== undefined ? set.receiptDate : before.receiptDate) as string | null
+  const decision = decideApproval(before.status as ReceiptStatus, entity, total, date)
   if (decision.action === 'noop_already_approved') return { ok: true, alreadyApproved: true }
   if (decision.action === 'blocked') return { ok: false, error: decision.error }
   const changes = diffFields(before as Record<string, unknown>, set)
@@ -152,56 +212,115 @@ export async function approveReceipt(id: string, fields: ReviewFields, actor: st
     reviewedBy: before.reviewedBy ?? actor, reviewedAt: before.reviewedAt ?? new Date(),
     qbSyncStatus: 'export_ready', updatedAt: new Date(),
     auditLog: appendAudit(auditEntry('approved', actor, changes)),
-  }).where(and(eq(businessReceipts.id, id), ne(businessReceipts.status, 'approved'))).returning({ id: businessReceipts.id })
-  if (claimed.length === 0) return { ok: true, alreadyApproved: true } // lost the race → already approved
+  }).where(and(eq(businessReceipts.id, id), eq(businessReceipts.status, 'needs_review'))).returning({ id: businessReceipts.id })
+  if (claimed.length === 0) {
+    // Lost the race: re-read to distinguish already-approved (idempotent) from a concurrent move.
+    const cur = await getReceipt(id)
+    if (cur?.status === 'approved') return { ok: true, alreadyApproved: true }
+    return { ok: false, error: 'This receipt was just updated by someone else — refresh and try again.' }
+  }
   return { ok: true }
 }
 
-/** Reject a receipt (unreadable / not a business expense / duplicate). Never deletes the row or image. */
-export async function rejectReceipt(id: string, reason: string | null, actor: string | null): Promise<{ ok: boolean; error?: string }> {
+/** Reject a receipt — ATOMIC. Only fires while still editable (needs_review/processing_failed), so it
+ *  cannot overwrite a concurrent approval. Idempotent if already rejected. Never deletes the row/image. */
+export async function rejectReceipt(id: string, reason: string | null, actor: string | null): Promise<{ ok: boolean; error?: string; conflict?: boolean }> {
   const db = getDb()
   const before = await getReceipt(id)
   if (!before) return { ok: false, error: 'Receipt not found.' }
   if (before.status === 'rejected') return { ok: true }
-  if (!['needs_review', 'processing_failed'].includes(before.status)) return { ok: false, error: `Cannot reject from status "${before.status}".` }
-  await db.update(businessReceipts).set({
+  const done = await db.update(businessReceipts).set({
     status: 'rejected', rejectedReason: reason || null, reviewedBy: actor, reviewedAt: new Date(),
     qbSyncStatus: 'none', updatedAt: new Date(), auditLog: appendAudit(auditEntry('rejected', actor, undefined, reason)),
-  }).where(eq(businessReceipts.id, id))
+  }).where(and(eq(businessReceipts.id, id), inArray(businessReceipts.status, EDITABLE_FROM))).returning({ id: businessReceipts.id })
+  if (done.length === 0) {
+    const cur = await getReceipt(id)
+    if (cur?.status === 'rejected') return { ok: true }
+    return { ok: false, conflict: true, error: `This receipt is now "${cur?.status ?? 'gone'}" — refresh and try again.` }
+  }
   return { ok: true }
 }
 
-/** Reopen an approved/rejected receipt back to needs_review (audited). Clears the approval + export flag. */
-export async function reopenReceipt(id: string, actor: string | null): Promise<{ ok: boolean; error?: string }> {
+/** Reopen an approved/rejected receipt back to needs_review — ATOMIC (only from approved/rejected).
+ *  Clears the approval + export flag. Idempotent if already in review. */
+export async function reopenReceipt(id: string, actor: string | null): Promise<{ ok: boolean; error?: string; conflict?: boolean }> {
   const db = getDb()
   const before = await getReceipt(id)
   if (!before) return { ok: false, error: 'Receipt not found.' }
   if (before.status === 'needs_review') return { ok: true }
-  if (!['approved', 'rejected'].includes(before.status)) return { ok: false, error: `Cannot reopen from status "${before.status}".` }
-  await db.update(businessReceipts).set({
+  const done = await db.update(businessReceipts).set({
     status: 'needs_review', approvedBy: null, approvedAt: null, rejectedReason: null,
     qbSyncStatus: 'none', updatedAt: new Date(), auditLog: appendAudit(auditEntry('reopened', actor)),
-  }).where(eq(businessReceipts.id, id))
+  }).where(and(eq(businessReceipts.id, id), inArray(businessReceipts.status, ['approved', 'rejected']))).returning({ id: businessReceipts.id })
+  if (done.length === 0) {
+    const cur = await getReceipt(id)
+    if (cur?.status === 'needs_review') return { ok: true }
+    return { ok: false, conflict: true, error: `This receipt is now "${cur?.status ?? 'gone'}" — refresh and try again.` }
+  }
   return { ok: true }
 }
 
-// ── Retry extraction (re-run AI on the already-stored image; NEVER creates a duplicate receipt) ──────
+// ── Retry extraction (re-run AI on the already-stored image; DURABLE per-receipt lock) ────────────────
+// Stale-lock recovery window: a 'processing' claim older than this may be re-claimed (a crashed retry).
+const RETRY_STALE_MS = 3 * 60 * 1000
+
+/**
+ * Atomically CLAIM a receipt for re-extraction by moving it to 'processing'. Only succeeds from an
+ * editable state (needs_review/processing_failed) OR from a STALE 'processing' claim (crash recovery).
+ * This is the durable, cross-instance guard against concurrent/repeated AI calls for the same receipt:
+ * a second concurrent retry loses the claim and is told it is busy. Returns the claimed row (for its
+ * stored image reference) or a reason it could not claim.
+ */
+export async function claimRetryExtraction(id: string): Promise<{ ok: true; row: ReceiptRow } | { ok: false; error: string; busy?: boolean }> {
+  const db = getDb()
+  const before = await getReceipt(id)
+  if (!before) return { ok: false, error: 'Receipt not found.' }
+  if (before.storage !== 'blob_private' || !before.storageRef) return { ok: false, error: 'No stored image to re-read.' }
+  const staleCutoff = new Date(Date.now() - RETRY_STALE_MS)
+  const claimed = await db.update(businessReceipts)
+    .set({ status: 'processing', updatedAt: new Date() })
+    .where(and(
+      eq(businessReceipts.id, id),
+      or(
+        inArray(businessReceipts.status, EDITABLE_FROM),
+        and(eq(businessReceipts.status, 'processing'), sql`${businessReceipts.updatedAt} < ${staleCutoff}`),
+      ),
+    ))
+    .returning({ id: businessReceipts.id })
+  if (claimed.length === 0) return { ok: false, busy: true, error: 'This receipt is already being re-read — try again in a moment.' }
+  return { ok: true, row: before }
+}
+
+/** Release a claim WITHOUT applying a result (blob/AI error) — restores the row to needs_review. Guarded
+ *  so it only affects a row we still own ('processing'). */
+export async function releaseRetryClaim(id: string): Promise<void> {
+  await getDb().update(businessReceipts)
+    .set({ status: 'needs_review', updatedAt: new Date() })
+    .where(and(eq(businessReceipts.id, id), eq(businessReceipts.status, 'processing')))
+}
+
 export interface RetryExtractionUpdate {
   aiStatus: 'extracted' | 'failed'; aiModel: string | null; aiRaw: unknown; aiExtracted: unknown; confidence: unknown
   vendor?: string | null; receiptDate?: string | null; subtotalCents?: number | null; taxCents?: number | null
   totalCents?: number | null; category?: ExpenseCategory; paymentMethod?: string | null; paymentLast4?: string | null
 }
-/** Apply a re-extraction to an EXISTING receipt (retry). Only pre-fills a proposal field when the manager
- *  has not already set a value (never clobbers a correction). Status stays needs_review; no new row. */
-export async function applyRetryExtraction(id: string, u: RetryExtractionUpdate, actor: string | null): Promise<{ ok: boolean; error?: string }> {
+/**
+ * Apply a re-extraction result to a receipt WE HOLD THE PROCESSING LOCK ON. Guarded WHERE status =
+ * 'processing', so a LATE result (the receipt was reopened/approved/rejected after a stale reclaim, or
+ * the lock was lost) is DROPPED — never overwriting a newer status or a manager correction. Only pre-fills
+ * EMPTY proposal fields (never clobbers a manager edit); ai_raw is refreshed for the new proposal. Returns
+ * the row to needs_review. No new row, no expense.
+ */
+export async function applyRetryExtraction(id: string, u: RetryExtractionUpdate, actor: string | null): Promise<{ ok: boolean; error?: string; stale?: boolean }> {
   const db = getDb()
   const before = await getReceipt(id)
   if (!before) return { ok: false, error: 'Receipt not found.' }
+  if (before.status !== 'processing') return { ok: false, stale: true, error: 'Receipt is no longer processing.' }
   const set: Record<string, unknown> = {
     aiStatus: u.aiStatus, aiModel: u.aiModel, aiRaw: u.aiRaw as object, aiExtracted: u.aiExtracted as object, confidence: u.confidence as object,
     status: 'needs_review', updatedAt: new Date(),
   }
-  // Fill empty proposal fields only (respect prior manager edits + reviewed state).
+  // Fill empty proposal fields only (respect prior manager edits).
   if (!before.vendor && u.vendor) set.vendor = u.vendor
   if (!before.receiptDate && u.receiptDate) set.receiptDate = u.receiptDate
   if (before.subtotalCents == null && u.subtotalCents != null) set.subtotalCents = u.subtotalCents
@@ -210,7 +329,11 @@ export async function applyRetryExtraction(id: string, u: RetryExtractionUpdate,
   if (before.category === 'uncategorized' && u.category && u.category !== 'uncategorized') set.category = u.category
   if (!before.paymentMethod && u.paymentMethod && isPaymentMethod(u.paymentMethod)) set.paymentMethod = u.paymentMethod
   if (!before.paymentLast4 && u.paymentLast4) set.paymentLast4 = u.paymentLast4
-  await db.update(businessReceipts).set({ ...set, auditLog: appendAudit(auditEntry('retried', actor, undefined, u.aiStatus)) }).where(eq(businessReceipts.id, id))
+  const done = await db.update(businessReceipts)
+    .set({ ...set, auditLog: appendAudit(auditEntry('retried', actor, undefined, u.aiStatus)) })
+    .where(and(eq(businessReceipts.id, id), eq(businessReceipts.status, 'processing')))
+    .returning({ id: businessReceipts.id })
+  if (done.length === 0) return { ok: false, stale: true, error: 'Receipt is no longer processing.' }
   return { ok: true }
 }
 

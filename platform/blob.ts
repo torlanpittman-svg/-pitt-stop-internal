@@ -37,41 +37,53 @@ export async function deletePhoto(url: string): Promise<void> {
   logger.info(MODULE, 'delete.success', { url })
 }
 
+// Private receipt storage uses a SEPARATE, explicitly-configured store credential — never the public
+// BLOB_READ_WRITE_TOKEN (which backs the public Auto-Sales receipt store). This isolates private receipts
+// to a private store and guarantees we never silently fall back to public storage.
+function receiptsBlobToken(): string {
+  const t = process.env.RECEIPTS_BLOB_READ_WRITE_TOKEN
+  if (!t) throw new Error('RECEIPTS_BLOB_READ_WRITE_TOKEN is not configured (private receipt store).')
+  return t
+}
+
 /**
- * Upload a PRIVATE blob (not anonymously accessible via URL). Returns ONLY the store PATHNAME/key —
- * the server-side reference we persist. We never hand a reusable URL or token to the client; retrieval
- * happens through an authenticated server route that streams the bytes via {@link getPrivateBlob}.
+ * Upload a PRIVATE receipt blob (not anonymously accessible). Returns ONLY the store PATHNAME/key — the
+ * server-side reference we persist. No reusable URL or token ever reaches the client; retrieval is via an
+ * authenticated server route that streams bytes with {@link getPrivateBlob}.
  *
- * The key is content-hash-derived (deterministic) so identical bytes map to one object; `allowOverwrite`
- * makes a re-put of the same content idempotent. `addRandomSuffix:false` keeps the pathname stable so the
- * DB reference stays valid. (Guessability is irrelevant — private blobs require authentication regardless.)
- * @returns the blob pathname (store key), e.g. "business-receipts/ab12cd34ef56.jpg"
+ * IMMUTABLE creation: `allowOverwrite:false` + `addRandomSuffix:false` means the ORIGINAL bytes are never
+ * overwritten. The key is content-hash-derived, so a concurrent identical upload that hits "already
+ * exists" is treated as success — the identical bytes are already stored — and the deterministic pathname
+ * is returned. Uses the dedicated private-store token.
+ * @returns the blob pathname (store key), e.g. "business-receipts/<sha256>.jpg"
  */
 export async function uploadPrivatePhoto(
   key: string,
   data: Buffer | Blob | ArrayBuffer,
   contentType: string
 ): Promise<string> {
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
-    throw new Error('BLOB_READ_WRITE_TOKEN is not configured.')
+  const token = receiptsBlobToken()
+  try {
+    const blob = await put(key, data, { access: 'private', contentType, addRandomSuffix: false, allowOverwrite: false, token })
+    logger.info(MODULE, 'upload.private.success', { ok: true }) // never log pathname/URL/token/bytes
+    return blob.pathname
+  } catch (err) {
+    // Identical content already stored (immutable) → reuse the deterministic pathname (== key).
+    if (/already exists/i.test(String((err as { message?: unknown })?.message ?? err))) return key
+    throw err
   }
-  const blob = await put(key, data, { access: 'private', contentType, addRandomSuffix: false, allowOverwrite: true })
-  // Never log the pathname/URL/token/bytes — just a success marker.
-  logger.info(MODULE, 'upload.private.success', { ok: true })
-  return blob.pathname
 }
 
 export interface PrivateBlobBytes { bytes: Buffer; contentType: string | null; size: number | null }
 /**
- * Fetch a PRIVATE blob's bytes by its stored pathname, server-side (uses BLOB_READ_WRITE_TOKEN, never
- * exposed to the client). Returns null when the object does not exist. Buffers the (small, ≤12 MB
- * receipt) stream so the caller can set headers and control Content-Disposition. Never logs contents.
+ * Fetch a PRIVATE receipt blob's bytes by its stored pathname, server-side (dedicated private-store
+ * token; never exposed to the client). The pathname is RESTRICTED to the receipt namespace as a
+ * defense-in-depth guard against a stray/foreign reference. Returns null when missing. Never logs contents.
  */
 export async function getPrivateBlob(pathname: string): Promise<PrivateBlobBytes | null> {
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
-    throw new Error('BLOB_READ_WRITE_TOKEN is not configured.')
-  }
-  const res = await get(pathname, { access: 'private' })
+  const token = receiptsBlobToken()
+  if (!pathname || !pathname.startsWith('business-receipts/')) return null // namespace-restricted
+  const res = await get(pathname, { access: 'private', token })
   if (!res || res.statusCode !== 200 || !res.stream) return null
   const chunks: Uint8Array[] = []
   const reader = res.stream.getReader()

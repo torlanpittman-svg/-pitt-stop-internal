@@ -18,6 +18,7 @@ import { getReceipt } from '@/apps/expenses/db'
 import { decideRetrieval } from '@/apps/expenses/view'
 import { getPrivateBlob } from '@/platform/blob'
 import { authenticatedActorFromRequest, isManagerRole } from '@/apps/auth/employee-guard'
+import { errorCode } from '@/apps/expenses/errors'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
@@ -26,9 +27,10 @@ const APP = 'expenses:receipt:image'
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const actor = await authenticatedActorFromRequest(req).catch(() => null)
 
-  // Authorize before touching the DB (no existence leak; no wasted query for unauthorized callers).
+  // FAIL-CLOSED: authenticatedActorFromRequest never dev-opens (returns null when anonymous). Authorize
+  // BEFORE the DB lookup so existence is never leaked; distinguish anonymous (401) from employee (403).
+  const actor = await authenticatedActorFromRequest(req).catch(() => null)
   if (!actor || !isManagerRole(actor.role)) {
     const d = decideRetrieval(actor ? { role: actor.role } : null, null)
     return new NextResponse(null, { status: d.ok ? 500 : d.status })
@@ -52,7 +54,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       },
     })
   } catch (err) {
-    logger.error(APP, 'retrieve_failed', { receiptId: id, error: String(err) })
+    logger.error(APP, 'retrieve_failed', { code: errorCode(err) }) // never log id/pathname/raw error
     return new NextResponse(null, { status: 500 })
   }
 }

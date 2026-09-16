@@ -3,11 +3,11 @@
  *
  * ONE row per uploaded business-expense receipt (Pitt Stop Detail AND Auto Sales). This is the GENERAL
  * expense path — a general shop expense needs NO vehicle; an expense tied to an inventory vehicle MAY
- * reference the canonical record via `inventory_vehicle_id` (plain nullable uuid — no hard FK, keeping
- * this module decoupled from the auto-sales lifecycle).
+ * reference the canonical record via `inventory_vehicle_id` (nullable FK, ON DELETE SET NULL — the link
+ * clears rather than cascading a delete).
  *
  * Evidence-preserving + review-driven:
- *   - the ORIGINAL image is stored (Vercel Blob, deduped by sha-256) and never overwritten
+ *   - the ORIGINAL image is stored PRIVATELY (Vercel Blob, deduped by sha-256, immutable — never overwritten)
  *   - `ai_raw` (audit only) and `ai_extracted` (the proposal) are kept separate from the MANAGER-
  *     CONFIRMED operational fields (vendor/date/amounts/category/entity/payment/memo)
  *   - `status` is the current review state; `audit_log` is an append-only JSONB trail of actions
@@ -16,7 +16,8 @@
  *
  * Applied via drizzle/migrations/manual/0038_business_receipts.sql (additive; new table only).
  */
-import { pgTable, uuid, text, varchar, integer, date, timestamp, jsonb, index } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, varchar, integer, date, timestamp, jsonb, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { inventoryVehicles } from '@/apps/auto-sales/schema'
 
 export const businessReceipts = pgTable(
@@ -87,5 +88,8 @@ export const businessReceipts = pgTable(
     index('business_receipts_entity_idx').on(t.entity),
     index('business_receipts_date_idx').on(t.receiptDate),
     index('business_receipts_vehicle_idx').on(t.inventoryVehicleId),
+    // DB-enforced upload idempotency: one active (non-rejected) row per content hash → concurrent
+    // identical uploads collapse to one receipt (no duplicate expense). Migration 0039.
+    uniqueIndex('business_receipts_hash_active_uniq').on(t.imageHash).where(sql`status <> 'rejected'`),
   ]
 )

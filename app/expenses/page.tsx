@@ -5,14 +5,18 @@
  * see a compact link into the queue with the pending count. Capture never approves or books anything.
  */
 import Link from 'next/link'
-import { authorizedManager } from '@/apps/auth/employee-guard'
+import { redirect } from 'next/navigation'
+import { receiptManager, receiptUploader } from '@/apps/expenses/authz'
 import { queueCounts } from '@/apps/expenses/db'
 import CaptureExpense from '@/apps/expenses/ui/CaptureExpense'
 
 export const dynamic = 'force-dynamic'
 
 export default async function ExpensesPage() {
-  const manager = await authorizedManager()
+  // FAIL-CLOSED: require a verified session even if no PIN is configured. Anonymous → login.
+  const uploader = await receiptUploader()
+  if (!uploader) redirect('/auto-sales/login?next=/expenses')
+  const manager = await receiptManager()
   const counts = manager ? await queueCounts().catch(() => null) : null
 
   return (

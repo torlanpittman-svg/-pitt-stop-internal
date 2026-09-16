@@ -154,11 +154,14 @@ export function canTransition(from: ReceiptStatus, to: ReceiptStatus): boolean {
 // are verified deterministically: already-approved → no-op (idempotent); wrong status / unassigned entity
 // / missing-or-zero total → blocked (never approve an unclassified or $0/unknown-total receipt).
 export type ApproveDecision = { action: 'approve' } | { action: 'noop_already_approved' } | { action: 'blocked'; error: string }
-export function decideApproval(status: ReceiptStatus, entity: string, totalCents: number | null | undefined): ApproveDecision {
+export function decideApproval(status: ReceiptStatus, entity: string, totalCents: number | null | undefined, receiptDate: string | null | undefined): ApproveDecision {
   if (status === 'approved') return { action: 'noop_already_approved' }
   if (status !== 'needs_review') return { action: 'blocked', error: `Cannot approve from status "${status}".` }
   if (entity === 'unassigned') return { action: 'blocked', error: 'Assign a business (Detail / Auto Sales / Shared) before approving.' }
   if (totalCents === null || totalCents === undefined || totalCents <= 0) return { action: 'blocked', error: 'Enter the receipt total before approving.' }
+  // A valid calendar receipt date is required so the approved receipt lands in a month (and is never
+  // silently dropped from the accountant package). Missing/invalid → blocked, never coerced to today.
+  if (!isBusinessDate(receiptDate)) return { action: 'blocked', error: 'Enter the receipt date before approving.' }
   return { action: 'approve' }
 }
 

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8')
-const MODULE_FILES = ['./db.ts', './actions.ts', './ai.ts', './types.ts', './view.ts', './upload-validation.ts', './schema.ts']
+const MODULE_FILES = ['./db.ts', './actions.ts', './ai.ts', './types.ts', './view.ts', './upload-validation.ts', './schema.ts', './authz.ts', './errors.ts', './image-decode.ts']
 
 describe('no QuickBooks mutation from the expenses module', () => {
   it('no module file imports the quickbooks app', () => {

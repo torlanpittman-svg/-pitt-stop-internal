@@ -1,5 +1,5 @@
 /**
- * Business Receipts — MANAGER review queue. Manager-gated (authorizedManager; SEPARATE from
+ * Business Receipts — MANAGER review queue. Manager-gated (receiptManager, FAIL-CLOSED; SEPARATE from
  * ADMIN_PASSWORD). Non-managers are redirected back to capture. Shows each receipt needing attention
  * with the original image alongside editable fields, plus a monthly summary of what's been approved.
  *
@@ -7,8 +7,8 @@
  */
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import { authorizedManager } from '@/apps/auth/employee-guard'
-import { listReceipts, queueCounts, monthlyExpenseReport } from '@/apps/expenses/db'
+import { receiptManager } from '@/apps/expenses/authz'
+import { listReceipts, queueCounts, monthlyExpenseReport, listInventoryVehiclesForPicker } from '@/apps/expenses/db'
 import { toReviewCard } from '@/apps/expenses/view'
 import { currentReportMonth } from '@/apps/auto-sales/report-db'
 import { EXPENSE_CATEGORIES, BUSINESS_ENTITIES, formatMoney, isReceiptStatus, isBusinessMonth, type ReceiptStatus } from '@/apps/expenses/types'
@@ -18,16 +18,19 @@ export const dynamic = 'force-dynamic'
 
 const entityLabel = (k: string) => BUSINESS_ENTITIES.find((b) => b.key === k)?.label ?? k
 const categoryLabel = (k: string) => EXPENSE_CATEGORIES.find((c) => c.key === k)?.label ?? k
+// Everything awaiting a decision (includes a receipt transiently locked for re-reading).
+const OPEN_STATES: ReceiptStatus[] = ['needs_review', 'processing', 'processing_failed']
 
 export default async function ReviewQueuePage({ searchParams }: { searchParams: Promise<{ status?: string; month?: string }> }) {
-  if (!(await authorizedManager())) redirect('/expenses')
+  // FAIL-CLOSED manager gate (never dev-opens); non-managers are redirected to capture.
+  if (!(await receiptManager())) redirect('/expenses')
   const sp = await searchParams
-  const filter: ReceiptStatus[] = isReceiptStatus(sp.status) ? [sp.status] : ['needs_review', 'processing_failed']
+  const filter: ReceiptStatus[] = isReceiptStatus(sp.status) ? [sp.status] : OPEN_STATES
   const month = isBusinessMonth(sp.month) ? sp.month : currentReportMonth()
-  const [rows, counts, report] = await Promise.all([listReceipts(filter), queueCounts(), monthlyExpenseReport(month)])
+  const [rows, counts, report, vehicles] = await Promise.all([listReceipts(filter), queueCounts(), monthlyExpenseReport(month), listInventoryVehiclesForPicker()])
 
   const TABS: { key: ReceiptStatus | 'open'; label: string; n?: number }[] = [
-    { key: 'open', label: 'To review', n: counts.needs_review + counts.processing_failed },
+    { key: 'open', label: 'To review', n: counts.needs_review + counts.processing + counts.processing_failed },
     { key: 'approved', label: 'Approved', n: counts.approved },
     { key: 'rejected', label: 'Rejected', n: counts.rejected },
   ]
@@ -85,7 +88,7 @@ export default async function ReviewQueuePage({ searchParams }: { searchParams: 
 
       {rows.length === 0
         ? <p className="text-gray-500 text-sm text-center py-12">Nothing here.</p>
-        : <div className="space-y-4">{rows.map((r) => <ReviewCard key={r.id} r={toReviewCard(r)} />)}</div>}
+        : <div className="space-y-4">{rows.map((r) => <ReviewCard key={r.id} r={toReviewCard(r)} vehicles={vehicles} />)}</div>}
     </main>
   )
 }
