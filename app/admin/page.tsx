@@ -75,6 +75,11 @@ const ADMIN_SECTIONS: AdminSection[] = [
         description: 'Owned inventory · per-vehicle financial folder · acquisition, expenses, returns/refunds, sale & closeout',
         href: '/admin/auto-sales',
       },
+      {
+        label: 'Monthly Report',
+        description: 'Auto Sales accountant package · acquired / sold / month-end inventory · CSV & print · finalize snapshot',
+        href: '/admin/auto-sales/report',
+      },
     ],
   },
   {

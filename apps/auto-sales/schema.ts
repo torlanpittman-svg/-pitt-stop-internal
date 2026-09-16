@@ -54,6 +54,24 @@ export const inventoryVehicles = pgTable(
     titleOutstanding:boolean('title_outstanding'),
     closeoutNotes:   text('closeout_notes'),
 
+    // B7 — Sale-detail: separately-stated customer-transaction components (never folded into revenue/
+    // profit) + sale idempotency. Financial components stay separate so the accountant determines
+    // their treatment. saleFinalizedAt/saleVersion make Record-Sale idempotent (a vehicle sells once;
+    // an explicit manager edit bumps saleVersion; reversal clears saleFinalizedAt and audits).
+    saleTaxCents:         integer('sale_tax_cents'),           // sales tax collected (pass-through)
+    saleDocFeesCents:     integer('sale_doc_fees_cents'),      // title/registration/document fees collected
+    saleOtherChargesCents:integer('sale_other_charges_cents'), // other separately-stated customer charges
+    saleDiscountCents:    integer('sale_discount_cents'),      // discounts/allowances
+    amountReceivedCents:  integer('amount_received_cents'),    // cash actually received to date
+    salePaymentMethod:    varchar('sale_payment_method', { length: 20 }),  // cash|check|financing|mixed|other
+    salePaymentRef:       varchar('sale_payment_ref', { length: 200 }),    // payment/reference note
+    buyerContact:         varchar('buyer_contact', { length: 200 }),       // buyer contact (phone/email) — operational
+    tradeIn:              boolean('trade_in'),
+    tradeInNotes:         text('trade_in_notes'),
+    salesperson:          varchar('salesperson', { length: 200 }),         // manager/salesperson completing the sale
+    saleFinalizedAt:      timestamp('sale_finalized_at', { withTimezone: true }), // set once on confirm (idempotency)
+    saleVersion:          integer('sale_version').notNull().default(0),     // 0 = never sold; bumped by edits/reversals
+
     // Go-forward cutover + completeness (facts-first; historical uncertainty stays visible)
     origin:        varchar('origin', { length: 24 }).notNull().default('quick_entry'), // quick_entry | spreadsheet_backfill | trade_in
     preCutover:    boolean('pre_cutover').notNull().default(false),
@@ -162,5 +180,32 @@ export const vehicleDocuments = pgTable(
     index('vehicle_documents_vehicle_idx').on(t.inventoryVehicleId),
     index('vehicle_documents_hash_idx').on(t.imageHash),
     index('vehicle_documents_event_idx').on(t.linkedEventId),
+  ]
+)
+
+// B7 — Monthly Auto-Sales report snapshots (accountant package). The LIVE report is always recomputed
+// from source data (inventory + ledger); FINALIZING captures the exact computed values at a point in
+// time so a later data correction cannot silently rewrite what a finalized month claimed. A newer
+// finalization does NOT delete the prior one — it is marked superseded (full version history kept).
+// `contentHash` is a stable hash of the financial totals so re-generating an unchanged month reproduces
+// the same values, and a post-finalization data change is DETECTED (hash mismatch → "changed").
+export const autoSalesReportSnapshots = pgTable(
+  'auto_sales_report_snapshots',
+  {
+    id:           uuid('id').primaryKey().defaultRandom(),
+    reportMonth:  varchar('report_month', { length: 7 }).notNull(),   // 'YYYY-MM' (business timezone)
+    tz:           varchar('tz', { length: 50 }).notNull(),
+    status:       varchar('status', { length: 16 }).notNull().default('final'), // final | superseded
+    contentHash:  varchar('content_hash', { length: 64 }).notNull(),  // hash of canonical totals (drift detect)
+    totals:       jsonb('totals').notNull(),                          // the summary totals block (quick compare)
+    payload:      jsonb('payload').notNull(),                         // full computed report (sections A–D)
+    note:         text('note'),
+    generatedBy:  varchar('generated_by', { length: 200 }),
+    supersededAt: timestamp('superseded_at', { withTimezone: true }),
+    createdAt:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('asr_month_idx').on(t.reportMonth),
+    index('asr_month_status_idx').on(t.reportMonth, t.status),
   ]
 )

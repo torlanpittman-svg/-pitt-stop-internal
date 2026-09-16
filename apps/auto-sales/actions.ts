@@ -9,9 +9,10 @@
  * Each action revalidates BOTH route trees so a change shows on whichever surface the user is on.
  */
 import { revalidatePath } from 'next/cache'
-import { createAcquisition, addExpenseEvent, addReturnRefund, settleRefund, sellVehicle, updateCloseout, resolveVin, saveReceipt, type VinResolveResult } from './db'
+import { createAcquisition, addExpenseEvent, addReturnRefund, settleRefund, recordSale, editSale, reverseSale, editAcquisitionPrice, updateCloseout, resolveVin, saveReceipt, type VinResolveResult, type SaleInput } from './db'
 import { ECONOMIC_CATEGORIES, REFUND_KINDS, econForLabel, type EconomicCategory } from './types'
-import { employeeAuthorized } from '@/apps/auth/employee-guard'
+import { dollarsToCents, isPaymentMethod } from './calc'
+import { employeeAuthorized, authorizedManager } from '@/apps/auth/employee-guard'
 
 const revalidateVehicle = (id: string) => { revalidatePath(`/auto-sales/${id}`); revalidatePath(`/admin/auto-sales/${id}`) }
 const revalidateList = () => { revalidatePath('/auto-sales'); revalidatePath('/admin/auto-sales') }
@@ -67,20 +68,72 @@ export async function settleAction(fd: FormData) {
   if (eventId && /^\d{4}-\d{2}-\d{2}$/.test(date)) await settleRefund(eventId, date, 'auto-sales'); revalidateVehicle(id)
 }
 
-export async function sellAction(fd: FormData) {
-  if (!(await employeeAuthorized())) return
-  const id = String(fd.get('inventoryVehicleId') ?? ''); const price = Math.round(parseFloat(String(fd.get('salePrice') ?? '')) * 100)
-  const saleDate = String(fd.get('saleDate') ?? '')
-  if (id && Number.isFinite(price) && price >= 0 && /^\d{4}-\d{2}-\d{2}$/.test(saleDate)) {
-    const comm = Math.round(parseFloat(String(fd.get('commission') ?? '0')) * 100) || 0
-    const payoff = Math.round(parseFloat(String(fd.get('payoff') ?? '0')) * 100) || 0
-    await sellVehicle({ inventoryVehicleId: id, saleDate, salePriceCents: price, saleType: (String(fd.get('saleType') ?? 'retail') as 'retail' | 'wholesale'),
-      proceedsAccount: String(fd.get('proceedsAccount') ?? '') || undefined, buyerRef: String(fd.get('buyerRef') ?? '') || undefined,
-      commissionCents: comm, payoffKnownCents: payoff, payoffStatus: (String(fd.get('payoffStatus') ?? 'unknown') as any),
-      titleOutstanding: fd.get('titleOutstanding') === 'on', proceedsReceived: (String(fd.get('proceedsReceived') ?? 'unknown') as any),
-      markDelivered: fd.get('markDelivered') === 'on', notes: String(fd.get('notes') ?? '') || undefined, actor: 'auto-sales' })
+// ── Sale workflow (MANAGER-gated; separate from ADMIN_PASSWORD) ──
+export interface SaleForm {
+  inventoryVehicleId: string; saleDate: string; salePrice: string; saleType?: string
+  buyerRef?: string; buyerContact?: string; paymentMethod?: string; salePaymentRef?: string
+  tax?: string; docFees?: string; otherCharges?: string; discount?: string; amountReceived?: string
+  commission?: string; payoff?: string; payoffStatus?: string; proceedsAccount?: string
+  proceedsReceived?: string; titleOutstanding?: boolean; tradeIn?: boolean; tradeInNotes?: string
+  markDelivered?: boolean; notes?: string; mode?: 'record' | 'edit'
+}
+function saleInputFrom(f: SaleForm, actorName: string): SaleInput | null {
+  const price = dollarsToCents(f.salePrice)
+  if (price == null || price < 0) return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(f.saleDate)) return null
+  return {
+    inventoryVehicleId: f.inventoryVehicleId, saleDate: f.saleDate, salePriceCents: price,
+    saleType: f.saleType === 'wholesale' ? 'wholesale' : 'retail',
+    proceedsAccount: f.proceedsAccount || undefined, buyerRef: f.buyerRef || undefined, buyerContact: f.buyerContact || undefined,
+    commissionCents: dollarsToCents(f.commission) ?? 0, payoffKnownCents: dollarsToCents(f.payoff) ?? 0,
+    payoffStatus: (['open', 'paid', 'none'].includes(f.payoffStatus ?? '') ? f.payoffStatus : 'unknown') as SaleInput['payoffStatus'],
+    titleOutstanding: !!f.titleOutstanding, proceedsReceived: (['yes', 'no'].includes(f.proceedsReceived ?? '') ? f.proceedsReceived : 'unknown') as SaleInput['proceedsReceived'],
+    taxCents: dollarsToCents(f.tax) ?? undefined, docFeesCents: dollarsToCents(f.docFees) ?? undefined,
+    otherChargesCents: dollarsToCents(f.otherCharges) ?? undefined, discountCents: dollarsToCents(f.discount) ?? undefined,
+    amountReceivedCents: dollarsToCents(f.amountReceived) ?? undefined,
+    paymentMethod: isPaymentMethod(f.paymentMethod) ? f.paymentMethod : (f.paymentMethod || undefined),
+    salePaymentRef: f.salePaymentRef || undefined, tradeIn: !!f.tradeIn, tradeInNotes: f.tradeInNotes || undefined,
+    salesperson: actorName, markDelivered: !!f.markDelivered, notes: f.notes || undefined, actor: actorName,
   }
-  revalidateVehicle(id)
+}
+/** Record OR edit a sale (manager-gated). Idempotent record (single sale); edit = audited correction. */
+export async function submitSaleAction(f: SaleForm): Promise<{ ok: boolean; error?: string; alreadySold?: boolean }> {
+  const actor = await authorizedManager()
+  if (!actor) return { ok: false, error: 'Manager sign-in required to complete a sale.' }
+  const input = saleInputFrom(f, actor.name)
+  if (!input) return { ok: false, error: 'Enter a valid selling price and sale date.' }
+  const r = f.mode === 'edit' ? await editSale(input) : await recordSale(input)
+  if (r.ok) revalidateVehicle(f.inventoryVehicleId)
+  return r
+}
+/** Reverse a completed sale (manager-gated). Append-only; restores the vehicle to active inventory. */
+export async function reverseSaleAction(f: { inventoryVehicleId: string; reason?: string; restoreStatus?: string }): Promise<{ ok: boolean; error?: string }> {
+  const actor = await authorizedManager()
+  if (!actor) return { ok: false, error: 'Manager sign-in required to reverse a sale.' }
+  const r = await reverseSale({ inventoryVehicleId: f.inventoryVehicleId, reason: f.reason, restoreStatus: f.restoreStatus, actor: actor.name })
+  if (r.ok) revalidateVehicle(f.inventoryVehicleId)
+  return r
+}
+/** Finalize the monthly Auto-Sales report (manager-gated). Captures a snapshot; supersedes any prior. */
+export async function finalizeReportAction(f: { month: string; note?: string }): Promise<{ ok: boolean; error?: string; superseded?: boolean }> {
+  const actor = await authorizedManager()
+  if (!actor) return { ok: false, error: 'Manager sign-in required to finalize a report.' }
+  const { finalizeMonthlyReport, isValidMonth } = await import('./report-db')
+  if (!isValidMonth(f.month)) return { ok: false, error: 'Invalid month.' }
+  const r = await finalizeMonthlyReport(f.month, actor.name, f.note)
+  if (r.ok) { revalidatePath('/admin/auto-sales/report'); revalidatePath('/admin/auto-sales') }
+  return { ok: r.ok, error: r.error, superseded: r.superseded }
+}
+
+/** Edit the acquisition/purchase price (manager-gated, append-only + audited). */
+export async function editAcquisitionPriceAction(f: { inventoryVehicleId: string; amount: string; reason?: string }): Promise<{ ok: boolean; error?: string; previousCents?: number; newCents?: number }> {
+  const actor = await authorizedManager()
+  if (!actor) return { ok: false, error: 'Manager sign-in required to edit the acquisition price.' }
+  const cents = dollarsToCents(f.amount)
+  if (cents == null) return { ok: false, error: 'Enter a valid amount.' }
+  const r = await editAcquisitionPrice({ inventoryVehicleId: f.inventoryVehicleId, newCents: cents, reason: f.reason, actor: actor.name })
+  if (r.ok) revalidateVehicle(f.inventoryVehicleId)
+  return r
 }
 
 export async function closeoutAction(fd: FormData) {

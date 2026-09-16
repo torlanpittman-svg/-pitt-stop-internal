@@ -2,7 +2,7 @@
  * Auto-Sales B0 — read models + append-only writes over the canonical vehicle.
  * Facts only; no accounting policy. No money movement; no QBO/bank writes.
  */
-import { and, desc, eq, ne, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, ne, inArray, isNull, sql } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
 import { getDb } from '@/platform/db'
 import { vehicles, serviceOrders } from '@/apps/workflow/schema'
@@ -185,6 +185,48 @@ export async function reverseEvent(eventId: string, actor: string | null): Promi
     amountCents: orig.amountCents, eventDate: iso(new Date()), reversesEventId: orig.id, status: 'verified', source: 'manual',
     memo: `Reversal of ${orig.economicCategory} (${(orig.memo ?? '').slice(0, 60)})`, createdBy: actor,
   })
+}
+
+// Sensible upper bound for a single-vehicle acquisition price ($5,000,000). Guards fat-finger entry.
+export const MAX_ACQUISITION_CENTS = 500_000_000
+
+/**
+ * Manager-only: correct the amount Pitt Stop PAID to acquire this vehicle (the acquisition/purchase
+ * price). Append-only + audited — never silently replaces the value: the current acquisition event is
+ * REVERSED and a fresh acquisition event is written with the new amount, carrying a structured audit in
+ * `evidence.priceEdit` (previous, new, manager, timestamp, optional reason). The old event stays in the
+ * ledger (visible, struck-through). Because computeSummary sums the ACTIVE acquisition events, cost and
+ * gross-profit projections update immediately. Does not touch repairs, taxes, title, auction/transport
+ * or any other cost bucket. No money movement.
+ */
+export async function editAcquisitionPrice(input: { inventoryVehicleId: string; newCents: number; reason?: string; actor: string | null }): Promise<{ ok: boolean; error?: string; previousCents?: number; newCents?: number }> {
+  const db = getDb()
+  if (!Number.isFinite(input.newCents) || input.newCents < 0) return { ok: false, error: 'Enter a valid non-negative amount.' }
+  if (input.newCents > MAX_ACQUISITION_CENTS) return { ok: false, error: `Amount exceeds the sanity limit ($${(MAX_ACQUISITION_CENTS / 100).toLocaleString()}).` }
+  const events = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.inventoryVehicleId, input.inventoryVehicleId))
+  const reversedTargets = new Set(events.filter((e) => e.reversesEventId).map((e) => e.reversesEventId))
+  const activeAcq = events.filter((e) => e.economicCategory === 'acquisition' && e.status !== 'void' && !e.reversesEventId && !reversedTargets.has(e.id))
+  const previousCents = activeAcq.reduce((t, e) => t + e.amountCents, 0)
+  if (previousCents === input.newCents) return { ok: false, error: 'New amount matches the current acquisition price.' }
+  const eventDate = activeAcq[0]?.eventDate ?? iso(new Date())
+  const at = new Date().toISOString()
+  const audit = { priceEdit: { previousCents, newCents: input.newCents, reason: input.reason ?? null, manager: input.actor ?? null, at } }
+  // Reverse each active acquisition event (append-only correction), then write the corrected one.
+  for (const e of activeAcq) {
+    await db.insert(vehicleFinancialEvents).values({
+      inventoryVehicleId: e.inventoryVehicleId, economicCategory: 'adjustment', cashflowCategory: 'non_cash',
+      amountCents: e.amountCents, eventDate: iso(new Date()), reversesEventId: e.id, status: 'verified', source: 'manual',
+      evidence: audit as any, memo: `Acquisition price correction (reversing prior $${(e.amountCents / 100).toLocaleString()})`, createdBy: input.actor,
+    })
+  }
+  await db.insert(vehicleFinancialEvents).values({
+    inventoryVehicleId: input.inventoryVehicleId, economicCategory: 'acquisition', cashflowCategory: defaultCashflow('acquisition'),
+    amountCents: input.newCents, eventDate, status: 'verified', source: 'manual', evidence: audit as any,
+    memo: `Acquisition price set to $${(input.newCents / 100).toLocaleString()} (was $${(previousCents / 100).toLocaleString()})${input.reason ? ` — ${input.reason}` : ''}`,
+    createdBy: input.actor,
+  })
+  await db.update(inventoryVehicles).set({ updatedAt: new Date() }).where(eq(inventoryVehicles.id, input.inventoryVehicleId))
+  return { ok: true, previousCents, newCents: input.newCents }
 }
 
 // ── Factual summary (never a single "total cost basis" when incomplete) ──
@@ -380,15 +422,20 @@ export async function settleRefund(eventId: string, settledDate: string, actor: 
 // ── Sale / closeout ──
 export interface SaleInput {
   inventoryVehicleId: string; saleDate: string; salePriceCents: number; saleType?: 'retail' | 'wholesale'
-  proceedsAccount?: string; buyerRef?: string; commissionCents?: number; payoffKnownCents?: number
+  proceedsAccount?: string; buyerRef?: string; buyerContact?: string; commissionCents?: number; payoffKnownCents?: number
   payoffStatus?: 'open' | 'paid' | 'unknown' | 'none'; titleOutstanding?: boolean; proceedsReceived?: 'yes' | 'no' | 'unknown'
+  // B7 — separately-stated customer-transaction components (kept OUT of the sale/proceeds event so taxes
+  // and fees never enter revenue or gross profit) + payment/trade-in facts.
+  taxCents?: number; docFeesCents?: number; otherChargesCents?: number; discountCents?: number
+  amountReceivedCents?: number; paymentMethod?: string; salePaymentRef?: string; tradeIn?: boolean; tradeInNotes?: string
+  salesperson?: string
   markDelivered?: boolean; notes?: string; actor: string | null
 }
-/** Record a sale: a sale (proceeds) event, optional commission (selling cost) + known payoff (financing)
- *  events, and the closeout facts on the vehicle. Status → sale_pending/sold/delivered. Does NOT feed
- *  *5600 unencumbered or company Safe-to-Spend. Manually-known payoff is captured, not reconciled (B4). */
-export async function sellVehicle(input: SaleInput): Promise<void> {
-  const db = getDb()
+
+/** Insert the sale-side ledger events (proceeds + optional commission + known payoff). The sale event
+ *  amount is the VEHICLE SELLING PRICE only — taxes/fees/discounts live on the inventory row, never in
+ *  proceeds. Shared by recordSale + editSale. */
+async function insertSaleEvents(db: ReturnType<typeof getDb>, input: SaleInput): Promise<void> {
   await db.insert(vehicleFinancialEvents).values({
     inventoryVehicleId: input.inventoryVehicleId, economicCategory: 'sale', cashflowCategory: input.proceedsReceived === 'yes' ? 'cash_inflow' : 'pending',
     amountCents: input.salePriceCents, eventDate: input.saleDate, vendor: input.buyerRef ?? null, paymentAccountRef: input.proceedsAccount ?? 'unknown',
@@ -404,14 +451,110 @@ export async function sellVehicle(input: SaleInput): Promise<void> {
     status: input.payoffStatus === 'paid' ? 'verified' : 'unverified', confidence: 'estimated', source: 'manual',
     memo: `Manually-known payoff (${input.payoffStatus ?? 'unknown'}) — not reconciled to Extraco until B4`, createdBy: input.actor,
   })
-  const status = input.markDelivered ? 'delivered' : 'sold'
-  await db.update(inventoryVehicles).set({
+}
+
+/** The sale-detail column set written on the inventory row (recordSale + editSale). */
+function saleColumns(input: SaleInput, status: string): Record<string, unknown> {
+  return {
     status, disposition: input.saleType ?? 'retail', soldAt: input.saleDate, deliveredAt: input.markDelivered ? input.saleDate : null,
-    salePriceCents: input.salePriceCents, saleType: input.saleType ?? 'retail', proceedsAccount: input.proceedsAccount ?? null, buyerRef: input.buyerRef ?? null,
+    salePriceCents: input.salePriceCents, saleType: input.saleType ?? 'retail', proceedsAccount: input.proceedsAccount ?? null,
+    buyerRef: input.buyerRef ?? null, buyerContact: input.buyerContact ?? null,
+    saleTaxCents: input.taxCents ?? null, saleDocFeesCents: input.docFeesCents ?? null,
+    saleOtherChargesCents: input.otherChargesCents ?? null, saleDiscountCents: input.discountCents ?? null,
+    amountReceivedCents: input.amountReceivedCents ?? null, salePaymentMethod: input.paymentMethod ?? null,
+    salePaymentRef: input.salePaymentRef ?? null, tradeIn: input.tradeIn ?? false, tradeInNotes: input.tradeInNotes ?? null,
+    salesperson: input.salesperson ?? input.actor ?? null,
     payoffKnownCents: input.payoffKnownCents ?? null, payoffStatus: input.payoffStatus ?? 'unknown',
     proceedsReceived: input.proceedsReceived ?? 'unknown', titleOutstanding: input.titleOutstanding ?? false, closeoutNotes: input.notes ?? null,
     updatedAt: new Date(),
+  }
+}
+
+/**
+ * Record a sale — IDEMPOTENT + single-sale-guaranteed. The finalize is an atomic claim: it only writes
+ * when sale_finalized_at IS NULL, so a double-click / retry / refresh cannot create a second sale or
+ * duplicate ledger events (the losers no-op). On success it writes the proceeds/commission/payoff events
+ * and the full sale detail. Status → sold/delivered. Does NOT post to QuickBooks, feed *5600 unencumbered,
+ * or move money. Manually-known payoff is captured, not reconciled (B4).
+ */
+export async function recordSale(input: SaleInput): Promise<{ ok: boolean; error?: string; alreadySold?: boolean }> {
+  const db = getDb()
+  if (!Number.isFinite(input.salePriceCents) || input.salePriceCents < 0) return { ok: false, error: 'Enter a valid selling price.' }
+  const status = input.markDelivered ? 'delivered' : 'sold'
+  // Atomic idempotency claim — first finalize wins.
+  const claimed = await db.update(inventoryVehicles)
+    .set({ ...saleColumns(input, status), saleFinalizedAt: new Date(), saleVersion: sql`sale_version + 1` })
+    .where(and(eq(inventoryVehicles.id, input.inventoryVehicleId), isNull(inventoryVehicles.saleFinalizedAt)))
+    .returning({ id: inventoryVehicles.id })
+  if (claimed.length === 0) {
+    const [inv] = await db.select({ id: inventoryVehicles.id }).from(inventoryVehicles).where(eq(inventoryVehicles.id, input.inventoryVehicleId)).limit(1)
+    return { ok: false, error: inv ? 'This vehicle is already marked sold. Reverse or edit the existing sale instead.' : 'Vehicle not found.', alreadySold: !!inv }
+  }
+  await insertSaleEvents(db, input)
+  return { ok: true }
+}
+
+/** Active (non-void, non-reversed) sale-side events for a vehicle. */
+async function activeSaleSideEvents(db: ReturnType<typeof getDb>, inventoryVehicleId: string) {
+  const events = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.inventoryVehicleId, inventoryVehicleId))
+  const reversedTargets = new Set(events.filter((e) => e.reversesEventId).map((e) => e.reversesEventId))
+  return events.filter((e) => ['sale', 'commission', 'financing_settlement', 'deposit'].includes(e.economicCategory) && e.status !== 'void' && !e.reversesEventId && !reversedTargets.has(e.id))
+}
+
+/** Append reversals for the active sale-side events (append-only; originals preserved, struck-through). */
+async function reverseSaleSideEvents(db: ReturnType<typeof getDb>, inventoryVehicleId: string, tag: 'saleReversal' | 'saleEdit', reason: string | undefined, actor: string | null): Promise<number> {
+  const saleSide = await activeSaleSideEvents(db, inventoryVehicleId)
+  for (const e of saleSide) {
+    await db.insert(vehicleFinancialEvents).values({
+      inventoryVehicleId: e.inventoryVehicleId, economicCategory: 'adjustment', cashflowCategory: 'non_cash',
+      amountCents: e.amountCents, eventDate: iso(new Date()), reversesEventId: e.id, status: 'verified', source: 'manual',
+      evidence: { [tag]: true, reason: reason ?? null, manager: actor ?? null } as any,
+      memo: `${tag === 'saleReversal' ? 'Sale reversal' : 'Sale correction — reversing'} of ${e.economicCategory}${reason ? ` — ${reason}` : ''}`, createdBy: actor,
+    })
+  }
+  return saleSide.length
+}
+
+/**
+ * Manager-only: REVERSE a completed sale. Append-only — the sale-side events are reversed (history kept,
+ * nothing deleted) and the vehicle is deliberately returned to active inventory (default 'listed') so it
+ * can be corrected or re-sold. Clears the finalize marker (re-sale allowed) and bumps sale_version. The
+ * reversal is audited (reason + manager on the reversal events and in the closeout note).
+ */
+export async function reverseSale(input: { inventoryVehicleId: string; reason?: string; restoreStatus?: string; actor: string | null }): Promise<{ ok: boolean; error?: string }> {
+  const db = getDb()
+  const [inv] = await db.select().from(inventoryVehicles).where(eq(inventoryVehicles.id, input.inventoryVehicleId)).limit(1)
+  if (!inv) return { ok: false, error: 'Vehicle not found.' }
+  if (!inv.saleFinalizedAt) return { ok: false, error: 'This vehicle is not marked sold.' }
+  await reverseSaleSideEvents(db, input.inventoryVehicleId, 'saleReversal', input.reason, input.actor)
+  const restore = input.restoreStatus ?? 'listed'
+  const note = `SALE REVERSED ${iso(new Date())} by ${input.actor ?? 'manager'}${input.reason ? `: ${input.reason}` : ''} (prior sale price $${((inv.salePriceCents ?? 0) / 100).toLocaleString()})`
+  await db.update(inventoryVehicles).set({
+    status: restore, disposition: null, soldAt: null, deliveredAt: null, saleFinalizedAt: null,
+    saleVersion: sql`sale_version + 1`,
+    closeoutNotes: [inv.closeoutNotes, note].filter(Boolean).join(' | '), updatedAt: new Date(),
   }).where(eq(inventoryVehicles.id, input.inventoryVehicleId))
+  return { ok: true }
+}
+
+/**
+ * Manager-only: EDIT a completed sale (correction). Reverses the prior sale-side events and writes the
+ * corrected ones + updated sale detail, keeping the vehicle SOLD (finalize marker preserved). Bumps
+ * sale_version. Corrections are audited with previous vs new on the reversal + new events.
+ */
+export async function editSale(input: SaleInput): Promise<{ ok: boolean; error?: string }> {
+  const db = getDb()
+  if (!Number.isFinite(input.salePriceCents) || input.salePriceCents < 0) return { ok: false, error: 'Enter a valid selling price.' }
+  const [inv] = await db.select({ id: inventoryVehicles.id, saleFinalizedAt: inventoryVehicles.saleFinalizedAt }).from(inventoryVehicles).where(eq(inventoryVehicles.id, input.inventoryVehicleId)).limit(1)
+  if (!inv) return { ok: false, error: 'Vehicle not found.' }
+  if (!inv.saleFinalizedAt) return { ok: false, error: 'This vehicle is not marked sold — record a sale instead.' }
+  await reverseSaleSideEvents(db, input.inventoryVehicleId, 'saleEdit', input.notes, input.actor)
+  await insertSaleEvents(db, input)
+  const status = input.markDelivered ? 'delivered' : 'sold'
+  await db.update(inventoryVehicles)
+    .set({ ...saleColumns(input, status), saleVersion: sql`sale_version + 1` })
+    .where(eq(inventoryVehicles.id, input.inventoryVehicleId))
+  return { ok: true }
 }
 
 /** Resolve outstanding closeout items (proceeds received / payoff paid / title done / delivered). */

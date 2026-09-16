@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { signEmployeeSession, EMP_COOKIE, type AuthedActor } from './employee-session'
-import { authenticatedActorFromRequest, employeeAuthorizedFromRequest } from './employee-guard'
+import { authenticatedActorFromRequest, employeeAuthorizedFromRequest, isManagerRole } from './employee-guard'
 
 const OLD = { ...process.env }
 beforeEach(() => {
@@ -61,6 +61,16 @@ describe('manager is NEVER admin — a manager PIN session grants no admin autho
     })
     const actor = await authenticatedActorFromRequest(req)
     expect(actor).toEqual({ key: 'darryl', name: 'Darryl', role: 'manager' }) // still manager — forged claims ignored
+  })
+})
+
+describe('isManagerRole — the manager/admin authorization predicate (Auto-Sales manager gate)', () => {
+  it('managers and admins qualify; employees and anonymous do not', () => {
+    expect(isManagerRole('manager')).toBe(true)
+    expect(isManagerRole('admin')).toBe(true)      // admin ⊇ manager
+    expect(isManagerRole('employee')).toBe(false)  // unauthorized edits fail closed
+    expect(isManagerRole(null)).toBe(false)
+    expect(isManagerRole(undefined)).toBe(false)
   })
 })
 

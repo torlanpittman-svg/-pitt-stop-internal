@@ -25,7 +25,9 @@ const box = 'bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-base t
 export default async function InventoryView({ admin }: { admin: boolean }) {
   const [enabled, list] = await Promise.all([autoSalesEnabled(), getInventoryList()])
   const today = new Date().toISOString().slice(0, 10)
-  const active = list.filter((r) => !['sold', 'delivered', 'wholesaled'].includes(r.status))
+  const SOLD = ['sold', 'delivered', 'wholesaled']
+  const active = list.filter((r) => !SOLD.includes(r.status))
+  const soldList = list.filter((r) => SOLD.includes(r.status))
   const base = admin ? '/admin/auto-sales' : '/auto-sales'
 
   return (
@@ -62,37 +64,54 @@ export default async function InventoryView({ admin }: { admin: boolean }) {
         </form>
       </details>
 
-      {/* Inventory cards */}
+      {/* Inventory cards — active (available-for-sale) only; sold vehicles move to the history section. */}
       <div className="flex items-baseline justify-between mb-3">
         <h2 className="text-white font-bold">Inventory <span className="text-gray-500 font-normal text-sm">({active.length} on lot)</span></h2>
-        {admin && <Link href="/admin/auto-sales/backfill" className="text-gray-500 text-xs underline">Opening-inventory import</Link>}
+        {admin && <Link href="/admin/auto-sales/report" className="text-gray-500 text-xs underline">Monthly report</Link>}
       </div>
-      {list.length === 0 ? <p className="text-gray-500 text-sm">No vehicles yet. Tap “+ Add a vehicle” to scan one in.</p> : (
+      {active.length === 0 ? <p className="text-gray-500 text-sm">{list.length === 0 ? 'No vehicles yet. Tap “+ Add a vehicle” to scan one in.' : 'No vehicles on the lot — all sold.'}</p> : (
         <div className="space-y-3">
-          {list.map((r) => {
-            const st = STATUS[r.status] ?? { c: 'bg-gray-800 text-gray-300 border-gray-700', label: r.status.replace('_', ' ') }
-            const needsVin = !r.stockNumber
-            return (
-              <Link key={r.id} href={`${base}/${r.id}`} className="block rounded-2xl bg-gray-900 border border-gray-800 active:border-gray-700 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-white font-bold text-lg leading-tight">{[r.year, r.make, r.model].filter(Boolean).join(' ') || 'Unidentified vehicle'}</p>
-                    <p className="text-gray-400 text-sm mt-0.5">{[r.color, r.stockNumber ?? null].filter(Boolean).join(' · ') || (r.vin ? `VIN …${r.vin.slice(-6)}` : '')}</p>
-                  </div>
-                  <span className={`shrink-0 text-[11px] px-2 py-1 rounded-full border ${st.c}`}>{st.label}</span>
-                </div>
-                <div className="flex items-center justify-between mt-3">
-                  {needsVin
-                    ? <span className="inline-flex items-center gap-1 text-sm font-semibold px-3 py-1.5 rounded-full border border-indigo-700 text-indigo-200">📷 Add / Scan VIN</span>
-                    : <span className="text-gray-500 text-xs">In it: <b className="text-gray-200">{money(r.summary.knownInvestmentCents)}</b>{admin && r.summary.historicalIncomplete && <span className="text-amber-400" title="historical costs may be incomplete"> ⚠</span>}</span>}
-                  <span className="text-gray-600 text-xs">{r.daysOnLot != null ? `${r.daysOnLot}d on lot` : ''}</span>
-                </div>
-              </Link>
-            )
-          })}
+          {active.map((r) => <VehicleCard key={r.id} r={r} base={base} admin={admin} />)}
         </div>
       )}
+
+      {/* Sold / history — hidden by default; nothing is deleted. */}
+      {soldList.length > 0 && (
+        <details className="mt-5 rounded-2xl bg-gray-900 border border-gray-800 overflow-hidden">
+          <summary className="px-4 py-3 cursor-pointer list-none text-gray-300 font-semibold flex items-center justify-between">Sold &amp; history <span className="text-gray-500 text-sm">{soldList.length} ▾</span></summary>
+          <div className="px-4 pb-4 space-y-3">
+            {soldList.map((r) => <VehicleCard key={r.id} r={r} base={base} admin={admin} />)}
+          </div>
+        </details>
+      )}
+
       <p className="text-gray-700 text-[11px] mt-4">“In it” = what we paid + tracked costs so far.{admin && ' ⚠ = older costs may be incomplete.'}</p>
+      {admin && <Link href="/admin/auto-sales/backfill" className="block text-gray-600 text-xs underline mt-2">Opening-inventory import</Link>}
     </main>
+  )
+}
+
+function VehicleCard({ r, base, admin }: { r: Awaited<ReturnType<typeof getInventoryList>>[number]; base: string; admin: boolean }) {
+  const st = STATUS[r.status] ?? { c: 'bg-gray-800 text-gray-300 border-gray-700', label: r.status.replace('_', ' ') }
+  const needsVin = !r.stockNumber
+  const sold = ['sold', 'delivered', 'wholesaled'].includes(r.status)
+  return (
+    <Link href={`${base}/${r.id}`} className="block rounded-2xl bg-gray-900 border border-gray-800 active:border-gray-700 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-white font-bold text-lg leading-tight">{[r.year, r.make, r.model].filter(Boolean).join(' ') || 'Unidentified vehicle'}</p>
+          <p className="text-gray-400 text-sm mt-0.5">{[r.color, r.stockNumber ?? null].filter(Boolean).join(' · ') || (r.vin ? `VIN …${r.vin.slice(-6)}` : '')}</p>
+        </div>
+        <span className={`shrink-0 text-[11px] px-2 py-1 rounded-full border ${st.c}`}>{st.label}</span>
+      </div>
+      <div className="flex items-center justify-between mt-3">
+        {needsVin
+          ? <span className="inline-flex items-center gap-1 text-sm font-semibold px-3 py-1.5 rounded-full border border-indigo-700 text-indigo-200">📷 Add / Scan VIN</span>
+          : sold && r.result.indicativeProfitCents != null
+            ? <span className="text-gray-500 text-xs">Est. profit: <b className={r.result.indicativeProfitCents < 0 ? 'text-red-400' : 'text-emerald-300'}>{money(r.result.indicativeProfitCents)}</b></span>
+            : <span className="text-gray-500 text-xs">In it: <b className="text-gray-200">{money(r.summary.knownInvestmentCents)}</b>{admin && r.summary.historicalIncomplete && <span className="text-amber-400" title="historical costs may be incomplete"> ⚠</span>}</span>}
+        <span className="text-gray-600 text-xs">{sold ? (r.status === 'delivered' ? 'delivered' : 'sold') : r.daysOnLot != null ? `${r.daysOnLot}d on lot` : ''}</span>
+      </div>
+    </Link>
   )
 }

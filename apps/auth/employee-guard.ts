@@ -12,7 +12,7 @@
  */
 import { cookies, headers } from 'next/headers'
 import {
-  EMP_COOKIE, employeeAuthConfigured, verifyEmployeeToken, authedActorFromToken, type AuthedActor,
+  EMP_COOKIE, employeeAuthConfigured, verifyEmployeeToken, authedActorFromToken, type AuthedActor, type EmployeeRole,
 } from './employee-session'
 
 function adminBasicOk(auth: string | null): boolean {
@@ -58,4 +58,27 @@ export async function authenticatedActor(): Promise<AuthedActor | null> {
   if (adminBasicOk((await headers()).get('authorization'))) return ADMIN_ACTOR
   const payload = await verifyEmployeeToken((await cookies()).get(EMP_COOKIE)?.value)
   return authedActorFromToken(payload)
+}
+
+// Dev-open manager actor: when NO employee gate is configured (local dev) the whole shop surface is
+// open (matches employeeAuthorized() returning true). We surface a labelled dev actor so manager-only
+// flows are testable locally, and audit attribution is never blank. Never occurs in production (PINs set).
+const DEV_MANAGER_ACTOR: AuthedActor = { key: 'dev', name: 'Dev (open)', role: 'manager' }
+
+/** True for operational managers and admins (admin ⊇ manager). */
+export function isManagerRole(role: EmployeeRole | null | undefined): boolean {
+  return role === 'manager' || role === 'admin'
+}
+
+/**
+ * The authenticated MANAGER identity for a request, or null if the signed-in person is not a manager.
+ * This is the authorization gate for manager-only Auto-Sales operations (edit acquisition price, reverse/
+ * edit sale, finalize monthly report). It is SEPARATE from ADMIN_PASSWORD: a manager PIN is sufficient
+ * (admin Basic-Auth also qualifies, since admin ⊇ manager). Returns the actor for audit attribution.
+ * next/headers variant for server components / actions.
+ */
+export async function authorizedManager(): Promise<AuthedActor | null> {
+  if (!employeeAuthConfigured()) return DEV_MANAGER_ACTOR // dev-open, matches employeeAuthorized()
+  const actor = await authenticatedActor()
+  return actor && isManagerRole(actor.role) ? actor : null
 }

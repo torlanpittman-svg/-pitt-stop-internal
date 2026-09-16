@@ -10,10 +10,14 @@ import { notFound } from 'next/navigation'
 import BackLink from '@/app/components/BackLink'
 import { getVehicleFolder } from '@/apps/auto-sales/db'
 import { IN_SCOPE_ACCOUNTS, REFUND_KINDS, labelFor, costRelevance, type EconomicCategory } from '@/apps/auto-sales/types'
+import { computeCostBasis, computeSaleFinancials, PAYMENT_METHODS } from '@/apps/auto-sales/calc'
 import { autoSalesCutoverDate } from '@/apps/settings/db'
-import { sellAction, returnRefundAction, settleAction, closeoutAction } from '@/apps/auto-sales/actions'
+import { authorizedManager } from '@/apps/auth/employee-guard'
+import { returnRefundAction, settleAction, closeoutAction } from '@/apps/auto-sales/actions'
 import VinResolver from './VinResolver'
 import AddExpense from './AddExpense'
+import AcquisitionPrice from './AcquisitionPrice'
+import SellVehicle, { ReverseSale } from './SellVehicle'
 
 const money = (c: number | null | undefined) => c == null ? '—' : `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const COMPLETENESS: Record<string, { c: string; label: string }> = {
@@ -24,9 +28,20 @@ const box = 'bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-base t
 const card = 'rounded-2xl bg-gray-900 border border-gray-800 p-4'
 
 export default async function VehicleFolderView({ id, admin, reverseAction }: { id: string; admin: boolean; reverseAction?: (fd: FormData) => Promise<void> }) {
-  const [folder, cutover] = await Promise.all([getVehicleFolder(id), autoSalesCutoverDate()])
+  const [folder, cutover, manager] = await Promise.all([getVehicleFolder(id), autoSalesCutoverDate(), authorizedManager()])
   if (!folder) notFound()
   const { inv, vehicle, events, summary, result, returnable, daysOnLot, attachments } = folder
+  const isManager = !!manager
+  // Canonical cost basis (ONE calc service) — drives the acquisition-price line, the sale confirmation
+  // and the monthly report identically.
+  const basis = computeCostBasis(events)
+  const vehicleLabel = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Unidentified vehicle'
+  // Stored sale transaction (for the sold summary + Edit prefill). Selling price/discount/tax/fees kept separate.
+  const saleFin = computeSaleFinancials({
+    salePriceCents: inv.salePriceCents ?? 0, taxCents: inv.saleTaxCents ?? 0, docFeesCents: inv.saleDocFeesCents ?? 0,
+    otherChargesCents: inv.saleOtherChargesCents ?? 0, discountCents: inv.saleDiscountCents ?? 0, amountReceivedCents: inv.amountReceivedCents ?? 0,
+  })
+  const paymentLabel = PAYMENT_METHODS.find((m) => m.value === inv.salePaymentMethod)?.label ?? inv.salePaymentMethod
   const returnableForReceipt = returnable.filter((r) => r.remainingCents > 0).map((r) => ({ id: r.id, label: `${labelFor(r.economicCategory)}${r.vendor ? ` · ${r.vendor}` : ''} · ${money(r.amountCents)}` }))
   const cm = COMPLETENESS[inv.financialCompleteness] ?? COMPLETENESS.needs_review
   const reversedTargets = new Set(events.filter((e) => e.reversesEventId).map((e) => e.reversesEventId))
@@ -63,7 +78,7 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
       {/* Money at a glance */}
       <div className={`${card} mt-4`}>
         <div className="space-y-1.5 text-[15px]">
-          <div className="flex justify-between"><span className="text-gray-400">Paid for it</span><span className="text-white tabular-nums">{money(summary.acquisitionCostCents)}</span></div>
+          <AcquisitionPrice vehicleId={inv.id} currentCents={summary.acquisitionCostCents} canEdit={isManager} />
           {grossAdded > 0 && <div className="flex justify-between"><span className="text-gray-400">Added costs</span><span className="text-white tabular-nums">+{money(grossAdded)}</span></div>}
           {returnsTotal > 0 && <div className="flex justify-between"><span className="text-gray-400">Returns / credits</span><span className="text-emerald-300 tabular-nums">−{money(returnsTotal)}</span></div>}
           <div className="flex justify-between border-t border-gray-700 pt-1.5 mt-1"><span className="text-white font-semibold">In it so far</span><span className="text-white font-bold text-lg tabular-nums">{money(summary.knownInvestmentCents)}</span></div>
@@ -105,38 +120,54 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
         </div>
       )}
 
+      {/* Sale transaction details (when sold) — every component separately stated for the accountant. */}
+      {result.sold && (inv.salePriceCents != null) && (
+        <div className={`${card} mt-4`}>
+          <p className="text-gray-400 text-sm font-semibold mb-2">Sale transaction</p>
+          <div className="space-y-1.5 text-[15px]">
+            <div className="flex justify-between"><span className="text-gray-400">Vehicle selling price</span><span className="text-white tabular-nums">{money(saleFin.salePriceCents)}</span></div>
+            {saleFin.discountCents > 0 && <div className="flex justify-between"><span className="text-gray-400">Discount / allowance</span><span className="text-emerald-300 tabular-nums">−{money(saleFin.discountCents)}</span></div>}
+            {saleFin.taxCents > 0 && <div className="flex justify-between"><span className="text-gray-500">Sales tax (pass-through)</span><span className="text-gray-300 tabular-nums">{money(saleFin.taxCents)}</span></div>}
+            {saleFin.docFeesCents > 0 && <div className="flex justify-between"><span className="text-gray-500">Title / doc fees</span><span className="text-gray-300 tabular-nums">{money(saleFin.docFeesCents)}</span></div>}
+            {saleFin.otherChargesCents > 0 && <div className="flex justify-between"><span className="text-gray-500">Other charges</span><span className="text-gray-300 tabular-nums">{money(saleFin.otherChargesCents)}</span></div>}
+            <div className="flex justify-between border-t border-gray-700 pt-1.5 mt-1"><span className="text-white font-semibold">Total customer transaction</span><span className="text-white font-bold tabular-nums">{money(saleFin.totalTransactionCents)}</span></div>
+            <div className="flex justify-between"><span className="text-gray-400">Amount received</span><span className="text-white tabular-nums">{money(saleFin.amountReceivedCents)}</span></div>
+            {saleFin.balanceRemainingCents > 0 && <div className="flex justify-between"><span className="text-amber-400/90">Balance remaining</span><span className="text-amber-400/90 tabular-nums">{money(saleFin.balanceRemainingCents)}</span></div>}
+          </div>
+          <div className="mt-2 text-gray-500 text-xs space-y-0.5">
+            {inv.buyerRef && <p>Buyer: <span className="text-gray-300">{inv.buyerRef}</span>{inv.buyerContact ? ` · ${inv.buyerContact}` : ''}</p>}
+            <p>{[inv.soldAt ? `Sold ${inv.soldAt}` : null, paymentLabel ? `paid by ${paymentLabel}` : null, inv.tradeIn ? 'trade-in involved' : null, inv.salesperson ? `by ${inv.salesperson}` : null].filter(Boolean).join(' · ')}</p>
+            {inv.tradeIn && inv.tradeInNotes && <p>Trade-in: {inv.tradeInNotes}</p>}
+          </div>
+          {/* Manager corrections — edit the sale (audited) or reverse it (restores to inventory). */}
+          {isManager && inv.saleFinalizedAt && (
+            <div className="mt-3 border-t border-gray-800 pt-3 space-y-2">
+              <SellVehicle vehicleId={inv.id} vehicleLabel={vehicleLabel} vin={vehicle.vin} stockNumber={inv.stockNumber} basis={basis} today={today} accounts={IN_SCOPE_ACCOUNTS} mode="edit" initial={{
+                saleDate: inv.soldAt ?? today, salePrice: inv.salePriceCents != null ? (inv.salePriceCents / 100).toFixed(2) : '', saleType: inv.saleType ?? 'retail',
+                buyerRef: inv.buyerRef ?? '', buyerContact: inv.buyerContact ?? '', paymentMethod: inv.salePaymentMethod ?? '', salePaymentRef: inv.salePaymentRef ?? '',
+                tax: inv.saleTaxCents != null ? (inv.saleTaxCents / 100).toFixed(2) : '', docFees: inv.saleDocFeesCents != null ? (inv.saleDocFeesCents / 100).toFixed(2) : '',
+                otherCharges: inv.saleOtherChargesCents != null ? (inv.saleOtherChargesCents / 100).toFixed(2) : '', discount: inv.saleDiscountCents != null ? (inv.saleDiscountCents / 100).toFixed(2) : '',
+                amountReceived: inv.amountReceivedCents != null ? (inv.amountReceivedCents / 100).toFixed(2) : '', payoff: inv.payoffKnownCents != null ? (inv.payoffKnownCents / 100).toFixed(2) : '',
+                payoffStatus: inv.payoffStatus ?? 'unknown', proceedsReceived: inv.proceedsReceived ?? 'unknown', proceedsAccount: inv.proceedsAccount ?? '*5600',
+                tradeIn: inv.tradeIn ?? false, tradeInNotes: inv.tradeInNotes ?? '', markDelivered: inv.status === 'delivered', notes: inv.closeoutNotes ?? '',
+              }} />
+              <ReverseSale vehicleId={inv.id} />
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Primary actions */}
       <div className="mt-5 space-y-3">
         {/* ONE unified Add Expense: Take Photo / Upload / Enter Manually (+ smart return matching) */}
         <AddExpense vehicleId={inv.id} returnable={returnableForReceipt} />
 
-        {/* Mark sold */}
-        {!sold && (
-          <details className="rounded-2xl bg-gray-900 border border-gray-800 overflow-hidden">
-            <summary className="px-4 py-4 cursor-pointer list-none text-white font-bold text-lg flex items-center justify-between">Mark Sold <span className="text-gray-500 text-sm">▾</span></summary>
-            <form action={sellAction} className="px-4 pb-4 space-y-3">
-              <input type="hidden" name="inventoryVehicleId" value={inv.id} />
-              <div className="grid grid-cols-2 gap-3">
-                <label className="text-xs text-gray-500">Sold for<br /><input name="salePrice" type="number" step="0.01" min="0" inputMode="decimal" required className={box} /></label>
-                <label className="text-xs text-gray-500">Date<br /><input name="saleDate" type="date" defaultValue={today} required className={box} /></label>
-              </div>
-              <details className="rounded-xl border border-gray-800 bg-gray-900/60"><summary className="px-3 py-2 text-gray-400 text-sm cursor-pointer list-none">More details (optional) ▾</summary>
-                <div className="px-3 pb-3 grid grid-cols-2 gap-2">
-                  <label className="text-xs text-gray-500">Retail/wholesale<br /><select name="saleType" className={box} defaultValue="retail"><option value="retail">retail</option><option value="wholesale">wholesale</option></select></label>
-                  <label className="text-xs text-gray-500">Proceeds to<br /><select name="proceedsAccount" className={box} defaultValue="*5600">{IN_SCOPE_ACCOUNTS.map((a) => <option key={a.ref} value={a.ref}>{a.ref}</option>)}</select></label>
-                  <label className="text-xs text-gray-500">Buyer<br /><input name="buyerRef" className={box} /></label>
-                  <label className="text-xs text-gray-500">Commission<br /><input name="commission" type="number" step="0.01" min="0" inputMode="decimal" className={box} /></label>
-                  <label className="text-xs text-gray-500">Known payoff<br /><input name="payoff" type="number" step="0.01" min="0" inputMode="decimal" className={box} /></label>
-                  <label className="text-xs text-gray-500">Payoff status<br /><select name="payoffStatus" className={box} defaultValue="unknown"><option value="unknown">unknown</option><option value="open">open</option><option value="paid">paid</option><option value="none">none</option></select></label>
-                  <label className="text-xs text-gray-500">Money received?<br /><select name="proceedsReceived" className={box} defaultValue="unknown"><option value="unknown">unknown</option><option value="yes">yes</option><option value="no">no</option></select></label>
-                  <label className="text-xs text-gray-500 flex items-center gap-2 mt-4"><input name="titleOutstanding" type="checkbox" className="w-5 h-5" /> title outstanding</label>
-                  <label className="text-xs text-gray-500 flex items-center gap-2 mt-4"><input name="markDelivered" type="checkbox" className="w-5 h-5" /> delivered</label>
-                  <label className="text-xs text-gray-500 col-span-2">Notes<br /><input name="notes" className={box} /></label>
-                </div>
-              </details>
-              <button className="w-full bg-indigo-600 active:bg-indigo-700 text-white text-lg font-bold py-4 rounded-2xl">Record Sale</button>
-            </form>
-          </details>
+        {/* Sell this vehicle — MANAGER-facing two-step (enter → confirm summary → record). */}
+        {!sold && isManager && (
+          <SellVehicle vehicleId={inv.id} vehicleLabel={vehicleLabel} vin={vehicle.vin} stockNumber={inv.stockNumber} basis={basis} today={today} accounts={IN_SCOPE_ACCOUNTS} />
+        )}
+        {!sold && !isManager && (
+          <p className="text-gray-600 text-xs text-center py-2">A manager can record the sale of this vehicle.</p>
         )}
 
         {/* Return / refund (only if there's something to return) */}
