@@ -6,11 +6,10 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { exchangeCodeForTokens } from '@/apps/quickbooks/oauth'
+import { exchangeCodeForTokens, QB_STATE_COOKIE } from '@/apps/quickbooks/oauth'
 import { saveConnection } from '@/apps/quickbooks/db'
 import { getQBConfig } from '@/apps/quickbooks/config'
 import { logger } from '@/platform/logger'
-import { QB_STATE_COOKIE } from '../connect/route'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'

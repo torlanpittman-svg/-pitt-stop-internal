@@ -7,6 +7,13 @@
  */
 import { getQBConfig, QB_OAUTH, QB_ACCOUNTING_SCOPE } from './config'
 
+/**
+ * Name of the httpOnly cookie holding the OAuth CSRF `state` (set in the connect route, verified in the
+ * callback). Lives here — a shared module — rather than on a route handler, because Next.js route files may
+ * only export reserved route fields (GET/POST/dynamic/…); a stray export there fails the production build.
+ */
+export const QB_STATE_COOKIE = 'qb_oauth_state'
+
 export interface TokenResponse {
   token_type:                 string // 'bearer'
   access_token:               string
