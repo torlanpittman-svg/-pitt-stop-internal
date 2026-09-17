@@ -65,6 +65,7 @@ beforeAll(async () => {
   await applyMigration(client, '0040_business_receipts_hardening.sql')
   await applyMigration(client, '0042_business_receipts_filing.sql')
   await applyMigration(client, '0044_business_receipts_clarified.sql')
+  await applyMigration(client, '0045_business_receipts_capture_id.sql')
   await applyMigration(client, '0043_fin_receipt_matches.sql')
   await applyMigration(client, '0043_fin_receipt_matches.sql') // idempotent re-apply
   h.db = drizzle(client, { schema })
@@ -76,6 +77,22 @@ async function fileClean(hash: string, over: Record<string, unknown> = {}) {
   const r = await fileReceipt(id, clean(over), filer)
   return { id, r }
 }
+
+describe('coverage — an unresolved duplicate candidate is NOT counted as a completed purchase', () => {
+  it('a receipt flagged duplicate at filing stays needs_review and is excluded from coverage', async () => {
+    // First Costco photo files cleanly.
+    const { id: first } = await createReceipt(base({ imageHash: 'DUP1' }))
+    await fileReceipt(first, clean({ vendor: 'Costco', receiptDate: `${MONTH}-14`, totalCents: 44672 }), filer)
+    // Second photo of the SAME purchase, filed with the duplicate flag (employee said "same — I have it").
+    const { id: second } = await createReceipt(base({ imageHash: 'DUP2' }))
+    const r = await fileReceipt(second, clean({ vendor: 'Costco', receiptDate: `${MONTH}-14`, totalCents: 44672 }), filer, { duplicate: true })
+    expect(r.status).toBe('needs_review')            // not a clean filing
+    expect(r.reasons).toContain('duplicate')
+    const cov = await getReceiptCoverage(MONTH)
+    expect(cov.completeCount).toBe(1)                // only the first counts
+    expect(cov.purchasesTotalCents).toBe(44672)     // the purchase is counted ONCE, not doubled
+  })
+})
 
 describe('coverage — filed + approved visible, purchases counted once', () => {
   it('a filed business receipt is visible and reconcilable, unreconciled until matched', async () => {

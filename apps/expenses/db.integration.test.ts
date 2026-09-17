@@ -20,6 +20,7 @@ import {
   createReceipt, storedPathnameForHash, getReceipt, saveReview, approveReceipt, rejectReceipt, reopenReceipt,
   claimRetryExtraction, applyRetryExtraction, releaseRetryClaim, inventoryVehicleExists,
   listInventoryVehiclesForPicker, monthlyExpenseReport, consumeRateLimit, fileReceipt, listReceipts, queueCounts,
+  createPendingReceipt, findReceiptByCaptureId, possibleDuplicateFor,
 } from './db'
 import type { CategoryChoice } from './types'
 
@@ -63,12 +64,14 @@ beforeAll(async () => {
   await applyMigration(client, '0040_business_receipts_hardening.sql')
   await applyMigration(client, '0042_business_receipts_filing.sql')
   await applyMigration(client, '0044_business_receipts_clarified.sql')
+  await applyMigration(client, '0045_business_receipts_capture_id.sql')
   // Idempotency: re-apply must not throw.
   await applyMigration(client, '0038_business_receipts.sql')
   await applyMigration(client, '0039_business_receipts_dedup.sql')
   await applyMigration(client, '0040_business_receipts_hardening.sql')
   await applyMigration(client, '0042_business_receipts_filing.sql')
   await applyMigration(client, '0044_business_receipts_clarified.sql')
+  await applyMigration(client, '0045_business_receipts_capture_id.sql')
   h.db = drizzle(client, { schema })
 })
 
@@ -462,6 +465,69 @@ describe('manager exception resolution — clarify without falsifying facts (rea
     expect(r.status).toBe('filed')
     const row = await getReceipt(id)
     expect(row?.status).toBe('filed'); expect(row?.clarifiedAt).toBeNull(); expect(row?.funding).toBe('business')
+  })
+})
+
+describe('fast durable save + capture-id dedup (real Postgres)', () => {
+  const pend = (over: Record<string, unknown> = {}) => ({
+    storageRef: 'business-receipts/h.jpg', filename: 'r.jpg', contentType: 'image/jpeg',
+    imageHash: 'h1', byteSize: 100, uploadedBy: 'Sam', uploadedByKey: 'sam', ...over,
+  })
+
+  it('creates a recoverable PENDING row (needs_review, ai pending, capture_id) with no proposal', async () => {
+    const { id } = await createPendingReceipt(pend({ captureId: 'cap-A', imageHash: 'hA' }))
+    const row = await getReceipt(id)
+    expect(row?.status).toBe('needs_review')
+    expect(row?.aiStatus).toBe('pending')
+    expect(row?.captureId).toBe('cap-A')
+    expect(row?.vendor).toBeNull(); expect(row?.totalCents).toBeNull()
+    expect(await findReceiptByCaptureId('cap-A')).not.toBeNull()
+  })
+
+  it('a RETRY with the same capture_id returns the SAME receipt (no second purchase) even if bytes differ', async () => {
+    const a = await createPendingReceipt(pend({ captureId: 'cap-B', imageHash: 'hB1' }))
+    const b = await createPendingReceipt(pend({ captureId: 'cap-B', imageHash: 'hB2-retaken' })) // different bytes
+    expect(b.duplicate).toBe(true)
+    expect(b.id).toBe(a.id)
+  })
+
+  it('identical bytes (same hash) also collapse to one active receipt', async () => {
+    const a = await createPendingReceipt(pend({ captureId: 'cap-C1', imageHash: 'hC' }))
+    const b = await createPendingReceipt(pend({ captureId: 'cap-C2', imageHash: 'hC' }))
+    expect(b.duplicate).toBe(true); expect(b.id).toBe(a.id)
+  })
+
+  it('a rejected capture_id frees the id for a fresh capture (partial unique excludes rejected)', async () => {
+    const a = await createPendingReceipt(pend({ captureId: 'cap-D', imageHash: 'hD1' }))
+    await rejectReceipt(a.id, 'test', 'Mgr')
+    const b = await createPendingReceipt(pend({ captureId: 'cap-D', imageHash: 'hD2' })) // re-use after rejection
+    expect(b.duplicate).toBe(false); expect(b.id).not.toBe(a.id)
+  })
+})
+
+describe('possible-duplicate detection — vendor+date+total, never total alone (real Postgres)', () => {
+  const filer = { name: 'Sam', key: 'sam' }
+  const filedCostco = async (hash: string, over: Record<string, unknown> = {}) => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: hash, uploadedByKey: 'sam' }))
+    await fileReceipt(id, { entity: 'detail', category: single('shop_supplies'), funding: 'business', paymentMethod: 'card', vendor: 'Costco', receiptDate: '2026-03-14', totalCents: 44672, ...over }, filer)
+    return id
+  }
+  it('two photos of the same purchase (same vendor+date+total, same uploader) surface as candidates', async () => {
+    const a = await filedCostco('D1'); const b = await filedCostco('D2')
+    expect((await possibleDuplicateFor(b))?.id).toBe(a)
+    expect((await possibleDuplicateFor(a))?.id).toBe(b)
+  })
+  it('EQUAL TOTAL ALONE is not a duplicate (different vendor/date)', async () => {
+    await filedCostco('E1')
+    const other = await filedCostco('E2', { vendor: 'Napa', receiptDate: '2026-03-20' }) // same total, different vendor+date
+    expect(await possibleDuplicateFor(other)).toBeNull()
+  })
+  it('another employee’s matching receipt is NOT surfaced (privacy)', async () => {
+    const { id: mine } = await createReceipt(baseReceipt({ imageHash: 'F1', uploadedByKey: 'sam' }))
+    await fileReceipt(mine, { entity: 'detail', category: single('shop_supplies'), funding: 'business', paymentMethod: 'card', vendor: 'Costco', receiptDate: '2026-03-14', totalCents: 44672 }, filer)
+    const { id: theirs } = await createReceipt(baseReceipt({ imageHash: 'F2', uploadedByKey: 'lee' }))
+    await fileReceipt(theirs, { entity: 'detail', category: single('shop_supplies'), funding: 'business', paymentMethod: 'card', vendor: 'Costco', receiptDate: '2026-03-14', totalCents: 44672 }, { name: 'Lee', key: 'lee' })
+    expect(await possibleDuplicateFor(theirs)).toBeNull() // sam's receipt not exposed to lee
   })
 })
 

@@ -64,8 +64,12 @@ export const businessReceipts = pgTable(
     storageRef:    text('storage_ref'),
     filename:      varchar('filename', { length: 300 }),
     contentType:   varchar('content_type', { length: 60 }),
-    imageHash:     varchar('image_hash', { length: 64 }),      // sha-256, dedup
+    imageHash:     varchar('image_hash', { length: 64 }),      // sha-256 of ORIGINAL bytes — catches IDENTICAL files only
     byteSize:      integer('byte_size'),
+    // Stable per-capture id the client keeps across retries. Unlike image_hash (which changes when a photo
+    // is retaken), this collapses "the upload timed out — try again" into ONE receipt: a retry with the same
+    // capture_id returns the already-saved row instead of creating a second purchase. Partial-unique below.
+    captureId:     varchar('capture_id', { length: 64 }),
 
     // AI proposal (unverified). ai_raw is audit-only; ai_extracted is the normalized proposal; confidence
     // holds the per-field presence/uncertainty signal.
@@ -130,6 +134,10 @@ export const businessReceipts = pgTable(
     // DB-enforced upload idempotency: one active (non-rejected) row per content hash → concurrent
     // identical uploads collapse to one receipt (no duplicate expense). Migration 0039.
     uniqueIndex('business_receipts_hash_active_uniq').on(t.imageHash).where(sql`status <> 'rejected'`),
+    // DB-enforced capture idempotency: one active (non-rejected) row per capture_id → a retry after a lost/
+    // timed-out response returns the SAME receipt instead of a second purchase, even when the retaken photo's
+    // bytes (and hash) differ. Migration 0045.
+    uniqueIndex('business_receipts_capture_active_uniq').on(t.captureId).where(sql`capture_id is not null and status <> 'rejected'`),
   ]
 )
 

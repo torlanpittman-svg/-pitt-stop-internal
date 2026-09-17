@@ -14,7 +14,12 @@
 import OpenAI from 'openai'
 import { parseCents, categoryForLabel, type ExpenseCategory } from './types'
 
-export const RECEIPT_PROMPT_VERSION = 'exp_v1'
+export const RECEIPT_PROMPT_VERSION = 'exp_v2'
+// Bounded so a slow/hung provider call can never make capture "feel lost": the original is already saved,
+// and a timed-out read surfaces as a recoverable failure the employee can retry or bypass with manual entry.
+const EXTRACT_TIMEOUT_MS = 40_000
+const EXTRACT_MAX_RETRIES = 1
+const EXTRACT_MODEL = 'gpt-4o' // gpt-4o-mini tiles vision into 12–30× the tokens with no latency gain — measured
 
 export interface ExpenseExtraction {
   vendor: string | null
@@ -23,7 +28,8 @@ export interface ExpenseExtraction {
   taxCents: number | null
   totalCents: number | null
   categoryLabel: string | null   // free-text model label (mapped to a coarse key downstream)
-  categoryKey: ExpenseCategory   // normalized coarse category ('uncategorized' when unknown)
+  categoryKey: ExpenseCategory   // normalized coarse category SUGGESTION ('uncategorized' when unknown)
+  description: string | null     // short human summary of what was bought (drives the category suggestion)
   paymentMethod: string | null   // cash|card|check|... (verbatim-ish; validated downstream)
   paymentLast4: string | null
   receiptNumber: string | null
@@ -34,11 +40,11 @@ export interface ExpenseExtractResult { status: 'extracted' | 'failed'; model: s
 
 export const EMPTY_EXTRACTION: ExpenseExtraction = {
   vendor: null, date: null, subtotalCents: null, taxCents: null, totalCents: null,
-  categoryLabel: null, categoryKey: 'uncategorized', paymentMethod: null, paymentLast4: null, receiptNumber: null,
+  categoryLabel: null, categoryKey: 'uncategorized', description: null, paymentMethod: null, paymentLast4: null, receiptNumber: null,
   present: { vendor: false, date: false, subtotal: false, tax: false, total: false, category: false, paymentMethod: false },
 }
 
-const PROMPT = `You are reading a photo of a BUSINESS EXPENSE RECEIPT or INVOICE for an auto detailing shop and used-car dealership. Extract ONLY what is clearly legible; use null when unsure — do NOT guess. Return STRICT JSON, no prose, no markdown fences:
+const PROMPT = `You are reading a photo of a BUSINESS EXPENSE RECEIPT or INVOICE for an auto detailing shop and used-car dealership. Extract ONLY what is clearly legible; use null when unsure — do NOT guess. Return a STRICT JSON object with exactly these keys:
 {
   "vendor": string|null,            // merchant / store name
   "date": "YYYY-MM-DD"|null,        // transaction date
@@ -46,6 +52,7 @@ const PROMPT = `You are reading a photo of a BUSINESS EXPENSE RECEIPT or INVOICE
   "tax": number|null,               // tax in dollars (absolute)
   "total": number|null,             // grand total in dollars, ABSOLUTE value
   "category": string|null,          // a short expense category, e.g. "Parts", "Fuel", "Shop supplies", "Office", "Utilities"
+  "description": string|null,       // 2-6 words naming the main items bought, e.g. "microfiber towels, wax" — helps pick a category
   "paymentMethod": "cash"|"card"|"check"|"ach"|"other"|null,  // how it was paid, if shown
   "paymentLast4": string|null,      // last 4 of the card if visible
   "receiptNumber": string|null      // this document's receipt/invoice number if visible
@@ -63,6 +70,10 @@ export function parseReceiptJson(j: unknown): ExpenseExtraction {
   const o = (j && typeof j === 'object' ? j : {}) as Record<string, unknown>
   const has = (v: unknown) => v !== null && v !== undefined && v !== ''
   const categoryLabel = cleanStr(o.category, 60)
+  const description = cleanStr(o.description, 120)
+  // Suggest a category from the explicit label first; fall back to the item description ("microfiber
+  // towels" → shop supplies). Still only a SUGGESTION — the employee/manager confirms it.
+  const categoryKey = categoryForLabel(categoryLabel) !== 'uncategorized' ? categoryForLabel(categoryLabel) : categoryForLabel(description)
   const rawPm = typeof o.paymentMethod === 'string' ? o.paymentMethod.trim().toLowerCase() : null
   const paymentMethod = rawPm && ['cash', 'card', 'check', 'ach', 'other'].includes(rawPm) ? rawPm : null
   return {
@@ -72,30 +83,42 @@ export function parseReceiptJson(j: unknown): ExpenseExtraction {
     taxCents: parseCents(o.tax),
     totalCents: parseCents(o.total),
     categoryLabel,
-    categoryKey: categoryForLabel(categoryLabel),
+    categoryKey,
+    description,
     paymentMethod,
     paymentLast4: typeof o.paymentLast4 === 'string' ? (o.paymentLast4.match(/\d{4}/)?.[0] ?? null) : null,
     receiptNumber: cleanStr(o.receiptNumber, 60),
     present: {
       vendor: has(o.vendor), date: has(o.date), subtotal: has(o.subtotal), tax: has(o.tax),
-      total: has(o.total), category: has(o.category), paymentMethod: has(o.paymentMethod),
+      total: has(o.total), category: has(o.category) || has(o.description), paymentMethod: has(o.paymentMethod),
     },
   }
 }
 
-/** Extract an expense receipt from image bytes (base64). Never throws — returns status='failed' on any error. */
+/**
+ * Extract an expense receipt from image bytes (base64). Never throws — returns status='failed' on any error
+ * (missing key, timeout, provider error, unparseable output). Two reliability fixes over the original:
+ *   - response_format:json_object forces a valid JSON object (the model can't wrap it in prose/markdown),
+ *     which was the silent cause of blank vendor/date/total — a stray fence made JSON.parse throw and the
+ *     whole read was discarded. A guaranteed object also means a parse failure is a genuine provider fault,
+ *     surfaced as a recoverable 'failed' (not swallowed).
+ *   - a bounded timeout + one retry so a hung provider call cannot make capture hang; the original is
+ *     already saved before this runs, so a timeout is recoverable, never lost work.
+ */
 export async function extractExpense(imageBase64: string, mimeType: string): Promise<ExpenseExtractResult> {
   if (!process.env.OPENAI_API_KEY) return { status: 'failed', model: null, raw: { error: 'OPENAI_API_KEY not set' }, extraction: EMPTY_EXTRACTION }
   try {
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: EXTRACT_TIMEOUT_MS, maxRetries: EXTRACT_MAX_RETRIES })
     const response = await client.chat.completions.create({
-      model: 'gpt-4o', max_tokens: 1200, temperature: 0,
+      model: EXTRACT_MODEL, max_tokens: 1200, temperature: 0,
+      response_format: { type: 'json_object' },
       messages: [{ role: 'user', content: [
         { type: 'image_url', image_url: { url: `data:${mimeType};base64,${imageBase64}`, detail: 'high' } },
         { type: 'text', text: PROMPT },
       ] as never }],
     })
     const content = response.choices[0]?.message?.content ?? ''
+    // json_object guarantees a bare object; the fence-strip is kept only as a defensive no-op.
     const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
     const extraction = parseReceiptJson(JSON.parse(cleaned))
     // Keep only sanitized text (no PII beyond the receipt itself) — raw is audit-only, never logged.

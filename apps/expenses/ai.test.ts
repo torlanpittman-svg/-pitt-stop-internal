@@ -45,6 +45,19 @@ describe('parseReceiptJson — proposal normalization (never invents, never $0)'
     expect(e2.categoryKey).toBe('uncategorized')
   })
 
+  it('suggests a category from the item DESCRIPTION when there is no explicit category label', () => {
+    // "microfiber towels" → detailing/shop supplies, even though no `category` was returned.
+    const e = parseReceiptJson({ vendor: 'Costco', total: 40, description: 'microfiber towels, wax' })
+    expect(e.categoryKey).toBe('shop_supplies')
+    expect(e.description).toBe('microfiber towels, wax')
+    expect(e.present.category).toBe(true) // a description counts as a category signal (a suggestion)
+  })
+
+  it('an explicit category label wins over the description', () => {
+    const e = parseReceiptJson({ category: 'Parts', description: 'microfiber towels', total: 10 })
+    expect(e.categoryKey).toBe('parts')
+  })
+
   it('an empty / garbage object yields the empty proposal shape', () => {
     const e = parseReceiptJson({})
     expect(e).toEqual({ ...EMPTY_EXTRACTION })

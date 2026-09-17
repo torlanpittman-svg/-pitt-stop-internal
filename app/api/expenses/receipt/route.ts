@@ -1,37 +1,53 @@
 /**
- * POST /api/expenses/receipt  (multipart: receipt)
+ * POST /api/expenses/receipt  (multipart: receipt, captureId)
  *
- * General business-expense receipt capture (Detail AND Auto Sales). Employee-safe surface, but FAIL-CLOSED:
- * it requires a SERVER-VERIFIED session (receiptUploaderFromRequest) — an anonymous caller is rejected even
- * when no PIN is configured. Approval is a separate manager act; capturing never books or approves anything.
+ * FAST DURABLE SAVE — separates "saved" from "read". It preserves the ORIGINAL image and creates a
+ * recoverable receipt row BEFORE any AI, then returns immediately so the employee sees "photo saved" as
+ * soon as the evidence is durable. The AI read is a SEPARATE step (POST .../[id]/extract) the client fires
+ * next; a slow or failed read can never lose the receipt or make capture feel lost.
  *
  * Order: authorize → durable rate-limit → validate (magic bytes + decode + size) → hash ORIGINAL bytes →
- * PRESERVE ORIGINAL (private Blob) → AI on a DERIVED downscaled copy → create row. The stored blob + the
- * evidence hash are the employee's ORIGINAL bytes; the downscale is a throwaway used only for extraction.
- * If storage fails we DO NOT report success. No money movement; no QuickBooks mutation.
+ * capture_id / hash dedup → PRESERVE ORIGINAL (private Blob) → create PENDING row → return {receiptId,
+ * fileToken}. A storage failure HARD-FAILS (never a phantom "saved"). No AI, no money movement, no QB.
+ *
+ * Idempotent: a retry carries the SAME captureId, so a lost/timed-out response never creates a second
+ * purchase — the retry resumes the already-saved receipt (with its extracted proposal if the read finished).
  */
 import { NextResponse } from 'next/server'
 import { createHash } from 'node:crypto'
 import { uploadPrivatePhoto } from '@/platform/blob'
-import { extractExpense } from '@/apps/expenses/ai'
-import { createReceipt, storedPathnameForHash, consumeRateLimit, RATE_LIMITS } from '@/apps/expenses/db'
+import { createPendingReceipt, findReceiptByCaptureId, findActiveReceiptByHash, storedPathnameForHash, consumeRateLimit, RATE_LIMITS, type ReceiptRow } from '@/apps/expenses/db'
 import { validateReceiptUpload, extForMime, MAX_UPLOAD_BYTES, MAX_DECLARED_OVERHEAD } from '@/apps/expenses/upload-validation'
-import { decodeImageMeta, validateDecodedMeta, derivedForExtraction } from '@/apps/expenses/image-decode'
-import { receiptUploaderFromRequest } from '@/apps/expenses/authz'
+import { decodeImageMeta, validateDecodedMeta } from '@/apps/expenses/image-decode'
+import { receiptUploaderFromRequest, type Uploader } from '@/apps/expenses/authz'
 import { signCaptureToken } from '@/apps/expenses/capture-token'
 import { errorCode } from '@/apps/expenses/errors'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
+export const maxDuration = 30 // bounds a slow client upload of the multipart body; no AI runs here
 const APP = 'expenses:receipt'
 
-/** Rate-limit bucket for an uploader: the SERVER-VERIFIED actor key when known; otherwise a shared-device
- *  bucket keyed by a hashed client IP (a fallback for anonymous shared-PIN devices — never the sole
- *  identity for an authenticated user). */
 function uploadBucket(actorKey: string | null, ip: string): string {
   if (actorKey) return `upload:actor:${actorKey}`
   return `upload:shared:${createHash('sha256').update(ip).digest('hex').slice(0, 16)}`
+}
+/** Does this uploader own (or share the device of) this receipt? Governs whether we resume it with a token. */
+function ownsForResume(uploader: Uploader, row: ReceiptRow): boolean {
+  const key = uploader.actor?.key ?? null
+  return row.uploadedByKey === key // named-key match, or both null (same shared device)
+}
+/** The client-safe resume payload for an already-saved receipt (its confirmed vendor/date/total only). */
+function resumePayload(row: ReceiptRow) {
+  const present = (row.confidence && typeof row.confidence === 'object' ? row.confidence : null) as Record<string, boolean> | null
+  return {
+    ok: true as const, receiptId: row.id, fileToken: signCaptureToken(row.id), duplicate: true, resumed: true,
+    aiStatus: row.aiStatus,
+    proposal: row.aiStatus === 'extracted'
+      ? { vendor: row.vendor, date: row.receiptDate, totalCents: row.totalCents, categoryKey: row.category, present: present ?? {} }
+      : null,
+  }
 }
 
 export async function POST(req: Request) {
@@ -49,9 +65,19 @@ export async function POST(req: Request) {
     const declaredLen = parseInt(req.headers.get('content-length') || '0', 10)
     if (Number.isFinite(declaredLen) && declaredLen > MAX_UPLOAD_BYTES + MAX_DECLARED_OVERHEAD) return NextResponse.json({ ok: false, error: 'Image too large' }, { status: 413 })
 
-    // 4) Validate: magic bytes (authoritative type) + size, then a real image DECODE. The ORIGINAL bytes
-    //    are what we hash + store — never a re-encoded copy.
     const form = await req.formData()
+    const captureId = ((form.get('captureId') as string | null) || '').trim().slice(0, 64) || null
+
+    // 3b) RETRY RESUME: a repeat with the same captureId returns the already-saved receipt (never a 2nd row).
+    if (captureId) {
+      const prior = await findReceiptByCaptureId(captureId).catch(() => null)
+      if (prior) {
+        if (ownsForResume(uploader, prior)) return NextResponse.json(resumePayload(prior))
+        return NextResponse.json({ ok: true, duplicate: true, alreadyCaptured: true }) // never hand another's receipt
+      }
+    }
+
+    // 4) Validate: magic bytes (authoritative type) + size, then a real image DECODE (metadata only — fast).
     const image = (form.get('receipt') || form.get('image')) as File | null
     if (!image) return NextResponse.json({ ok: false, error: 'No image provided' }, { status: 400 })
     const bytes = Buffer.from(await image.arrayBuffer())
@@ -62,8 +88,12 @@ export async function POST(req: Request) {
     const contentType = v.mime
     const imageHash = createHash('sha256').update(bytes).digest('hex') // hash of the ORIGINAL bytes
 
+    // 4b) IDENTICAL-BYTES duplicate from a DIFFERENT capture → already captured (no second purchase, no token).
+    const byHash = await findActiveReceiptByHash(imageHash).catch(() => null)
+    if (byHash && byHash.captureId !== captureId) return NextResponse.json({ ok: true, duplicate: true, alreadyCaptured: true })
+
     // 5) PRESERVE THE ORIGINAL FIRST (private Blob), immutable. Reuse the pathname if these exact bytes were
-    //    ever stored (any prior receipt). A storage failure HARD-FAILS — never a phantom "sent to review".
+    //    ever stored. A storage failure HARD-FAILS — never a phantom "saved".
     let storageRef = await storedPathnameForHash(imageHash).catch(() => null)
     if (!storageRef) {
       try {
@@ -74,34 +104,22 @@ export async function POST(req: Request) {
       }
     }
 
-    // 6) AI extraction on a DERIVED downscaled copy (never stored/hashed). Never throws; failed → manual.
-    const derived = await derivedForExtraction(bytes)
-    const ai = await extractExpense(derived.bytes.toString('base64'), derived.contentType)
-    const e = ai.extraction
-
-    // 7) Create the row — DB-idempotent (unique hash). Concurrent identical uploads collapse to one row.
-    const { id: receiptId, duplicate } = await createReceipt({
-      storage: 'blob_private', storageRef, filename: image.name, contentType, imageHash, byteSize: bytes.length,
-      aiStatus: ai.status, aiModel: ai.model, aiRaw: ai.raw, aiExtracted: e, confidence: e.present,
+    // 6) Create the recoverable PENDING row (no AI yet). DB-idempotent on capture_id + hash.
+    const { id: receiptId, duplicate } = await createPendingReceipt({
+      storageRef, filename: image.name, contentType, imageHash, byteSize: bytes.length, captureId,
       uploadedBy: uploader.name, uploadedByKey: uploader.actor?.key ?? null,
-      vendor: e.vendor, receiptDate: e.date, subtotalCents: e.subtotalCents, taxCents: e.taxCents,
-      totalCents: e.totalCents, category: e.categoryKey, paymentMethod: e.paymentMethod, paymentLast4: e.paymentLast4,
     })
+    if (duplicate) {
+      const prior = captureId ? await findReceiptByCaptureId(captureId).catch(() => null) : null
+      if (prior && ownsForResume(uploader, prior)) return NextResponse.json(resumePayload(prior))
+      return NextResponse.json({ ok: true, duplicate: true, alreadyCaptured: true })
+    }
 
-    logger.info(APP, 'captured', { aiStatus: ai.status, duplicate })
-    // Return the AI PROPOSAL (vendor/date/total) so the employee can confirm it inline, plus a capture token
-    // that authorizes filing THIS receipt (a duplicate returns neither id nor token — it is already captured
-    // and never disclosed). The proposal is this uploader's own receipt facts; no other receipt is exposed.
-    if (duplicate) return NextResponse.json({ ok: true, duplicate: true, aiStatus: ai.status })
-    return NextResponse.json({
-      ok: true, duplicate: false, receiptId, fileToken: signCaptureToken(receiptId), aiStatus: ai.status,
-      proposal: {
-        vendor: e.vendor, date: e.date, totalCents: e.totalCents,
-        present: { vendor: e.present.vendor, date: e.present.date, total: e.present.total },
-      },
-    })
+    logger.info(APP, 'saved', { hasCapture: !!captureId })
+    // Photo is durably saved. The client now fires the extract step; a fileToken authorizes filing THIS row.
+    return NextResponse.json({ ok: true, receiptId, fileToken: signCaptureToken(receiptId), duplicate: false, aiStatus: 'pending', proposal: null })
   } catch (err) {
     logger.error(APP, 'failed', { code: errorCode(err) })
-    return NextResponse.json({ ok: false, error: 'Could not process receipt — try again or enter it later.' }, { status: 500 })
+    return NextResponse.json({ ok: false, error: 'Could not save the photo — try again.' }, { status: 500 })
   }
 }

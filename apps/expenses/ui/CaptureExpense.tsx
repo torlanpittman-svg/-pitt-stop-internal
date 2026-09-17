@@ -2,17 +2,17 @@
 /**
  * Business Receipts — employee TAP-FIRST capture + self-filing.
  *
- * Snap/upload → three quick questions (big bubbles, no typing needed for most receipts) → confirm the
- * vendor/date/total the photo read → Save. An ordinary complete receipt is FILED immediately by the
- * employee (no "a manager will review it"). An incomplete / mixed / personal / unpaid / unsure receipt is
- * still SAVED — flagged "needs clarification" for a manager — the employee is never trapped in the form.
+ * SAVED is separated from READ. Snap/upload → the ORIGINAL is preserved and a recoverable receipt row is
+ * created FIRST; the employee immediately sees "Photo saved — reading receipt". The AI read runs as a
+ * SEPARATE step while the employee answers three quick questions, then prefills vendor/date/total. A slow or
+ * failed read never makes the capture feel lost: the photo is already saved; the employee retries the read
+ * (bounded) or just types the few facts. Nothing shows "photo read" unless the read actually succeeded.
  *
- * The upload runs in the BACKGROUND while the employee answers the questions (the answers don't depend on
- * the image), so the AI read overlaps the human's taps. The employee's confirmed vendor/date/total are
- * authoritative — the server writes them over any AI proposal, and a filed receipt can't be re-read over.
- * A signed capture token returned by the upload authorizes filing THIS receipt only.
+ * Interruptions are recoverable: a stable captureId (kept across retries) means a lost/timed-out response
+ * never creates a second purchase, and a small sessionStorage marker lets the employee resume an in-progress
+ * capture. The employee's typed answers are authoritative — a late read never overwrites them.
  */
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   BUSINESS_ENTITIES, EXPENSE_CATEGORIES, CAPTURE_PRIMARY_CATEGORIES, CAPTURE_MORE_CATEGORIES,
   attentionReasonLabel, centsToDollars,
@@ -22,39 +22,37 @@ import { OTHER_PAYMENT_MAX_LENGTH, RECEIPT_PAYMENT_CHOICES, resolveReceiptPaymen
 
 export interface VehicleOption { id: string; label: string }
 
-// The server preserves the ORIGINAL uploaded bytes as evidence, so we never re-encode the file we send.
-// The platform caps request bodies (~4.5 MB); reject an oversized ORIGINAL up front (never silently shrink
-// the only stored copy). Kept a touch below the server cap for multipart overhead.
+// The server preserves the ORIGINAL bytes as evidence, so we never re-encode the file we send. The platform
+// caps request bodies (~4.5 MB); reject an oversized ORIGINAL up front (never silently shrink the only copy).
 const MAX_ORIGINAL_BYTES = 4 * 1024 * 1024
+const MAX_READ_ATTEMPTS = 3       // a retry must be safe AND limited — never unlimited AI calls
+const RESUME_KEY = 'ps_capture_resume'
+const RESUME_TTL_MS = 2 * 60 * 60_000
 
 type Step = 'q1' | 'q2' | 'q2more' | 'q3' | 'confirm' | 'saving'
-type UploadState = 'uploading' | 'ready' | 'duplicate' | 'error'
-interface Proposal { vendor: string | null; date: string | null; totalCents: number | null }
-interface UploadResult { ok: boolean; receiptId?: string; fileToken?: string; duplicate?: boolean; aiStatus?: string; proposal?: Proposal; error?: string }
+type SaveState = 'uploading' | 'saved' | 'duplicate' | 'error'   // is the ORIGINAL durably stored?
+type ReadState = 'idle' | 'reading' | 'read' | 'failed'          // did the AI read succeed?
+interface Proposal { vendor: string | null; date: string | null; totalCents: number | null; categoryKey?: string }
+interface Saved { receiptId: string; fileToken?: string }
+
 const entityLabel = (k: string) => BUSINESS_ENTITIES.find((b) => b.key === k)?.label ?? k
 const categoryLabel = (k: string) => EXPENSE_CATEGORIES.find((c) => c.key === k)?.label ?? k
+const uuid = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `c-${Date.now()}-${Math.random().toString(36).slice(2)}`)
 
-// Large, accessible selection bubble. `selected` gets a clear ring; everything is a real <button>.
 function Bubble({ children, onClick, selected = false, variant = 'default' }: { children: React.ReactNode; onClick: () => void; selected?: boolean; variant?: 'default' | 'muted' }) {
   const base = 'w-full text-left rounded-2xl px-4 py-4 text-lg font-semibold border transition active:scale-[0.99] focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400'
-  const tone = selected
-    ? 'bg-indigo-600 border-indigo-400 text-white'
-    : variant === 'muted'
-      ? 'bg-gray-900 border-gray-800 text-gray-400'
-      : 'bg-gray-800 border-gray-700 text-white'
+  const tone = selected ? 'bg-indigo-600 border-indigo-400 text-white' : variant === 'muted' ? 'bg-gray-900 border-gray-800 text-gray-400' : 'bg-gray-800 border-gray-700 text-white'
   return <button type="button" aria-pressed={selected} onClick={onClick} className={`${base} ${tone}`}>{children}</button>
 }
 
-// One step's chrome: the question title, a small preview thumbnail, the live upload badge and a Back link.
-// Hoisted to module scope (never re-created during render) so its children keep their state across steps.
-function StepShell({ title, children, onBack, previewUrl, uploadBadge }: { title: string; children: React.ReactNode; onBack?: () => void; previewUrl: string | null; uploadBadge: React.ReactNode }) {
+function StepShell({ title, children, onBack, previewUrl, badge }: { title: string; children: React.ReactNode; onBack?: () => void; previewUrl: string | null; badge: React.ReactNode }) {
   return (
     <section className="rounded-2xl bg-gray-900 border border-gray-800 p-4" role="group" aria-label={title}>
       <div className="flex items-start gap-3 mb-3">
         {previewUrl && <img src={previewUrl} alt="receipt preview" className="w-14 h-14 rounded-lg object-cover bg-black/40 border border-gray-800" />}
         <div className="flex-1">
           <h2 className="text-white font-bold text-lg leading-tight">{title}</h2>
-          <p className="text-xs mt-0.5">{uploadBadge}</p>
+          <p className="text-xs mt-0.5" aria-live="polite">{badge}</p>
         </div>
         {onBack && <button type="button" onClick={onBack} className="text-gray-500 text-sm">Back</button>}
       </div>
@@ -66,15 +64,19 @@ function StepShell({ title, children, onBack, previewUrl, uploadBadge }: { title
 export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOption[] }) {
   const camRef = useRef<HTMLInputElement>(null)
   const upRef = useRef<HTMLInputElement>(null)
-  const uploadPromise = useRef<Promise<UploadResult> | null>(null)
+  const captureId = useRef<string>('')
 
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const [started, setStarted] = useState(false)          // in the flow (vs idle)
+  const [started, setStarted] = useState(false)
   const [step, setStep] = useState<Step>('q1')
   const [pickErr, setPickErr] = useState<string | null>(null)
 
-  const [uploadState, setUploadState] = useState<UploadState>('uploading')
-  const [upload, setUpload] = useState<UploadResult | null>(null)
+  const [saveState, setSaveState] = useState<SaveState>('uploading')
+  const [readState, setReadState] = useState<ReadState>('idle')
+  const [readAttempts, setReadAttempts] = useState(0)
+  const [saved, setSaved] = useState<Saved | null>(null)
+  const [possibleDup, setPossibleDup] = useState(false)
+  const [dupChoice, setDupChoice] = useState<'' | 'different' | 'same'>('')
 
   // Answers
   const [entity, setEntity] = useState('')
@@ -82,37 +84,90 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
   const [categoryKey, setCategoryKey] = useState('')
   const [paymentChoice, setPaymentChoice] = useState('')
   const [otherPayment, setOtherPayment] = useState('')
-  // Confirmed purchase facts (prefilled from the AI proposal when it arrives, unless already typed)
-  const [vendor, setVendor] = useState('')
-  const [date, setDate] = useState('')
-  const [total, setTotal] = useState('')
+  // Confirmed purchase facts. `touched` marks fields the employee changed — a late read never overwrites them.
+  const [vendor, setVendor] = useState(''); const vendorT = useRef(false)
+  const [date, setDate] = useState(''); const dateT = useRef(false)
+  const [total, setTotal] = useState(''); const totalT = useRef(false)
   const [showExtras, setShowExtras] = useState(false)
   const [vehicleId, setVehicleId] = useState('')
   const [note, setNote] = useState('')
 
-  // Result
   const [saveErr, setSaveErr] = useState<string | null>(null)
   const [result, setResult] = useState<{ status: string; reasons: string[] } | null>(null)
+  const [resume, setResume] = useState<{ captureId: string; receiptId: string; fileToken?: string } | null>(null)
+
+  // On mount (client only), offer to resume an in-progress capture whose photo is already saved. Deliberately
+  // in an effect, not a lazy initializer: sessionStorage is client-only, so reading it after hydration avoids
+  // an SSR/client mismatch. The setState here is exactly the intended one-time hydration of that client state.
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(RESUME_KEY)
+      if (!raw) return
+      const r = JSON.parse(raw) as { captureId: string; receiptId: string; fileToken?: string; ts: number }
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (r && r.receiptId && Date.now() - (r.ts || 0) < RESUME_TTL_MS) setResume(r)
+      else sessionStorage.removeItem(RESUME_KEY)
+    } catch { /* ignore */ }
+  }, [])
+
+  function persistResume(s: Saved) {
+    try { sessionStorage.setItem(RESUME_KEY, JSON.stringify({ captureId: captureId.current, receiptId: s.receiptId, fileToken: s.fileToken, ts: Date.now() })) } catch { /* ignore */ }
+  }
+  function clearResume() { try { sessionStorage.removeItem(RESUME_KEY) } catch { /* ignore */ } }
 
   function resetAll() {
     if (previewUrl) URL.revokeObjectURL(previewUrl); setPreviewUrl(null)
     setStarted(false); setStep('q1'); setPickErr(null)
-    setUploadState('uploading'); setUpload(null); uploadPromise.current = null
+    setSaveState('uploading'); setReadState('idle'); setSaved(null); setPossibleDup(false); setDupChoice('')
     setEntity(''); setCategoryMode('single'); setCategoryKey(''); setPaymentChoice(''); setOtherPayment('')
-    setVendor(''); setDate(''); setTotal(''); setShowExtras(false); setVehicleId(''); setNote('')
-    setSaveErr(null); setResult(null)
+    setVendor(''); setDate(''); setTotal(''); vendorT.current = false; dateT.current = false; totalT.current = false
+    setShowExtras(false); setVehicleId(''); setNote(''); setSaveErr(null); setResult(null)
+    captureId.current = ""; setReadAttempts(0)
     if (camRef.current) camRef.current.value = ''
     if (upRef.current) upRef.current.value = ''
   }
 
-  async function doUpload(f: File): Promise<UploadResult> {
+  // Prefill a confirm field from the read — ONLY if the employee hasn't touched it (never overwrite answers).
+  function applyProposal(p: Proposal | null | undefined) {
+    if (!p) return
+    if (p.vendor && !vendorT.current) setVendor((v) => v || p.vendor || '')
+    if (p.date && !dateT.current) setDate((d) => d || p.date || '')
+    if (p.totalCents != null && !totalT.current) setTotal((t) => t || centsToDollars(p.totalCents))
+    if (p.categoryKey && p.categoryKey !== 'uncategorized' && categoryMode === 'single' && !categoryKey) setCategoryKey(p.categoryKey)
+  }
+
+  async function runExtract(receiptId: string, token?: string) {
+    if (readAttempts >= MAX_READ_ATTEMPTS) { setReadState('failed'); return }
+    setReadAttempts((n) => n + 1)
+    setReadState('reading')
     try {
-      const fd = new FormData(); fd.set('receipt', f)
+      const res = await fetch(`/api/expenses/receipt/${receiptId}/extract`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }),
+      })
+      const j = await res.json().catch(() => ({}))
+      if (res.ok && j.ok && j.aiStatus === 'extracted') {
+        applyProposal(j.proposal)
+        setPossibleDup(!!j.possibleDuplicate)
+        setReadState('read')
+      } else {
+        setReadState('failed')   // saved, but not read — honest; employee can retry or type
+      }
+    } catch { setReadState('failed') }
+  }
+
+  async function doUpload(f: File) {
+    setSaveState('uploading'); setReadState('idle')
+    try {
+      const fd = new FormData(); fd.set('receipt', f); fd.set('captureId', captureId.current)
       const res = await fetch('/api/expenses/receipt', { method: 'POST', body: fd })
-      const j = (await res.json().catch(() => ({}))) as UploadResult
-      if (!res.ok || !j.ok) return { ok: false, error: j.error || 'Could not send the photo — try again.' }
-      return j
-    } catch { return { ok: false, error: 'No connection — try again in a moment.' } }
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok || !j.ok) { setSaveState('error'); setSaveErr(j.error || 'Could not save the photo — try again.'); return }
+      if (j.alreadyCaptured || (j.duplicate && !j.receiptId)) { setSaveState('duplicate'); return }
+      const s: Saved = { receiptId: j.receiptId, fileToken: j.fileToken }
+      setSaved(s); setSaveState('saved'); persistResume(s)
+      if (j.resumed && j.proposal) { applyProposal(j.proposal); setReadState('read') }
+      else runExtract(s.receiptId, s.fileToken)   // fire the read; the employee answers meanwhile
+    } catch { setSaveState('error'); setSaveErr('No connection — the photo did not save. Try again.') }
   }
 
   function pick(f: File | null) {
@@ -120,40 +175,36 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
     if (f.size > MAX_ORIGINAL_BYTES) { setPickErr('This photo is too large. Retake it at a lower resolution (under 4 MB).'); return }
     setPickErr(null)
     setPreviewUrl((u) => { if (u) URL.revokeObjectURL(u); return URL.createObjectURL(f) })
-    // Fire the upload in the BACKGROUND; the employee answers the questions meanwhile.
-    setUploadState('uploading'); setUpload(null)
-    const p = doUpload(f)
-    uploadPromise.current = p
-    p.then((r) => {
-      setUpload(r)
-      setUploadState(!r.ok ? 'error' : r.duplicate ? 'duplicate' : 'ready')
-      // Prefill the confirm fields from the proposal, but never clobber anything already typed.
-      if (r.ok && r.proposal) {
-        if (r.proposal.vendor) setVendor((v) => v || r.proposal!.vendor || '')
-        if (r.proposal.date) setDate((d) => d || r.proposal!.date || '')
-        if (r.proposal.totalCents != null) setTotal((t) => t || centsToDollars(r.proposal!.totalCents))
-      }
-    })
+    captureId.current = uuid(); setReadAttempts(0)
+    doUpload(f)
     setStarted(true); setStep('q1')
   }
+
+  async function doResume() {
+    if (!resume) return
+    captureId.current = resume.captureId
+    setSaved({ receiptId: resume.receiptId, fileToken: resume.fileToken })
+    setSaveState('saved'); setResume(null); setStarted(true); setStep('q1')
+    setReadAttempts(0)
+    runExtract(resume.receiptId, resume.fileToken)  // fetch the (already-finished or re-run) read
+  }
+  function discardResume() { clearResume(); setResume(null) }
 
   async function save() {
     const payment = resolveReceiptPayment(paymentChoice, otherPayment)
     if (!payment.ok) { setSaveErr(payment.error); setStep('q3'); return }
+    if (possibleDup && !dupChoice) { setSaveErr('Tell us if this is the same purchase or a different one.'); return }
+    if (!saved?.receiptId) { setSaveErr(saveState === 'duplicate' ? 'This receipt was already captured.' : 'The photo hasn’t saved yet — one moment.'); return }
     setSaveErr(null); setStep('saving')
-    // The upload may still be in flight — wait for it (overlapped with the human answering).
-    let up = upload
-    if (!up && uploadPromise.current) up = await uploadPromise.current
-    if (!up || !up.ok) { setSaveErr(up?.error || 'The photo didn’t upload — go back and retake it.'); setStep('confirm'); return }
-    if (up.duplicate || !up.receiptId) { setSaveErr('This receipt was already captured — no need to send it again.'); setStep('confirm'); return }
     const res = await fileReceiptAction({
-      id: up.receiptId, token: up.fileToken,
+      id: saved.receiptId, token: saved.fileToken,
       entity, category: categoryKey, categoryMode, paymentChoice, otherPayment,
       vendor, receiptDate: date, total,
-      filingNote: note || undefined,
-      inventoryVehicleId: vehicleId || undefined,
+      filingNote: note || undefined, inventoryVehicleId: vehicleId || undefined,
+      duplicate: possibleDup && dupChoice === 'same',   // flag as a duplicate → manager resolves, CFO won't count it
     })
     if (!res.ok) { setSaveErr(res.error || 'Could not save — try again.'); setStep('confirm'); return }
+    clearResume()
     setResult({ status: res.status ?? 'needs_review', reasons: res.reasons ?? [] })
   }
 
@@ -163,6 +214,16 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
       <section className="rounded-2xl bg-gray-900 border border-gray-800 p-4">
         <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => pick(e.target.files?.[0] ?? null)} />
         <input ref={upRef} type="file" accept="image/*" className="hidden" onChange={(e) => pick(e.target.files?.[0] ?? null)} />
+        {resume && (
+          <div className="mb-3 rounded-xl border border-indigo-900/60 bg-indigo-950/20 p-3">
+            <p className="text-indigo-200 text-sm font-semibold">You have a receipt in progress.</p>
+            <p className="text-gray-400 text-xs mt-0.5">Your photo is saved. Pick up where you left off.</p>
+            <div className="flex gap-2 mt-2">
+              <button type="button" onClick={doResume} className="flex-1 bg-indigo-600 text-white font-semibold py-2 rounded-xl">Resume</button>
+              <button type="button" onClick={discardResume} className="text-gray-500 text-sm px-3">Discard</button>
+            </div>
+          </div>
+        )}
         <div className="space-y-3">
           <button type="button" onClick={() => camRef.current?.click()} className="w-full bg-indigo-600 active:bg-indigo-700 text-white text-lg font-bold py-5 rounded-2xl">📷 Snap a Receipt</button>
           <button type="button" onClick={() => upRef.current?.click()} className="w-full border border-gray-700 text-gray-200 text-base font-semibold py-3 rounded-2xl">Upload a Photo</button>
@@ -195,14 +256,16 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
     )
   }
 
-  // ── FLOW ──
-  const uploadBadge =
-    uploadState === 'uploading' ? <span className="text-gray-500">reading photo…</span>
-    : uploadState === 'ready' ? <span className="text-emerald-400">photo read ✓</span>
-    : uploadState === 'duplicate' ? <span className="text-amber-300">already captured</span>
-    : <span className="text-red-400">upload failed</span>
-
-  const shell = { previewUrl, uploadBadge }
+  // ── Honest status badge: SAVED vs READ are separate; never claim "read" on failure, no invented % ──
+  const badge =
+    saveState === 'uploading' ? <span className="text-gray-500">saving photo…</span>
+    : saveState === 'error' ? <span className="text-red-400">not saved — retake</span>
+    : saveState === 'duplicate' ? <span className="text-amber-300">already captured</span>
+    : readState === 'reading' ? <span className="text-emerald-400">photo saved ✓ · reading…</span>
+    : readState === 'read' ? <span className="text-emerald-400">photo saved ✓ · read ✓</span>
+    : readState === 'failed' ? <span className="text-amber-300">photo saved ✓ · couldn’t read</span>
+    : <span className="text-emerald-400">photo saved ✓</span>
+  const shell = { previewUrl, badge }
 
   if (step === 'q1') {
     return (
@@ -276,6 +339,7 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
   const catText = categoryMode === 'single' ? categoryLabel(categoryKey) : categoryMode === 'mixed' ? 'More than one category' : 'Other / Not sure'
   const fundText = paymentChoice === 'other' ? `Other: ${otherPayment.trim()}` : paymentChoice === 'unpaid' ? 'Not paid yet' : RECEIPT_PAYMENT_CHOICES.find((c) => c.key === paymentChoice)?.label ?? '—'
   const missing = (v: string) => v.trim() === ''
+  const set = <T,>(setter: (v: T) => void, touched: React.MutableRefObject<boolean>) => (v: T) => { touched.current = true; setter(v) }
   return (
     <StepShell title="Check the details" onBack={saving ? undefined : () => setStep('q3')} {...shell}>
       <div className="space-y-3">
@@ -285,17 +349,36 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
           <span className="text-gray-300">{fundText}</span>
         </div>
 
+        {readState === 'reading' && <p className="text-gray-500 text-sm">Reading the photo… you can fill these in now if you like.</p>}
+        {readState === 'failed' && (
+          <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-sm">
+            <p className="text-amber-300">Your photo is saved, but we couldn’t read it automatically.</p>
+            <button type="button" onClick={() => saved && runExtract(saved.receiptId, saved.fileToken)} disabled={readAttempts >= MAX_READ_ATTEMPTS}
+              className="text-indigo-300 underline mt-1 disabled:opacity-40 disabled:no-underline">{readAttempts >= MAX_READ_ATTEMPTS ? 'Enter the details below' : 'Try reading again'}</button>
+          </div>
+        )}
         {paymentChoice === 'personal' && <p className="text-amber-300 text-sm">Personal payment — saved for manager review. This does not record a reimbursement.</p>}
 
+        {possibleDup && (
+          <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 space-y-2">
+            <p className="text-amber-300 text-sm">This looks like a receipt you already captured (same store, date, and total).</p>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setDupChoice('different')} className={`flex-1 py-2 rounded-xl text-sm font-semibold border ${dupChoice === 'different' ? 'bg-indigo-600 border-indigo-400 text-white' : 'border-gray-700 text-gray-200'}`}>Different purchase</button>
+              <button type="button" onClick={() => setDupChoice('same')} className={`flex-1 py-2 rounded-xl text-sm font-semibold border ${dupChoice === 'same' ? 'bg-indigo-600 border-indigo-400 text-white' : 'border-gray-700 text-gray-200'}`}>Same — I already have it</button>
+            </div>
+            {dupChoice === 'same' && <p className="text-gray-400 text-xs">We’ll flag this so it isn’t counted twice; a manager will tidy it up.</p>}
+          </div>
+        )}
+
         <label className="block text-xs text-gray-500">Store / vendor {missing(vendor) && <span className="text-amber-400">· needed</span>}
-          <input value={vendor} onChange={(e) => setVendor(e.target.value)} disabled={saving} placeholder="e.g. O’Reilly Auto Parts" className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />
+          <input value={vendor} onChange={(e) => set(setVendor, vendorT)(e.target.value)} disabled={saving} placeholder="e.g. O’Reilly Auto Parts" className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />
         </label>
         <div className="grid grid-cols-2 gap-3">
           <label className="block text-xs text-gray-500">Date {missing(date) && <span className="text-amber-400">· needed</span>}
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} disabled={saving} className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />
+            <input type="date" value={date} onChange={(e) => set(setDate, dateT)(e.target.value)} disabled={saving} className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />
           </label>
           <label className="block text-xs text-gray-500">Total {missing(total) && <span className="text-amber-400">· needed</span>}
-            <input value={total} onChange={(e) => setTotal(e.target.value)} disabled={saving} inputMode="decimal" placeholder="0.00" className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />
+            <input value={total} onChange={(e) => set(setTotal, totalT)(e.target.value)} disabled={saving} inputMode="decimal" placeholder="0.00" className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />
           </label>
         </div>
 
@@ -315,13 +398,13 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
           </div>
         )}
 
-        {uploadState === 'duplicate' && <p className="text-amber-300 text-sm rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2">This receipt was already captured — no need to send it again.</p>}
-        {uploadState === 'error' && <p className="text-red-400 text-sm">The photo didn’t upload. Go back and retake it.</p>}
+        {saveState === 'duplicate' && <p className="text-amber-300 text-sm rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2">This receipt was already captured — no need to send it again.</p>}
+        {saveState === 'error' && <p className="text-red-400 text-sm">The photo didn’t save. Go back and retake it.</p>}
         {saveErr && <p className="text-red-400 text-sm">{saveErr}</p>}
 
-        <button type="button" onClick={save} disabled={saving || uploadState === 'duplicate' || uploadState === 'error'}
+        <button type="button" onClick={save} disabled={saving || saveState === 'duplicate' || saveState === 'error'}
           className="w-full bg-green-600 active:bg-green-700 text-white text-lg font-bold py-4 rounded-2xl disabled:opacity-50">
-          {saving ? (uploadState === 'uploading' ? 'Finishing upload…' : 'Saving…') : 'Save receipt'}
+          {saving ? 'Saving…' : 'Save receipt'}
         </button>
         <p className="text-gray-600 text-xs text-center">You’re filing this yourself. If anything’s missing we’ll flag it for a manager.</p>
       </div>

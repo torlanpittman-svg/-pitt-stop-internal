@@ -47,6 +47,17 @@ export async function findActiveReceiptByHash(hash: string): Promise<ReceiptRow 
   return d ?? null
 }
 
+/** A prior, non-rejected receipt with the same stable capture_id — used to make an upload RETRY (after a
+ *  lost/timed-out response) return the already-saved receipt instead of creating a second purchase, even
+ *  when the retaken photo's bytes differ. */
+export async function findReceiptByCaptureId(captureId: string): Promise<ReceiptRow | null> {
+  if (!captureId) return null
+  const [d] = await getDb().select().from(businessReceipts)
+    .where(and(eq(businessReceipts.captureId, captureId), ne(businessReceipts.status, 'rejected')))
+    .orderBy(desc(businessReceipts.createdAt)).limit(1)
+  return d ?? null
+}
+
 /** ANY prior receipt (incl. rejected) with the same content hash + a stored private image. Used ONLY to
  *  REUSE the immutable Blob pathname for identical bytes (never re-uploading), avoiding a put-conflict on a
  *  re-upload after rejection. Returns just the pathname — never any receipt metadata. */
@@ -102,6 +113,72 @@ export async function createReceipt(input: CreateReceiptInput): Promise<{ id: st
     }
     throw err
   }
+}
+
+// ── Fast durable save (upload) — the receipt row is created BEFORE any AI read ────────────────────────
+export interface CreatePendingInput {
+  storageRef: string | null; filename?: string | null; contentType?: string | null
+  imageHash: string; byteSize?: number | null; captureId?: string | null
+  uploadedBy: string | null; uploadedByKey?: string | null
+}
+/**
+ * Create a recoverable receipt row on upload, BEFORE the AI read — so the employee is told "photo saved"
+ * as soon as the evidence is durable, and a slow/failed read can never lose the receipt. Status lands on
+ * needs_review with ai_status='pending' (a real, recoverable row; the manager backlog surfaces it if the
+ * capture is abandoned); the extract step fills the proposal later. DB-idempotent on BOTH capture_id (retry
+ * after a lost response) and image_hash (identical bytes): a duplicate insert returns the EXISTING active
+ * row instead of a second purchase.
+ */
+export async function createPendingReceipt(input: CreatePendingInput): Promise<{ id: string; duplicate: boolean }> {
+  // Short-circuit: a retry with a known capture_id returns the already-saved receipt (no second row).
+  if (input.captureId) {
+    const existing = await findReceiptByCaptureId(input.captureId)
+    if (existing) return { id: existing.id, duplicate: true }
+  }
+  const audit = [auditEntry('uploaded', input.uploadedBy)]
+  try {
+    const [row] = await getDb().insert(businessReceipts).values({
+      status: 'needs_review', entity: 'unassigned', category: 'uncategorized',
+      storage: 'blob_private', storageRef: input.storageRef, filename: input.filename ?? null, contentType: input.contentType ?? null,
+      imageHash: input.imageHash, byteSize: input.byteSize ?? null, captureId: input.captureId ?? null,
+      aiStatus: 'pending', aiModel: null, aiRaw: null, aiExtracted: null, confidence: null,
+      uploadedBy: input.uploadedBy, uploadedByKey: input.uploadedByKey ?? null, auditLog: audit as unknown as object,
+    }).returning({ id: businessReceipts.id })
+    return { id: row.id, duplicate: false }
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      const existing = (input.captureId ? await findReceiptByCaptureId(input.captureId) : null) ?? await findActiveReceiptByHash(input.imageHash)
+      if (existing) return { id: existing.id, duplicate: true }
+    }
+    throw err
+  }
+}
+
+// ── Possible-duplicate detection (post-extraction; evidence = vendor + date + total, never total alone) ──
+export interface DuplicateCandidate { id: string; vendor: string | null; receiptDate: string | null; totalCents: number | null; status: string }
+/**
+ * A likely-duplicate receipt for `id`, based on STRONG evidence: same vendor AND same business date AND same
+ * (non-zero) total. Equal totals alone are never enough. Scoped to the SAME uploader (or the same shared
+ * device when there is no named uploader) so another employee's private receipt is never exposed — and the
+ * returned vendor/date/total necessarily equal the caller's own receipt, so nothing new is disclosed. Never
+ * merges or deletes; this only surfaces a candidate for the human to resolve.
+ */
+export async function possibleDuplicateFor(id: string): Promise<DuplicateCandidate | null> {
+  const r = await getReceipt(id)
+  if (!r || !r.vendor || !r.receiptDate || r.totalCents == null || r.totalCents <= 0) return null
+  const conds = [
+    ne(businessReceipts.id, r.id),
+    ne(businessReceipts.status, 'rejected'),
+    eq(businessReceipts.receiptDate, r.receiptDate),
+    eq(businessReceipts.totalCents, r.totalCents),
+    sql`lower(${businessReceipts.vendor}) = lower(${r.vendor})`,
+    r.uploadedByKey ? eq(businessReceipts.uploadedByKey, r.uploadedByKey) : isNull(businessReceipts.uploadedByKey),
+  ]
+  // Different capture_id — a retry of the SAME capture is not a duplicate purchase (already collapsed).
+  if (r.captureId) conds.push(or(isNull(businessReceipts.captureId), ne(businessReceipts.captureId, r.captureId))!)
+  const [d] = await getDb().select({ id: businessReceipts.id, vendor: businessReceipts.vendor, receiptDate: businessReceipts.receiptDate, totalCents: businessReceipts.totalCents, status: businessReceipts.status })
+    .from(businessReceipts).where(and(...conds)).orderBy(desc(businessReceipts.createdAt)).limit(1)
+  return d ?? null
 }
 
 /** Does this canonical inventory-vehicle id exist? App-level guard so an arbitrary/nonexistent id can
