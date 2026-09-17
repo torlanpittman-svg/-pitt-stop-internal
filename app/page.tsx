@@ -6,16 +6,12 @@ import { managerActor } from '@/apps/checks/authz'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
+// Retail Estimator is intentionally hidden from the homepage — its route/code/data are untouched.
 const MODULES = [
   {
     href:    '/quick-entry',
     label:   'Quick Entry',
     sub:     'Customer + vehicle + services → Work Board in under a minute.',
-  },
-  {
-    href:    '/estimator',
-    label:   'Retail Estimator',
-    sub:     'Photograph a vehicle and create an estimate.',
   },
   {
     href:    '/dealer-check-in',
