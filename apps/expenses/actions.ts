@@ -15,6 +15,7 @@ import {
   type BusinessEntity, type ExpenseCategory, type PaymentMethod, type FundingSource,
 } from './types'
 import { errorCode } from './errors'
+import { resolveReceiptPayment } from './payment'
 import { logger } from '@/platform/logger'
 
 const revalidate = () => { revalidatePath('/expenses/review'); revalidatePath('/expenses') }
@@ -75,6 +76,7 @@ export async function saveReviewAction(f: ReviewForm): Promise<{ ok: boolean; er
  */
 export interface FileForm {
   id: string; token?: string
+  paymentChoice?: string; otherPayment?: string
   entity?: string; category?: string; categoryMode?: string; funding?: string; paymentMethod?: string
   vendor?: string; receiptDate?: string; subtotal?: string; tax?: string; total?: string
   memo?: string; filingNote?: string; inventoryVehicleId?: string; duplicate?: boolean
@@ -110,6 +112,15 @@ export async function fileReceiptAction(f: FileForm): Promise<FileResult> {
     vendor: f.vendor !== undefined ? (f.vendor.trim() || null) : null,
     receiptDate: f.receiptDate !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(f.receiptDate.trim()) ? f.receiptDate.trim() : null,
     totalCents: total,
+  }
+  if (f.paymentChoice !== undefined) {
+    const payment = resolveReceiptPayment(f.paymentChoice, f.otherPayment)
+    if (!payment.ok) return { ok: false, error: payment.error }
+    // Derive instrument, funding and account together on the server, never from client-supplied mappings.
+    Object.assign(input, payment.payment)
+  } else if (input.funding !== row.funding || input.paymentMethod !== row.paymentMethod) {
+    // Legacy manager controls may change the method/funding without selecting a known bank.
+    input.accountRef = null
   }
   if (f.subtotal !== undefined) input.subtotalCents = f.subtotal.trim() === '' ? null : parseCents(f.subtotal)
   if (f.tax !== undefined) input.taxCents = f.tax.trim() === '' ? null : parseCents(f.tax)

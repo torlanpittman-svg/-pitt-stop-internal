@@ -183,6 +183,8 @@ export interface ReconRow {
   entity: string
   category: string
   funding: string
+  accountRef: string | null
+  paymentMethod: string | null
   imageUrl: string | null            // gated, manager/admin-only retrieval route (never a raw blob URL)
   suggestions: { txnId: string; amountCents: number; txnDate: string; label: string; strength: 'strong' | 'possible'; amountDeltaCents: number | null; dateDeltaDays: number | null }[]
 }
@@ -248,7 +250,7 @@ export async function getReceiptReconciliation(month: string = currentReportMont
     const ranked = rankCandidates({ totalCents: r.totalCents, receiptDate: r.receiptDate, vendor: r.vendor }, available)
     unreconciled.push({
       receiptId: r.id, vendor: r.vendor, receiptDate: r.receiptDate, totalCents: r.totalCents,
-      entity: r.entity, category: r.category, funding: r.funding,
+      entity: r.entity, category: r.category, funding: r.funding, accountRef: r.accountRef, paymentMethod: r.paymentMethod,
       imageUrl: r.storage !== 'none' && r.storageRef ? `/api/expenses/receipt/${r.id}/image` : null,
       suggestions: ranked.filter((c) => c.strength !== 'none').map((c) => ({
         txnId: c.txnId, amountCents: c.txn.amountCents, txnDate: c.txn.txnDate, label: txnLabel(c.txn),

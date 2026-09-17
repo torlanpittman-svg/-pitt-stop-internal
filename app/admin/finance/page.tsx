@@ -7,6 +7,7 @@
  * but demoted into expandable sections lower down. No money movement anywhere.
  */
 import { revalidatePath } from 'next/cache'
+import { receiptPaymentLabel } from '@/apps/expenses/payment'
 import { financeEnabled } from '@/apps/settings/db'
 import { getAccounts, getDebts, getLatestPayroll, getDocuments, getLatestSyncRun, getDataGaps, setNextPayroll, addDocumentMeta, getPlaidConnections, verifyPlaidMapping, refreshPlaidBalances, getOperatingCash, getAutoSalesLiquidity, setPlaidAccountStatus, setAccountStatus } from '@/apps/finance/db'
 import { plaidDiagnostics } from '@/apps/finance/plaid'
@@ -451,6 +452,7 @@ export default async function FinancePage() {
                     <div className="text-sm">
                       <span className="text-gray-200">{r.vendor || 'Unknown vendor'}</span>
                       <span className="text-gray-500"> · {r.receiptDate || 'no date'} · {money(r.totalCents)} · {rcptEntityLabel(r.entity)} / {rcptCategoryLabel(r.category)}</span>
+                      <span className="block text-gray-400 text-xs">Paid with: {receiptPaymentLabel(r)}</span>
                       {r.imageUrl && <a href={r.imageUrl} target="_blank" rel="noreferrer" className="text-indigo-300 ml-2 text-[11px] underline">receipt</a>}
                     </div>
                     <form action={dismissMatchAction}><input type="hidden" name="receiptId" value={r.receiptId} /><button className="text-gray-500 text-[11px] hover:text-gray-300">No bank match</button></form>

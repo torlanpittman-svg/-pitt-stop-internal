@@ -254,6 +254,7 @@ export interface FileReceiptInput {
   category: CategoryChoice
   funding: FundingSource
   paymentMethod: PaymentMethod | null
+  accountRef?: string | null
   vendor: string | null
   receiptDate: string | null
   totalCents: number | null
@@ -313,6 +314,7 @@ export async function fileReceipt(id: string, input: FileReceiptInput, actor: Fi
   if (input.taxCents !== undefined) set.taxCents = input.taxCents
   if (input.memo !== undefined) set.memo = input.memo || null
   if (input.filingNote !== undefined) set.filingNote = input.filingNote || null
+  if (input.accountRef !== undefined) set.accountRef = input.accountRef
   if (input.inventoryVehicleId !== undefined) set.inventoryVehicleId = input.inventoryVehicleId || null
 
   if (decision.status === 'filed') {
@@ -330,7 +332,7 @@ export async function fileReceipt(id: string, input: FileReceiptInput, actor: Fi
   const action = decision.status === 'filed' ? 'filed' : clarify ? 'clarified' : 'flagged'
   const note = decision.status === 'filed' ? null : decision.reasons.join(', ')
   const done = await db.update(businessReceipts)
-    .set({ ...set, auditLog: appendAudit(auditEntry(action, actor.name, undefined, note)) })
+    .set({ ...set, auditLog: appendAudit(auditEntry(action, actor.name, diffFields(before as unknown as Record<string, unknown>, set), note)) })
     .where(and(eq(businessReceipts.id, id), inArray(businessReceipts.status, EDITABLE_FROM)))
     .returning({ id: businessReceipts.id })
   if (done.length === 0) {

@@ -16,7 +16,8 @@ import * as schema from '@/drizzle/schema'
 const h = vi.hoisted(() => ({ db: null as unknown }))
 vi.mock('@/platform/db', () => ({ getDb: () => h.db }))
 
-import { createReceipt, fileReceipt, approveReceipt, rejectReceipt, reopenReceipt } from '@/apps/expenses/db'
+import { createReceipt, fileReceipt, approveReceipt, rejectReceipt, reopenReceipt, getReceipt } from '@/apps/expenses/db'
+import { resolveReceiptPayment } from '@/apps/expenses/payment'
 import type { CategoryChoice } from '@/apps/expenses/types'
 import { getReceiptCoverage, getReceiptReconciliation, confirmReceiptMatch, dismissReceiptMatch, clearReceiptMatch } from './receipts-cfo'
 
@@ -86,6 +87,23 @@ describe('coverage — filed + approved visible, purchases counted once', () => 
     expect(cov.reconciledCents).toBe(0)          // nothing matched yet
     expect(cov.unreconciledCents).toBe(4599)     // visible + not subtracted anywhere
     expect(cov.unreconciledCount).toBe(1)
+  })
+
+  it('retains the selected bank through filing, audit and CFO reconciliation without changing totals', async () => {
+    const { id } = await createReceipt(base({ imageHash: 'bank-source' }))
+    const p = resolveReceiptPayment('extraco_check')
+    if (!p.ok) throw new Error('fixture')
+    expect((await fileReceipt(id, { ...clean(), ...p.payment }, filer)).status).toBe('filed')
+    const row = await getReceipt(id)
+    expect(row?.accountRef).toBe('*5600')
+    expect(row?.auditLog).toEqual(expect.arrayContaining([expect.objectContaining({ action: 'filed', changes: expect.objectContaining({ accountRef: { from: null, to: '*5600' } }) })]))
+    expect((await getReceiptReconciliation(MONTH)).unreconciled[0]).toMatchObject({ accountRef: '*5600', paymentMethod: 'check', funding: 'business' })
+    await reopenReceipt(id, 'Manager')
+    const personal = resolveReceiptPayment('personal')
+    if (!personal.ok) throw new Error('fixture')
+    await fileReceipt(id, { ...clean(), ...personal.payment }, filer)
+    expect((await getReceipt(id))?.accountRef).toBeNull()
+    expect((await getReceiptReconciliation(MONTH)).unreconciled).toHaveLength(0)
   })
 
   it('a legacy APPROVED receipt also flows through the coverage layer', async () => {

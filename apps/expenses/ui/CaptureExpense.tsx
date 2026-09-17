@@ -18,6 +18,7 @@ import {
   attentionReasonLabel, centsToDollars,
 } from '@/apps/expenses/types'
 import { fileReceiptAction } from '@/apps/expenses/actions'
+import { OTHER_PAYMENT_MAX_LENGTH, RECEIPT_PAYMENT_CHOICES, resolveReceiptPayment } from '@/apps/expenses/payment'
 
 export interface VehicleOption { id: string; label: string }
 
@@ -30,15 +31,6 @@ type Step = 'q1' | 'q2' | 'q2more' | 'q3' | 'confirm' | 'saving'
 type UploadState = 'uploading' | 'ready' | 'duplicate' | 'error'
 interface Proposal { vendor: string | null; date: string | null; totalCents: number | null }
 interface UploadResult { ok: boolean; receiptId?: string; fileToken?: string; duplicate?: boolean; aiStatus?: string; proposal?: Proposal; error?: string }
-interface FundingChoice { label: string; funding: string; paymentMethod: string | null }
-
-const FUNDING_CHOICES: FundingChoice[] = [
-  { label: 'Business card',  funding: 'business', paymentMethod: 'card' },
-  { label: 'Business cash',  funding: 'business', paymentMethod: 'cash' },
-  { label: 'Business check', funding: 'business', paymentMethod: 'check' },
-  { label: 'Personal money', funding: 'personal', paymentMethod: null },
-  { label: 'Not paid yet',   funding: 'unpaid',   paymentMethod: null },
-]
 const entityLabel = (k: string) => BUSINESS_ENTITIES.find((b) => b.key === k)?.label ?? k
 const categoryLabel = (k: string) => EXPENSE_CATEGORIES.find((c) => c.key === k)?.label ?? k
 
@@ -88,8 +80,8 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
   const [entity, setEntity] = useState('')
   const [categoryMode, setCategoryMode] = useState<'single' | 'mixed' | 'unsure'>('single')
   const [categoryKey, setCategoryKey] = useState('')
-  const [funding, setFunding] = useState('')
-  const [paymentMethod, setPaymentMethod] = useState<string | null>(null)
+  const [paymentChoice, setPaymentChoice] = useState('')
+  const [otherPayment, setOtherPayment] = useState('')
   // Confirmed purchase facts (prefilled from the AI proposal when it arrives, unless already typed)
   const [vendor, setVendor] = useState('')
   const [date, setDate] = useState('')
@@ -106,7 +98,7 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
     if (previewUrl) URL.revokeObjectURL(previewUrl); setPreviewUrl(null)
     setStarted(false); setStep('q1'); setPickErr(null)
     setUploadState('uploading'); setUpload(null); uploadPromise.current = null
-    setEntity(''); setCategoryMode('single'); setCategoryKey(''); setFunding(''); setPaymentMethod(null)
+    setEntity(''); setCategoryMode('single'); setCategoryKey(''); setPaymentChoice(''); setOtherPayment('')
     setVendor(''); setDate(''); setTotal(''); setShowExtras(false); setVehicleId(''); setNote('')
     setSaveErr(null); setResult(null)
     if (camRef.current) camRef.current.value = ''
@@ -146,6 +138,8 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
   }
 
   async function save() {
+    const payment = resolveReceiptPayment(paymentChoice, otherPayment)
+    if (!payment.ok) { setSaveErr(payment.error); setStep('q3'); return }
     setSaveErr(null); setStep('saving')
     // The upload may still be in flight — wait for it (overlapped with the human answering).
     let up = upload
@@ -154,7 +148,7 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
     if (up.duplicate || !up.receiptId) { setSaveErr('This receipt was already captured — no need to send it again.'); setStep('confirm'); return }
     const res = await fileReceiptAction({
       id: up.receiptId, token: up.fileToken,
-      entity, category: categoryKey, categoryMode, funding, paymentMethod: paymentMethod ?? undefined,
+      entity, category: categoryKey, categoryMode, paymentChoice, otherPayment,
       vendor, receiptDate: date, total,
       filingNote: note || undefined,
       inventoryVehicleId: vehicleId || undefined,
@@ -253,12 +247,25 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
 
   if (step === 'q3') {
     return (
-      <StepShell title="How did you pay?" onBack={() => setStep('q2')} {...shell}>
+      <StepShell title="How did we pay for it?" onBack={() => setStep('q2')} {...shell}>
         <div className="space-y-3">
-          {FUNDING_CHOICES.map((c) => (
-            <Bubble key={c.label} selected={funding === c.funding && paymentMethod === c.paymentMethod}
-              onClick={() => { setFunding(c.funding); setPaymentMethod(c.paymentMethod); setStep('confirm') }}>{c.label}</Bubble>
+          {RECEIPT_PAYMENT_CHOICES.map((c) => (
+            <Bubble key={c.key} selected={paymentChoice === c.key}
+              onClick={() => { setPaymentChoice(c.key); setSaveErr(null); if (c.key !== 'other') { setOtherPayment(''); setStep('confirm') } }}>{c.label}</Bubble>
           ))}
+          {paymentChoice === 'other' && (
+            <div className="space-y-3">
+              <label className="block text-sm text-gray-300">How was it paid?
+                <input autoFocus value={otherPayment} onChange={(e) => setOtherPayment(e.target.value)} maxLength={OTHER_PAYMENT_MAX_LENGTH}
+                  placeholder="e.g. company Amex" className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />
+              </label>
+              <button type="button" disabled={!resolveReceiptPayment(paymentChoice, otherPayment).ok} onClick={() => setStep('confirm')}
+                className="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl disabled:opacity-50">Continue</button>
+              <p className="text-xs text-gray-500">A manager will clarify this payment source.</p>
+            </div>
+          )}
+          <button type="button" className="text-gray-400 text-sm py-2" onClick={() => { setPaymentChoice('unpaid'); setOtherPayment(''); setStep('confirm') }}>Not paid yet</button>
+          {saveErr && <p className="text-red-400 text-sm">{saveErr}</p>}
         </div>
       </StepShell>
     )
@@ -267,7 +274,7 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
   // confirm / saving
   const saving = step === 'saving'
   const catText = categoryMode === 'single' ? categoryLabel(categoryKey) : categoryMode === 'mixed' ? 'More than one category' : 'Other / Not sure'
-  const fundText = FUNDING_CHOICES.find((c) => c.funding === funding && c.paymentMethod === paymentMethod)?.label ?? '—'
+  const fundText = paymentChoice === 'other' ? `Other: ${otherPayment.trim()}` : paymentChoice === 'unpaid' ? 'Not paid yet' : RECEIPT_PAYMENT_CHOICES.find((c) => c.key === paymentChoice)?.label ?? '—'
   const missing = (v: string) => v.trim() === ''
   return (
     <StepShell title="Check the details" onBack={saving ? undefined : () => setStep('q3')} {...shell}>
@@ -277,6 +284,8 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
           <span className="text-gray-300">{catText}</span><span>·</span>
           <span className="text-gray-300">{fundText}</span>
         </div>
+
+        {paymentChoice === 'personal' && <p className="text-amber-300 text-sm">Personal payment — saved for manager review. This does not record a reimbursement.</p>}
 
         <label className="block text-xs text-gray-500">Store / vendor {missing(vendor) && <span className="text-amber-400">· needed</span>}
           <input value={vendor} onChange={(e) => setVendor(e.target.value)} disabled={saving} placeholder="e.g. O’Reilly Auto Parts" className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />

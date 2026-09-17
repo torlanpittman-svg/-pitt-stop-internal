@@ -17,6 +17,7 @@ import {
 } from '@/apps/expenses/types'
 import { fileReceiptAction, rejectReceiptAction, reopenReceiptAction, retryExtractionAction } from '@/apps/expenses/actions'
 import type { ReviewCardData } from '@/apps/expenses/view'
+import { OTHER_PAYMENT_MAX_LENGTH, RECEIPT_PAYMENT_CHOICES, receiptPaymentChoice, receiptPaymentLabel } from '@/apps/expenses/payment'
 
 export type { ReviewCardData }
 export interface VehicleOption { id: string; label: string }
@@ -34,6 +35,8 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
   const [tax, setTax] = useState(centsToDollars(r.taxCents))
   const [total, setTotal] = useState(centsToDollars(r.totalCents))
   const [paymentMethod, setPaymentMethod] = useState(r.paymentMethod ?? '')
+  const [paymentChoice, setPaymentChoice] = useState(receiptPaymentChoice(r))
+  const [otherPayment, setOtherPayment] = useState(r.accountRef?.startsWith('other:') ? r.accountRef.slice(6) : '')
   const [inventoryVehicleId, setInventoryVehicleId] = useState(r.inventoryVehicleId ?? '')
   const [memo, setMemo] = useState(r.memo ?? '')
   const [busy, setBusy] = useState(false)
@@ -63,6 +66,7 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
 
   const formFields = () => ({
     id: r.id, entity, category, categoryMode: 'single', funding, paymentMethod: paymentMethod || undefined,
+    paymentChoice: paymentChoice || undefined, otherPayment,
     vendor, receiptDate, subtotal, tax, total, memo, inventoryVehicleId,
   })
   // Manager files via the SAME operational path as the employee (categoryMode 'single' with the chosen key).
@@ -131,7 +135,17 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
             <label className={lbl}>Tax{suggested('tax')}<br /><input value={tax} onChange={(e) => setTax(e.target.value)} disabled={decided} inputMode="decimal" placeholder="" className={box} /></label>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <label className={lbl}>Paid with<br />
+            <select value={paymentChoice} onChange={(e) => { setPaymentChoice(e.target.value); if (e.target.value !== 'other') setOtherPayment('') }} disabled={decided} className={box}>
+              <option value="">{receiptPaymentLabel(r)} (existing details)</option>
+              {RECEIPT_PAYMENT_CHOICES.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+              <option value="unpaid">Not paid yet</option>
+            </select>
+          </label>
+          {paymentChoice === 'other' && <label className={lbl}>Other payment source<br />
+            <input value={otherPayment} onChange={(e) => setOtherPayment(e.target.value)} maxLength={OTHER_PAYMENT_MAX_LENGTH} disabled={decided} className={box} />
+          </label>}
+          {!paymentChoice && <div className="grid grid-cols-2 gap-3">
             <label className={lbl}>Funding<br />
               <select value={funding} onChange={(e) => setFunding(e.target.value)} disabled={decided} className={box}>
                 {FUNDING_SOURCES.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
@@ -140,7 +154,7 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
               <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} disabled={decided} className={box}>
                 <option value="">—</option>{PAYMENT_METHODS.filter((m) => m !== 'unknown').map((m) => <option key={m} value={m}>{m}</option>)}
               </select></label>
-          </div>
+          </div>}
 
           <details className="rounded-xl border border-gray-800 bg-gray-900/60">
             <summary className="px-3 py-2 text-gray-400 text-sm cursor-pointer list-none">Vehicle &amp; note ▾</summary>
