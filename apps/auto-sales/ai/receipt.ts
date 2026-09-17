@@ -28,7 +28,9 @@ export interface ReceiptExtraction {
   taxCents: number | null
   categoryLabel: string | null   // one of RECEIPT_CATEGORIES labels
   lineItems: ReceiptLineItem[]
-  paymentLast4: string | null
+  paymentMethod: string | null   // cash|card|check|ach|other|multiple (for the shared payment-source match)
+  cardBrand: string | null       // visa|mastercard|discover|amex — ONLY when explicitly printed
+  paymentLast4: string | null    // the PAYMENT CARD's last 4 only (never an order#/date/terminal/auth/check#)
   receiptNumber: string | null   // this document's own receipt/invoice number
   documentType: DocumentType     // purchase | return | partial_return | refund | store_credit | unknown
   originalReference: string | null // for a return: the ORIGINAL receipt/invoice # it references, if cited
@@ -36,7 +38,7 @@ export interface ReceiptExtraction {
 }
 export interface ReceiptExtractResult { status: 'extracted' | 'failed'; model: string | null; raw: unknown; extraction: ReceiptExtraction }
 
-const EMPTY: ReceiptExtraction = { vendor: null, date: null, totalCents: null, subtotalCents: null, taxCents: null, categoryLabel: null, lineItems: [], paymentLast4: null, receiptNumber: null, documentType: 'unknown', originalReference: null, isReturn: false }
+const EMPTY: ReceiptExtraction = { vendor: null, date: null, totalCents: null, subtotalCents: null, taxCents: null, categoryLabel: null, lineItems: [], paymentMethod: null, cardBrand: null, paymentLast4: null, receiptNumber: null, documentType: 'unknown', originalReference: null, isReturn: false }
 
 const PROMPT = `You are reading a photo of a vehicle-shop RECEIPT, INVOICE, RETURN or CREDIT MEMO. Extract ONLY what is clearly legible; use null when unsure. Return STRICT JSON, no prose, no markdown fences:
 {
@@ -47,7 +49,9 @@ const PROMPT = `You are reading a photo of a vehicle-shop RECEIPT, INVOICE, RETU
   "tax": number|null,                    // tax in dollars (absolute)
   "category": one of ["Parts","Mechanical / Labor","Body / Paint","PDR","Tires / Wheels","Transport / Towing","Detail / Recon","Title / Registration","Auction / Purchase Fees","Fuel","Other"]|null,
   "lineItems": [ { "description": string, "amount": number|null, "quantity": number|null, "unitPrice": number|null, "sku": string|null, "returned": boolean } ],  // dollars, absolute; sku = part number if printed; returned=true only if THIS line is a returned/credit line
-  "paymentLast4": string|null,           // last 4 of card if visible
+  "paymentMethod": "cash"|"card"|"check"|"ach"|"other"|"multiple"|null,  // how it was paid; "multiple" if more than one tender is shown
+  "cardBrand": "visa"|"mastercard"|"discover"|"amex"|null,  // the card network, ONLY if explicitly printed
+  "paymentLast4": string|null,           // last 4 of the PAYMENT CARD number ONLY, if visible — never an order#, date, terminal ID, auth code, or check number
   "receiptNumber": string|null,          // THIS document's receipt/invoice number if visible
   "documentType": "purchase"|"return"|"partial_return"|"refund"|"store_credit"|"unknown",  // classify the whole document
   "originalReference": string|null       // if this is a return, the ORIGINAL receipt/invoice number it references (else null)
@@ -98,6 +102,8 @@ export async function extractReceipt(imageBase64: string, mimeType: string): Pro
         sku: typeof li?.sku === 'string' && li.sku.trim() ? li.sku.trim().slice(0, 60) : null,
         returned: Boolean(li?.returned),
       })).filter((li: ReceiptLineItem) => li.description) : [],
+      paymentMethod: typeof j.paymentMethod === 'string' && ['cash', 'card', 'check', 'ach', 'other', 'multiple'].includes(j.paymentMethod.trim().toLowerCase()) ? j.paymentMethod.trim().toLowerCase() : null,
+      cardBrand: typeof j.cardBrand === 'string' && ['visa', 'mastercard', 'discover', 'amex'].includes(j.cardBrand.trim().toLowerCase()) ? j.cardBrand.trim().toLowerCase() : null,
       paymentLast4: typeof j.paymentLast4 === 'string' ? (j.paymentLast4.match(/\d{4}/)?.[0] ?? null) : null,
       receiptNumber: cleanRef(j.receiptNumber),
       documentType,

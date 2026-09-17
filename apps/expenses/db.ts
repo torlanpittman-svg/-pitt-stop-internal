@@ -332,6 +332,7 @@ export interface FileReceiptInput {
   funding: FundingSource
   paymentMethod: PaymentMethod | null
   accountRef?: string | null
+  paymentLast4?: string | null        // the CARD ending (distinguishes AMB 0022 vs 0320); undefined = unchanged
   vendor: string | null
   receiptDate: string | null
   totalCents: number | null
@@ -392,6 +393,9 @@ export async function fileReceipt(id: string, input: FileReceiptInput, actor: Fi
   if (input.memo !== undefined) set.memo = input.memo || null
   if (input.filingNote !== undefined) set.filingNote = input.filingNote || null
   if (input.accountRef !== undefined) set.accountRef = input.accountRef
+  // The card ending is stored ONLY for a card source (distinguishes the two AMB Mastercards); a check/cash/
+  // personal/other choice clears it. Kept as a string so leading zeros in 0022/0320 survive.
+  if (input.paymentLast4 !== undefined) set.paymentLast4 = input.paymentLast4 || null
   if (input.inventoryVehicleId !== undefined) set.inventoryVehicleId = input.inventoryVehicleId || null
 
   if (decision.status === 'filed') {

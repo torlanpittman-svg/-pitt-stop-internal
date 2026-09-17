@@ -28,7 +28,7 @@ import { extractExpense } from '@/apps/expenses/ai'
 const asMock = <T>(fn: T) => fn as unknown as ReturnType<typeof vi.fn>
 const params = Promise.resolve({ id: 'rec-1' })
 const req = (body: unknown = {}) => new Request('http://x', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-const EXTRACTION = { vendor: 'Costco', date: '2026-03-14', subtotalCents: null, taxCents: null, totalCents: 44672, categoryLabel: null, categoryKey: 'shop_supplies', description: 'towels', paymentMethod: null, paymentLast4: null, receiptNumber: null, present: { vendor: true, date: true, total: true, category: true } }
+const EXTRACTION = { vendor: 'Costco', date: '2026-03-14', subtotalCents: null, taxCents: null, totalCents: 44672, categoryLabel: null, categoryKey: 'shop_supplies', description: 'towels', paymentMethod: null, cardBrand: null, paymentLast4: null, receiptNumber: null, present: { vendor: true, date: true, total: true, category: true } }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -62,6 +62,17 @@ describe('extract route', () => {
     expect(j.ok).toBe(true); expect(j.aiStatus).toBe('extracted')
     expect(j.proposal.vendor).toBe('Costco'); expect(j.proposal.totalCents).toBe(44672)
     expect(asMock(db.applyRetryExtraction)).toHaveBeenCalled()
+  })
+
+  it('the deterministic payment-source match is returned in the proposal (auto-select), null when unresolved', async () => {
+    // Card evidence identifying AMB ••0022 → the client pre-selects that bubble.
+    asMock(extractExpense).mockResolvedValue({ status: 'extracted', model: 'gpt-4o', raw: {}, extraction: { ...EXTRACTION, paymentMethod: 'card', cardBrand: 'mastercard', paymentLast4: '0022' } })
+    let j = await (await POST(req(), { params })).json()
+    expect(j.proposal.paymentChoice).toBe('amb_debit_0022')
+    // A check alone can't identify the bank → no auto-select.
+    asMock(extractExpense).mockResolvedValue({ status: 'extracted', model: 'gpt-4o', raw: {}, extraction: { ...EXTRACTION, paymentMethod: 'check', cardBrand: null, paymentLast4: null } })
+    j = await (await POST(req(), { params })).json()
+    expect(j.proposal.paymentChoice).toBeNull()
   })
 
   it('a provider FAILURE is recoverable: aiStatus=failed, the receipt is not lost', async () => {

@@ -119,8 +119,9 @@ export async function fileReceiptAction(f: FileForm): Promise<FileResult> {
     // Derive instrument, funding and account together on the server, never from client-supplied mappings.
     Object.assign(input, payment.payment)
   } else if (input.funding !== row.funding || input.paymentMethod !== row.paymentMethod) {
-    // Legacy manager controls may change the method/funding without selecting a known bank.
+    // Legacy manager controls may change the method/funding without selecting a known source.
     input.accountRef = null
+    input.paymentLast4 = null
   }
   if (f.subtotal !== undefined) input.subtotalCents = f.subtotal.trim() === '' ? null : parseCents(f.subtotal)
   if (f.tax !== undefined) input.taxCents = f.tax.trim() === '' ? null : parseCents(f.tax)

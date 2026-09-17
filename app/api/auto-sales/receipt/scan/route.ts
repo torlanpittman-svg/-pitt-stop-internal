@@ -13,6 +13,7 @@ import { NextResponse } from 'next/server'
 import { createHash } from 'node:crypto'
 import { uploadPhoto } from '@/platform/blob'
 import { extractReceipt } from '@/apps/auto-sales/ai/receipt'
+import { matchedAccountRef as matchedAccountRefFrom } from '@/apps/expenses/payment'
 import { findDocumentByHash, createReceiptDocument, proposeReturnMatch } from '@/apps/auto-sales/db'
 import { isAcceptedMimeType } from '@/platform/image'
 import { EMP_COOKIE, employeePinConfigured, verifyEmployeeToken } from '@/apps/auth/employee-session'
@@ -100,8 +101,13 @@ export async function POST(req: Request) {
       aiStatus: ai.status, aiModel: ai.model, aiRaw: ai.raw, aiExtracted: ai.extraction, uploadedBy: 'auto-sales',
     })
 
-    logger.info(APP, 'scanned', { vehicle: inventoryVehicleId, aiStatus: ai.status, stored: storage, dup: !!duplicateWarning, ret: returnMatch?.classification })
-    return NextResponse.json({ ok: true, documentId, storageRef, imageHash, aiStatus: ai.status, proposal: ai.extraction, duplicateWarning, returnMatch })
+    // 6c) Deterministic payment-source match (SHARED with general receipts). Resolves the printed card
+    //     evidence to an approved bank account_ref (*2649/*5600) — the granularity Auto Sales stores per
+    //     event. null when unresolved; the model never supplies the mapping. Verify screen pre-selects it.
+    const matchedAccountRef = matchedAccountRefFrom({ method: ai.extraction.paymentMethod, brand: ai.extraction.cardBrand, cardLast4: ai.extraction.paymentLast4 })
+
+    logger.info(APP, 'scanned', { vehicle: inventoryVehicleId, aiStatus: ai.status, stored: storage, dup: !!duplicateWarning, ret: returnMatch?.classification, acct: !!matchedAccountRef })
+    return NextResponse.json({ ok: true, documentId, storageRef, imageHash, aiStatus: ai.status, proposal: ai.extraction, matchedAccountRef, duplicateWarning, returnMatch })
   } catch (err) {
     logger.error(APP, 'failed', { error: String(err) })
     return NextResponse.json({ ok: false, error: 'Could not process receipt — enter it manually.' }, { status: 500 })

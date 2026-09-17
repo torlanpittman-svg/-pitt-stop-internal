@@ -21,6 +21,7 @@ import { validateReceiptUpload, extForMime, MAX_UPLOAD_BYTES, MAX_DECLARED_OVERH
 import { decodeImageMeta, validateDecodedMeta } from '@/apps/expenses/image-decode'
 import { receiptUploaderFromRequest, type Uploader } from '@/apps/expenses/authz'
 import { signCaptureToken } from '@/apps/expenses/capture-token'
+import { matchPaymentSource } from '@/apps/expenses/payment'
 import { errorCode } from '@/apps/expenses/errors'
 import { logger } from '@/platform/logger'
 
@@ -45,7 +46,7 @@ function resumePayload(row: ReceiptRow) {
     ok: true as const, receiptId: row.id, fileToken: signCaptureToken(row.id), duplicate: true, resumed: true,
     aiStatus: row.aiStatus,
     proposal: row.aiStatus === 'extracted'
-      ? { vendor: row.vendor, date: row.receiptDate, totalCents: row.totalCents, categoryKey: row.category, present: present ?? {} }
+      ? { vendor: row.vendor, date: row.receiptDate, totalCents: row.totalCents, categoryKey: row.category, paymentChoice: matchPaymentSource({ method: row.paymentMethod, brand: null, cardLast4: row.paymentLast4 }), present: present ?? {} }
       : null,
   }
 }

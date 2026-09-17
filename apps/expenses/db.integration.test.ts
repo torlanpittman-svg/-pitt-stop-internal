@@ -23,6 +23,7 @@ import {
   createPendingReceipt, findReceiptByCaptureId, possibleDuplicateFor,
 } from './db'
 import type { CategoryChoice } from './types'
+import { receiptPaymentChoice } from './payment'
 
 const single = (key: string): CategoryChoice => ({ kind: 'single', key: key as never })
 const cleanFiling = (over: Record<string, unknown> = {}) => ({
@@ -528,6 +529,24 @@ describe('possible-duplicate detection — vendor+date+total, never total alone 
     const { id: theirs } = await createReceipt(baseReceipt({ imageHash: 'F2', uploadedByKey: 'lee' }))
     await fileReceipt(theirs, { entity: 'detail', category: single('shop_supplies'), funding: 'business', paymentMethod: 'card', vendor: 'Costco', receiptDate: '2026-03-14', totalCents: 44672 }, { name: 'Lee', key: 'lee' })
     expect(await possibleDuplicateFor(theirs)).toBeNull() // sam's receipt not exposed to lee
+  })
+})
+
+describe('payment-source persistence — card ending stored separately from the bank (real Postgres)', () => {
+  const filer = { name: 'Sam', key: 'sam' }
+  it('a debit-card source persists account_ref + card ending; round-trips to the exact source (0022 vs 0320)', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'PS1' }))
+    await fileReceipt(id, cleanFiling({ paymentMethod: 'card', accountRef: '*2649', paymentLast4: '0022' }), filer)
+    const row = await getReceipt(id)
+    expect(row?.paymentMethod).toBe('card'); expect(row?.accountRef).toBe('*2649'); expect(row?.paymentLast4).toBe('0022')
+    expect(receiptPaymentChoice({ funding: row!.funding, paymentMethod: row!.paymentMethod, accountRef: row!.accountRef, paymentLast4: row!.paymentLast4 })).toBe('amb_debit_0022')
+  })
+  it('a check source persists the bank with NO card ending', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'PS2' }))
+    await fileReceipt(id, cleanFiling({ paymentMethod: 'check', accountRef: '*5600', paymentLast4: null }), filer)
+    const row = await getReceipt(id)
+    expect(row?.paymentMethod).toBe('check'); expect(row?.accountRef).toBe('*5600'); expect(row?.paymentLast4).toBeNull()
+    expect(receiptPaymentChoice({ funding: row!.funding, paymentMethod: row!.paymentMethod, accountRef: row!.accountRef, paymentLast4: row!.paymentLast4 })).toBe('extraco_check')
   })
 })
 

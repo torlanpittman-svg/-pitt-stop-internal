@@ -10,7 +10,7 @@
  */
 import { revalidatePath } from 'next/cache'
 import { createAcquisition, addExpenseEvent, addReturnRefund, settleRefund, recordSale, editSale, reverseSale, editAcquisitionPrice, updateCloseout, resolveVin, saveReceipt, type VinResolveResult, type SaleInput } from './db'
-import { ECONOMIC_CATEGORIES, REFUND_KINDS, econForLabel, type EconomicCategory } from './types'
+import { ECONOMIC_CATEGORIES, REFUND_KINDS, IN_SCOPE_ACCOUNTS, econForLabel, type EconomicCategory } from './types'
 import { dollarsToCents, isPaymentMethod } from './calc'
 import { employeeAuthorized, authorizedManager } from '@/apps/auth/employee-guard'
 
@@ -155,6 +155,7 @@ export async function resolveVinAction(inventoryVehicleId: string, rawVin: strin
 export interface SaveReceiptForm {
   documentId: string; vehicleId: string; categoryLabel?: string; economicCategory?: EconomicCategory
   amountDollars: string; totalDollars?: string; eventDate: string; vendor?: string; memo?: string
+  paymentAccountRef?: string  // approved bank the shared matcher identified (or a manual pick); validated server-side
   // Return handling: refundKind (cash vs non-cash), a matched originalEventId or unmatched, + match evidence.
   isReturn?: boolean; refundKind?: string; originalEventId?: string; unmatched?: boolean
   matchConfidence?: string; matchReasons?: string[]; returnedLineRef?: string; referencedReceipt?: string
@@ -167,8 +168,10 @@ export async function saveReceiptAction(f: SaveReceiptForm): Promise<{ ok: boole
     return { ok: false, error: 'Enter an amount and date.' }
   const econ = f.economicCategory ?? econForLabel(f.categoryLabel)
   if (!ECONOMIC_CATEGORIES.includes(econ)) return { ok: false, error: 'Invalid category.' }
+  // Only an approved account ref is accepted; anything else (incl. an unresolved match) stays 'unknown'.
+  const paymentAccountRef = IN_SCOPE_ACCOUNTS.some((a) => a.ref === f.paymentAccountRef) ? f.paymentAccountRef : 'unknown'
   const r = await saveReceipt({ documentId: f.documentId, economicCategory: econ, amountCents, eventDate: f.eventDate,
-    vendor: f.vendor || undefined, receiptTotalCents: totalCents, memo: f.memo || undefined,
+    vendor: f.vendor || undefined, receiptTotalCents: totalCents, memo: f.memo || undefined, paymentAccountRef,
     isReturn: f.isReturn ?? false, refundKind: f.refundKind, originalEventId: f.isReturn ? (f.originalEventId || null) : undefined,
     unmatched: f.unmatched, matchConfidence: f.matchConfidence, matchReasons: f.matchReasons,
     returnedLineRef: f.returnedLineRef, referencedReceipt: f.referencedReceipt, actor: 'auto-sales' })

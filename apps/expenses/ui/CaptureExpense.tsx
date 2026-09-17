@@ -32,7 +32,7 @@ const RESUME_TTL_MS = 2 * 60 * 60_000
 type Step = 'q1' | 'q2' | 'q2more' | 'q3' | 'confirm' | 'saving'
 type SaveState = 'uploading' | 'saved' | 'duplicate' | 'error'   // is the ORIGINAL durably stored?
 type ReadState = 'idle' | 'reading' | 'read' | 'failed'          // did the AI read succeed?
-interface Proposal { vendor: string | null; date: string | null; totalCents: number | null; categoryKey?: string }
+interface Proposal { vendor: string | null; date: string | null; totalCents: number | null; categoryKey?: string; paymentChoice?: string | null }
 interface Saved { receiptId: string; fileToken?: string }
 
 const entityLabel = (k: string) => BUSINESS_ENTITIES.find((b) => b.key === k)?.label ?? k
@@ -84,6 +84,8 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
   const [categoryKey, setCategoryKey] = useState('')
   const [paymentChoice, setPaymentChoice] = useState('')
   const [otherPayment, setOtherPayment] = useState('')
+  const paymentTouched = useRef(false)          // set once the employee picks a payment — protects a manual choice
+  const [paymentAuto, setPaymentAuto] = useState(false) // the current selection came from the receipt read
   // Confirmed purchase facts. `touched` marks fields the employee changed — a late read never overwrites them.
   const [vendor, setVendor] = useState(''); const vendorT = useRef(false)
   const [date, setDate] = useState(''); const dateT = useRef(false)
@@ -119,7 +121,7 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
     if (previewUrl) URL.revokeObjectURL(previewUrl); setPreviewUrl(null)
     setStarted(false); setStep('q1'); setPickErr(null)
     setSaveState('uploading'); setReadState('idle'); setSaved(null); setPossibleDup(false); setDupChoice('')
-    setEntity(''); setCategoryMode('single'); setCategoryKey(''); setPaymentChoice(''); setOtherPayment('')
+    setEntity(''); setCategoryMode('single'); setCategoryKey(''); setPaymentChoice(''); setOtherPayment(''); paymentTouched.current = false; setPaymentAuto(false)
     setVendor(''); setDate(''); setTotal(''); vendorT.current = false; dateT.current = false; totalT.current = false
     setShowExtras(false); setVehicleId(''); setNote(''); setSaveErr(null); setResult(null)
     captureId.current = ""; setReadAttempts(0)
@@ -134,6 +136,11 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
     if (p.date && !dateT.current) setDate((d) => d || p.date || '')
     if (p.totalCents != null && !totalT.current) setTotal((t) => t || centsToDollars(p.totalCents))
     if (p.categoryKey && p.categoryKey !== 'uncategorized' && categoryMode === 'single' && !categoryKey) setCategoryKey(p.categoryKey)
+    // Auto-select the matching payment bubble the receipt identified — never over a choice the employee made.
+    if (p.paymentChoice && !paymentTouched.current) {
+      setPaymentChoice((c) => (paymentTouched.current ? c : c || p.paymentChoice!))
+      setPaymentAuto((a) => a || !paymentTouched.current)
+    }
   }
 
   async function runExtract(receiptId: string, token?: string) {
@@ -309,12 +316,16 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
   }
 
   if (step === 'q3') {
+    // paymentAuto is cleared the moment the employee picks anything, so it alone reflects "still auto-selected".
+    const autoLabel = paymentAuto && paymentChoice ? (RECEIPT_PAYMENT_CHOICES.find((c) => c.key === paymentChoice)?.label ?? '') : ''
+    const pick = (key: string) => { paymentTouched.current = true; setPaymentAuto(false); setPaymentChoice(key); setSaveErr(null) }
     return (
       <StepShell title="How did we pay for it?" onBack={() => setStep('q2')} {...shell}>
         <div className="space-y-3">
+          {autoLabel && <p className="text-emerald-400 text-sm">Read from the receipt: <span className="font-semibold">{autoLabel}</span> — tap to confirm, or pick another.</p>}
           {RECEIPT_PAYMENT_CHOICES.map((c) => (
             <Bubble key={c.key} selected={paymentChoice === c.key}
-              onClick={() => { setPaymentChoice(c.key); setSaveErr(null); if (c.key !== 'other') { setOtherPayment(''); setStep('confirm') } }}>{c.label}</Bubble>
+              onClick={() => { pick(c.key); if (c.key !== 'other') { setOtherPayment(''); setStep('confirm') } }}>{c.label}</Bubble>
           ))}
           {paymentChoice === 'other' && (
             <div className="space-y-3">
@@ -327,7 +338,7 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
               <p className="text-xs text-gray-500">A manager will clarify this payment source.</p>
             </div>
           )}
-          <button type="button" className="text-gray-400 text-sm py-2" onClick={() => { setPaymentChoice('unpaid'); setOtherPayment(''); setStep('confirm') }}>Not paid yet</button>
+          <button type="button" className="text-gray-400 text-sm py-2" onClick={() => { pick('unpaid'); setOtherPayment(''); setStep('confirm') }}>Not paid yet</button>
           {saveErr && <p className="text-red-400 text-sm">{saveErr}</p>}
         </div>
       </StepShell>

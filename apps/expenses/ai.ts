@@ -30,8 +30,9 @@ export interface ExpenseExtraction {
   categoryLabel: string | null   // free-text model label (mapped to a coarse key downstream)
   categoryKey: ExpenseCategory   // normalized coarse category SUGGESTION ('uncategorized' when unknown)
   description: string | null     // short human summary of what was bought (drives the category suggestion)
-  paymentMethod: string | null   // cash|card|check|... (verbatim-ish; validated downstream)
-  paymentLast4: string | null
+  paymentMethod: string | null   // cash|card|check|ach|other|multiple (verbatim-ish; validated downstream)
+  cardBrand: string | null       // visa|mastercard|discover|amex — ONLY when explicitly printed (payment-source match)
+  paymentLast4: string | null    // the PAYMENT CARD's last 4 only (never an order#/date/terminal/auth/check#)
   receiptNumber: string | null
   /** Which fields the model actually produced (a coarse per-field confidence/presence signal). */
   present: Record<'vendor' | 'date' | 'subtotal' | 'tax' | 'total' | 'category' | 'paymentMethod', boolean>
@@ -40,7 +41,7 @@ export interface ExpenseExtractResult { status: 'extracted' | 'failed'; model: s
 
 export const EMPTY_EXTRACTION: ExpenseExtraction = {
   vendor: null, date: null, subtotalCents: null, taxCents: null, totalCents: null,
-  categoryLabel: null, categoryKey: 'uncategorized', description: null, paymentMethod: null, paymentLast4: null, receiptNumber: null,
+  categoryLabel: null, categoryKey: 'uncategorized', description: null, paymentMethod: null, cardBrand: null, paymentLast4: null, receiptNumber: null,
   present: { vendor: false, date: false, subtotal: false, tax: false, total: false, category: false, paymentMethod: false },
 }
 
@@ -53,11 +54,12 @@ const PROMPT = `You are reading a photo of a BUSINESS EXPENSE RECEIPT or INVOICE
   "total": number|null,             // grand total in dollars, ABSOLUTE value
   "category": string|null,          // a short expense category, e.g. "Parts", "Fuel", "Shop supplies", "Office", "Utilities"
   "description": string|null,       // 2-6 words naming the main items bought, e.g. "microfiber towels, wax" — helps pick a category
-  "paymentMethod": "cash"|"card"|"check"|"ach"|"other"|null,  // how it was paid, if shown
-  "paymentLast4": string|null,      // last 4 of the card if visible
+  "paymentMethod": "cash"|"card"|"check"|"ach"|"other"|"multiple"|null,  // how it was paid; "multiple" if more than one tender is shown
+  "cardBrand": "visa"|"mastercard"|"discover"|"amex"|null,  // the card network, ONLY if explicitly printed
+  "paymentLast4": string|null,      // last 4 of the PAYMENT CARD number ONLY, if visible — never an order#, date, terminal ID, auth code, or check number
   "receiptNumber": string|null      // this document's receipt/invoice number if visible
 }
-Dollars as numbers (not strings, no $). Never invent a vendor, amount, tax, date, category, or payment method. If a value is not clearly on the receipt, return null for it.`
+Dollars as numbers (not strings, no $). Never invent a vendor, amount, tax, date, category, brand, card ending, or payment method. If a value is not clearly on the receipt, return null for it.`
 
 function cleanDate(v: unknown): string | null { return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v.trim()) ? v.trim() : null }
 function cleanStr(v: unknown, max: number): string | null { return typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null }
@@ -75,7 +77,9 @@ export function parseReceiptJson(j: unknown): ExpenseExtraction {
   // towels" → shop supplies). Still only a SUGGESTION — the employee/manager confirms it.
   const categoryKey = categoryForLabel(categoryLabel) !== 'uncategorized' ? categoryForLabel(categoryLabel) : categoryForLabel(description)
   const rawPm = typeof o.paymentMethod === 'string' ? o.paymentMethod.trim().toLowerCase() : null
-  const paymentMethod = rawPm && ['cash', 'card', 'check', 'ach', 'other'].includes(rawPm) ? rawPm : null
+  const paymentMethod = rawPm && ['cash', 'card', 'check', 'ach', 'other', 'multiple'].includes(rawPm) ? rawPm : null
+  const rawBrand = typeof o.cardBrand === 'string' ? o.cardBrand.trim().toLowerCase() : null
+  const cardBrand = rawBrand && ['visa', 'mastercard', 'discover', 'amex'].includes(rawBrand) ? rawBrand : null
   return {
     vendor: cleanStr(o.vendor, 200),
     date: cleanDate(o.date),
@@ -86,6 +90,7 @@ export function parseReceiptJson(j: unknown): ExpenseExtraction {
     categoryKey,
     description,
     paymentMethod,
+    cardBrand,
     paymentLast4: typeof o.paymentLast4 === 'string' ? (o.paymentLast4.match(/\d{4}/)?.[0] ?? null) : null,
     receiptNumber: cleanStr(o.receiptNumber, 60),
     present: {

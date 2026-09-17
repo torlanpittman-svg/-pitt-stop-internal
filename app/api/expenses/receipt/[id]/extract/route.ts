@@ -12,6 +12,7 @@ import { NextResponse } from 'next/server'
 import { getReceipt, claimRetryExtraction, applyRetryExtraction, releaseRetryClaim, possibleDuplicateFor, consumeRateLimit, RATE_LIMITS } from '@/apps/expenses/db'
 import { receiptUploaderFromRequest, canFileReceipt } from '@/apps/expenses/authz'
 import { extractExpense } from '@/apps/expenses/ai'
+import { matchPaymentSource } from '@/apps/expenses/payment'
 import { errorCode } from '@/apps/expenses/errors'
 import { logger } from '@/platform/logger'
 
@@ -32,9 +33,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ ok: false, error: 'Not your receipt.' }, { status: 403 })
   }
   // Already read (a resume after the read finished): return the current proposal without another AI call.
+  // Re-derive the payment source from what was stored (method + card ending); the brand isn't persisted, so
+  // this only auto-selects on the unambiguous ending — a manual choice always wins (client guards it).
   if (row.aiStatus === 'extracted') {
     const present = (row.confidence && typeof row.confidence === 'object' ? row.confidence : {}) as Record<string, boolean>
-    return NextResponse.json({ ok: true, aiStatus: 'extracted', proposal: { vendor: row.vendor, date: row.receiptDate, totalCents: row.totalCents, categoryKey: row.category, present }, possibleDuplicate: await dupHint(id) })
+    const paymentChoice = matchPaymentSource({ method: row.paymentMethod, brand: null, cardLast4: row.paymentLast4 })
+    return NextResponse.json({ ok: true, aiStatus: 'extracted', proposal: { vendor: row.vendor, date: row.receiptDate, totalCents: row.totalCents, categoryKey: row.category, paymentChoice, present }, possibleDuplicate: await dupHint(id) })
   }
 
   // Bounded rate limits (per actor AND per receipt) so repeated triggers can't burn unbounded AI cost.
@@ -62,10 +66,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }, uploader.name)
     if (!r.ok) return NextResponse.json({ ok: false, aiStatus: ai.status, error: r.error ?? 'This read is no longer current.', stale: r.stale }, { status: 409 })
     logger.info(APP, 'read', { aiStatus: ai.status })
+    // Deterministic, server-side payment-source match from the extracted evidence (the model never supplies
+    // the account mapping). Returned as a choice KEY the client auto-selects; null when unresolved.
+    const paymentChoice = matchPaymentSource({ method: e.paymentMethod, brand: e.cardBrand, cardLast4: e.paymentLast4 })
     // Only surface a possible duplicate once we actually have vendor/date/total to compare on.
     return NextResponse.json({
       ok: true, aiStatus: ai.status,
-      proposal: { vendor: e.vendor, date: e.date, totalCents: e.totalCents, categoryKey: e.categoryKey, present: e.present },
+      proposal: { vendor: e.vendor, date: e.date, totalCents: e.totalCents, categoryKey: e.categoryKey, paymentChoice, present: e.present },
       possibleDuplicate: ai.status === 'extracted' ? await dupHint(id) : null,
     })
   } catch (err) {

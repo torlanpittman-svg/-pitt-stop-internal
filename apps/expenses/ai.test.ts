@@ -19,6 +19,15 @@ describe('parseReceiptJson — proposal normalization (never invents, never $0)'
     expect(e.present).toEqual({ vendor: true, date: true, subtotal: true, tax: true, total: true, category: true, paymentMethod: true })
   })
 
+  it('parses cardBrand + paymentMethod for the payment-source match (only validated values)', () => {
+    const e = parseReceiptJson({ vendor: 'Costco', total: 40, paymentMethod: 'card', cardBrand: 'Mastercard', paymentLast4: '0022' })
+    expect(e.paymentMethod).toBe('card'); expect(e.cardBrand).toBe('mastercard'); expect(e.paymentLast4).toBe('0022')
+    // a "multiple tenders" method is preserved; an unknown brand becomes null (never invented)
+    expect(parseReceiptJson({ paymentMethod: 'multiple' }).paymentMethod).toBe('multiple')
+    expect(parseReceiptJson({ cardBrand: 'JCB' }).cardBrand).toBeNull()
+    expect(EMPTY_EXTRACTION.cardBrand).toBeNull()
+  })
+
   it('keeps missing fields null and records absence in `present` (never coerces to $0)', () => {
     const e = parseReceiptJson({ vendor: 'Shell', total: 60.0 })
     expect(e.vendor).toBe('Shell')
