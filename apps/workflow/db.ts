@@ -241,7 +241,7 @@ export async function setOrderUrgent(orderId: string, urgent: boolean, actor: st
 
 export async function findActiveOrderByVehicleId(vehicleId: string): Promise<ServiceOrderRow | null> {
   const db = getDb()
-  const TERMINAL = ['delivered', 'cancelled']
+  const TERMINAL = ['delivered', 'cancelled', 'estimate']
   const rows = await db
     .select()
     .from(serviceOrders)
@@ -267,7 +267,7 @@ export async function deleteOrderCascade(orderId: string, alsoVehicleId?: string
 /** Active (non-terminal) order for a VIN, or null. Used for duplicate check-in guard. */
 export async function findActiveOrderByVin(vin: string): Promise<ServiceOrderRow | null> {
   const db = getDb()
-  const TERMINAL = ['delivered', 'cancelled']
+  const TERMINAL = ['delivered', 'cancelled', 'estimate']
   const rows = await db
     .select({ order: serviceOrders })
     .from(serviceOrders)
@@ -284,7 +284,7 @@ export async function findActiveOrderByVin(vin: string): Promise<ServiceOrderRow
 export async function listActiveOrders(): Promise<OrderWithContext[]> {
   const db = getDb()
 
-  const TERMINAL = ['delivered', 'cancelled']
+  const TERMINAL = ['delivered', 'cancelled', 'estimate']
   const orders = await db
     .select()
     .from(serviceOrders)

@@ -290,6 +290,24 @@ export const finArInvoices = pgTable('fin_ar_invoices', {
   index('fin_ar_realm_idx').on(t.realmId),
 ])
 
+// Receipt ↔ bank-transaction RECONCILIATION decisions (the ONLY link between employee-filed expense
+// receipts and finance). One row per receipt that a manager has acted on: a CONFIRMED link to a specific
+// fin_transactions row, or a DISMISSED "no bank match" decision. Suggestions are computed on the fly and
+// never persisted or auto-applied — a match is only ever recorded here by an explicit human decision, so
+// two equal amounts never silently link. Receipts are otherwise a purely informational coverage layer:
+// nothing here feeds Safe-to-Spend, balances, or obligations. receiptId is the PK → idempotent (re-deciding
+// updates in place). No cross-schema FK (loose coupling; business_receipts lives in the expenses domain);
+// txnId references a fin_transactions id but is validated at the app layer.
+export const finReceiptMatches = pgTable('fin_receipt_matches', {
+  receiptId:  uuid('receipt_id').primaryKey(),                             // business_receipts.id (soft ref)
+  txnId:      uuid('txn_id'),                                              // fin_transactions.id when confirmed
+  status:     varchar('status', { length: 12 }).notNull(),                // confirmed | dismissed
+  amountCents:integer('amount_cents'),                                    // receipt total snapshot at decision
+  matchedBy:  varchar('matched_by', { length: 200 }),
+  matchedAt:  timestamp('matched_at', { withTimezone: true }).notNull().defaultNow(),
+  evidence:   jsonb('evidence'),                                          // { amountDeltaCents, dateDeltaDays, ... }
+}, (t) => [index('fin_receipt_matches_txn_idx').on(t.txnId), index('fin_receipt_matches_status_idx').on(t.status)])
+
 // Append-only audit for manual finance edits.
 export const finEvents = pgTable('fin_events', {
   id:        uuid('id').primaryKey().defaultRandom(),

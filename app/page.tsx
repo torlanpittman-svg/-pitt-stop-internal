@@ -41,7 +41,7 @@ export default async function Home() {
   // to find without exposing it to ordinary employees.
   const manager = await managerActor()
   const modules = manager
-    ? [...MODULES, { href: '/checks', label: 'Write a Check', sub: 'Pay a vendor by check — QuickBooks + shop printer. Manager only.' }]
+    ? [...MODULES, { href: '/estimates', label: 'Estimates', sub: 'Quote a customer, send through QuickBooks, and move approved work onto the board.' }, { href: '/checks', label: 'Write a Check', sub: 'Pay a vendor by check — QuickBooks + shop printer. Manager only.' }]
     : MODULES
 
   return (

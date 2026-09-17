@@ -7,15 +7,17 @@
  * atomically and existing entries are never rewritten. Approval is idempotent (a conditional update
  * that only fires when the row is not already approved).
  */
-import { and, desc, eq, ne, or, sql, inArray, lt } from 'drizzle-orm'
+import { and, desc, eq, ne, or, sql, inArray, isNull, isNotNull, lt } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
 import { getDb } from '@/platform/db'
 import { inventoryVehicles } from '@/apps/auto-sales/schema'
 import { vehicles } from '@/apps/workflow/schema'
 import { businessReceipts, expenseRateCounters } from './schema'
 import {
-  auditEntry, decideApproval, diffFields, inBusinessMonth, isBusinessEntity, isExpenseCategory, isPaymentMethod,
-  type AuditEntry, type BusinessEntity, type ExpenseCategory, type PaymentMethod, type ReceiptStatus,
+  auditEntry, canAcknowledgeOutstanding, decideApproval, decideFiling, diffFields, inBusinessMonth,
+  isBusinessEntity, isCompleteStatus, isExpenseCategory, isFundingSource, isPaymentMethod,
+  type AttentionReason, type AuditEntry, type BusinessEntity, type CategoryChoice, type ExpenseCategory,
+  type FundingSource, type PaymentMethod, type ReceiptStatus,
 } from './types'
 
 export type ReceiptRow = typeof businessReceipts.$inferSelect
@@ -30,7 +32,7 @@ export interface CreateReceiptInput {
   storage: 'blob_public' | 'blob_private' | 'none'; storageRef: string | null
   filename?: string | null; contentType?: string | null; imageHash: string; byteSize?: number | null
   aiStatus: 'extracted' | 'failed'; aiModel: string | null; aiRaw: unknown; aiExtracted: unknown; confidence: unknown
-  uploadedBy: string | null
+  uploadedBy: string | null; uploadedByKey?: string | null
   // seed proposal fields (from the AI extraction) so the review screen is pre-filled — all overridable
   vendor?: string | null; receiptDate?: string | null; subtotalCents?: number | null; taxCents?: number | null
   totalCents?: number | null; category?: ExpenseCategory; paymentMethod?: string | null; paymentLast4?: string | null
@@ -90,7 +92,7 @@ export async function createReceipt(input: CreateReceiptInput): Promise<{ id: st
       storage: input.storage, storageRef: input.storageRef, filename: input.filename ?? null, contentType: input.contentType ?? null,
       imageHash: input.imageHash, byteSize: input.byteSize ?? null,
       aiStatus: input.aiStatus, aiModel: input.aiModel, aiRaw: input.aiRaw as object, aiExtracted: input.aiExtracted as object, confidence: input.confidence as object,
-      uploadedBy: input.uploadedBy, auditLog: audit as unknown as object,
+      uploadedBy: input.uploadedBy, uploadedByKey: input.uploadedByKey ?? null, auditLog: audit as unknown as object,
     }).returning({ id: businessReceipts.id })
     return { id: row.id, duplicate: false }
   } catch (err) {
@@ -129,17 +131,37 @@ export async function getReceipt(id: string): Promise<ReceiptRow | null> {
   const [r] = await getDb().select().from(businessReceipts).where(eq(businessReceipts.id, id)).limit(1)
   return r ?? null
 }
-/** The review queue — receipts in the given statuses (default: everything needing attention), newest first. */
-export async function listReceipts(statuses: ReceiptStatus[] = ['needs_review', 'processing_failed']): Promise<ReceiptRow[]> {
+/**
+ * The review queue — receipts in the given statuses (default: everything needing attention), newest first.
+ * `clarified` splits the needs_review exceptions: 'exclude' = the primary BACKLOG (not yet reviewed);
+ * 'only' = the OUTSTANDING list (a manager reviewed the info but a real-world item remains — reimbursement /
+ * unpaid / allocation). Filed/approved/rejected are unaffected by the flag.
+ */
+export async function listReceipts(
+  statuses: ReceiptStatus[] = ['needs_review', 'processing_failed'],
+  opts?: { clarified?: 'only' | 'exclude' },
+): Promise<ReceiptRow[]> {
   if (statuses.length === 0) return []
-  return getDb().select().from(businessReceipts).where(inArray(businessReceipts.status, statuses)).orderBy(desc(businessReceipts.createdAt))
+  const conds = [inArray(businessReceipts.status, statuses)]
+  if (opts?.clarified === 'only') conds.push(isNotNull(businessReceipts.clarifiedAt))
+  else if (opts?.clarified === 'exclude') conds.push(isNull(businessReceipts.clarifiedAt))
+  return getDb().select().from(businessReceipts).where(and(...conds)).orderBy(desc(businessReceipts.createdAt))
 }
-export interface QueueCounts { needs_review: number; approved: number; rejected: number; processing: number; processing_failed: number }
+export interface QueueCounts {
+  needs_review: number; filed: number; approved: number; rejected: number; processing: number; processing_failed: number
+  outstanding: number  // needs_review that a manager reviewed but which stays outstanding (leaves the backlog)
+  backlog: number      // needs_review not yet reviewed (the primary "Needs attention" queue)
+}
 /** Counts by status for the queue header (surfaces incomplete/failed/unreviewed separately). */
 export async function queueCounts(): Promise<QueueCounts> {
-  const rows = await getDb().select({ status: businessReceipts.status, n: sql<number>`count(*)::int` }).from(businessReceipts).groupBy(businessReceipts.status)
-  const c: QueueCounts = { needs_review: 0, approved: 0, rejected: 0, processing: 0, processing_failed: 0 }
+  const db = getDb()
+  const rows = await db.select({ status: businessReceipts.status, n: sql<number>`count(*)::int` }).from(businessReceipts).groupBy(businessReceipts.status)
+  const c: QueueCounts = { needs_review: 0, filed: 0, approved: 0, rejected: 0, processing: 0, processing_failed: 0, outstanding: 0, backlog: 0 }
   for (const r of rows) if (r.status in c) (c as unknown as Record<string, number>)[r.status] = Number(r.n)
+  const [out] = await db.select({ n: sql<number>`count(*)::int` }).from(businessReceipts)
+    .where(and(eq(businessReceipts.status, 'needs_review'), isNotNull(businessReceipts.clarifiedAt)))
+  c.outstanding = Number(out?.n ?? 0)
+  c.backlog = c.needs_review - c.outstanding
   return c
 }
 
@@ -226,6 +248,99 @@ export async function approveReceipt(id: string, fields: ReviewFields, actor: st
   return { ok: true }
 }
 
+// ── Operational filing (employee self-file OR manager exception-resolution) ───────────────────────────
+export interface FileReceiptInput {
+  entity: BusinessEntity
+  category: CategoryChoice
+  funding: FundingSource
+  paymentMethod: PaymentMethod | null
+  vendor: string | null
+  receiptDate: string | null
+  totalCents: number | null
+  subtotalCents?: number | null       // optional (manager card supplies these; capture flow does not)
+  taxCents?: number | null
+  memo?: string | null                // undefined = leave unchanged
+  filingNote?: string | null
+  inventoryVehicleId?: string | null  // undefined = unchanged; '' handled by the caller → null
+}
+export interface FileReceiptResult {
+  ok: boolean; error?: string; conflict?: boolean; alreadyFiled?: boolean
+  status?: 'filed' | 'needs_review'; reasons?: AttentionReason[]
+  clarified?: boolean   // true when a manager acknowledged an outstanding exception (left the backlog)
+}
+export interface FilingActor { name: string | null; key: string | null }
+
+/**
+ * Finalize a receipt's OPERATIONAL FILING — the employee-safe terminal action (also used by a manager
+ * resolving an exception). ATOMIC + guarded: the UPDATE only fires while the row is still editable
+ * (needs_review/processing_failed), so it can never overwrite a concurrently approved/rejected/processing
+ * row. The pure decideFiling() decides CLEAN (→ 'filed') vs EXCEPTION (→ stays 'needs_review' with concrete
+ * attention_reasons). The employee's confirmed vendor/date/total are AUTHORITATIVE (written explicitly, over
+ * any AI proposal) — and because a 'filed' row is not an editable state, a late AI retry can never claim or
+ * overwrite it. Filing is NOT approval: filed_by/at record the ACTUAL person; approved_by is untouched.
+ * Idempotent: a double-submit that finds the row already 'filed' is a no-op success.
+ */
+export async function fileReceipt(id: string, input: FileReceiptInput, actor: FilingActor, opts?: { duplicate?: boolean; acknowledge?: boolean }): Promise<FileReceiptResult> {
+  const db = getDb()
+  const before = await getReceipt(id)
+  if (!before) return { ok: false, error: 'Receipt not found.' }
+  if (before.status === 'filed') return { ok: true, alreadyFiled: true, status: 'filed', reasons: [] }
+  if (!EDITABLE_FROM.includes(before.status as ReceiptStatus)) {
+    return { ok: false, conflict: true, error: `This receipt is now "${before.status}" — refresh and try again.` }
+  }
+  const decision = decideFiling({
+    entity: input.entity, category: input.category, funding: input.funding, paymentMethod: input.paymentMethod,
+    vendor: input.vendor, receiptDate: input.receiptDate, totalCents: input.totalCents, duplicate: opts?.duplicate,
+  })
+  // A manager may ACKNOWLEDGE an exception (leave the backlog) only when every remaining reason is a real-
+  // world OUTSTANDING item (reimbursement / unpaid / mixed allocation) — never to hide missing info. This
+  // never changes funding or category, so personal stays personal, unpaid stays unpaid, mixed stays
+  // unallocated.
+  const clarify = decision.status === 'needs_review' && !!opts?.acknowledge && canAcknowledgeOutstanding(decision.reasons)
+  const now = new Date()
+  const set: Record<string, unknown> = {
+    entity: isBusinessEntity(input.entity) ? input.entity : 'unassigned',
+    category: decision.category,
+    funding: isFundingSource(input.funding) ? input.funding : 'unknown',
+    paymentMethod: decision.paymentMethod,
+    vendor: input.vendor || null,
+    receiptDate: input.receiptDate || null,
+    totalCents: input.totalCents ?? null,
+    attentionReasons: JSON.stringify(decision.reasons),
+    updatedAt: now,
+  }
+  if (input.subtotalCents !== undefined) set.subtotalCents = input.subtotalCents
+  if (input.taxCents !== undefined) set.taxCents = input.taxCents
+  if (input.memo !== undefined) set.memo = input.memo || null
+  if (input.filingNote !== undefined) set.filingNote = input.filingNote || null
+  if (input.inventoryVehicleId !== undefined) set.inventoryVehicleId = input.inventoryVehicleId || null
+
+  if (decision.status === 'filed') {
+    set.status = 'filed'; set.filedBy = actor.name; set.filedByKey = actor.key; set.filedAt = now
+    set.qbSyncStatus = 'export_ready' // complete + export-ready for the accountant package — NOT posted to QB
+    set.clarifiedAt = null; set.clarifiedBy = null // a clean filing supersedes any prior clarification
+  } else {
+    set.status = 'needs_review'; set.qbSyncStatus = 'none'
+    // An exception is NOT a filing — clear any stale filing attribution but keep the answers we captured.
+    set.filedBy = null; set.filedByKey = null; set.filedAt = null
+    // Acknowledged → reviewed + outstanding (leaves the backlog); otherwise → back in the backlog.
+    set.clarifiedAt = clarify ? now : null
+    set.clarifiedBy = clarify ? actor.name : null
+  }
+  const action = decision.status === 'filed' ? 'filed' : clarify ? 'clarified' : 'flagged'
+  const note = decision.status === 'filed' ? null : decision.reasons.join(', ')
+  const done = await db.update(businessReceipts)
+    .set({ ...set, auditLog: appendAudit(auditEntry(action, actor.name, undefined, note)) })
+    .where(and(eq(businessReceipts.id, id), inArray(businessReceipts.status, EDITABLE_FROM)))
+    .returning({ id: businessReceipts.id })
+  if (done.length === 0) {
+    const cur = await getReceipt(id)
+    if (cur?.status === 'filed') return { ok: true, alreadyFiled: true, status: 'filed', reasons: [] }
+    return { ok: false, conflict: true, error: `This receipt was just updated by someone else — refresh and try again.` }
+  }
+  return { ok: true, status: decision.status, reasons: decision.reasons, clarified: clarify }
+}
+
 /** Reject a receipt — ATOMIC. Only fires while still editable (needs_review/processing_failed), so it
  *  cannot overwrite a concurrent approval. Idempotent if already rejected. Never deletes the row/image. */
 export async function rejectReceipt(id: string, reason: string | null, actor: string | null): Promise<{ ok: boolean; error?: string; conflict?: boolean }> {
@@ -235,6 +350,7 @@ export async function rejectReceipt(id: string, reason: string | null, actor: st
   if (before.status === 'rejected') return { ok: true }
   const done = await db.update(businessReceipts).set({
     status: 'rejected', rejectedReason: reason || null, reviewedBy: actor, reviewedAt: new Date(),
+    clarifiedAt: null, clarifiedBy: null, // a rejected receipt is not "outstanding" — clear the acknowledgement
     qbSyncStatus: 'none', updatedAt: new Date(), auditLog: appendAudit(auditEntry('rejected', actor, undefined, reason)),
   }).where(and(eq(businessReceipts.id, id), inArray(businessReceipts.status, EDITABLE_FROM))).returning({ id: businessReceipts.id })
   if (done.length === 0) {
@@ -245,17 +361,18 @@ export async function rejectReceipt(id: string, reason: string | null, actor: st
   return { ok: true }
 }
 
-/** Reopen an approved/rejected receipt back to needs_review — ATOMIC (only from approved/rejected).
- *  Clears the approval + export flag. Idempotent if already in review. */
+/** Reopen a filed/approved/rejected receipt back to needs_review — ATOMIC (only from those terminal states).
+ *  Clears filing + approval + export flag so it can be corrected. Idempotent if already in review. */
 export async function reopenReceipt(id: string, actor: string | null): Promise<{ ok: boolean; error?: string; conflict?: boolean }> {
   const db = getDb()
   const before = await getReceipt(id)
   if (!before) return { ok: false, error: 'Receipt not found.' }
   if (before.status === 'needs_review') return { ok: true }
   const done = await db.update(businessReceipts).set({
-    status: 'needs_review', approvedBy: null, approvedAt: null, rejectedReason: null,
-    qbSyncStatus: 'none', updatedAt: new Date(), auditLog: appendAudit(auditEntry('reopened', actor)),
-  }).where(and(eq(businessReceipts.id, id), inArray(businessReceipts.status, ['approved', 'rejected']))).returning({ id: businessReceipts.id })
+    status: 'needs_review', approvedBy: null, approvedAt: null, filedBy: null, filedByKey: null, filedAt: null,
+    clarifiedAt: null, clarifiedBy: null, // reopening returns it to the primary backlog (not yet reviewed)
+    rejectedReason: null, qbSyncStatus: 'none', updatedAt: new Date(), auditLog: appendAudit(auditEntry('reopened', actor)),
+  }).where(and(eq(businessReceipts.id, id), inArray(businessReceipts.status, ['filed', 'approved', 'rejected']))).returning({ id: businessReceipts.id })
   if (done.length === 0) {
     const cur = await getReceipt(id)
     if (cur?.status === 'needs_review') return { ok: true }
@@ -352,6 +469,7 @@ export const RATE_LIMITS = {
   upload:         { limit: 60, windowMs: 10 * 60_000 },  // 60 uploads / 10 min per actor
   extractActor:   { limit: 30, windowMs: 10 * 60_000 },  // 30 AI extraction attempts / 10 min per actor
   extractReceipt: { limit: 10, windowMs: 60 * 60_000 },  // 10 AI extraction attempts / hour per receipt
+  file:           { limit: 120, windowMs: 10 * 60_000 }, // 120 filing submits / 10 min per actor-or-device
 } as const
 
 export interface RateResult { ok: boolean; retryAfterSec?: number }
@@ -400,46 +518,65 @@ export async function consumeRateLimit(bucket: string, limit: number, windowMs: 
 // ── Reporting / accountant-package readiness (internal; nothing is "booked" or "synced") ──────────────
 export interface MonthlyExpenseReport {
   month: string
-  approvedCount: number
-  approvedTotalCents: number
-  byEntity: Record<string, { count: number; totalCents: number }>
-  byCategory: Record<string, { count: number; totalCents: number }>
-  uncategorizedCount: number            // approved but still 'uncategorized' → accountant attention
-  // attention buckets (surfaced separately; NOT part of the approved totals)
+  // The COMPLETE / operational set for the month = employee-FILED ∪ legacy-APPROVED receipts.
+  completeCount: number
+  purchasesTotalCents: number           // what was BOUGHT (every complete receipt counted exactly once)
+  filedCount: number                    // employee/manager operational filings (new path)
+  approvedCount: number                 // LEGACY manager approvals (preserved; approved-only)
+  approvedTotalCents: number            // LEGACY approved amount only (back-compat)
+  byEntity: Record<string, { count: number; totalCents: number }>    // over the complete set
+  byCategory: Record<string, { count: number; totalCents: number }>  // over the complete set
+  // Funding split of the complete set — purchases are NOT the same as cash actually paid. Each complete
+  // receipt lands in exactly ONE bucket (no double counting); the four sum to purchasesTotalCents.
+  businessCashOutflowCents: number      // funding='business' → real business-account cash spent
+  personalReimbursableCents: number     // funding='personal' → owed to an employee, NOT business cash
+  unpaidCents: number                   // funding='unpaid'   → not yet cash spent
+  unknownFundingCents: number           // funding='unknown'  → legacy/incomplete (needs a manager)
+  uncategorizedCount: number            // complete but still 'uncategorized' → accountant attention
+  // attention buckets (surfaced separately; NOT part of the complete totals)
   needsReviewCount: number
   processingFailedCount: number
   rejectedCount: number
-  approved: ReceiptRow[]                 // original-document references + provenance preserved
+  complete: ReceiptRow[]                 // original-document references + provenance preserved
 }
 /**
- * Approved receipts for a business month (membership by the plain 'YYYY-MM-DD' receipt date → no UTC
- * drift), plus the attention buckets. This is the clean internal data layer the future accountant
- * package consumes. NOTHING here is labeled booked/posted/synced — approved means "manager-approved,
- * export-ready", not "in QuickBooks".
+ * The complete (filed ∪ legacy-approved) receipts for a business month (membership by the plain
+ * 'YYYY-MM-DD' receipt date → no UTC drift), plus honest funding buckets and the attention buckets. This
+ * is the clean internal data layer the future accountant package consumes. NOTHING here is labeled
+ * booked/posted/synced — 'filed'/'approved' mean "operationally captured, export-ready", not "in QuickBooks".
+ * Purchases (what was bought) are kept separate from cash actually paid (business funding only).
  */
 export async function monthlyExpenseReport(month: string): Promise<MonthlyExpenseReport> {
   const db = getDb()
   const rows = await db.select().from(businessReceipts)
-  const approved = rows.filter((r) => r.status === 'approved' && inBusinessMonth(r.receiptDate, month))
+  const complete = rows.filter((r) => isCompleteStatus(r.status) && inBusinessMonth(r.receiptDate, month))
   const byEntity: MonthlyExpenseReport['byEntity'] = {}
   const byCategory: MonthlyExpenseReport['byCategory'] = {}
-  let approvedTotalCents = 0, uncategorizedCount = 0
-  for (const r of approved) {
+  const funded = { business: 0, personal: 0, unpaid: 0, unknown: 0 }
+  let purchasesTotalCents = 0, uncategorizedCount = 0, filedCount = 0, approvedCount = 0, approvedTotalCents = 0
+  for (const r of complete) {
     const amt = r.totalCents ?? 0
-    approvedTotalCents += amt
+    purchasesTotalCents += amt
+    if (r.status === 'filed') filedCount++
+    if (r.status === 'approved') { approvedCount++; approvedTotalCents += amt }
     ;(byEntity[r.entity] ??= { count: 0, totalCents: 0 })
     byEntity[r.entity].count++; byEntity[r.entity].totalCents += amt
     ;(byCategory[r.category] ??= { count: 0, totalCents: 0 })
     byCategory[r.category].count++; byCategory[r.category].totalCents += amt
     if (r.category === 'uncategorized') uncategorizedCount++
+    const f = (isFundingSource(r.funding) ? r.funding : 'unknown') as FundingSource
+    funded[f] += amt
   }
   // Attention buckets are month-scoped by receipt date where known, else always surfaced (undated → shown).
   const inMonthOrUndated = (r: ReceiptRow) => r.receiptDate == null || inBusinessMonth(r.receiptDate, month)
   return {
-    month, approvedCount: approved.length, approvedTotalCents, byEntity, byCategory, uncategorizedCount,
+    month, completeCount: complete.length, purchasesTotalCents, filedCount, approvedCount, approvedTotalCents,
+    byEntity, byCategory,
+    businessCashOutflowCents: funded.business, personalReimbursableCents: funded.personal,
+    unpaidCents: funded.unpaid, unknownFundingCents: funded.unknown, uncategorizedCount,
     needsReviewCount: rows.filter((r) => r.status === 'needs_review' && inMonthOrUndated(r)).length,
     processingFailedCount: rows.filter((r) => r.status === 'processing_failed' && inMonthOrUndated(r)).length,
     rejectedCount: rows.filter((r) => r.status === 'rejected' && inBusinessMonth(r.receiptDate, month)).length,
-    approved,
+    complete,
   }
 }

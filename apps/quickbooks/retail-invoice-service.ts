@@ -62,7 +62,7 @@ async function jobContact(orderId: string, fallbackName: string) {
  * the mapped Product/Service (catalog qb_item_ref) or the generic Labor fallback; Description
  * is the managed canonical qb_description (never AI-generated).
  */
-async function buildRetailWorkPayload(params: {
+export async function buildRetailWorkPayload(params: {
   estimateId: string; order: OrderWithContext; full: FullEstimate | null; draft: InvoiceDraft
 }): Promise<{ payload: RetailPayload; fallbacks: string[] }> {
   const { estimateId, order, full, draft } = params
@@ -106,6 +106,7 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
   }
 
   const order = await getOrderWithContext(orderId)
+  if (order?.status === 'estimate') return { ok: false, status: 'refused', error: 'Move this estimate to the Work Board before creating an invoice.' }
   if (!order) return { ok: false, status: 'refused', error: 'Job not found.' }
   if (isDealerOrder(order)) return { ok: false, status: 'refused', error: 'Dealer Jobs are invoiced through Dealer Check-In.' }
 

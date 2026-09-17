@@ -6,13 +6,11 @@
 import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import crypto from 'node:crypto'
-import { buildAuthorizeUrl } from '@/apps/quickbooks/oauth'
+import { buildAuthorizeUrl, QB_STATE_COOKIE } from '@/apps/quickbooks/oauth'
 import { isConfigured } from '@/apps/quickbooks/config'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
-
-export const QB_STATE_COOKIE = 'qb_oauth_state'
 
 export async function GET() {
   if (!isConfigured()) {
