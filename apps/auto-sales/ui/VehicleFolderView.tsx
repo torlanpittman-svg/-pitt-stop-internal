@@ -9,7 +9,7 @@
 import { notFound } from 'next/navigation'
 import BackLink from '@/app/components/BackLink'
 import { getVehicleFolder } from '@/apps/auto-sales/db'
-import { IN_SCOPE_ACCOUNTS, REFUND_KINDS, labelFor, costRelevance, type EconomicCategory } from '@/apps/auto-sales/types'
+import { IN_SCOPE_ACCOUNTS, REFUND_KINDS, labelFor, costRelevance, isRemovableVehicleExpense, type EconomicCategory } from '@/apps/auto-sales/types'
 import { computeCostBasis, computeSaleFinancials, PAYMENT_METHODS } from '@/apps/auto-sales/calc'
 import { autoSalesCutoverDate } from '@/apps/settings/db'
 import { authorizedManager } from '@/apps/auth/employee-guard'
@@ -17,6 +17,7 @@ import { returnRefundAction, settleAction, closeoutAction } from '@/apps/auto-sa
 import { receiptPaymentLabel } from '@/apps/expenses/payment'
 import VinResolver from './VinResolver'
 import AddExpense from './AddExpense'
+import VehicleExpenses, { type ExpenseRow } from './VehicleExpenses'
 import AcquisitionPrice from './AcquisitionPrice'
 import SellVehicle, { ReverseSale } from './SellVehicle'
 
@@ -58,6 +59,17 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
   const active = events.filter((e) => e.status !== 'void' && !e.reversesEventId && !reversedTargets.has(e.id))
   const grossAdded = active.filter((e) => e.economicCategory !== 'acquisition' && costRelevance(e.economicCategory as EconomicCategory) === 'cost_add' && (e.status === 'verified' || e.status === 'reconciled')).reduce((t, e) => t + e.amountCents, 0)
   const returnsTotal = active.filter((e) => costRelevance(e.economicCategory as EconomicCategory) === 'cost_contra' && (e.status === 'verified' || e.status === 'reconciled')).reduce((t, e) => t + e.amountCents, 0)
+  // Dedicated ACTIVE expense list (mistaken-attachment correction surface) — receipt-attachable cost
+  // buckets only; acquisition + lifecycle stay in History. Removal is manager/admin-gated (isManager).
+  const expenseRows: ExpenseRow[] = active
+    .filter((e) => isRemovableVehicleExpense(e.economicCategory))
+    .map((e) => ({
+      id: e.id, categoryLabel: labelFor(e.economicCategory), date: e.eventDate,
+      vendor: e.vendor ?? (e.memo ? e.memo.slice(0, 48) : null), amountCents: e.amountCents,
+      receiptUrl: attachments[e.id]?.url ?? null, hasReceipt: Boolean(attachments[e.id]),
+      accountingLocked: e.status === 'reconciled' || Boolean(e.finTransactionId),
+    }))
+  const expensesTotalCents = expenseRows.reduce((t, r) => t + r.amountCents, 0)
 
   return (
     <main className="min-h-screen bg-gray-950 text-gray-200 max-w-xl mx-auto px-4 py-6">
@@ -197,6 +209,10 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
         )}
       </div>
 
+      {/* Dedicated active-expenses list — vendor/date/category/amount/receipt + total. Managers can
+          correct a mistaken attachment here (swipe/Remove → confirm). Acquisition + lifecycle stay below in History. */}
+      <VehicleExpenses inventoryVehicleId={inv.id} vehicleLabel={vehicleLabel} canRemove={isManager} expenses={expenseRows} totalCents={expensesTotalCents} />
+
       {/* Returns list (if any) */}
       {returnEvents.length > 0 && (
         <div className={`${card} mt-4`}>
@@ -253,6 +269,7 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
                     ? <a href={attachments[e.id].url!} target="_blank" rel="noopener" className="text-indigo-300 no-underline ml-1" title="View receipt">📎</a>
                     : <span className="ml-1" title="receipt on file">📎</span>)}
                   <span className="block text-gray-600 text-xs">{e.eventDate}{e.vendor ? ` · ${e.vendor}` : ''}{paySrc ? ` · ${paySrc}` : ''}</span>
+                  {e.economicCategory === 'adjustment' && e.memo && <span className="block text-amber-400/70 text-[11px] no-underline">{e.memo}</span>}
                 </div>
                 <div className="text-right shrink-0">
                   <span className="text-gray-200 tabular-nums">{money(e.amountCents)}</span>

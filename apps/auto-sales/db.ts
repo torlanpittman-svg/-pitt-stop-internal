@@ -10,7 +10,7 @@ import { inventoryVehicles, vehicleFinancialEvents, vehicleDocuments } from './s
 import { autoSalesCutoverDate } from '@/apps/settings/db'
 import { normalizeVIN, validateVIN, decodeVINFromNHTSA, type VINDecodeResult } from '@/apps/vehicle-entry/vin'
 import { generateStockNumber } from './stock'
-import { costRelevance, defaultCashflow, refundKindDef, type EconomicCategory, type FinancialCompleteness } from './types'
+import { costRelevance, defaultCashflow, refundKindDef, labelFor, isRemovableVehicleExpense, type EconomicCategory, type FinancialCompleteness } from './types'
 import { scoreReturnMatch, type NormalizedLine, type PriorPurchase, type ReturnQuery, type ReturnMatchResult } from './returns'
 import type { ReceiptExtraction } from './ai/receipt'
 
@@ -185,6 +185,56 @@ export async function reverseEvent(eventId: string, actor: string | null): Promi
     amountCents: orig.amountCents, eventDate: iso(new Date()), reversesEventId: orig.id, status: 'verified', source: 'manual',
     memo: `Reversal of ${orig.economicCategory} (${(orig.memo ?? '').slice(0, 60)})`, createdBy: actor,
   })
+}
+
+export type RemoveExpenseResult = { ok: boolean; error?: string; alreadyRemoved?: boolean }
+/**
+ * Manager correction: remove an expense that was attached to this vehicle BY MISTAKE. This is a
+ * mistaken-attachment fix, NOT a refund/return — no money moved, no offsetting accounting entry, the
+ * acquisition price is untouched and QuickBooks is never changed. Mechanics (append-only, like every
+ * other correction here): the original expense row is NEVER rewritten or deleted — we append a
+ * `reversesEventId` "adjustment" event so computeSummary nets the pair to zero, which excludes it from
+ * active cost/profit. The original (and its receipt document) stays in the ledger, struck-through, so a
+ * manager can still see and re-correct it. The reversal carries a structured audit in `evidence.removal`
+ * (who, when, the former vehicle association, the original category/amount, the receipt).
+ *
+ * Guards (all fail-closed): only a removable EXPENSE category may be removed here (never acquisition, a
+ * sale, a return/credit or a correction); an already-void or already-reversed expense is a safe no-op
+ * (idempotent — repeated clicks never append a second adjustment); and an expense that is reconciled or
+ * linked to a finance/accounting transaction is refused with a clear explanation (it must be unlinked by
+ * the accountant first — we never silently break an accounting link or touch QuickBooks).
+ */
+export async function removeVehicleExpense(input: { eventId: string; actor: string | null }): Promise<RemoveExpenseResult> {
+  const db = getDb()
+  const [orig] = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.id, input.eventId)).limit(1)
+  if (!orig) return { ok: false, error: 'That expense no longer exists.' }
+  if (orig.status === 'void') return { ok: false, error: 'That entry is already voided.' }
+  if (!isRemovableVehicleExpense(orig.economicCategory)) {
+    return { ok: false, error: 'Only a vehicle expense can be removed here. Acquisition, sales and returns are corrected in their own place.' }
+  }
+  // Accounting-link guard — never break a reconciled/linked record or touch QuickBooks.
+  if (orig.status === 'reconciled' || orig.finTransactionId) {
+    return { ok: false, error: 'This expense is linked to a reconciled bank/accounting record, so it can’t be removed here. Ask the accountant to unlink it first — no QuickBooks record is changed.' }
+  }
+  // Idempotent: if a reversal already exists for this expense, treat repeat requests as a no-op success.
+  const [existing] = await db.select({ id: vehicleFinancialEvents.id }).from(vehicleFinancialEvents)
+    .where(and(eq(vehicleFinancialEvents.reversesEventId, orig.id), ne(vehicleFinancialEvents.status, 'void'))).limit(1)
+  if (existing) return { ok: true, alreadyRemoved: true }
+  await db.insert(vehicleFinancialEvents).values({
+    inventoryVehicleId: orig.inventoryVehicleId, economicCategory: 'adjustment', cashflowCategory: 'non_cash',
+    amountCents: orig.amountCents, eventDate: iso(new Date()), reversesEventId: orig.id, status: 'verified', source: 'manual',
+    memo: `Removed from vehicle — attached by mistake (${labelFor(orig.economicCategory)}${orig.vendor ? ` · ${orig.vendor}` : ''})`,
+    evidence: {
+      removal: {
+        reason: 'mistaken_vehicle_attachment', removedBy: input.actor, removedAt: new Date().toISOString(),
+        formerVehicleId: orig.inventoryVehicleId, originalEventId: orig.id,
+        originalCategory: orig.economicCategory, originalAmountCents: orig.amountCents,
+        originalVendor: orig.vendor ?? null, documentId: orig.documentId ?? null,
+      },
+    },
+    createdBy: input.actor,
+  })
+  return { ok: true }
 }
 
 // Sensible upper bound for a single-vehicle acquisition price ($5,000,000). Guards fat-finger entry.

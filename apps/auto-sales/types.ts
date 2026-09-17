@@ -146,3 +146,21 @@ export function costRelevance(cat: EconomicCategory): 'cost_add' | 'cost_contra'
 export function labelFor(cat: string): string {
   return cat.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
+
+/**
+ * The expense categories a manager may REMOVE from a vehicle when it was attached by mistake — the
+ * receipt-attachable cost buckets (parts, recon labor, mechanic, body, PDR, paint, transport, title/tax,
+ * registration, auction/buyer fees). Deliberately EXCLUDES acquisition (a lifecycle price, corrected via
+ * the acquisition editor), sale/deposit/commission/trade (lifecycle), floor-plan draws/interest/fees
+ * (financing, managed by the floor-plan system), returns/refunds/credits (a real-world contra, corrected
+ * via the returns flow) and adjustment (a correction itself). Kept in sync with AddExpense's manual set
+ * so the dedicated expense list shows exactly what can be removed. This is a mistaken-attachment fix, NOT
+ * a return: it never touches money, QuickBooks or the acquisition price.
+ */
+export const REMOVABLE_EXPENSE_CATEGORIES: EconomicCategory[] = [
+  'part', 'recon_labor', 'mechanic', 'bodywork', 'pdr', 'paint',
+  'transport', 'title_tax', 'registration', 'auction_fee', 'buyer_fee',
+]
+export function isRemovableVehicleExpense(cat: string): boolean {
+  return (REMOVABLE_EXPENSE_CATEGORIES as string[]).includes(cat)
+}

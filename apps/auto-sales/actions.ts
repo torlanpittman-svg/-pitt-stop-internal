@@ -114,6 +114,21 @@ export async function reverseSaleAction(f: { inventoryVehicleId: string; reason?
   if (r.ok) revalidateVehicle(f.inventoryVehicleId)
   return r
 }
+/**
+ * Remove an expense attached to a vehicle BY MISTAKE (manager/admin-gated). A mistaken-attachment
+ * correction — NOT a return/refund: append-only, keeps the receipt, nets the expense out of active cost
+ * and profit, records who/when/former-vehicle, never touches money, the acquisition price or QuickBooks.
+ * Idempotent: repeated clicks never create a second adjustment.
+ */
+export async function removeVehicleExpenseAction(f: { inventoryVehicleId: string; eventId: string }): Promise<{ ok: boolean; error?: string; alreadyRemoved?: boolean }> {
+  const actor = await authorizedManager()
+  if (!actor) return { ok: false, error: 'Manager sign-in required to remove an expense.' }
+  if (!f.eventId) return { ok: false, error: 'Missing expense.' }
+  const { removeVehicleExpense } = await import('./db')
+  const r = await removeVehicleExpense({ eventId: f.eventId, actor: actor.name })
+  if (r.ok) revalidateVehicle(f.inventoryVehicleId)
+  return r
+}
 /** Finalize the monthly Auto-Sales report (manager-gated). Captures a snapshot; supersedes any prior. */
 export async function finalizeReportAction(f: { month: string; note?: string }): Promise<{ ok: boolean; error?: string; superseded?: boolean }> {
   const actor = await authorizedManager()
