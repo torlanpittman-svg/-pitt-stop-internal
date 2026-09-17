@@ -8,9 +8,12 @@
  * and lives in the API route (app/api/expenses/receipt). No money movement; no QuickBooks mutation.
  */
 import { revalidatePath } from 'next/cache'
-import { receiptManager } from './authz'
-import { saveReview, approveReceipt, rejectReceipt, reopenReceipt, claimRetryExtraction, applyRetryExtraction, releaseRetryClaim, inventoryVehicleExists, consumeRateLimit, RATE_LIMITS, type ReviewFields } from './db'
-import { parseCents, isBusinessEntity, isExpenseCategory, isPaymentMethod, type BusinessEntity, type ExpenseCategory, type PaymentMethod } from './types'
+import { receiptManager, receiptUploader, canFileReceipt } from './authz'
+import { saveReview, approveReceipt, rejectReceipt, reopenReceipt, claimRetryExtraction, applyRetryExtraction, releaseRetryClaim, inventoryVehicleExists, consumeRateLimit, getReceipt, fileReceipt, RATE_LIMITS, type ReviewFields, type FileReceiptInput } from './db'
+import {
+  parseCents, isBusinessEntity, isExpenseCategory, isPaymentMethod, isFundingSource, categoryChoiceFrom,
+  type BusinessEntity, type ExpenseCategory, type PaymentMethod, type FundingSource,
+} from './types'
 import { errorCode } from './errors'
 import { logger } from '@/platform/logger'
 
@@ -58,6 +61,62 @@ export async function saveReviewAction(f: ReviewForm): Promise<{ ok: boolean; er
   const vErr = await validateVehicle(fields)
   if (vErr) return { ok: false, error: vErr }
   const r = await saveReview(f.id, fields, actor.name)
+  if (r.ok) revalidate()
+  return r
+}
+
+/**
+ * Employee (or manager) OPERATIONAL FILING — the tap-first flow's finalize step. FAIL-CLOSED: requires a
+ * verified session (anonymous → rejected) AND ownership of THIS receipt (canFileReceipt: manager role, a
+ * signed capture token minted for it at upload, or an uploaded_by_key match). An employee can therefore
+ * never file an arbitrary receipt id. The pure decideFiling() (inside db.fileReceipt) decides clean-file vs
+ * exception; this action just parses the form + enforces authorization. Filing is NOT approval and never
+ * touches QuickBooks.
+ */
+export interface FileForm {
+  id: string; token?: string
+  entity?: string; category?: string; categoryMode?: string; funding?: string; paymentMethod?: string
+  vendor?: string; receiptDate?: string; subtotal?: string; tax?: string; total?: string
+  memo?: string; filingNote?: string; inventoryVehicleId?: string; duplicate?: boolean
+}
+export interface FileResult { ok: boolean; error?: string; conflict?: boolean; alreadyFiled?: boolean; status?: 'filed' | 'needs_review'; reasons?: string[] }
+
+export async function fileReceiptAction(f: FileForm): Promise<FileResult> {
+  const uploader = await receiptUploader()
+  if (!uploader) return { ok: false, error: 'Sign in required.' }
+  if (!f.id) return { ok: false, error: 'Missing receipt.' }
+  const row = await getReceipt(f.id)
+  if (!row) return { ok: false, error: 'Receipt not found.' }
+  // Ownership enforced server-side, independent of the UI.
+  if (!canFileReceipt(uploader.actor, { id: row.id, uploadedByKey: row.uploadedByKey }, f.token)) {
+    return { ok: false, error: 'You can only file a receipt you captured.' }
+  }
+  // Durable rate limit — bound filing submits per named actor, else per shared device by receipt.
+  const bucket = uploader.actor?.key ? `file:actor:${uploader.actor.key}` : `file:rcpt:${f.id}`
+  const rl = await consumeRateLimit(bucket, RATE_LIMITS.file.limit, RATE_LIMITS.file.windowMs)
+  if (!rl.ok) return { ok: false, error: `Too many saves — try again in ${rl.retryAfterSec}s.` }
+
+  const total = f.total !== undefined ? (f.total.trim() === '' ? null : parseCents(f.total)) : null
+  const input: FileReceiptInput = {
+    entity: (isBusinessEntity(f.entity) ? f.entity : 'unassigned') as BusinessEntity,
+    category: categoryChoiceFrom(f.categoryMode, f.category),
+    funding: (isFundingSource(f.funding) ? f.funding : 'unknown') as FundingSource,
+    paymentMethod: (isPaymentMethod(f.paymentMethod) ? f.paymentMethod : null) as PaymentMethod | null,
+    vendor: f.vendor !== undefined ? (f.vendor.trim() || null) : null,
+    receiptDate: f.receiptDate !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(f.receiptDate.trim()) ? f.receiptDate.trim() : null,
+    totalCents: total,
+  }
+  if (f.subtotal !== undefined) input.subtotalCents = f.subtotal.trim() === '' ? null : parseCents(f.subtotal)
+  if (f.tax !== undefined) input.taxCents = f.tax.trim() === '' ? null : parseCents(f.tax)
+  if (f.memo !== undefined) input.memo = f.memo.trim() || null
+  if (f.filingNote !== undefined) input.filingNote = f.filingNote.trim() || null
+  if (f.inventoryVehicleId !== undefined) {
+    input.inventoryVehicleId = f.inventoryVehicleId.trim() || null
+    if (input.inventoryVehicleId && !(await inventoryVehicleExists(input.inventoryVehicleId))) {
+      return { ok: false, error: 'That vehicle no longer exists — pick a current inventory vehicle or leave it off.' }
+    }
+  }
+  const r = await fileReceipt(f.id, input, { name: uploader.name, key: uploader.actor?.key ?? null }, { duplicate: f.duplicate })
   if (r.ok) revalidate()
   return r
 }

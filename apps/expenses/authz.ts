@@ -14,6 +14,7 @@
 import { cookies } from 'next/headers'
 import { EMP_COOKIE, verifyEmployeeToken, type AuthedActor } from '@/apps/auth/employee-session'
 import { authenticatedActor, authenticatedActorFromRequest, isManagerRole } from '@/apps/auth/employee-guard'
+import { verifyCaptureToken } from './capture-token'
 
 export interface Uploader { actor: AuthedActor | null; name: string }
 
@@ -51,4 +52,24 @@ export async function receiptUploaderFromRequest(req: Request): Promise<Uploader
   const tok = cookieFromHeader(req.headers.get('cookie'), EMP_COOKIE)
   if (await verifyEmployeeToken(tok)) return { actor: null, name: 'Shop device' }
   return null
+}
+
+/**
+ * May THIS actor finalize (file) THIS receipt? Fail-closed authorization for employee self-filing, enforced
+ * independently of the UI. A caller must have a verified session (checked by the action) AND satisfy one of:
+ *   - manager/admin role — full authority (resolving exceptions, correcting anything); OR
+ *   - a valid signed CAPTURE TOKEN minted for this receipt id (proves they uploaded it this session — the
+ *     path a shared-PIN device or a named employee uses right after capture); OR
+ *   - their server-verified identity key matches the receipt's uploaded_by_key (a named uploader).
+ * An employee without any of these cannot touch an arbitrary receipt id.
+ */
+export function canFileReceipt(
+  actor: AuthedActor | null,
+  row: { uploadedByKey: string | null; id: string },
+  captureToken: string | null | undefined,
+): boolean {
+  if (actor && isManagerRole(actor.role)) return true
+  if (verifyCaptureToken(captureToken, row.id)) return true
+  if (actor?.key && row.uploadedByKey && actor.key === row.uploadedByKey) return true
+  return false
 }

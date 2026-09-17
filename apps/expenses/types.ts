@@ -10,12 +10,21 @@
  */
 
 // ── Review lifecycle (a receipt's status). Transient states (uploaded/processing) exist for a future
-// async pipeline; the current synchronous scan lands on needs_review or processing_failed. ──
-export const RECEIPT_STATUSES = ['uploaded', 'processing', 'needs_review', 'approved', 'rejected', 'processing_failed'] as const
+// async pipeline; the current synchronous scan lands on needs_review. ──
+//   needs_review = the "Needs attention" queue (an exception a manager should look at, OR a capture the
+//                  employee has not yet completed).
+//   filed        = an employee (or a manager resolving an exception) completed the OPERATIONAL filing of a
+//                  COMPLETE receipt. This is NOT accounting approval / QuickBooks posting — it just means
+//                  "operationally captured, categorized, and ready for the accountant package".
+//   approved     = LEGACY manager approval (preserved for historical attribution). No longer the routine
+//                  path — kept so old records + their approvedBy attribution are never rewritten.
+export const RECEIPT_STATUSES = ['uploaded', 'processing', 'needs_review', 'filed', 'approved', 'rejected', 'processing_failed'] as const
 export type ReceiptStatus = (typeof RECEIPT_STATUSES)[number]
 export function isReceiptStatus(s: unknown): s is ReceiptStatus {
   return typeof s === 'string' && (RECEIPT_STATUSES as readonly string[]).includes(s)
 }
+/** The COMPLETE / operational set (employee-filed OR legacy manager-approved). Used by reporting. */
+export function isCompleteStatus(s: string): boolean { return s === 'filed' || s === 'approved' }
 
 // ── Business entity the expense belongs to. 'shared' = overhead split across both; 'unassigned' =
 // not yet classified (a manager must set it before approval). No accounting policy is implied. ──
@@ -75,11 +84,79 @@ export function categoryForLabel(label: string | null | undefined): ExpenseCateg
   return 'other'
 }
 
-// ── Payment method (how it was paid). 'unknown' until confirmed; never guessed into a real account. ──
+// ── Payment method (how it was paid — the INSTRUMENT). 'unknown' until confirmed; never guessed into a
+// real account. This is deliberately SEPARATE from `funding` below (who/whether it was paid): a business
+// card and a personal card are both paymentMethod='card', but their funding differs. ──
 export const PAYMENT_METHODS = ['cash', 'card', 'check', 'ach', 'other', 'unknown'] as const
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number]
 export function isPaymentMethod(m: unknown): m is PaymentMethod {
   return typeof m === 'string' && (PAYMENT_METHODS as readonly string[]).includes(m)
+}
+
+// ── Funding source (WHO paid / WHETHER paid — kept distinct from the payment instrument so reporting can
+// honestly separate cash actually spent from a personal reimbursement owed and an unpaid purchase):
+//   business = paid from a business account/drawer (card/cash/check) → real business cash outflow.
+//   personal = an employee paid out of pocket → a reimbursement REVIEW is needed (we never create/promise
+//              a reimbursement here); NOT business-account cash.
+//   unpaid   = not paid yet (e.g. billed / on account) → NOT cash spent; a payment REVIEW is needed (we
+//              never create a payable/payment here).
+//   unknown  = legacy/incomplete — never inferred into a real account. ──
+export const FUNDING_SOURCES = [
+  { key: 'business', label: 'Business account' },
+  { key: 'personal', label: 'Personal money (reimbursement)' },
+  { key: 'unpaid',   label: 'Not paid yet' },
+  { key: 'unknown',  label: 'Unknown' },
+] as const
+export type FundingSource = (typeof FUNDING_SOURCES)[number]['key']
+export function isFundingSource(f: unknown): f is FundingSource {
+  return typeof f === 'string' && FUNDING_SOURCES.some((s) => s.key === f)
+}
+
+// ── Why a receipt is in the "Needs attention" queue (an exception). An ordinary complete filing has NONE
+// of these. Stored as an append-only-at-filing array on the row (attention_reasons) + surfaced to the
+// manager so the queue explains itself. Never a substitute for the audit log. ──
+export const ATTENTION_REASONS = [
+  { key: 'missing_business',       label: 'Business not chosen' },
+  { key: 'missing_info',           label: 'Missing vendor, date, or total' },
+  { key: 'mixed_category',         label: 'More than one category — needs splitting' },
+  { key: 'unclear_category',       label: 'Category unclear (“Other / Not sure”)' },
+  { key: 'personal_reimbursement', label: 'Paid with personal money — reimbursement review' },
+  { key: 'unpaid',                 label: 'Not paid yet — payment review' },
+  { key: 'duplicate',              label: 'Possible duplicate' },
+  { key: 'unreadable',             label: 'Photo could not be read automatically' },
+] as const
+export type AttentionReason = (typeof ATTENTION_REASONS)[number]['key']
+export function attentionReasonLabel(k: string): string {
+  return ATTENTION_REASONS.find((r) => r.key === k)?.label ?? k
+}
+
+// ── The employee capture flow's Question 2 ("What did you buy?"). The common six are shown first; the
+// rest of the operational categories live behind "More categories". Two special choices are NOT single
+// categories: 'mixed' (more than one — save + flag, never dump the whole total into one guess) and
+// 'unsure' ("Other / Not sure" — save with an optional note). Each concrete key REUSES an existing
+// EXPENSE_CATEGORIES key (no parallel category system). ──
+export const CAPTURE_PRIMARY_CATEGORIES = [
+  { key: 'shop_supplies',   label: 'Detailing supplies' },   // → existing shop-supplies bucket
+  { key: 'parts',           label: 'Parts' },
+  { key: 'tools_equipment', label: 'Tools & equipment' },
+  { key: 'fuel',            label: 'Fuel' },
+  { key: 'subcontractor',   label: 'Outside labor' },
+] as const
+/** The remaining operational categories exposed under "More categories" (excludes the primary six,
+ *  'other', and 'uncategorized' which are handled by the special "Other / Not sure" choice). */
+export const CAPTURE_MORE_CATEGORIES = EXPENSE_CATEGORIES.filter(
+  (c) => !CAPTURE_PRIMARY_CATEGORIES.some((p) => p.key === c.key) && c.key !== 'uncategorized' && c.key !== 'other',
+)
+
+/** How the employee answered Q2. 'single' carries a concrete EXPENSE_CATEGORIES key. */
+export type CategoryChoice =
+  | { kind: 'single'; key: ExpenseCategory }
+  | { kind: 'mixed' }
+  | { kind: 'unsure' }
+export function categoryChoiceFrom(mode: string | null | undefined, key: string | null | undefined): CategoryChoice {
+  if (mode === 'mixed') return { kind: 'mixed' }
+  if (mode === 'unsure') return { kind: 'unsure' }
+  return { kind: 'single', key: isExpenseCategory(key) ? key : 'uncategorized' }
 }
 
 // In-scope cash/card accounts (allowlist; extensible without schema change). Mirrors the Auto-Sales
@@ -140,10 +217,11 @@ export function inBusinessMonth(date: string | null | undefined, month: string):
 const TRANSITIONS: Record<ReceiptStatus, ReceiptStatus[]> = {
   uploaded: ['processing', 'needs_review', 'processing_failed'],
   processing: ['needs_review', 'processing_failed'],
-  processing_failed: ['needs_review', 'rejected'],       // a successful retry, or reject an unreadable one
-  needs_review: ['approved', 'rejected'],                // manager decision
+  processing_failed: ['needs_review', 'filed', 'rejected'], // manual completion → filed, retry, or reject
+  needs_review: ['filed', 'approved', 'rejected'],       // employee/manager files, legacy approve, or reject
+  filed: ['needs_review'],                               // manager can reopen a filing to correct it (audited)
   rejected: ['needs_review'],                            // manager can reopen (un-reject) — never silently deleted
-  approved: ['needs_review'],                            // manager can reopen an approval to correct it (audited)
+  approved: ['needs_review'],                            // manager can reopen a legacy approval to correct it (audited)
 }
 export function canTransition(from: ReceiptStatus, to: ReceiptStatus): boolean {
   if (from === to) return true // idempotent no-op
@@ -165,8 +243,68 @@ export function decideApproval(status: ReceiptStatus, entity: string, totalCents
   return { action: 'approve' }
 }
 
+// ── Employee (or manager) OPERATIONAL FILING decision (pure). Given the answers to the three questions +
+// the confirmed purchase facts, decide whether this is a CLEAN filing (→ 'filed') or an EXCEPTION that a
+// manager should look at (→ 'needs_review' with concrete reasons). It NEVER traps the employee: an
+// incomplete/mixed/personal/unpaid receipt is still SAVED — just flagged. Key guarantees the caller relies
+// on: a mixed or unsure receipt is stored as 'uncategorized' (its whole total is NOT dumped into one guess);
+// personal money and unpaid status are surfaced as their own review reasons (never booked as business cash).
+export interface FilingAnswers {
+  entity: string                         // detail|auto_sales|shared|unassigned
+  category: CategoryChoice               // Q2 answer
+  funding: FundingSource                 // Q3 answer (business|personal|unpaid|unknown)
+  paymentMethod: PaymentMethod | null    // the instrument, when business-funded
+  vendor: string | null | undefined
+  receiptDate: string | null | undefined // YYYY-MM-DD
+  totalCents: number | null | undefined
+  duplicate?: boolean                    // an unresolved possible-duplicate flag
+}
+export interface FilingOutcome {
+  status: Extract<ReceiptStatus, 'filed' | 'needs_review'>
+  category: ExpenseCategory              // the concrete key to persist ('uncategorized' for mixed/unsure)
+  reasons: AttentionReason[]             // empty ⇔ clean filing
+  paymentMethod: PaymentMethod | null    // normalized (cleared unless business-funded)
+}
+export function decideFiling(a: FilingAnswers): FilingOutcome {
+  const reasons = new Set<AttentionReason>()
+
+  // Q2 → concrete category. Mixed/unsure never claim a single spending bucket.
+  let category: ExpenseCategory = 'uncategorized'
+  if (a.category.kind === 'single') category = a.category.key
+  else if (a.category.kind === 'mixed') reasons.add('mixed_category')
+  else reasons.add('unclear_category')
+  if (a.category.kind === 'single' && (category === 'uncategorized' || category === 'other')) reasons.add('unclear_category')
+
+  // Q1 → business must be chosen for a clean filing.
+  if (!(a.entity === 'detail' || a.entity === 'auto_sales' || a.entity === 'shared')) reasons.add('missing_business')
+
+  // Q3 → funding. Only business-funding carries a real payment instrument; personal/unpaid are flagged.
+  let paymentMethod: PaymentMethod | null = null
+  if (a.funding === 'business') {
+    paymentMethod = a.paymentMethod && a.paymentMethod !== 'unknown' ? a.paymentMethod : null
+    if (!paymentMethod) reasons.add('missing_info')
+  } else if (a.funding === 'personal') {
+    reasons.add('personal_reimbursement')
+  } else if (a.funding === 'unpaid') {
+    reasons.add('unpaid')
+  } else {
+    reasons.add('missing_info') // funding unknown/unanswered
+  }
+
+  // Confirmed purchase facts required for a clean filing (never coerce a blank into $0 / today).
+  const vendorOk = typeof a.vendor === 'string' && a.vendor.trim().length > 0
+  const dateOk = isBusinessDate(a.receiptDate)
+  const totalOk = typeof a.totalCents === 'number' && a.totalCents > 0
+  if (!vendorOk || !dateOk || !totalOk) reasons.add('missing_info')
+
+  if (a.duplicate) reasons.add('duplicate')
+
+  const list = ATTENTION_REASONS.map((r) => r.key).filter((k) => reasons.has(k)) // stable order
+  return { status: list.length === 0 ? 'filed' : 'needs_review', category, reasons: list, paymentMethod }
+}
+
 // ── Append-only audit entry. Stored as a JSONB array on the row; NEVER rewritten, only appended. ──
-export type AuditAction = 'uploaded' | 'extracted' | 'extraction_failed' | 'reviewed' | 'approved' | 'rejected' | 'reopened' | 'retried'
+export type AuditAction = 'uploaded' | 'extracted' | 'extraction_failed' | 'reviewed' | 'filed' | 'flagged' | 'approved' | 'rejected' | 'reopened' | 'retried'
 export interface AuditEntry {
   action: AuditAction
   actor: string | null

@@ -19,8 +19,15 @@ vi.mock('@/platform/db', () => ({ getDb: () => h.db }))
 import {
   createReceipt, storedPathnameForHash, getReceipt, saveReview, approveReceipt, rejectReceipt, reopenReceipt,
   claimRetryExtraction, applyRetryExtraction, releaseRetryClaim, inventoryVehicleExists,
-  listInventoryVehiclesForPicker, monthlyExpenseReport, consumeRateLimit,
+  listInventoryVehiclesForPicker, monthlyExpenseReport, consumeRateLimit, fileReceipt,
 } from './db'
+import type { CategoryChoice } from './types'
+
+const single = (key: string): CategoryChoice => ({ kind: 'single', key: key as never })
+const cleanFiling = (over: Record<string, unknown> = {}) => ({
+  entity: 'detail' as const, category: single('shop_supplies'), funding: 'business' as const,
+  paymentMethod: 'card' as const, vendor: 'O’Reilly', receiptDate: '2026-01-15', totalCents: 4599, ...over,
+})
 
 const migPath = (f: string) => fileURLToPath(new URL(`../../drizzle/migrations/manual/${f}`, import.meta.url))
 // Replicate the production runner's splitter (strip full-line comments, split on ';') — also validates it.
@@ -54,10 +61,12 @@ beforeAll(async () => {
   await applyMigration(client, '0038_business_receipts.sql')
   await applyMigration(client, '0039_business_receipts_dedup.sql')
   await applyMigration(client, '0040_business_receipts_hardening.sql')
+  await applyMigration(client, '0042_business_receipts_filing.sql')
   // Idempotency: re-apply must not throw.
   await applyMigration(client, '0038_business_receipts.sql')
   await applyMigration(client, '0039_business_receipts_dedup.sql')
   await applyMigration(client, '0040_business_receipts_hardening.sql')
+  await applyMigration(client, '0042_business_receipts_filing.sql')
   h.db = drizzle(client, { schema })
 })
 
@@ -243,6 +252,130 @@ describe('business-month filtering uses plain dates (no UTC drift)', () => {
     expect(rpt.approvedCount).toBe(1)
     expect(rpt.approvedTotalCents).toBe(1000)
     expect(rpt.byEntity.detail.totalCents).toBe(1000)
+  })
+})
+
+describe('employee operational filing (real Postgres)', () => {
+  const filer = { name: 'Sam', key: 'sam' }
+
+  it('a complete filing → status filed, attributed, funding business, export-ready, no attention reasons', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'F1', uploadedByKey: 'sam' }))
+    const r = await fileReceipt(id, cleanFiling(), filer)
+    expect(r.ok).toBe(true); expect(r.status).toBe('filed'); expect(r.reasons).toEqual([])
+    const row = await getReceipt(id)
+    expect(row?.status).toBe('filed')
+    expect(row?.filedBy).toBe('Sam'); expect(row?.filedByKey).toBe('sam'); expect(row?.filedAt).not.toBeNull()
+    expect(row?.approvedBy).toBeNull()                 // filing is NOT approval
+    expect(row?.funding).toBe('business'); expect(row?.paymentMethod).toBe('card')
+    expect(row?.qbSyncStatus).toBe('export_ready')
+    expect(row?.attentionReasons).toEqual([])
+  })
+
+  it('the employee’s confirmed vendor/date/total OVERRIDE the AI proposal', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'F2', vendor: 'AI Vendor', receiptDate: '2020-01-01', totalCents: 999 }))
+    await fileReceipt(id, cleanFiling({ vendor: 'Real Vendor', receiptDate: '2026-01-15', totalCents: 4599 }), filer)
+    const row = await getReceipt(id)
+    expect(row?.vendor).toBe('Real Vendor'); expect(row?.receiptDate).toBe('2026-01-15'); expect(row?.totalCents).toBe(4599)
+  })
+
+  it('personal money → stays needs_review, flagged reimbursement, NOT a business instrument, not export-ready', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'F3' }))
+    const r = await fileReceipt(id, cleanFiling({ funding: 'personal', paymentMethod: null }), filer)
+    expect(r.status).toBe('needs_review'); expect(r.reasons).toContain('personal_reimbursement')
+    const row = await getReceipt(id)
+    expect(row?.status).toBe('needs_review'); expect(row?.funding).toBe('personal')
+    expect(row?.paymentMethod).toBeNull(); expect(row?.filedBy).toBeNull(); expect(row?.qbSyncStatus).toBe('none')
+    expect(row?.attentionReasons).toContain('personal_reimbursement')
+  })
+
+  it('unpaid → stays needs_review, flagged unpaid', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'F4' }))
+    const r = await fileReceipt(id, cleanFiling({ funding: 'unpaid', paymentMethod: null }), filer)
+    expect(r.status).toBe('needs_review'); expect(r.reasons).toContain('unpaid')
+    expect((await getReceipt(id))?.funding).toBe('unpaid')
+  })
+
+  it('mixed categories → uncategorized + flagged (whole total not dumped into one guess)', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'F5' }))
+    const r = await fileReceipt(id, cleanFiling({ category: { kind: 'mixed' } }), filer)
+    expect(r.status).toBe('needs_review'); expect(r.reasons).toContain('mixed_category')
+    expect((await getReceipt(id))?.category).toBe('uncategorized')
+  })
+
+  it('missing total → needs_review missing_info (never coerced to $0)', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'F6' }))
+    const r = await fileReceipt(id, cleanFiling({ totalCents: null }), filer)
+    expect(r.status).toBe('needs_review'); expect(r.reasons).toContain('missing_info')
+    expect((await getReceipt(id))?.totalCents).toBeNull()
+  })
+
+  it('double-file is idempotent (a filed receipt is a no-op success)', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'F7' }))
+    expect((await fileReceipt(id, cleanFiling(), filer)).status).toBe('filed')
+    const again = await fileReceipt(id, cleanFiling(), filer)
+    expect(again.ok).toBe(true); expect(again.alreadyFiled).toBe(true)
+  })
+
+  it('concurrent finalization: exactly one files, the other is a safe idempotent no-op', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'F8' }))
+    const [a, b] = await Promise.all([fileReceipt(id, cleanFiling(), filer), fileReceipt(id, cleanFiling(), filer)])
+    expect(a.ok && b.ok).toBe(true)
+    // one did the real transition, the other saw it already filed — never two filings, never an error.
+    const filedFresh = [a, b].filter((r) => r.status === 'filed' && !r.alreadyFiled)
+    expect(filedFresh.length).toBeGreaterThanOrEqual(1)
+    expect((await getReceipt(id))?.status).toBe('filed')
+  })
+
+  it('a filed receipt cannot be claimed for re-extraction (late AI can never overwrite a filing)', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'F9' }))
+    await fileReceipt(id, cleanFiling(), filer)
+    const claim = await claimRetryExtraction(id)
+    expect(claim.ok).toBe(false)                        // not in an editable state → refused
+    expect((await getReceipt(id))?.status).toBe('filed')
+  })
+
+  it('reopen a filed receipt → needs_review, clears filing attribution', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'F10' }))
+    await fileReceipt(id, cleanFiling(), filer)
+    const re = await reopenReceipt(id, 'Darryl')
+    expect(re.ok).toBe(true)
+    const row = await getReceipt(id)
+    expect(row?.status).toBe('needs_review'); expect(row?.filedBy).toBeNull(); expect(row?.qbSyncStatus).toBe('none')
+  })
+
+  it('cannot file from an approved/rejected/filed row via the guarded update (conflict, not a second filing)', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'F11' }))
+    await rejectReceipt(id, 'nope', 'Darryl')
+    const r = await fileReceipt(id, cleanFiling(), filer)
+    expect(r.ok).toBe(false); expect(r.conflict).toBe(true)
+    expect((await getReceipt(id))?.status).toBe('rejected')
+  })
+})
+
+describe('monthly report — filed receipts + funding split, no double counting (real Postgres)', () => {
+  const filer = { name: 'Sam', key: 'sam' }
+  it('filed receipts are counted once; funding buckets separate business cash from personal/unpaid', async () => {
+    // business-filed $45.99 (Jan), personal-flagged $10 (stays needs_review — NOT complete), legacy approved $20.
+    const f1 = await createReceipt(baseReceipt({ imageHash: 'R1' }))
+    await fileReceipt(f1.id, cleanFiling({ totalCents: 4599, receiptDate: '2026-01-10' }), filer)
+    const f2 = await createReceipt(baseReceipt({ imageHash: 'R2' }))
+    await fileReceipt(f2.id, cleanFiling({ funding: 'personal', paymentMethod: null, totalCents: 1000, receiptDate: '2026-01-11' }), filer)
+    const ap = await createReceipt(baseReceipt({ imageHash: 'R3' }))
+    await approveReceipt(ap.id, { entity: 'detail', totalCents: 2000, receiptDate: '2026-01-12' }, 'Darryl')
+
+    const rpt = await monthlyExpenseReport('2026-01')
+    // Complete = filed(1) + legacy approved(1). The personal receipt is an exception, not complete.
+    expect(rpt.completeCount).toBe(2)
+    expect(rpt.filedCount).toBe(1)
+    expect(rpt.approvedCount).toBe(1)
+    // Purchases counted once each (no double count): 4599 + 2000.
+    expect(rpt.purchasesTotalCents).toBe(6599)
+    // Business cash outflow is ONLY the business-funded filing; the legacy approved is unknown-funding.
+    expect(rpt.businessCashOutflowCents).toBe(4599)
+    expect(rpt.unknownFundingCents).toBe(2000)
+    // The personal receipt is surfaced as attention, NOT added to purchases or business cash.
+    expect(rpt.needsReviewCount).toBe(1)
+    expect(rpt.personalReimbursableCents).toBe(0) // it isn't complete, so not in the complete-set buckets
   })
 })
 

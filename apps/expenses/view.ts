@@ -19,8 +19,9 @@ export interface ReviewCardData {
   entity: string; category: string; vendor: string | null; receiptDate: string | null
   subtotalCents: number | null; taxCents: number | null; totalCents: number | null
   paymentMethod: string | null; accountRef: string | null; paymentLast4: string | null; memo: string | null
+  funding: string; filingNote: string | null; attentionReasons: string[]
   inventoryVehicleId: string | null
-  uploadedBy: string | null; createdAt: string; approvedBy: string | null; rejectedReason: string | null
+  uploadedBy: string | null; createdAt: string; approvedBy: string | null; filedBy: string | null; rejectedReason: string | null
   present: Record<string, boolean> | null
 }
 
@@ -34,13 +35,15 @@ export function toReviewCard(r: Row): ReviewCardData {
   const present = (r.confidence && typeof r.confidence === 'object' ? r.confidence : null) as Record<string, boolean> | null
   const hasImage = r.storage !== 'none' && !!r.storageRef
   const createdAt = r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt)
+  const attentionReasons = Array.isArray(r.attentionReasons) ? (r.attentionReasons as unknown[]).filter((x): x is string => typeof x === 'string') : []
   return {
     id: r.id, status: r.status, imageUrl: hasImage ? receiptImagePath(r.id) : null, aiStatus: r.aiStatus,
     entity: r.entity, category: r.category, vendor: r.vendor, receiptDate: r.receiptDate,
     subtotalCents: r.subtotalCents, taxCents: r.taxCents, totalCents: r.totalCents,
     paymentMethod: r.paymentMethod, accountRef: r.accountRef, paymentLast4: r.paymentLast4, memo: r.memo,
+    funding: r.funding, filingNote: r.filingNote, attentionReasons,
     inventoryVehicleId: r.inventoryVehicleId,
-    uploadedBy: r.uploadedBy, createdAt, approvedBy: r.approvedBy, rejectedReason: r.rejectedReason, present,
+    uploadedBy: r.uploadedBy, createdAt, approvedBy: r.approvedBy, filedBy: r.filedBy, rejectedReason: r.rejectedReason, present,
   }
 }
 

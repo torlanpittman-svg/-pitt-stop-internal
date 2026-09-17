@@ -18,6 +18,7 @@ import { createReceipt, storedPathnameForHash, consumeRateLimit, RATE_LIMITS } f
 import { validateReceiptUpload, extForMime, MAX_UPLOAD_BYTES, MAX_DECLARED_OVERHEAD } from '@/apps/expenses/upload-validation'
 import { decodeImageMeta, validateDecodedMeta, derivedForExtraction } from '@/apps/expenses/image-decode'
 import { receiptUploaderFromRequest } from '@/apps/expenses/authz'
+import { signCaptureToken } from '@/apps/expenses/capture-token'
 import { errorCode } from '@/apps/expenses/errors'
 import { logger } from '@/platform/logger'
 
@@ -81,14 +82,24 @@ export async function POST(req: Request) {
     // 7) Create the row — DB-idempotent (unique hash). Concurrent identical uploads collapse to one row.
     const { id: receiptId, duplicate } = await createReceipt({
       storage: 'blob_private', storageRef, filename: image.name, contentType, imageHash, byteSize: bytes.length,
-      aiStatus: ai.status, aiModel: ai.model, aiRaw: ai.raw, aiExtracted: e, confidence: e.present, uploadedBy: uploader.name,
+      aiStatus: ai.status, aiModel: ai.model, aiRaw: ai.raw, aiExtracted: e, confidence: e.present,
+      uploadedBy: uploader.name, uploadedByKey: uploader.actor?.key ?? null,
       vendor: e.vendor, receiptDate: e.date, subtotalCents: e.subtotalCents, taxCents: e.taxCents,
       totalCents: e.totalCents, category: e.categoryKey, paymentMethod: e.paymentMethod, paymentLast4: e.paymentLast4,
     })
 
     logger.info(APP, 'captured', { aiStatus: ai.status, duplicate })
-    // Never disclose another receipt's metadata to an employee — only whether THIS upload was a duplicate.
-    return NextResponse.json({ ok: true, receiptId: duplicate ? undefined : receiptId, aiStatus: ai.status, duplicate })
+    // Return the AI PROPOSAL (vendor/date/total) so the employee can confirm it inline, plus a capture token
+    // that authorizes filing THIS receipt (a duplicate returns neither id nor token — it is already captured
+    // and never disclosed). The proposal is this uploader's own receipt facts; no other receipt is exposed.
+    if (duplicate) return NextResponse.json({ ok: true, duplicate: true, aiStatus: ai.status })
+    return NextResponse.json({
+      ok: true, duplicate: false, receiptId, fileToken: signCaptureToken(receiptId), aiStatus: ai.status,
+      proposal: {
+        vendor: e.vendor, date: e.date, totalCents: e.totalCents,
+        present: { vendor: e.present.vendor, date: e.present.date, total: e.present.total },
+      },
+    })
   } catch (err) {
     logger.error(APP, 'failed', { code: errorCode(err) })
     return NextResponse.json({ ok: false, error: 'Could not process receipt — try again or enter it later.' }, { status: 500 })
