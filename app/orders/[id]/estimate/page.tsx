@@ -7,6 +7,7 @@ import { authenticatedActor } from '@/apps/auth/employee-guard'
 import { estimateEnabled } from '@/apps/workflow/estimate'
 import { getOrderWithContext } from '@/apps/workflow/db'
 import { prepareEstimateView } from '@/apps/workflow/estimate-db'
+import { withIntakeLock } from '@/apps/estimates/db'
 import EstimateBuilder from './EstimateBuilder'
 
 export const dynamic = 'force-dynamic'
@@ -22,13 +23,23 @@ export default async function EstimatePage({ params }: { params: Promise<{ id: s
   // Idempotent: ensure the estimate exists, mirror the Job's services, and seed suggested
   // prices for a truly fresh Job — so the manager sees a useful draft without an extra tap.
   // Never itemizes a flat (Quick Entry Work Price) Job just by opening the page.
-  const view = await prepareEstimateView(id, actor.name)
+  const view = order.status === 'estimate'
+    ? await withIntakeLock(id, () => prepareEstimateView(id, actor.name))
+    : await prepareEstimateView(id, actor.name)
 
   const header = {
     id,
     customer: order.customerName?.trim() || 'Unknown Customer',
     vehicle: [order.vehicle.year, order.vehicle.make, order.vehicle.model].filter(Boolean).join(' ') || 'Vehicle',
+    vehicleDetails: {
+      vin: order.vehicle.vin,
+      color: order.vehicle.color,
+      licensePlate: order.vehicle.licensePlate,
+      bodyClass: order.vehicle.bodyClass,
+    },
     requested: order.services ?? [],
+    standalone: order.status === 'estimate',
+    notes: order.notes,
   }
   return <EstimateBuilder header={header} initialView={view} />
 }

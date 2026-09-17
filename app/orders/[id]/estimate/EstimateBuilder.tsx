@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from 'react'
 import NavHeader from '@/app/components/NavHeader'
+import EstimateActions from '@/app/estimates/EstimateActions'
 import SwipeRow from '@/app/components/SwipeRow'
 
 /**
@@ -13,7 +14,8 @@ import SwipeRow from '@/app/components/SwipeRow'
  */
 interface ServiceView { id: string; title: string; priceCents: number | null; suggestedCents: number | null }
 interface View { exists: boolean; flat: boolean; workTotalCents: number; services: ServiceView[] }
-interface Header { id: string; customer: string; vehicle: string; requested: string[] }
+interface VehicleDetails { vin: string | null; color: string | null; licensePlate: string | null; bodyClass: string | null }
+interface Header { vehicleDetails: VehicleDetails; id: string; customer: string; vehicle: string; requested: string[]; standalone?: boolean; notes?: string | null }
 
 const dollars = (c: number) => (c / 100).toFixed(2)
 const parseDollars = (s: string): number => Math.max(0, Math.round((parseFloat(s.replace(/[^0-9.]/g, '')) || 0) * 100))
@@ -45,7 +47,9 @@ const ROW_CONTENT = 'flex items-center gap-3 bg-gray-900 border border-gray-800 
 
 export default function EstimateBuilder({ header, initialView }: { header: Header; initialView: View }) {
   const [view, setView] = useState<View>(initialView)
-  const [busy, setBusy] = useState(false)
+  const [editingBusy, setBusy] = useState(false)
+  const [actionBusy, setActionBusy] = useState(false)
+  const busy = editingBusy || actionBusy
   const [err, setErr] = useState<string | null>(null)
   const [newName, setNewName] = useState('')
   const [newPrice, setNewPrice] = useState('')
@@ -67,13 +71,27 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
 
   return (
     <main className="min-h-screen bg-gray-950 text-white">
-      <NavHeader back={{ href: `/orders/${header.id}`, label: 'Job' }} />
+      <NavHeader back={header.standalone ? { href: '/estimates', label: 'Estimates' } : { href: `/orders/${header.id}`, label: 'Job' }} />
       <div className="max-w-xl mx-auto px-4 py-5">
         <div className="mb-4">
           <h1 className="text-2xl font-bold">Estimate</h1>
           <p className="text-gray-400 text-sm">{header.customer} · {header.vehicle}</p>
+          {header.notes && <p className="text-gray-500 text-sm mt-2 whitespace-pre-wrap">{header.notes}</p>}
         </div>
         {err && <p className="text-red-400 text-sm mb-3">{err}</p>}
+
+        <section aria-label="Vehicle information" className="mb-5 rounded-2xl border border-gray-800 bg-gray-900 p-4">
+          <h2 className="font-semibold text-white mb-3">Vehicle information</h2>
+          <dl className="space-y-3 text-sm">
+            <div><dt className="text-gray-500">Vehicle</dt><dd className="text-gray-200">{header.vehicle}</dd></div>
+            <div><dt className="text-gray-500">VIN</dt><dd className="font-mono text-base text-white select-all break-all">{header.vehicleDetails.vin || 'Not recorded'}</dd></div>
+            <div className="grid grid-cols-2 gap-4">
+              <div><dt className="text-gray-500">Color</dt><dd className="text-gray-200 break-words">{header.vehicleDetails.color || 'Not recorded'}</dd></div>
+              <div><dt className="text-gray-500">License plate</dt><dd className="text-gray-200 select-all break-words">{header.vehicleDetails.licensePlate || 'Not recorded'}</dd></div>
+            </div>
+            {header.vehicleDetails.bodyClass && <div><dt className="text-gray-500">Body style</dt><dd className="text-gray-200">{header.vehicleDetails.bodyClass}</dd></div>}
+          </dl>
+        </section>
 
         {/* Services */}
         <div className="space-y-2">
@@ -128,8 +146,9 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
             <button onClick={() => post({ action: 'itemize' })} disabled={busy}
               className="mt-3 text-blue-400 text-sm font-semibold active:opacity-70 disabled:opacity-40">Set individual prices →</button>
           )}
-          <p className="text-gray-600 text-xs mt-3">Work price only. Shop supplies, card charge, and tax are added on the invoice.</p>
+          <p className="text-gray-600 text-xs mt-3">Work price only. Shop supplies, card charge, and tax are included in the customer total separately.</p>
         </div>
+        {header.standalone && <EstimateActions key={JSON.stringify(view)} id={header.id} editorBusy={editingBusy} onBusyChange={setActionBusy} />}
       </div>
     </main>
   )

@@ -3,11 +3,13 @@
  * GET  → full estimate (or { estimate: null }).
  * POST → action dispatch (build, services, lines, tax, status, approval, convert).
  */
+import { getOrderWithContext } from '@/apps/workflow/db'
+import { withIntakeLock } from '@/apps/estimates/db'
 import { NextResponse } from 'next/server'
 import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { estimateEnabled } from '@/apps/workflow/estimate'
 import {
-  getOrCreateEstimate, getEstimateRow, getFullEstimate, promoteTextServices, recomputeEstimate,
+  getOrCreateEstimate, getEstimateRow, getFullEstimate, recomputeEstimate,
   addService, updateService, removeService, addLine, updateLine, removeLine,
   setTaxRate, setStatus, setApproval, convertEstimate, type LineInput,
   prepareEstimateView, getEstimateView, setServicePrice, setWorkTotal, itemizeEstimate, flagQbSyncNeededIfInvoiced,
@@ -45,6 +47,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   try {
     const estimateId = async () => (await getEstimateRow(id))?.id ?? (await getOrCreateEstimate(id, actor)).id
 
+    const perform = async () => {
     switch (action) {
       case 'build':
       case 'prepare': {
@@ -92,6 +95,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         return NextResponse.json({ ok: false, error: 'Unknown action' }, { status: 400 })
     }
     return NextResponse.json({ ok: true, view: await getEstimateView(id), ...(await getFullEstimate(id)) })
+    }
+    const order = await getOrderWithContext(id)
+    if (!order) return NextResponse.json({ error: 'Estimate not found.' }, { status: 404 })
+    if (order.status === 'estimate') {
+      // Standalone quotes use the dedicated conversion and email routes. All edits share
+      // the same lock as send/conversion so a customer cannot receive a half-edited quote.
+      const allowed = ['build', 'prepare', 'set_service_price', 'set_work_total', 'itemize', 'add_service', 'remove_service']
+      if (!allowed.includes(action)) return NextResponse.json({ error: 'Use the estimate actions to send or move this estimate.' }, { status: 400 })
+      return await withIntakeLock(id, async () => {
+        if ((await getOrderWithContext(id))?.status !== 'estimate') throw new Error('This estimate has moved to the Work Board. Refresh before editing.')
+        if (body.serviceId) {
+          const full = await getFullEstimate(id)
+          if (!full?.services.some(s => s.id === body.serviceId && s.source !== 'system')) throw new Error('Service does not belong to this estimate.')
+        }
+        return perform()
+      })
+    }
+    return await perform()
   } catch (err) {
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })
   }
