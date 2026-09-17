@@ -141,18 +141,28 @@ Plan = **Hobby, no payment method** (so nothing can silently incur cost). **Crit
 `DATABASE_URL` and public `BLOB_READ_WRITE_TOKEN` are scoped to Production **and** Preview — i.e. previews
 currently SHARE the production DB + public store — so the preview MUST override these per-branch.
 
-**Already done (zero production impact):**
-- Created a dedicated **private** Blob store `receipts-preview-priv` (id `store_XMF59Z0yiQ5DKXWA`), created
-  **unconnected** to any project/environment (no env vars added; the production public store is untouched).
-- Generated isolated test credentials, stored ONLY in the macOS Keychain (service `pittstop-receipt-preview`,
-  accounts `ADMIN_PASSWORD` / `IDENTITY_SECRET` / `PIN_TONY`). Retrieve locally (never in chat):
-  `security find-generic-password -a <ACCOUNT> -s pittstop-receipt-preview -w`.
+**Already provisioned (all Free plan, $0; both UNCONNECTED → zero production/env impact):**
+- Empty **Neon** DB `receipts-preview-db` — resource id `store_0ilebuHeqbLLomnC` (external Neon project
+  `patient-scene-49638485`), plan **Free** (`free_v3`, no credit card). Fresh project = empty (no
+  production data copied; NOT a branch). Provisioned with `--no-connect` (no env vars created).
+- Private **Blob** store `receipts-preview-priv` — id `store_XMF59Z0yiQ5DKXWA`, access **private**,
+  unconnected (production public store `pitt-stop-internal-blob` untouched).
+- Test credentials in the macOS Keychain (service `pittstop-receipt-preview`, accounts `ADMIN_PASSWORD` /
+  `IDENTITY_SECRET` / `PIN_TONY`). Retrieve locally: `security find-generic-password -a <ACCT> -s pittstop-receipt-preview -w`.
 
-**Blocked prerequisite (needs a human/interactive step):** an isolated **empty** Postgres. A Neon *branch*
-copies the parent's data (production records) → disallowed. Provisioning a fresh **empty Neon project** via
-the Vercel Marketplace requires interactive terms/browser confirmation (`vercel integration add`), which
-cannot be automated safely. **Action for the owner:** in Vercel → Storage → Create Database → Neon (a NEW,
-empty project — NOT a branch of the existing DB). It starts empty (schema-only); no production data.
+**Remaining blocker — secure value handoff (one owner step):** the two resource SECRET VALUES (the Neon
+connection string and the private-Blob RW token) cannot be read by the CLI token (marketplace secrets API
+returns 403), and *connecting* the resources to Preview would OVERWRITE the shared Preview `DATABASE_URL`/
+`BLOB_READ_WRITE_TOKEN` (disallowed). So the owner retrieves both from the dashboards and stores them in the
+Keychain (their terminal — never in chat); the agent then reads them to apply schema, set BRANCH-scoped
+env, deploy, and test. Dashboards:
+- Neon connection string: `https://vercel.com/pitt-stop/~/stores/store_0ilebuHeqbLLomnC` (pooled `DATABASE_URL`).
+- Blob RW token: `https://vercel.com/pitt-stop/~/stores/blob/store_XMF59Z0yiQ5DKXWA`.
+
+```
+security add-generic-password -a PREVIEW_DATABASE_URL   -s pittstop-receipt-preview -w '<neon-conn-string>' -U
+security add-generic-password -a RECEIPTS_BLOB_TOKEN    -s pittstop-receipt-preview -w '<blob-rw-token>'   -U
+```
 
 **Then (once the empty DB exists) — set BRANCH-SCOPED Preview env for `receipt-capture-work` only** (so
 other previews are unaffected; branch-scoped values take precedence over the shared Preview values):
@@ -208,7 +218,10 @@ curl -s -X DELETE -H "Authorization: Bearer <cli-token>" \
 vercel env rm DATABASE_URL preview receipt-capture-work   # (repeat for each var added)
 # remove keychain test creds:
 security delete-generic-password -s pittstop-receipt-preview   # (repeat per account)
-# delete the throwaway Neon project in Vercel → Storage. Remove the local link: rm -rf .vercel
+# delete the throwaway Neon DB + keychain values:
+vercel integration resource remove receipts-preview-db --yes --scope pitt-stop
+security delete-generic-password -s pittstop-receipt-preview     # removes all preview test secrets
+# remove the local link: rm -rf .vercel
 ```
 
 ## 5. Application rollback (RETAINS receipts, evidence, audit history)
