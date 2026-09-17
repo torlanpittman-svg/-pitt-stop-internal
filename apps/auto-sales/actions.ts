@@ -156,6 +156,7 @@ export interface SaveReceiptForm {
   documentId: string; vehicleId: string; categoryLabel?: string; economicCategory?: EconomicCategory
   amountDollars: string; totalDollars?: string; eventDate: string; vendor?: string; memo?: string
   paymentAccountRef?: string  // approved bank the shared matcher identified (or a manual pick); validated server-side
+  paymentCardLast4?: string   // the matched CARD ending — stored SEPARATELY from the bank account ending
   // Return handling: refundKind (cash vs non-cash), a matched originalEventId or unmatched, + match evidence.
   isReturn?: boolean; refundKind?: string; originalEventId?: string; unmatched?: boolean
   matchConfidence?: string; matchReasons?: string[]; returnedLineRef?: string; referencedReceipt?: string
@@ -170,8 +171,10 @@ export async function saveReceiptAction(f: SaveReceiptForm): Promise<{ ok: boole
   if (!ECONOMIC_CATEGORIES.includes(econ)) return { ok: false, error: 'Invalid category.' }
   // Only an approved account ref is accepted; anything else (incl. an unresolved match) stays 'unknown'.
   const paymentAccountRef = IN_SCOPE_ACCOUNTS.some((a) => a.ref === f.paymentAccountRef) ? f.paymentAccountRef : 'unknown'
+  // The card ending is kept ONLY alongside a real bank (a card draws on an account); a check/unknown has none.
+  const paymentCardLast4 = paymentAccountRef !== 'unknown' && /^\d{4}$/.test(f.paymentCardLast4 ?? '') ? f.paymentCardLast4 : undefined
   const r = await saveReceipt({ documentId: f.documentId, economicCategory: econ, amountCents, eventDate: f.eventDate,
-    vendor: f.vendor || undefined, receiptTotalCents: totalCents, memo: f.memo || undefined, paymentAccountRef,
+    vendor: f.vendor || undefined, receiptTotalCents: totalCents, memo: f.memo || undefined, paymentAccountRef, paymentCardLast4,
     isReturn: f.isReturn ?? false, refundKind: f.refundKind, originalEventId: f.isReturn ? (f.originalEventId || null) : undefined,
     unmatched: f.unmatched, matchConfidence: f.matchConfidence, matchReasons: f.matchReasons,
     returnedLineRef: f.returnedLineRef, referencedReceipt: f.referencedReceipt, actor: 'auto-sales' })

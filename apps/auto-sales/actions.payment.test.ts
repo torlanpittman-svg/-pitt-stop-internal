@@ -35,4 +35,19 @@ describe('auto-sales saveReceiptAction — persists the selected/corrected payme
     await saveReceiptAction({ ...base })
     expect(asMock(db.saveReceipt).mock.calls[0][0].paymentAccountRef).toBe('unknown')
   })
+
+  it('saves the matched CARD ending SEPARATELY from the bank when a card was recognized', async () => {
+    await saveReceiptAction({ ...base, paymentAccountRef: '*2649', paymentCardLast4: '0022' })
+    const call = asMock(db.saveReceipt).mock.calls[0][0]
+    expect(call.paymentAccountRef).toBe('*2649'); expect(call.paymentCardLast4).toBe('0022')
+  })
+  it('drops the card ending if the bank is unknown (no card without a real account)', async () => {
+    await saveReceiptAction({ ...base, paymentAccountRef: 'nope', paymentCardLast4: '0022' })
+    const call = asMock(db.saveReceipt).mock.calls[0][0]
+    expect(call.paymentAccountRef).toBe('unknown'); expect(call.paymentCardLast4).toBeUndefined()
+  })
+  it('ignores a malformed card ending', async () => {
+    await saveReceiptAction({ ...base, paymentAccountRef: '*5600', paymentCardLast4: '12' })
+    expect(asMock(db.saveReceipt).mock.calls[0][0].paymentCardLast4).toBeUndefined()
+  })
 })

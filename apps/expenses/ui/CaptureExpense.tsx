@@ -18,7 +18,7 @@ import {
   attentionReasonLabel, centsToDollars,
 } from '@/apps/expenses/types'
 import { fileReceiptAction } from '@/apps/expenses/actions'
-import { OTHER_PAYMENT_MAX_LENGTH, RECEIPT_PAYMENT_CHOICES, resolveReceiptPayment } from '@/apps/expenses/payment'
+import { OTHER_PAYMENT_MAX_LENGTH, RECEIPT_PAYMENT_CHOICES, resolveReceiptPayment, autoSelectPayment } from '@/apps/expenses/payment'
 
 export interface VehicleOption { id: string; label: string }
 
@@ -136,11 +136,10 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
     if (p.date && !dateT.current) setDate((d) => d || p.date || '')
     if (p.totalCents != null && !totalT.current) setTotal((t) => t || centsToDollars(p.totalCents))
     if (p.categoryKey && p.categoryKey !== 'uncategorized' && categoryMode === 'single' && !categoryKey) setCategoryKey(p.categoryKey)
-    // Auto-select the matching payment bubble the receipt identified — never over a choice the employee made.
-    if (p.paymentChoice && !paymentTouched.current) {
-      setPaymentChoice((c) => (paymentTouched.current ? c : c || p.paymentChoice!))
-      setPaymentAuto((a) => a || !paymentTouched.current)
-    }
+    // Auto-select the matching payment bubble the receipt identified — never over a choice the employee made
+    // (shared, unit-tested guard: a late/retry read can't overwrite a manual selection).
+    const sel = autoSelectPayment(paymentChoice, paymentTouched.current, p.paymentChoice)
+    if (sel.auto) { setPaymentChoice(sel.choice); setPaymentAuto(true) }
   }
 
   async function runExtract(receiptId: string, token?: string) {

@@ -659,7 +659,7 @@ function confirmedLineItems(doc: (typeof vehicleDocuments.$inferSelect)): any[] 
 
 export interface SaveReceiptInput {
   documentId: string; economicCategory: EconomicCategory; amountCents: number; eventDate: string
-  vendor?: string; receiptTotalCents?: number; paymentAccountRef?: string; memo?: string
+  vendor?: string; receiptTotalCents?: number; paymentAccountRef?: string; paymentCardLast4?: string; memo?: string
   // Return handling: refundKind selects cash vs non-cash (REFUND_KINDS); originalEventId links a matched
   // return; unmatched=true records a flagged return with no confirmed original (reduces now, needs review).
   isReturn?: boolean; refundKind?: string; originalEventId?: string | null; unmatched?: boolean
@@ -699,14 +699,23 @@ export async function saveReceipt(input: SaveReceiptInput): Promise<{ ok: boolea
     eventId = await addExpenseEvent({ inventoryVehicleId: vehId, economicCategory: input.economicCategory, amountCents: input.amountCents,
       eventDate: input.eventDate, vendor: input.vendor, memo: input.memo, paymentAccountRef: input.paymentAccountRef ?? 'unknown', actor: input.actor })
   }
+  // The card ending is recorded SEPARATELY from paymentAccountRef (the bank) — on a purchase only, and only
+  // alongside a real bank. A check/refund/unknown has no card ending. Kept in the event's evidence jsonb
+  // (no schema change) so review + reporting can show the specific card without conflating it with the account.
+  const cardLast4 = !input.isReturn && input.paymentAccountRef && input.paymentAccountRef !== 'unknown' && /^\d{4}$/.test(input.paymentCardLast4 ?? '') ? input.paymentCardLast4 : null
   // Link event → document, document → event; stamp document as 'receipt_ai' source on the event.
-  if (eventId) await db.update(vehicleFinancialEvents).set({ documentId: input.documentId, source: doc.aiStatus === 'extracted' ? 'receipt_ai' : 'manual' }).where(eq(vehicleFinancialEvents.id, eventId))
+  if (eventId) {
+    const eventSet: Record<string, unknown> = { documentId: input.documentId, source: doc.aiStatus === 'extracted' ? 'receipt_ai' : 'manual' }
+    if (cardLast4) eventSet.evidence = { paymentCardLast4: cardLast4 } // expense path only (addExpenseEvent leaves evidence null)
+    await db.update(vehicleFinancialEvents).set(eventSet).where(eq(vehicleFinancialEvents.id, eventId))
+  }
   await db.update(vehicleDocuments).set({
     linkedEventId: eventId || null, isReturn: input.isReturn ?? false, originalEventId: input.originalEventId ?? null,
     receiptTotalCents: input.receiptTotalCents ?? null,
     confirmed: {
       vendor: input.vendor ?? null, date: input.eventDate, category: input.economicCategory, amountCents: input.amountCents,
       receiptTotalCents: input.receiptTotalCents ?? null, isReturn: input.isReturn ?? false,
+      paymentAccountRef: input.paymentAccountRef ?? 'unknown', paymentCardLast4: cardLast4,
       receiptNumber: (doc.aiExtracted as any)?.receiptNumber ?? null, originalReference: (doc.aiExtracted as any)?.originalReference ?? null,
       lineItems: confirmedLineItems(doc), match: matchInfo,
     } as any,

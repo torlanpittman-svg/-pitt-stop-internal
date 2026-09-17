@@ -14,6 +14,7 @@ import { computeCostBasis, computeSaleFinancials, PAYMENT_METHODS } from '@/apps
 import { autoSalesCutoverDate } from '@/apps/settings/db'
 import { authorizedManager } from '@/apps/auth/employee-guard'
 import { returnRefundAction, settleAction, closeoutAction } from '@/apps/auto-sales/actions'
+import { receiptPaymentLabel } from '@/apps/expenses/payment'
 import VinResolver from './VinResolver'
 import AddExpense from './AddExpense'
 import AcquisitionPrice from './AcquisitionPrice'
@@ -237,6 +238,12 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
         <div className="px-4 pb-4 space-y-2">
           {events.map((e) => {
             const voided = e.status === 'void' || reversedTargets.has(e.id) || Boolean(e.reversesEventId)
+            // Payment source (bank + specific card ending when recorded) — card ending kept separate from the
+            // account in the event's evidence, shown via the shared label. Hidden for return/refund entries.
+            const card = (e.evidence as { paymentCardLast4?: string } | null)?.paymentCardLast4 ?? null
+            const paySrc = e.paymentAccountRef && e.paymentAccountRef !== 'unknown' && !['return', 'refund', 'vendor_credit'].includes(e.economicCategory)
+              ? receiptPaymentLabel({ funding: 'business', paymentMethod: card ? 'card' : null, accountRef: e.paymentAccountRef, paymentLast4: card })
+              : ''
             return (
               <div key={e.id} className={`flex items-center justify-between text-sm border-b border-gray-800/60 pb-1.5 ${voided ? 'opacity-45 line-through' : ''}`}>
                 <div className="min-w-0">
@@ -245,7 +252,7 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
                   {attachments[e.id] && (attachments[e.id].url
                     ? <a href={attachments[e.id].url!} target="_blank" rel="noopener" className="text-indigo-300 no-underline ml-1" title="View receipt">📎</a>
                     : <span className="ml-1" title="receipt on file">📎</span>)}
-                  <span className="block text-gray-600 text-xs">{e.eventDate}{e.vendor ? ` · ${e.vendor}` : ''}</span>
+                  <span className="block text-gray-600 text-xs">{e.eventDate}{e.vendor ? ` · ${e.vendor}` : ''}{paySrc ? ` · ${paySrc}` : ''}</span>
                 </div>
                 <div className="text-right shrink-0">
                   <span className="text-gray-200 tabular-nums">{money(e.amountCents)}</span>

@@ -38,6 +38,7 @@ export default function AddExpense({ vehicleId, returnable }: { vehicleId: strin
   const [vendor, setVendor] = useState(''); const [date, setDate] = useState(today())
   const [category, setCategory] = useState('Parts'); const [total, setTotal] = useState(''); const [amount, setAmount] = useState('')
   const [paymentAccount, setPaymentAccount] = useState('unknown') // pre-filled from the shared payment-source match; editable
+  const [paymentCardLast4, setPaymentCardLast4] = useState('')    // the matched CARD ending — stored SEPARATELY from the bank
   const [paymentMatched, setPaymentMatched] = useState(false)     // the account was identified from the receipt
   // return fields
   const [isReturn, setIsReturn] = useState(false)
@@ -56,7 +57,7 @@ export default function AddExpense({ vehicleId, returnable }: { vehicleId: strin
   }
   function reset() {
     setMode('idle'); setFile(null); setDocumentId(''); setAiFailed(false); setDup(null); setErr(null)
-    setVendor(''); setDate(today()); setCategory('Parts'); setTotal(''); setAmount(''); setPaymentAccount('unknown'); setPaymentMatched(false)
+    setVendor(''); setDate(today()); setCategory('Parts'); setTotal(''); setAmount(''); setPaymentAccount('unknown'); setPaymentCardLast4(''); setPaymentMatched(false)
     setIsReturn(false); setRefundKind('card_refund'); setOriginalEventId(''); setReturnMatch(null); setReturnedLineRef(null); setMatchReasons([]); setReferencedReceipt(null)
     if (previewUrl) URL.revokeObjectURL(previewUrl); setPreviewUrl(null)
   }
@@ -76,6 +77,8 @@ export default function AddExpense({ vehicleId, returnable }: { vehicleId: strin
       // Pre-select the account the shared matcher identified from the card evidence (editable). Unresolved → unknown.
       const matchedAcct = IN_SCOPE_ACCOUNTS.some((a) => a.ref === j.matchedAccountRef) ? j.matchedAccountRef : 'unknown'
       setPaymentAccount(matchedAcct); setPaymentMatched(matchedAcct !== 'unknown')
+      // The specific card ending, stored SEPARATELY from the bank (only when a card was recognized).
+      setPaymentCardLast4(matchedAcct !== 'unknown' && /^\d{4}$/.test(String(j.matchedCardLast4 ?? '')) ? String(j.matchedCardLast4) : '')
       setVendor(p.vendor ?? '')
       setDate(p.date ?? today())
       setCategory(p.categoryLabel ?? 'Parts')
@@ -110,7 +113,7 @@ export default function AddExpense({ vehicleId, returnable }: { vehicleId: strin
     setBusy(true); setErr(null)
     const form: SaveReceiptForm = {
       documentId, vehicleId, categoryLabel: category, amountDollars: amount || total, totalDollars: total || amount,
-      eventDate: date, vendor: vendor || undefined, paymentAccountRef: paymentAccount,
+      eventDate: date, vendor: vendor || undefined, paymentAccountRef: paymentAccount, paymentCardLast4: paymentCardLast4 || undefined,
       isReturn, refundKind: isReturn ? refundKind : undefined,
       originalEventId: isReturn && originalEventId ? originalEventId : undefined,
       unmatched: isReturn && !originalEventId,
@@ -215,8 +218,8 @@ export default function AddExpense({ vehicleId, returnable }: { vehicleId: strin
             {total && amount && parseFloat(amount) < parseFloat(total) && <p className="text-gray-500 text-xs">Assigning {money(amount)} of the {money(total)} {isReturn ? 'return' : 'receipt'} to this vehicle. The rest isn’t assigned here.</p>}
 
             {/* Payment source — pre-selected from the receipt when the shared matcher identified it; editable. */}
-            <label className="text-xs text-gray-500">Paid from{paymentMatched && paymentAccount !== 'unknown' && <span className="text-emerald-400"> · read from receipt</span>}<br />
-              <select value={paymentAccount} onChange={(e) => { setPaymentAccount(e.target.value); setPaymentMatched(false) }} className={box}>
+            <label className="text-xs text-gray-500">Paid from{paymentMatched && paymentAccount !== 'unknown' && <span className="text-emerald-400"> · read from receipt{paymentCardLast4 ? ` (••${paymentCardLast4})` : ''}</span>}<br />
+              <select value={paymentAccount} onChange={(e) => { setPaymentAccount(e.target.value); setPaymentMatched(false); setPaymentCardLast4('') }} className={box}>
                 {IN_SCOPE_ACCOUNTS.map((a) => <option key={a.ref} value={a.ref}>{a.label}</option>)}
               </select>
             </label>

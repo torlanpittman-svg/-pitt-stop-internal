@@ -28,7 +28,7 @@ import { extractExpense } from '@/apps/expenses/ai'
 const asMock = <T>(fn: T) => fn as unknown as ReturnType<typeof vi.fn>
 const params = Promise.resolve({ id: 'rec-1' })
 const req = (body: unknown = {}) => new Request('http://x', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-const EXTRACTION = { vendor: 'Costco', date: '2026-03-14', subtotalCents: null, taxCents: null, totalCents: 44672, categoryLabel: null, categoryKey: 'shop_supplies', description: 'towels', paymentMethod: null, cardBrand: null, paymentLast4: null, receiptNumber: null, present: { vendor: true, date: true, total: true, category: true } }
+const EXTRACTION = { vendor: 'Costco', date: '2026-03-14', subtotalCents: null, taxCents: null, totalCents: 44672, categoryLabel: null, categoryKey: 'shop_supplies', description: 'towels', paymentMethod: null, cardBrand: null, paymentLast4: null, accountEnding: null, receiptNumber: null, present: { vendor: true, date: true, total: true, category: true } }
 
 beforeEach(() => {
   vi.clearAllMocks()

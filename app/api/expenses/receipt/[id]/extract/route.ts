@@ -68,7 +68,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     logger.info(APP, 'read', { aiStatus: ai.status })
     // Deterministic, server-side payment-source match from the extracted evidence (the model never supplies
     // the account mapping). Returned as a choice KEY the client auto-selects; null when unresolved.
-    const paymentChoice = matchPaymentSource({ method: e.paymentMethod, brand: e.cardBrand, cardLast4: e.paymentLast4 })
+    const paymentChoice = matchPaymentSource({ method: e.paymentMethod, brand: e.cardBrand, cardLast4: e.paymentLast4, accountEnding: e.accountEnding })
     // Only surface a possible duplicate once we actually have vendor/date/total to compare on.
     return NextResponse.json({
       ok: true, aiStatus: ai.status,

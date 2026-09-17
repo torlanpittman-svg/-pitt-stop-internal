@@ -33,6 +33,7 @@ export interface ExpenseExtraction {
   paymentMethod: string | null   // cash|card|check|ach|other|multiple (verbatim-ish; validated downstream)
   cardBrand: string | null       // visa|mastercard|discover|amex — ONLY when explicitly printed (payment-source match)
   paymentLast4: string | null    // the PAYMENT CARD's last 4 only (never an order#/date/terminal/auth/check#)
+  accountEnding: string | null   // the PAYING BANK ACCOUNT's last 4, ONLY if explicitly printed as an account (never a check#)
   receiptNumber: string | null
   /** Which fields the model actually produced (a coarse per-field confidence/presence signal). */
   present: Record<'vendor' | 'date' | 'subtotal' | 'tax' | 'total' | 'category' | 'paymentMethod', boolean>
@@ -41,7 +42,7 @@ export interface ExpenseExtractResult { status: 'extracted' | 'failed'; model: s
 
 export const EMPTY_EXTRACTION: ExpenseExtraction = {
   vendor: null, date: null, subtotalCents: null, taxCents: null, totalCents: null,
-  categoryLabel: null, categoryKey: 'uncategorized', description: null, paymentMethod: null, cardBrand: null, paymentLast4: null, receiptNumber: null,
+  categoryLabel: null, categoryKey: 'uncategorized', description: null, paymentMethod: null, cardBrand: null, paymentLast4: null, accountEnding: null, receiptNumber: null,
   present: { vendor: false, date: false, subtotal: false, tax: false, total: false, category: false, paymentMethod: false },
 }
 
@@ -57,6 +58,7 @@ const PROMPT = `You are reading a photo of a BUSINESS EXPENSE RECEIPT or INVOICE
   "paymentMethod": "cash"|"card"|"check"|"ach"|"other"|"multiple"|null,  // how it was paid; "multiple" if more than one tender is shown
   "cardBrand": "visa"|"mastercard"|"discover"|"amex"|null,  // the card network, ONLY if explicitly printed
   "paymentLast4": string|null,      // last 4 of the PAYMENT CARD number ONLY, if visible — never an order#, date, terminal ID, auth code, or check number
+  "accountEnding": string|null,     // last 4 of the PAYING BANK ACCOUNT, ONLY if the receipt explicitly prints it as a bank account (e.g. "ACCT ...2649"); a CHECK NUMBER is NOT an account ending — leave null
   "receiptNumber": string|null      // this document's receipt/invoice number if visible
 }
 Dollars as numbers (not strings, no $). Never invent a vendor, amount, tax, date, category, brand, card ending, or payment method. If a value is not clearly on the receipt, return null for it.`
@@ -92,6 +94,7 @@ export function parseReceiptJson(j: unknown): ExpenseExtraction {
     paymentMethod,
     cardBrand,
     paymentLast4: typeof o.paymentLast4 === 'string' ? (o.paymentLast4.match(/\d{4}/)?.[0] ?? null) : null,
+    accountEnding: typeof o.accountEnding === 'string' ? (o.accountEnding.match(/\d{4}/)?.[0] ?? null) : null,
     receiptNumber: cleanStr(o.receiptNumber, 60),
     present: {
       vendor: has(o.vendor), date: has(o.date), subtotal: has(o.subtotal), tax: has(o.tax),

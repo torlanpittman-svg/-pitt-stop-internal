@@ -31,6 +31,7 @@ export interface ReceiptExtraction {
   paymentMethod: string | null   // cash|card|check|ach|other|multiple (for the shared payment-source match)
   cardBrand: string | null       // visa|mastercard|discover|amex — ONLY when explicitly printed
   paymentLast4: string | null    // the PAYMENT CARD's last 4 only (never an order#/date/terminal/auth/check#)
+  accountEnding: string | null   // the PAYING BANK ACCOUNT's last 4, ONLY if explicitly printed as an account (never a check#)
   receiptNumber: string | null   // this document's own receipt/invoice number
   documentType: DocumentType     // purchase | return | partial_return | refund | store_credit | unknown
   originalReference: string | null // for a return: the ORIGINAL receipt/invoice # it references, if cited
@@ -38,7 +39,7 @@ export interface ReceiptExtraction {
 }
 export interface ReceiptExtractResult { status: 'extracted' | 'failed'; model: string | null; raw: unknown; extraction: ReceiptExtraction }
 
-const EMPTY: ReceiptExtraction = { vendor: null, date: null, totalCents: null, subtotalCents: null, taxCents: null, categoryLabel: null, lineItems: [], paymentMethod: null, cardBrand: null, paymentLast4: null, receiptNumber: null, documentType: 'unknown', originalReference: null, isReturn: false }
+const EMPTY: ReceiptExtraction = { vendor: null, date: null, totalCents: null, subtotalCents: null, taxCents: null, categoryLabel: null, lineItems: [], paymentMethod: null, cardBrand: null, paymentLast4: null, accountEnding: null, receiptNumber: null, documentType: 'unknown', originalReference: null, isReturn: false }
 
 const PROMPT = `You are reading a photo of a vehicle-shop RECEIPT, INVOICE, RETURN or CREDIT MEMO. Extract ONLY what is clearly legible; use null when unsure. Return STRICT JSON, no prose, no markdown fences:
 {
@@ -52,6 +53,7 @@ const PROMPT = `You are reading a photo of a vehicle-shop RECEIPT, INVOICE, RETU
   "paymentMethod": "cash"|"card"|"check"|"ach"|"other"|"multiple"|null,  // how it was paid; "multiple" if more than one tender is shown
   "cardBrand": "visa"|"mastercard"|"discover"|"amex"|null,  // the card network, ONLY if explicitly printed
   "paymentLast4": string|null,           // last 4 of the PAYMENT CARD number ONLY, if visible — never an order#, date, terminal ID, auth code, or check number
+  "accountEnding": string|null,          // last 4 of the PAYING BANK ACCOUNT, ONLY if explicitly printed as a bank account (e.g. "ACCT ...2649"); a CHECK NUMBER is NOT an account ending — leave null
   "receiptNumber": string|null,          // THIS document's receipt/invoice number if visible
   "documentType": "purchase"|"return"|"partial_return"|"refund"|"store_credit"|"unknown",  // classify the whole document
   "originalReference": string|null       // if this is a return, the ORIGINAL receipt/invoice number it references (else null)
@@ -105,6 +107,7 @@ export async function extractReceipt(imageBase64: string, mimeType: string): Pro
       paymentMethod: typeof j.paymentMethod === 'string' && ['cash', 'card', 'check', 'ach', 'other', 'multiple'].includes(j.paymentMethod.trim().toLowerCase()) ? j.paymentMethod.trim().toLowerCase() : null,
       cardBrand: typeof j.cardBrand === 'string' && ['visa', 'mastercard', 'discover', 'amex'].includes(j.cardBrand.trim().toLowerCase()) ? j.cardBrand.trim().toLowerCase() : null,
       paymentLast4: typeof j.paymentLast4 === 'string' ? (j.paymentLast4.match(/\d{4}/)?.[0] ?? null) : null,
+      accountEnding: typeof j.accountEnding === 'string' ? (j.accountEnding.match(/\d{4}/)?.[0] ?? null) : null,
       receiptNumber: cleanRef(j.receiptNumber),
       documentType,
       originalReference: cleanRef(j.originalReference),

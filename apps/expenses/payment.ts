@@ -100,6 +100,8 @@ export interface PaymentEvidence {
   method: string | null       // cash | card | check | ach | other | multiple | ...
   brand: string | null        // card network printed on the receipt, if any
   cardLast4: string | null     // the CARD's last four (never an order/date/terminal/auth/check number)
+  accountEnding?: string | null // the PAYING BANK ACCOUNT's last four, ONLY if explicitly printed as an account
+                                // (e.g. "ACCT ••2649") — a CHECK NUMBER is NOT an account ending
 }
 
 function normBrand(b: string | null): PaymentSource['brand'] | null {
@@ -127,14 +129,39 @@ export function matchPaymentSource(e: PaymentEvidence): string | null {
   const method = (e.method ?? '').trim().toLowerCase()
   if (method === 'multiple') return null
   if (method === 'cash') return 'cash'
-  if (method === 'check' || method === 'ach') return null // a check/ACH alone can't identify the account
+  // CARD — a printed card last-4 identifies the specific card (takes precedence over any account ending).
   const last4 = cardLast4Of(e.cardLast4)
-  if (!last4) return null                                  // card/mastercard alone → cannot distinguish
-  const card = BUSINESS_SOURCES.find((p) => p.method === 'card' && p.cardLast4 === last4)
-  if (!card) return null                                   // an ending we don't recognize → unknown
-  const brand = normBrand(e.brand)
-  if (brand && card.brand && brand !== card.brand) return null // explicit brand contradicts the approved card
-  return card.key
+  if (last4) {
+    const card = BUSINESS_SOURCES.find((p) => p.method === 'card' && p.cardLast4 === last4)
+    if (!card) return null                                   // an ending we don't recognize → unknown
+    const brand = normBrand(e.brand)
+    if (brand && card.brand && brand !== card.brand) return null // explicit brand contradicts the approved card
+    return card.key
+  }
+  // CHECK — resolve a checking account ONLY from an EXPLICIT paying-account ending (2649/5600). "Check" or a
+  // check number alone stays unanswered; a card method with no last-4 is never a check.
+  const acct = cardLast4Of(e.accountEnding ?? null)
+  if (acct && method !== 'card') {
+    const check = BUSINESS_SOURCES.find((p) => p.method === 'check' && p.accountEnding === acct)
+    if (check) return check.key
+  }
+  return null                                                // mastercard-alone / check-alone / unknown → unresolved
+}
+
+/** The card ending of the matched source (or null) — stored SEPARATELY from the bank account (Auto Sales). */
+export function matchedCardLast4(e: PaymentEvidence): string | null {
+  const key = matchPaymentSource(e)
+  return key ? (RECEIPT_PAYMENT_CHOICES.find((p) => p.key === key)?.cardLast4 ?? null) : null
+}
+
+/**
+ * PURE client autofill guard (shared by the capture screens + tests). Auto-selects the receipt-identified
+ * source ONLY when the employee hasn't chosen yet — a late/retry read NEVER overwrites a manual choice.
+ */
+export function autoSelectPayment(current: string, touched: boolean, proposed: string | null | undefined):
+  { choice: string; auto: boolean } {
+  if (proposed && !touched && !current) return { choice: proposed, auto: true }
+  return { choice: current, auto: false }
 }
 
 /** The bank account_ref of the matched source (or null) — the granularity Auto Sales stores per event. */

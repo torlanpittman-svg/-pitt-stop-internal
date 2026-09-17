@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { decideFiling } from './types'
 import {
   RECEIPT_PAYMENT_CHOICES, resolveReceiptPayment, receiptPaymentChoice, receiptPaymentLabel,
-  matchPaymentSource, matchedAccountRef,
+  matchPaymentSource, matchedAccountRef, matchedCardLast4, autoSelectPayment,
 } from './payment'
 
 // ── The five approved business sources + Cash/Personal/Other, defined ONCE and shared by both workflows. ──
@@ -79,7 +79,7 @@ describe('historical payment values are preserved, not reclassified', () => {
 })
 
 // ── Deterministic matcher: extracted evidence → an approved source (or null). ──
-const ev = (o: Partial<{ method: string | null; brand: string | null; cardLast4: string | null }>) => ({ method: null, brand: null, cardLast4: null, ...o })
+const ev = (o: Partial<{ method: string | null; brand: string | null; cardLast4: string | null; accountEnding: string | null }>) => ({ method: null, brand: null, cardLast4: null, accountEnding: null, ...o })
 
 describe('matchPaymentSource — identifies a source only from sufficient, unambiguous evidence', () => {
   it('each approved card matches by its printed last-4 (with a consistent or absent brand)', () => {
@@ -107,6 +107,21 @@ describe('matchPaymentSource — identifies a source only from sufficient, unamb
     expect(matchPaymentSource(ev({ method: 'check', brand: null, cardLast4: null }))).toBeNull()
     expect(matchPaymentSource(ev({ method: 'check', cardLast4: '1234' }))).toBeNull() // a check# never resolves a bank
   })
+
+  it('EXPLICIT checking-account evidence (2649/5600) resolves the check source; a bare check stays unanswered', () => {
+    // The paying bank account's printed last-4 identifies the checking account.
+    expect(matchPaymentSource(ev({ method: 'check', accountEnding: '2649' }))).toBe('amb_check')
+    expect(matchPaymentSource(ev({ method: 'check', accountEnding: '5600' }))).toBe('extraco_check')
+    expect(matchPaymentSource(ev({ method: null, accountEnding: '2649' }))).toBe('amb_check')
+    // A check with NO explicit account ending (only a check number lives in receiptNumber, not accountEnding) → null.
+    expect(matchPaymentSource(ev({ method: 'check', accountEnding: null }))).toBeNull()
+    // An unrecognized account ending → unresolved (not forced to a bank).
+    expect(matchPaymentSource(ev({ method: 'check', accountEnding: '4444' }))).toBeNull()
+  })
+
+  it('a printed card last-4 takes precedence over an account ending (it is a card payment)', () => {
+    expect(matchPaymentSource(ev({ method: 'card', brand: 'discover', cardLast4: '1068', accountEnding: '2649' }))).toBe('extraco_debit')
+  })
   it('never matches an ACCOUNT ending or arbitrary/ malformed 4-digit strings as a card', () => {
     expect(matchPaymentSource(ev({ method: 'card', cardLast4: '2649' }))).toBeNull() // account ending ≠ card ending
     expect(matchPaymentSource(ev({ method: 'card', cardLast4: '5600' }))).toBeNull()
@@ -121,13 +136,40 @@ describe('matchPaymentSource — identifies a source only from sufficient, unamb
   })
 })
 
-describe('matchedAccountRef — the bank granularity Auto Sales stores per event', () => {
+describe('matchedAccountRef + matchedCardLast4 — Auto Sales stores card ending SEPARATELY from the bank', () => {
   it('maps a matched source to its approved account_ref, else null', () => {
     expect(matchedAccountRef(ev({ method: 'card', brand: 'mastercard', cardLast4: '0022' }))).toBe('*2649')
     expect(matchedAccountRef(ev({ method: 'card', brand: 'mastercard', cardLast4: '0320' }))).toBe('*2649')
     expect(matchedAccountRef(ev({ method: 'card', brand: 'discover', cardLast4: '1068' }))).toBe('*5600')
+    expect(matchedAccountRef(ev({ method: 'check', accountEnding: '2649' }))).toBe('*2649') // check via account evidence
     expect(matchedAccountRef(ev({ method: 'card', brand: 'mastercard', cardLast4: null }))).toBeNull()
     expect(matchedAccountRef(ev({ method: 'check' }))).toBeNull()
     expect(matchedAccountRef(ev({ method: 'card', cardLast4: '9999' }))).toBeNull()
+  })
+  it('the card ending is 0022/0320/1068 for cards, but NULL for a check source (checks have no card)', () => {
+    expect(matchedCardLast4(ev({ method: 'card', brand: 'mastercard', cardLast4: '0022' }))).toBe('0022')
+    expect(matchedCardLast4(ev({ method: 'card', brand: 'mastercard', cardLast4: '0320' }))).toBe('0320')
+    expect(matchedCardLast4(ev({ method: 'card', brand: 'discover', cardLast4: '1068' }))).toBe('1068')
+    expect(matchedCardLast4(ev({ method: 'check', accountEnding: '2649' }))).toBeNull() // AMB check → no card ending
+    expect(matchedCardLast4(ev({ method: 'card', cardLast4: '9999' }))).toBeNull()
+  })
+  it('the Auto-Sales display shape (bank + separate card ending) labels the specific card', () => {
+    // How VehicleFolderView renders a stored expense: account_ref + card ending → "AMB debit ••0022".
+    expect(receiptPaymentLabel({ funding: 'business', paymentMethod: 'card', accountRef: '*2649', paymentLast4: '0022' })).toBe('AMB debit ••0022')
+    expect(receiptPaymentLabel({ funding: 'business', paymentMethod: 'card', accountRef: '*5600', paymentLast4: '1068' })).toBe('Extraco debit ••1068')
+    expect(receiptPaymentLabel({ funding: 'business', paymentMethod: null, accountRef: '*2649', paymentLast4: null })).toBe('*2649') // bank only (no card)
+  })
+})
+
+describe('autoSelectPayment — client guard: recognized selects, a manual choice survives a late/retry read', () => {
+  it('auto-selects the recognized source when the employee has not chosen yet', () => {
+    expect(autoSelectPayment('', false, 'amb_debit_0022')).toEqual({ choice: 'amb_debit_0022', auto: true })
+  })
+  it('a MANUAL choice is NEVER overwritten by a late/retry read (touched)', () => {
+    expect(autoSelectPayment('cash', true, 'amb_debit_0022')).toEqual({ choice: 'cash', auto: false })
+  })
+  it('does not override an already-selected value, and no-ops when nothing was recognized', () => {
+    expect(autoSelectPayment('extraco_debit', false, 'amb_debit_0022')).toEqual({ choice: 'extraco_debit', auto: false })
+    expect(autoSelectPayment('', false, null)).toEqual({ choice: '', auto: false })
   })
 })
