@@ -90,6 +90,13 @@ export const businessReceipts = pgTable(
     filedByKey:    varchar('filed_by_key', { length: 60 }),
     filedAt:       timestamp('filed_at', { withTimezone: true }),
 
+    // Exception "clarified/reviewed" acknowledgement. Set when a manager confirms an exception's info is
+    // correct while a real-world item stays genuinely OUTSTANDING (personal reimbursement / unpaid / mixed
+    // allocation). The row STAYS 'needs_review' (funding/category never falsified) but leaves the primary
+    // backlog for the "Outstanding" list. NULL ⇒ still in the backlog; set ⇒ reviewed + outstanding.
+    clarifiedAt:   timestamp('clarified_at', { withTimezone: true }),
+    clarifiedBy:   varchar('clarified_by', { length: 200 }),
+
     // Append-only audit trail (array of { action, actor, at, changes?, note? }). Never rewritten.
     auditLog:      jsonb('audit_log').notNull().default('[]'),
 

@@ -13,7 +13,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   BUSINESS_ENTITIES, EXPENSE_CATEGORIES, PAYMENT_METHODS, FUNDING_SOURCES,
-  attentionReasonLabel, centsToDollars, formatMoney,
+  attentionReasonLabel, canAcknowledgeOutstanding, outstandingKindLabel, centsToDollars, formatMoney,
 } from '@/apps/expenses/types'
 import { fileReceiptAction, rejectReceiptAction, reopenReceiptAction, retryExtractionAction } from '@/apps/expenses/actions'
 import type { ReviewCardData } from '@/apps/expenses/view'
@@ -42,24 +42,39 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
 
   const suggested = (k: string) => r.present?.[k] ? <span className="text-indigo-400/70"> · suggested</span> : null
 
-  async function run(fn: () => Promise<{ ok: boolean; error?: string; alreadyFiled?: boolean; status?: string }>, okNote: string) {
+  async function run(fn: () => Promise<{ ok: boolean; error?: string; alreadyFiled?: boolean; status?: string; clarified?: boolean; reasons?: string[] }>, okNote: string) {
     if (busy) return
     setBusy(true); setErr(null); setNote(null)
     try {
       const res = await fn()
       if (!res.ok) setErr(res.error ?? 'Something went wrong.')
-      else { setNote(res.alreadyFiled ? 'Already filed.' : okNote); router.refresh() }
+      else {
+        // Distinguish clean filing, acknowledged-outstanding, and still-in-backlog outcomes honestly.
+        const msg = res.alreadyFiled ? 'Already filed.'
+          : res.status === 'filed' ? 'Filed.'
+          : res.clarified ? 'Reviewed — moved to Outstanding (payment/allocation still open).'
+          : res.status === 'needs_review' ? `Saved — still needs: ${(res.reasons ?? []).map(attentionReasonLabel).join(', ') || 'attention'}.`
+          : okNote
+        setNote(msg); router.refresh()
+      }
     } catch { setErr('Could not reach the server.') }
     setBusy(false)
   }
 
-  // Manager files via the SAME operational path as the employee (categoryMode 'single' with the chosen key).
-  const fileNow = () => run(() => fileReceiptAction({
+  const formFields = () => ({
     id: r.id, entity, category, categoryMode: 'single', funding, paymentMethod: paymentMethod || undefined,
     vendor, receiptDate, subtotal, tax, total, memo, inventoryVehicleId,
-  }), 'Filed.')
+  })
+  // Manager files via the SAME operational path as the employee (categoryMode 'single' with the chosen key).
+  const fileNow = () => run(() => fileReceiptAction(formFields()), 'Filed.')
+  // Manager ACKNOWLEDGES a still-outstanding exception (reimbursement/unpaid/allocation): reviewed, leaves
+  // the backlog — funding/category are NOT falsified. Server honors this only when every reason is outstanding.
+  const acknowledgeNow = () => run(() => fileReceiptAction({ ...formFields(), acknowledge: true }), 'Reviewed.')
 
   const decided = r.status === 'filed' || r.status === 'approved' || r.status === 'rejected'
+  // Offer "Mark reviewed" when the stored reasons are all real-world outstanding items (never for a receipt
+  // that just needs a field supplied — that must be fixed, not acknowledged).
+  const acknowledgeable = r.status === 'needs_review' && canAcknowledgeOutstanding(r.attentionReasons)
 
   return (
     <div className="rounded-2xl bg-gray-900 border border-gray-800 overflow-hidden">
@@ -84,13 +99,14 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
             )}
           </div>
 
-          {/* Why it needs attention */}
+          {/* Why it needs attention (or, once reviewed, what remains outstanding) */}
           {r.status === 'needs_review' && r.attentionReasons.length > 0 && (
             <div className="rounded-xl border border-amber-900/50 bg-amber-950/20 px-3 py-2">
-              <p className="text-amber-300 text-xs font-semibold">Needs attention</p>
+              <p className="text-amber-300 text-xs font-semibold">{r.clarifiedAt ? `Reviewed — still outstanding: ${outstandingKindLabel(r.attentionReasons)}` : 'Needs attention'}</p>
               <ul className="text-amber-200/80 text-xs mt-1 list-disc list-inside">
                 {r.attentionReasons.map((k) => <li key={k}>{attentionReasonLabel(k)}</li>)}
               </ul>
+              {r.clarifiedAt && <p className="text-gray-500 text-[11px] mt-1">Reviewed by {r.clarifiedBy ?? 'manager'} — the receipt info is confirmed; the payment/allocation is still open.</p>}
             </div>
           )}
           {r.filingNote && <p className="text-gray-400 text-xs">Note from filer: “{r.filingNote}”</p>}
@@ -148,6 +164,11 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
           {!decided ? (
             <div className="space-y-2">
               <button type="button" onClick={fileNow} disabled={busy} className="w-full bg-green-600 active:bg-green-700 text-white font-bold py-3 rounded-xl disabled:opacity-50">File receipt</button>
+              {acknowledgeable && (
+                <button type="button" onClick={acknowledgeNow} disabled={busy} className="w-full border border-amber-800/70 text-amber-200 font-semibold py-3 rounded-xl disabled:opacity-50">
+                  Mark reviewed — {outstandingKindLabel(r.attentionReasons)} stays open
+                </button>
+              )}
               <button type="button" onClick={() => { const reason = window.prompt('Reason for rejecting this receipt?') ?? undefined; if (reason !== undefined) run(() => rejectReceiptAction({ id: r.id, reason }), 'Rejected.') }} disabled={busy} className="w-full text-gray-500 text-sm py-2 disabled:opacity-50">Reject</button>
             </div>
           ) : (

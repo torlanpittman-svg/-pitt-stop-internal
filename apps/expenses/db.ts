@@ -7,15 +7,15 @@
  * atomically and existing entries are never rewritten. Approval is idempotent (a conditional update
  * that only fires when the row is not already approved).
  */
-import { and, desc, eq, ne, or, sql, inArray, lt } from 'drizzle-orm'
+import { and, desc, eq, ne, or, sql, inArray, isNull, isNotNull, lt } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
 import { getDb } from '@/platform/db'
 import { inventoryVehicles } from '@/apps/auto-sales/schema'
 import { vehicles } from '@/apps/workflow/schema'
 import { businessReceipts, expenseRateCounters } from './schema'
 import {
-  auditEntry, decideApproval, decideFiling, diffFields, inBusinessMonth, isBusinessEntity, isCompleteStatus,
-  isExpenseCategory, isFundingSource, isPaymentMethod,
+  auditEntry, canAcknowledgeOutstanding, decideApproval, decideFiling, diffFields, inBusinessMonth,
+  isBusinessEntity, isCompleteStatus, isExpenseCategory, isFundingSource, isPaymentMethod,
   type AttentionReason, type AuditEntry, type BusinessEntity, type CategoryChoice, type ExpenseCategory,
   type FundingSource, type PaymentMethod, type ReceiptStatus,
 } from './types'
@@ -131,17 +131,37 @@ export async function getReceipt(id: string): Promise<ReceiptRow | null> {
   const [r] = await getDb().select().from(businessReceipts).where(eq(businessReceipts.id, id)).limit(1)
   return r ?? null
 }
-/** The review queue — receipts in the given statuses (default: everything needing attention), newest first. */
-export async function listReceipts(statuses: ReceiptStatus[] = ['needs_review', 'processing_failed']): Promise<ReceiptRow[]> {
+/**
+ * The review queue — receipts in the given statuses (default: everything needing attention), newest first.
+ * `clarified` splits the needs_review exceptions: 'exclude' = the primary BACKLOG (not yet reviewed);
+ * 'only' = the OUTSTANDING list (a manager reviewed the info but a real-world item remains — reimbursement /
+ * unpaid / allocation). Filed/approved/rejected are unaffected by the flag.
+ */
+export async function listReceipts(
+  statuses: ReceiptStatus[] = ['needs_review', 'processing_failed'],
+  opts?: { clarified?: 'only' | 'exclude' },
+): Promise<ReceiptRow[]> {
   if (statuses.length === 0) return []
-  return getDb().select().from(businessReceipts).where(inArray(businessReceipts.status, statuses)).orderBy(desc(businessReceipts.createdAt))
+  const conds = [inArray(businessReceipts.status, statuses)]
+  if (opts?.clarified === 'only') conds.push(isNotNull(businessReceipts.clarifiedAt))
+  else if (opts?.clarified === 'exclude') conds.push(isNull(businessReceipts.clarifiedAt))
+  return getDb().select().from(businessReceipts).where(and(...conds)).orderBy(desc(businessReceipts.createdAt))
 }
-export interface QueueCounts { needs_review: number; filed: number; approved: number; rejected: number; processing: number; processing_failed: number }
+export interface QueueCounts {
+  needs_review: number; filed: number; approved: number; rejected: number; processing: number; processing_failed: number
+  outstanding: number  // needs_review that a manager reviewed but which stays outstanding (leaves the backlog)
+  backlog: number      // needs_review not yet reviewed (the primary "Needs attention" queue)
+}
 /** Counts by status for the queue header (surfaces incomplete/failed/unreviewed separately). */
 export async function queueCounts(): Promise<QueueCounts> {
-  const rows = await getDb().select({ status: businessReceipts.status, n: sql<number>`count(*)::int` }).from(businessReceipts).groupBy(businessReceipts.status)
-  const c: QueueCounts = { needs_review: 0, filed: 0, approved: 0, rejected: 0, processing: 0, processing_failed: 0 }
+  const db = getDb()
+  const rows = await db.select({ status: businessReceipts.status, n: sql<number>`count(*)::int` }).from(businessReceipts).groupBy(businessReceipts.status)
+  const c: QueueCounts = { needs_review: 0, filed: 0, approved: 0, rejected: 0, processing: 0, processing_failed: 0, outstanding: 0, backlog: 0 }
   for (const r of rows) if (r.status in c) (c as unknown as Record<string, number>)[r.status] = Number(r.n)
+  const [out] = await db.select({ n: sql<number>`count(*)::int` }).from(businessReceipts)
+    .where(and(eq(businessReceipts.status, 'needs_review'), isNotNull(businessReceipts.clarifiedAt)))
+  c.outstanding = Number(out?.n ?? 0)
+  c.backlog = c.needs_review - c.outstanding
   return c
 }
 
@@ -246,6 +266,7 @@ export interface FileReceiptInput {
 export interface FileReceiptResult {
   ok: boolean; error?: string; conflict?: boolean; alreadyFiled?: boolean
   status?: 'filed' | 'needs_review'; reasons?: AttentionReason[]
+  clarified?: boolean   // true when a manager acknowledged an outstanding exception (left the backlog)
 }
 export interface FilingActor { name: string | null; key: string | null }
 
@@ -259,7 +280,7 @@ export interface FilingActor { name: string | null; key: string | null }
  * overwrite it. Filing is NOT approval: filed_by/at record the ACTUAL person; approved_by is untouched.
  * Idempotent: a double-submit that finds the row already 'filed' is a no-op success.
  */
-export async function fileReceipt(id: string, input: FileReceiptInput, actor: FilingActor, opts?: { duplicate?: boolean }): Promise<FileReceiptResult> {
+export async function fileReceipt(id: string, input: FileReceiptInput, actor: FilingActor, opts?: { duplicate?: boolean; acknowledge?: boolean }): Promise<FileReceiptResult> {
   const db = getDb()
   const before = await getReceipt(id)
   if (!before) return { ok: false, error: 'Receipt not found.' }
@@ -271,6 +292,11 @@ export async function fileReceipt(id: string, input: FileReceiptInput, actor: Fi
     entity: input.entity, category: input.category, funding: input.funding, paymentMethod: input.paymentMethod,
     vendor: input.vendor, receiptDate: input.receiptDate, totalCents: input.totalCents, duplicate: opts?.duplicate,
   })
+  // A manager may ACKNOWLEDGE an exception (leave the backlog) only when every remaining reason is a real-
+  // world OUTSTANDING item (reimbursement / unpaid / mixed allocation) — never to hide missing info. This
+  // never changes funding or category, so personal stays personal, unpaid stays unpaid, mixed stays
+  // unallocated.
+  const clarify = decision.status === 'needs_review' && !!opts?.acknowledge && canAcknowledgeOutstanding(decision.reasons)
   const now = new Date()
   const set: Record<string, unknown> = {
     entity: isBusinessEntity(input.entity) ? input.entity : 'unassigned',
@@ -292,12 +318,16 @@ export async function fileReceipt(id: string, input: FileReceiptInput, actor: Fi
   if (decision.status === 'filed') {
     set.status = 'filed'; set.filedBy = actor.name; set.filedByKey = actor.key; set.filedAt = now
     set.qbSyncStatus = 'export_ready' // complete + export-ready for the accountant package — NOT posted to QB
+    set.clarifiedAt = null; set.clarifiedBy = null // a clean filing supersedes any prior clarification
   } else {
     set.status = 'needs_review'; set.qbSyncStatus = 'none'
     // An exception is NOT a filing — clear any stale filing attribution but keep the answers we captured.
     set.filedBy = null; set.filedByKey = null; set.filedAt = null
+    // Acknowledged → reviewed + outstanding (leaves the backlog); otherwise → back in the backlog.
+    set.clarifiedAt = clarify ? now : null
+    set.clarifiedBy = clarify ? actor.name : null
   }
-  const action = decision.status === 'filed' ? 'filed' : 'flagged'
+  const action = decision.status === 'filed' ? 'filed' : clarify ? 'clarified' : 'flagged'
   const note = decision.status === 'filed' ? null : decision.reasons.join(', ')
   const done = await db.update(businessReceipts)
     .set({ ...set, auditLog: appendAudit(auditEntry(action, actor.name, undefined, note)) })
@@ -308,7 +338,7 @@ export async function fileReceipt(id: string, input: FileReceiptInput, actor: Fi
     if (cur?.status === 'filed') return { ok: true, alreadyFiled: true, status: 'filed', reasons: [] }
     return { ok: false, conflict: true, error: `This receipt was just updated by someone else — refresh and try again.` }
   }
-  return { ok: true, status: decision.status, reasons: decision.reasons }
+  return { ok: true, status: decision.status, reasons: decision.reasons, clarified: clarify }
 }
 
 /** Reject a receipt — ATOMIC. Only fires while still editable (needs_review/processing_failed), so it
@@ -320,6 +350,7 @@ export async function rejectReceipt(id: string, reason: string | null, actor: st
   if (before.status === 'rejected') return { ok: true }
   const done = await db.update(businessReceipts).set({
     status: 'rejected', rejectedReason: reason || null, reviewedBy: actor, reviewedAt: new Date(),
+    clarifiedAt: null, clarifiedBy: null, // a rejected receipt is not "outstanding" — clear the acknowledgement
     qbSyncStatus: 'none', updatedAt: new Date(), auditLog: appendAudit(auditEntry('rejected', actor, undefined, reason)),
   }).where(and(eq(businessReceipts.id, id), inArray(businessReceipts.status, EDITABLE_FROM))).returning({ id: businessReceipts.id })
   if (done.length === 0) {
@@ -339,6 +370,7 @@ export async function reopenReceipt(id: string, actor: string | null): Promise<{
   if (before.status === 'needs_review') return { ok: true }
   const done = await db.update(businessReceipts).set({
     status: 'needs_review', approvedBy: null, approvedAt: null, filedBy: null, filedByKey: null, filedAt: null,
+    clarifiedAt: null, clarifiedBy: null, // reopening returns it to the primary backlog (not yet reviewed)
     rejectedReason: null, qbSyncStatus: 'none', updatedAt: new Date(), auditLog: appendAudit(auditEntry('reopened', actor)),
   }).where(and(eq(businessReceipts.id, id), inArray(businessReceipts.status, ['filed', 'approved', 'rejected']))).returning({ id: businessReceipts.id })
   if (done.length === 0) {

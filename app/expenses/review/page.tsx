@@ -27,17 +27,24 @@ export default async function ReviewQueuePage({ searchParams }: { searchParams: 
   // FAIL-CLOSED manager gate (never dev-opens); non-managers are redirected to capture.
   if (!(await receiptManager())) redirect('/expenses')
   const sp = await searchParams
-  const filter: ReceiptStatus[] = isReceiptStatus(sp.status) ? [sp.status] : OPEN_STATES
   const month = isBusinessMonth(sp.month) ? sp.month : currentReportMonth()
-  const [rows, counts, report, vehicles] = await Promise.all([listReceipts(filter), queueCounts(), monthlyExpenseReport(month), listInventoryVehiclesForPicker()])
+  // View split: 'open' = the primary BACKLOG (unreviewed exceptions + unreadable); 'outstanding' = reviewed
+  // receipts whose payment/allocation is still open (kept visible, out of the backlog); else a status tab.
+  const view: ReceiptStatus | 'open' | 'outstanding' = sp.status === 'outstanding' ? 'outstanding' : isReceiptStatus(sp.status) ? sp.status : 'open'
+  const rowsPromise =
+    view === 'open' ? listReceipts(OPEN_STATES, { clarified: 'exclude' })
+    : view === 'outstanding' ? listReceipts(['needs_review'], { clarified: 'only' })
+    : listReceipts([view])
+  const [rows, counts, report, vehicles] = await Promise.all([rowsPromise, queueCounts(), monthlyExpenseReport(month), listInventoryVehiclesForPicker()])
 
-  const TABS: { key: ReceiptStatus | 'open'; label: string; n?: number }[] = [
-    { key: 'open', label: 'Needs attention', n: counts.needs_review + counts.processing + counts.processing_failed },
+  const TABS: { key: ReceiptStatus | 'open' | 'outstanding'; label: string; n?: number }[] = [
+    { key: 'open', label: 'Needs attention', n: counts.backlog + counts.processing + counts.processing_failed },
+    { key: 'outstanding', label: 'Outstanding', n: counts.outstanding },
     { key: 'filed', label: 'Filed', n: counts.filed },
     { key: 'approved', label: 'Approved (legacy)', n: counts.approved },
     { key: 'rejected', label: 'Rejected', n: counts.rejected },
   ]
-  const activeKey = isReceiptStatus(sp.status) ? sp.status : 'open'
+  const activeKey = view
 
   return (
     <main className="min-h-screen bg-gray-950 text-gray-200 max-w-3xl mx-auto px-4 py-6">
@@ -99,6 +106,10 @@ export default async function ReviewQueuePage({ searchParams }: { searchParams: 
           )
         })}
       </div>
+
+      {activeKey === 'outstanding' && (
+        <p className="text-gray-500 text-xs mb-3">Reviewed receipts whose real-world item is still open — a personal-money reimbursement, an unpaid purchase awaiting payment, or a mixed receipt needing allocation. The info is confirmed; these are NOT counted as clean filings, and nothing here is business cash unless it’s actually paid.</p>
+      )}
 
       {rows.length === 0
         ? <p className="text-gray-500 text-sm text-center py-12">Nothing here.</p>

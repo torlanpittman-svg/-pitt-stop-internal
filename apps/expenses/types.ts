@@ -130,6 +130,27 @@ export function attentionReasonLabel(k: string): string {
   return ATTENTION_REASONS.find((r) => r.key === k)?.label ?? k
 }
 
+// OUTSTANDING reasons are real-world items a manager CANNOT close by editing the receipt (the money is
+// genuinely owed / unpaid / the purchase spans categories). A manager may ACKNOWLEDGE these — confirm the
+// info is reviewed and correct — which moves the receipt out of the primary backlog into the "Outstanding"
+// list WITHOUT falsifying funding or category. The rest are FIXABLE by supplying/correcting information, so
+// they must be resolved (→ a clean filing), not merely acknowledged.
+export const OUTSTANDING_REASONS: readonly AttentionReason[] = ['personal_reimbursement', 'unpaid', 'mixed_category']
+export function isOutstandingReason(k: string): k is AttentionReason { return (OUTSTANDING_REASONS as readonly string[]).includes(k) }
+/** A receipt can be ACKNOWLEDGED (reviewed-but-outstanding) only when every remaining reason is an
+ *  outstanding real-world item — i.e. nothing is merely missing/unclear/duplicate that editing could fix. */
+export function canAcknowledgeOutstanding(reasons: readonly string[]): boolean {
+  return reasons.length > 0 && reasons.every(isOutstandingReason)
+}
+/** Short human label for the outstanding action still pending on a clarified receipt. */
+export function outstandingKindLabel(reasons: readonly string[]): string {
+  const parts: string[] = []
+  if (reasons.includes('personal_reimbursement')) parts.push('reimbursement owed')
+  if (reasons.includes('unpaid')) parts.push('awaiting payment')
+  if (reasons.includes('mixed_category')) parts.push('needs allocation')
+  return parts.join(' · ') || 'outstanding'
+}
+
 // ── The employee capture flow's Question 2 ("What did you buy?"). The common six are shown first; the
 // rest of the operational categories live behind "More categories". Two special choices are NOT single
 // categories: 'mixed' (more than one — save + flag, never dump the whole total into one guess) and
@@ -304,7 +325,7 @@ export function decideFiling(a: FilingAnswers): FilingOutcome {
 }
 
 // ── Append-only audit entry. Stored as a JSONB array on the row; NEVER rewritten, only appended. ──
-export type AuditAction = 'uploaded' | 'extracted' | 'extraction_failed' | 'reviewed' | 'filed' | 'flagged' | 'approved' | 'rejected' | 'reopened' | 'retried'
+export type AuditAction = 'uploaded' | 'extracted' | 'extraction_failed' | 'reviewed' | 'filed' | 'flagged' | 'clarified' | 'approved' | 'rejected' | 'reopened' | 'retried'
 export interface AuditEntry {
   action: AuditAction
   actor: string | null

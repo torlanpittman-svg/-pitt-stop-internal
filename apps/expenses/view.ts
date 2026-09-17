@@ -20,6 +20,7 @@ export interface ReviewCardData {
   subtotalCents: number | null; taxCents: number | null; totalCents: number | null
   paymentMethod: string | null; accountRef: string | null; paymentLast4: string | null; memo: string | null
   funding: string; filingNote: string | null; attentionReasons: string[]
+  clarifiedAt: string | null; clarifiedBy: string | null
   inventoryVehicleId: string | null
   uploadedBy: string | null; createdAt: string; approvedBy: string | null; filedBy: string | null; rejectedReason: string | null
   present: Record<string, boolean> | null
@@ -42,6 +43,8 @@ export function toReviewCard(r: Row): ReviewCardData {
     subtotalCents: r.subtotalCents, taxCents: r.taxCents, totalCents: r.totalCents,
     paymentMethod: r.paymentMethod, accountRef: r.accountRef, paymentLast4: r.paymentLast4, memo: r.memo,
     funding: r.funding, filingNote: r.filingNote, attentionReasons,
+    clarifiedAt: r.clarifiedAt instanceof Date ? r.clarifiedAt.toISOString() : (r.clarifiedAt ? String(r.clarifiedAt) : null),
+    clarifiedBy: r.clarifiedBy,
     inventoryVehicleId: r.inventoryVehicleId,
     uploadedBy: r.uploadedBy, createdAt, approvedBy: r.approvedBy, filedBy: r.filedBy, rejectedReason: r.rejectedReason, present,
   }

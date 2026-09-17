@@ -19,7 +19,7 @@ vi.mock('@/platform/db', () => ({ getDb: () => h.db }))
 import {
   createReceipt, storedPathnameForHash, getReceipt, saveReview, approveReceipt, rejectReceipt, reopenReceipt,
   claimRetryExtraction, applyRetryExtraction, releaseRetryClaim, inventoryVehicleExists,
-  listInventoryVehiclesForPicker, monthlyExpenseReport, consumeRateLimit, fileReceipt,
+  listInventoryVehiclesForPicker, monthlyExpenseReport, consumeRateLimit, fileReceipt, listReceipts, queueCounts,
 } from './db'
 import type { CategoryChoice } from './types'
 
@@ -62,11 +62,13 @@ beforeAll(async () => {
   await applyMigration(client, '0039_business_receipts_dedup.sql')
   await applyMigration(client, '0040_business_receipts_hardening.sql')
   await applyMigration(client, '0042_business_receipts_filing.sql')
+  await applyMigration(client, '0044_business_receipts_clarified.sql')
   // Idempotency: re-apply must not throw.
   await applyMigration(client, '0038_business_receipts.sql')
   await applyMigration(client, '0039_business_receipts_dedup.sql')
   await applyMigration(client, '0040_business_receipts_hardening.sql')
   await applyMigration(client, '0042_business_receipts_filing.sql')
+  await applyMigration(client, '0044_business_receipts_clarified.sql')
   h.db = drizzle(client, { schema })
 })
 
@@ -376,6 +378,90 @@ describe('monthly report — filed receipts + funding split, no double counting 
     // The personal receipt is surfaced as attention, NOT added to purchases or business cash.
     expect(rpt.needsReviewCount).toBe(1)
     expect(rpt.personalReimbursableCents).toBe(0) // it isn't complete, so not in the complete-set buckets
+  })
+})
+
+describe('manager exception resolution — clarify without falsifying facts (real Postgres)', () => {
+  const mgr = { name: 'Darryl', key: 'darryl' }
+
+  it('personal money: acknowledge → reviewed + OUTSTANDING, funding stays personal, leaves the backlog', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'A1' }))
+    const r = await fileReceipt(id, cleanFiling({ funding: 'personal', paymentMethod: null }), mgr, { acknowledge: true })
+    expect(r.ok).toBe(true); expect(r.status).toBe('needs_review'); expect(r.clarified).toBe(true)
+    const row = await getReceipt(id)
+    expect(row?.funding).toBe('personal')            // NOT flipped to business
+    expect(row?.status).toBe('needs_review')
+    expect(row?.clarifiedAt).not.toBeNull(); expect(row?.clarifiedBy).toBe('Darryl')
+    expect(row?.filedBy).toBeNull()                  // reviewing ≠ reimbursement paid ≠ a filing
+    expect(row?.attentionReasons).toContain('personal_reimbursement')
+    // Leaves the primary backlog, appears in the Outstanding list.
+    expect((await listReceipts(['needs_review'], { clarified: 'exclude' })).some((x) => x.id === id)).toBe(false)
+    expect((await listReceipts(['needs_review'], { clarified: 'only' })).some((x) => x.id === id)).toBe(true)
+    const c = await queueCounts(); expect(c.outstanding).toBe(1); expect(c.backlog).toBe(0)
+  })
+
+  it('unpaid stays unpaid after acknowledgement (payment not established)', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'A2' }))
+    await fileReceipt(id, cleanFiling({ funding: 'unpaid', paymentMethod: null }), mgr, { acknowledge: true })
+    const row = await getReceipt(id)
+    expect(row?.funding).toBe('unpaid'); expect(row?.clarifiedAt).not.toBeNull()
+    expect(row?.attentionReasons).toContain('unpaid')
+  })
+
+  it('mixed receipt stays UNALLOCATED (uncategorized) after acknowledgement — total not forced into one category', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'A3' }))
+    const r = await fileReceipt(id, cleanFiling({ category: { kind: 'mixed' } }), mgr, { acknowledge: true })
+    expect(r.clarified).toBe(true)
+    const row = await getReceipt(id)
+    expect(row?.category).toBe('uncategorized'); expect(row?.totalCents).toBe(4599)
+    expect(row?.attentionReasons).toContain('mixed_category')
+  })
+
+  it('"Other / Not sure" can be CORRECTED to a supported category → clean filing (no acknowledge needed)', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'A4' }))
+    // first lands unsure
+    await fileReceipt(id, { entity: 'detail', category: { kind: 'unsure' }, funding: 'business', paymentMethod: 'card', vendor: 'V', receiptDate: '2026-01-15', totalCents: 1000 }, mgr)
+    // manager corrects to a real category
+    const r = await fileReceipt(id, cleanFiling({ category: single('parts'), totalCents: 1000 }), mgr)
+    expect(r.status).toBe('filed'); expect((await getReceipt(id))?.category).toBe('parts')
+  })
+
+  it('missing field supplied → clean filing', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'A5' }))
+    await fileReceipt(id, cleanFiling({ totalCents: null }), mgr)     // exception: missing_info
+    const r = await fileReceipt(id, cleanFiling({ totalCents: 2599 }), mgr)
+    expect(r.status).toBe('filed'); expect((await getReceipt(id))?.totalCents).toBe(2599)
+  })
+
+  it('acknowledge is REFUSED while a fixable reason remains (missing total) — stays in the backlog', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'A6' }))
+    const r = await fileReceipt(id, cleanFiling({ funding: 'personal', paymentMethod: null, totalCents: null }), mgr, { acknowledge: true })
+    expect(r.clarified).toBe(false)                  // can't hide a missing field behind "reviewed"
+    const row = await getReceipt(id)
+    expect(row?.clarifiedAt).toBeNull()
+    expect((await listReceipts(['needs_review'], { clarified: 'exclude' })).some((x) => x.id === id)).toBe(true)
+  })
+
+  it('reject and reopen both clear the clarification (append-only history preserved)', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'A7' }))
+    await fileReceipt(id, cleanFiling({ funding: 'unpaid', paymentMethod: null }), mgr, { acknowledge: true })
+    await rejectReceipt(id, 'dup', mgr.name)
+    expect((await getReceipt(id))?.clarifiedAt).toBeNull()
+    await reopenReceipt(id, mgr.name)
+    const row = await getReceipt(id)
+    expect(row?.clarifiedAt).toBeNull(); expect(row?.status).toBe('needs_review')
+    // Append-only audit retains every step.
+    const actions = (row?.auditLog as { action: string }[]).map((a) => a.action)
+    expect(actions).toEqual(expect.arrayContaining(['uploaded', 'clarified', 'rejected', 'reopened']))
+  })
+
+  it('once actually paid, an acknowledged unpaid receipt can be filed clean (funding → business)', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'A8' }))
+    await fileReceipt(id, cleanFiling({ funding: 'unpaid', paymentMethod: null }), mgr, { acknowledge: true })
+    const r = await fileReceipt(id, cleanFiling({ funding: 'business', paymentMethod: 'check' }), mgr)
+    expect(r.status).toBe('filed')
+    const row = await getReceipt(id)
+    expect(row?.status).toBe('filed'); expect(row?.clarifiedAt).toBeNull(); expect(row?.funding).toBe('business')
   })
 })
 

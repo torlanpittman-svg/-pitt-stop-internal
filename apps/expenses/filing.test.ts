@@ -6,7 +6,7 @@
  * vehicle; the capture token authorizes only its own receipt; ownership fails closed for a foreign id.
  */
 import { describe, it, expect } from 'vitest'
-import { decideFiling, categoryChoiceFrom, type FilingAnswers } from './types'
+import { decideFiling, categoryChoiceFrom, canAcknowledgeOutstanding, isOutstandingReason, outstandingKindLabel, type FilingAnswers } from './types'
 import { signCaptureToken, verifyCaptureToken } from './capture-token'
 import { canFileReceipt } from './authz'
 import type { AuthedActor } from '@/apps/auth/employee-session'
@@ -97,6 +97,28 @@ describe('decideFiling — exceptions save but flag (never trap)', () => {
   })
   it('a $0 total is not a valid purchase total', () => {
     expect(decideFiling(complete({ totalCents: 0 })).reasons).toContain('missing_info')
+  })
+})
+
+describe('acknowledge-outstanding classification (manager resolution)', () => {
+  it('personal / unpaid / mixed are the only acknowledgeable outstanding reasons', () => {
+    expect(isOutstandingReason('personal_reimbursement')).toBe(true)
+    expect(isOutstandingReason('unpaid')).toBe(true)
+    expect(isOutstandingReason('mixed_category')).toBe(true)
+    expect(isOutstandingReason('missing_info')).toBe(false)
+    expect(isOutstandingReason('unclear_category')).toBe(false)
+    expect(isOutstandingReason('duplicate')).toBe(false)
+  })
+  it('canAcknowledge only when EVERY reason is outstanding (never to hide a fixable gap)', () => {
+    expect(canAcknowledgeOutstanding(['personal_reimbursement'])).toBe(true)
+    expect(canAcknowledgeOutstanding(['unpaid', 'mixed_category'])).toBe(true)
+    expect(canAcknowledgeOutstanding(['personal_reimbursement', 'missing_info'])).toBe(false) // must fix first
+    expect(canAcknowledgeOutstanding([])).toBe(false)
+  })
+  it('outstandingKindLabel names the still-open item', () => {
+    expect(outstandingKindLabel(['personal_reimbursement'])).toContain('reimbursement')
+    expect(outstandingKindLabel(['unpaid'])).toContain('payment')
+    expect(outstandingKindLabel(['mixed_category'])).toContain('allocation')
   })
 })
 

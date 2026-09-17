@@ -78,8 +78,11 @@ export interface FileForm {
   entity?: string; category?: string; categoryMode?: string; funding?: string; paymentMethod?: string
   vendor?: string; receiptDate?: string; subtotal?: string; tax?: string; total?: string
   memo?: string; filingNote?: string; inventoryVehicleId?: string; duplicate?: boolean
+  // Manager-only: acknowledge a still-OUTSTANDING exception (reimbursement/unpaid/mixed) as reviewed so it
+  // leaves the backlog WITHOUT falsifying funding/category. Ignored for non-managers.
+  acknowledge?: boolean
 }
-export interface FileResult { ok: boolean; error?: string; conflict?: boolean; alreadyFiled?: boolean; status?: 'filed' | 'needs_review'; reasons?: string[] }
+export interface FileResult { ok: boolean; error?: string; conflict?: boolean; alreadyFiled?: boolean; status?: 'filed' | 'needs_review'; reasons?: string[]; clarified?: boolean }
 
 export async function fileReceiptAction(f: FileForm): Promise<FileResult> {
   const uploader = await receiptUploader()
@@ -91,6 +94,8 @@ export async function fileReceiptAction(f: FileForm): Promise<FileResult> {
   if (!canFileReceipt(uploader.actor, { id: row.id, uploadedByKey: row.uploadedByKey }, f.token)) {
     return { ok: false, error: 'You can only file a receipt you captured.' }
   }
+  // Acknowledging an outstanding exception is a MANAGER review act — honored only for a verified manager.
+  const acknowledge = f.acknowledge === true && !!(await receiptManager())
   // Durable rate limit — bound filing submits per named actor, else per shared device by receipt.
   const bucket = uploader.actor?.key ? `file:actor:${uploader.actor.key}` : `file:rcpt:${f.id}`
   const rl = await consumeRateLimit(bucket, RATE_LIMITS.file.limit, RATE_LIMITS.file.windowMs)
@@ -116,7 +121,7 @@ export async function fileReceiptAction(f: FileForm): Promise<FileResult> {
       return { ok: false, error: 'That vehicle no longer exists — pick a current inventory vehicle or leave it off.' }
     }
   }
-  const r = await fileReceipt(f.id, input, { name: uploader.name, key: uploader.actor?.key ?? null }, { duplicate: f.duplicate })
+  const r = await fileReceipt(f.id, input, { name: uploader.name, key: uploader.actor?.key ?? null }, { duplicate: f.duplicate, acknowledge })
   if (r.ok) revalidate()
   return r
 }

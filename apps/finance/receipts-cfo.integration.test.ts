@@ -16,7 +16,7 @@ import * as schema from '@/drizzle/schema'
 const h = vi.hoisted(() => ({ db: null as unknown }))
 vi.mock('@/platform/db', () => ({ getDb: () => h.db }))
 
-import { createReceipt, fileReceipt, approveReceipt } from '@/apps/expenses/db'
+import { createReceipt, fileReceipt, approveReceipt, rejectReceipt, reopenReceipt } from '@/apps/expenses/db'
 import type { CategoryChoice } from '@/apps/expenses/types'
 import { getReceiptCoverage, getReceiptReconciliation, confirmReceiptMatch, dismissReceiptMatch, clearReceiptMatch } from './receipts-cfo'
 
@@ -63,6 +63,7 @@ beforeAll(async () => {
   await applyMigration(client, '0039_business_receipts_dedup.sql')
   await applyMigration(client, '0040_business_receipts_hardening.sql')
   await applyMigration(client, '0042_business_receipts_filing.sql')
+  await applyMigration(client, '0044_business_receipts_clarified.sql')
   await applyMigration(client, '0043_fin_receipt_matches.sql')
   await applyMigration(client, '0043_fin_receipt_matches.sql') // idempotent re-apply
   h.db = drizzle(client, { schema })
@@ -171,5 +172,34 @@ describe('personal / unpaid — distinct, never reconcilable, never an obligatio
     expect(cov.unpaidCents).toBe(4599)
     expect(cov.reconcilableCents).toBe(0)
     // (No obligation is ever created here — the finance obligations table is never written by this module.)
+  })
+
+  it('a manager-CLARIFIED (reviewed-but-outstanding) personal receipt still shows as reimbursement coverage', async () => {
+    const { id } = await createReceipt(base({ imageHash: 'P2' }))
+    await fileReceipt(id, clean({ funding: 'personal', paymentMethod: null }), { name: 'Darryl', key: 'darryl' }, { acknowledge: true })
+    const cov = await getReceiptCoverage(MONTH)
+    expect(cov.personalReimbursableCents).toBe(4599)   // reviewed ≠ resolved — still surfaced, still not business cash
+    expect(cov.reconcilableCents).toBe(0)
+    expect(cov.purchasesTotalCents).toBe(0)
+  })
+})
+
+describe('CFO accuracy — rejected receipts are never valid coverage', () => {
+  it('a filed+matched receipt that is later REJECTED disappears from coverage and reconciliation', async () => {
+    const { id } = await fileClean('J1')
+    const txnId = await seedTxn('55555555-5555-5555-5555-555555555555', 4599, `${MONTH}-16`, 'O’Reilly')
+    await confirmReceiptMatch(id, txnId, 'admin')
+    let cov = await getReceiptCoverage(MONTH)
+    expect(cov.reconciledCents).toBe(4599)             // counted while filed
+    // Void it — a filed receipt must be reopened before it can be rejected (guarded), then rejected.
+    await reopenReceipt(id, 'Darryl')
+    await rejectReceipt(id, 'not ours', 'Darryl')
+    cov = await getReceiptCoverage(MONTH)
+    expect(cov.purchasesTotalCents).toBe(0)            // rejected ⇒ no coverage
+    expect(cov.reconciledCents).toBe(0)                // stale match row is ignored (receipt not complete)
+    expect(cov.reconcilableCents).toBe(0)
+    const recon = await getReceiptReconciliation(MONTH)
+    expect(recon.confirmed).toHaveLength(0)
+    expect(recon.unreconciled).toHaveLength(0)
   })
 })
