@@ -21,6 +21,8 @@ import { getConfidenceScorecard, type Tier } from '@/apps/finance/confidence'
 import { getReservePolicy } from '@/apps/settings/db'
 import { getSyncHealth, type FreshnessStatus } from '@/apps/finance/sync-health'
 import { freshnessLabel } from '@/apps/finance/sources'
+import { getReceiptCoverage, getReceiptReconciliation, confirmReceiptMatch, dismissReceiptMatch, clearReceiptMatch } from '@/apps/finance/receipts-cfo'
+import { BUSINESS_ENTITIES, EXPENSE_CATEGORIES } from '@/apps/expenses/types'
 import PlaidLinkButton from './PlaidLinkButton'
 
 export const dynamic = 'force-dynamic'
@@ -28,6 +30,8 @@ export const dynamic = 'force-dynamic'
 const money = (c: number | null | undefined) => c == null ? '—' : `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const big = (c: number | null | undefined) => c == null ? '—' : `${c < 0 ? '−' : ''}$${Math.abs(Math.round(c / 100)).toLocaleString('en-US')}`
 const dollars = (n: number | null | undefined) => n == null ? '—' : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+const rcptEntityLabel = (k: string) => BUSINESS_ENTITIES.find((b) => b.key === k)?.label ?? k
+const rcptCategoryLabel = (k: string) => EXPENSE_CATEGORIES.find((c) => c.key === k)?.label ?? k
 
 const HEALTH: Record<Health, { c: string; bg: string; ring: string; word: string }> = {
   HEALTHY: { c: 'text-emerald-300', bg: 'bg-emerald-950/30', ring: 'border-emerald-800/60', word: 'HEALTHY' },
@@ -60,6 +64,11 @@ async function deriveInflowsAction() { 'use server'; await deriveExpectedInflows
 async function reservesAction(fd: FormData) { 'use server'; const { updateSetting } = await import('@/apps/settings/db'); const toCents = (v: string) => Math.round((parseFloat(v) || 0) * 100); await updateSetting('payroll_reserve_cents', toCents(String(fd.get('payroll') ?? '0')), 'admin'); await updateSetting('tax_reserve_cents', toCents(String(fd.get('tax') ?? '0')), 'admin'); await updateSetting('min_operating_buffer_cents', toCents(String(fd.get('buffer') ?? '0')), 'admin'); await updateSetting('reserves_configured', true, 'admin'); revalidatePath('/admin/finance') }
 async function plaidStatusAction(fd: FormData) { 'use server'; const plaidAccountId = String(fd.get('plaidAccountId') ?? ''); const status = String(fd.get('status') ?? '') as any; const entityNote = String(fd.get('entityNote') ?? '') || undefined; if (plaidAccountId && ['active', 'ignored', 'closed'].includes(status)) await setPlaidAccountStatus({ plaidAccountId, status, entityNote, actor: 'admin' }); revalidatePath('/admin/finance') }
 async function accountStatusAction(fd: FormData) { 'use server'; const finAccountId = String(fd.get('finAccountId') ?? ''); const status = String(fd.get('status') ?? '') as any; if (finAccountId && ['active', 'ignored', 'closed'].includes(status)) await setAccountStatus({ finAccountId, status, actor: 'admin' }); revalidatePath('/admin/finance') }
+// Receipt ↔ bank reconciliation (admin-gated with the rest of /admin/finance). Records a human decision
+// only — moves no money, changes no balance, creates no obligation.
+async function confirmMatchAction(fd: FormData) { 'use server'; const receiptId = String(fd.get('receiptId') ?? ''); const txnId = String(fd.get('txnId') ?? ''); if (receiptId && txnId) await confirmReceiptMatch(receiptId, txnId, 'admin'); revalidatePath('/admin/finance') }
+async function dismissMatchAction(fd: FormData) { 'use server'; const receiptId = String(fd.get('receiptId') ?? ''); if (receiptId) await dismissReceiptMatch(receiptId, 'admin'); revalidatePath('/admin/finance') }
+async function clearMatchAction(fd: FormData) { 'use server'; const receiptId = String(fd.get('receiptId') ?? ''); if (receiptId) await clearReceiptMatch(receiptId, 'admin'); revalidatePath('/admin/finance') }
 async function documentAction(fd: FormData) { 'use server'; const type = String(fd.get('type') ?? '').trim(); const filename = String(fd.get('filename') ?? '').trim(); if (type && filename) { await addDocumentMeta({ type, blobUrl: 'pending-secure-storage-phase2', filename, periodEnd: /^\d{4}-\d{2}-\d{2}$/.test(String(fd.get('asOf') ?? '')) ? String(fd.get('asOf')) : undefined, asOf: /^\d{4}-\d{2}-\d{2}$/.test(String(fd.get('asOf') ?? '')) ? String(fd.get('asOf')) : undefined, notes: String(fd.get('notes') ?? '') || undefined }, 'admin') } revalidatePath('/admin/finance') }
 
 const input = 'bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white'
@@ -185,6 +194,9 @@ export default async function FinancePage() {
   const [rw7, rw14] = await Promise.all([getCashRunway(7), getCashRunway(14)])
   // Money-IN evidence hierarchy (real A/R + Sterling dated + cleaned baseline, anti-double-counted).
   const [inflow7, inflow30, ar] = await Promise.all([getInflowForecast(7), getInflowForecast(30), getArSnapshot()])
+  // Employee-filed receipts: an INFORMATIONAL coverage layer + a human reconciliation worklist. Never feeds
+  // Safe-to-Spend/balances; unmatched receipts stay visible and are subtracted from nothing.
+  const [receiptCoverage, receiptRecon] = await Promise.all([getReceiptCoverage().catch(() => null), getReceiptReconciliation().catch(() => null)])
   const projGap = (r: { lowCents: number | null }) => (r.lowCents != null && r.lowCents < 0 ? -r.lowCents : 0)
   const liquidityCushionNeeded = Math.max(projGap(rw7), projGap(rw14), projGap(runway))
   // Detail/admin data (lower on page)
@@ -389,6 +401,93 @@ export default async function FinancePage() {
           <p className="text-amber-300/70 text-sm">No A/R snapshot yet. It populates on the next production QuickBooks sync (fail-closed to the authoritative company; the sandbox connection is ignored).</p>
         )}
       </section>
+
+      {/* ═══ D3. RECEIPT COVERAGE & RECONCILIATION (employee-filed receipts — informational) ═══ */}
+      {receiptCoverage && (
+        <section className={`${card} mb-4`}>
+          <div className="flex items-baseline justify-between mb-2">
+            <div>
+              <h2 className="text-white font-bold">Receipt coverage <span className="text-gray-600 text-sm font-normal">· {receiptCoverage.month} · employee-filed purchases</span></h2>
+              <p className="text-gray-600 text-[11px]">What was BOUGHT, from filed receipts — receipt coverage, not a complete ledger or bank reconciliation. These figures never change Safe-to-Spend or any balance.</p>
+            </div>
+            <div className="text-right"><p className={kicker}>Purchases (coverage)</p><p className="text-xl font-bold text-white tabular-nums">{big(receiptCoverage.purchasesTotalCents)}</p><p className="text-[11px] text-gray-500">{receiptCoverage.completeCount} filed receipt{receiptCoverage.completeCount === 1 ? '' : 's'}</p></div>
+          </div>
+
+          {/* Purchases are NOT cash paid — split honestly. */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+            <div className="rounded-lg border border-emerald-900/40 bg-emerald-950/10 p-2"><p className="text-[10px] text-gray-500 uppercase">Reconciled to bank</p><p className="text-sm font-bold tabular-nums text-emerald-300">{big(receiptCoverage.reconciledCents)}</p><p className="text-[10px] text-gray-600">already in bank txns · {receiptCoverage.reconciledCount}</p></div>
+            <div className="rounded-lg border border-gray-800 bg-gray-900/40 p-2"><p className="text-[10px] text-gray-500 uppercase">Unreconciled</p><p className="text-sm font-bold tabular-nums text-gray-200">{big(receiptCoverage.unreconciledCents)}</p><p className="text-[10px] text-gray-600">receipt-only · not subtracted · {receiptCoverage.unreconciledCount}</p></div>
+            <div className="rounded-lg border border-amber-900/40 bg-amber-950/10 p-2"><p className="text-[10px] text-gray-500 uppercase">Personal (reimburse?)</p><p className="text-sm font-bold tabular-nums text-amber-200">{big(receiptCoverage.personalReimbursableCents)}</p><p className="text-[10px] text-gray-600">not business cash</p></div>
+            <div className="rounded-lg border border-amber-900/40 bg-amber-950/10 p-2"><p className="text-[10px] text-gray-500 uppercase">Not paid yet</p><p className="text-sm font-bold tabular-nums text-amber-200">{big(receiptCoverage.unpaidCents)}</p><p className="text-[10px] text-gray-600">payment review · no obligation created</p></div>
+          </div>
+
+          {(Object.keys(receiptCoverage.byBusiness).length > 0 || Object.keys(receiptCoverage.byCategory).length > 0) && (
+            <div className="grid md:grid-cols-2 gap-3 mb-3">
+              <div>
+                <p className={kicker}>By business</p>
+                {Object.entries(receiptCoverage.byBusiness).map(([k, v]) => (
+                  <div key={k} className="flex justify-between text-sm"><span className="text-gray-400">{rcptEntityLabel(k)}</span><span className="text-gray-200 tabular-nums">{money(v.totalCents)}</span></div>
+                ))}
+              </div>
+              <div>
+                <p className={kicker}>By operational category <span className="text-gray-700">(not a chart of accounts)</span></p>
+                {Object.entries(receiptCoverage.byCategory).sort((a, b) => b[1].totalCents - a[1].totalCents).slice(0, 6).map(([k, v]) => (
+                  <div key={k} className="flex justify-between text-sm"><span className="text-gray-400">{rcptCategoryLabel(k)}</span><span className="text-gray-200 tabular-nums">{money(v.totalCents)}</span></div>
+                ))}
+              </div>
+            </div>
+          )}
+          {(receiptCoverage.needsReviewCount > 0 || receiptCoverage.processingFailedCount > 0) && (
+            <p className="text-amber-300/80 text-[11px] mb-3">{receiptCoverage.needsReviewCount} receipt{receiptCoverage.needsReviewCount === 1 ? '' : 's'} still need attention{receiptCoverage.processingFailedCount ? ` · ${receiptCoverage.processingFailedCount} unreadable` : ''} — resolved in the Receipts tool, not here.</p>
+          )}
+
+          {/* Reconciliation worklist — suggestions only; a link is recorded ONLY on an explicit confirm. */}
+          {receiptRecon && (receiptRecon.unreconciled.length > 0 || receiptRecon.confirmed.length > 0) && (
+            <div className="border-t border-gray-800 pt-3">
+              <p className={kicker}>Reconcile to bank <span className="text-gray-700">· suggestions only — equal amounts never auto-link</span></p>
+              {receiptRecon.unreconciled.map((r) => (
+                <div key={r.receiptId} className="rounded-lg border border-gray-800 bg-gray-900/40 p-2 mt-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm">
+                      <span className="text-gray-200">{r.vendor || 'Unknown vendor'}</span>
+                      <span className="text-gray-500"> · {r.receiptDate || 'no date'} · {money(r.totalCents)} · {rcptEntityLabel(r.entity)} / {rcptCategoryLabel(r.category)}</span>
+                      {r.imageUrl && <a href={r.imageUrl} target="_blank" rel="noreferrer" className="text-indigo-300 ml-2 text-[11px] underline">receipt</a>}
+                    </div>
+                    <form action={dismissMatchAction}><input type="hidden" name="receiptId" value={r.receiptId} /><button className="text-gray-500 text-[11px] hover:text-gray-300">No bank match</button></form>
+                  </div>
+                  {r.suggestions.length > 0 ? (
+                    <div className="mt-1.5 space-y-1">
+                      {r.suggestions.map((s) => (
+                        <form key={s.txnId} action={confirmMatchAction} className="flex items-center justify-between gap-2 text-[12px]">
+                          <input type="hidden" name="receiptId" value={r.receiptId} /><input type="hidden" name="txnId" value={s.txnId} />
+                          <span className="text-gray-400">
+                            <span className={s.strength === 'strong' ? 'text-emerald-300' : 'text-amber-300'}>{s.strength}</span> · {s.label} · {money(s.amountCents)} · {s.txnDate}
+                            <span className="text-gray-600"> ({s.amountDeltaCents === 0 ? 'exact' : `Δ${money(s.amountDeltaCents)}`}{s.dateDeltaDays != null ? `, ${s.dateDeltaDays}d` : ''})</span>
+                          </span>
+                          <button className="text-indigo-300 hover:text-indigo-200 border border-indigo-900/60 rounded px-2 py-0.5">Confirm match</button>
+                        </form>
+                      ))}
+                    </div>
+                  ) : <p className="text-gray-600 text-[11px] mt-1">No bank candidate in ±15 days — leave unmatched or mark “No bank match”.</p>}
+                </div>
+              ))}
+              {receiptRecon.confirmed.length > 0 && (
+                <details className="mt-2"><summary className="text-gray-500 text-[11px] cursor-pointer list-none">{receiptRecon.confirmed.length} reconciled ▾ <span className="text-gray-700">(counted once — via the bank txn, not added again)</span></summary>
+                  <div className="mt-1 space-y-1">
+                    {receiptRecon.confirmed.map((c) => (
+                      <form key={c.receiptId} action={clearMatchAction} className="flex items-center justify-between gap-2 text-[12px]">
+                        <input type="hidden" name="receiptId" value={c.receiptId} />
+                        <span className="text-gray-400">{c.vendor || 'Receipt'} · {money(c.totalCents)} → {c.txnLabel}{c.txnDate ? ` · ${c.txnDate}` : ''}</span>
+                        <button className="text-gray-500 hover:text-gray-300 text-[11px]">Unmatch</button>
+                      </form>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* ═══ E. NEXT CASH-FLOW RISK ═══ */}
       <section className={`${card} mb-4 border ${danger.risk === 'HIGH' || danger.risk === 'CRITICAL' ? 'border-red-900/50' : danger.risk === 'MODERATE' ? 'border-amber-900/40' : 'border-gray-800'}`}>
