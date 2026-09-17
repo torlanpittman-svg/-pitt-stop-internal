@@ -18,6 +18,17 @@ Set in the production environment BEFORE deploying (or the feature hard-fails cl
 Create the private Blob store as a **new store** (do not repurpose the public one). Retrieval is
 server-side only through `/api/expenses/receipt/[id]/image`; no public URL is ever issued.
 
+### PROVISIONED (production) — status
+- Project: **pitt-stop-internal** (`prj_0IrwBtr7GKX9a0Knn69gr8bvRzYc`), production branch **main**.
+- Private receipt store: **`pitt-stop-receipts-blob`** (`store_RGBv1NrcmWiSyq4H`, access **private**),
+  connected to the project with env-var prefix `RECEIPTS_BLOB` → the store-managed variable
+  **`RECEIPTS_BLOB_READ_WRITE_TOKEN`** (Vercel manages the value; no human ever copies it).
+- The existing public store **`pitt-stop-internal-blob`** (`store_7AC7k9nGMmV5HiOk`) and its
+  `BLOB_READ_WRITE_TOKEN` are **UNCHANGED** (verified: same env-var ids before/after). Auto-Sales
+  receipt capture (which uses the public `uploadPhoto`) is unaffected.
+- Free/Hobby plan (no payment method); Blob free-tier limits apply. Receipt images are ≤4 MB and
+  server-downscaled for AI, so usage stays well within the free tier.
+
 ## 1. Migration order + runner
 
 Apply in order with the generic manual runner (splits on `;`, each statement idempotent):
