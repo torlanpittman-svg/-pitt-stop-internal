@@ -174,17 +174,30 @@ export async function addExpenseEvent(input: ExpenseInput): Promise<string> {
   return row.id
 }
 
+/** A Postgres unique-constraint violation (23505), however the neon-http driver wraps it. */
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: unknown; cause?: { code?: unknown }; message?: unknown }
+  if (e?.code === '23505' || e?.cause?.code === '23505') return true
+  const text = `${String(e?.message ?? '')} ${String((e?.cause as { message?: unknown })?.message ?? '')} ${String(err)}`
+  return /duplicate key value|unique constraint|23505/i.test(text)
+}
+
 /** Correction = append a reversal event linking the original. The original row is never rewritten;
- *  the summary nets both to zero. */
+ *  the summary nets both to zero. Idempotent under the vfe_reverses_active_uniq index (a second reversal
+ *  of the same event loses the unique race and is quietly ignored). */
 export async function reverseEvent(eventId: string, actor: string | null): Promise<void> {
   const db = getDb()
   const [orig] = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.id, eventId)).limit(1)
   if (!orig) return
-  await db.insert(vehicleFinancialEvents).values({
-    inventoryVehicleId: orig.inventoryVehicleId, economicCategory: 'adjustment', cashflowCategory: 'non_cash',
-    amountCents: orig.amountCents, eventDate: iso(new Date()), reversesEventId: orig.id, status: 'verified', source: 'manual',
-    memo: `Reversal of ${orig.economicCategory} (${(orig.memo ?? '').slice(0, 60)})`, createdBy: actor,
-  })
+  try {
+    await db.insert(vehicleFinancialEvents).values({
+      inventoryVehicleId: orig.inventoryVehicleId, economicCategory: 'adjustment', cashflowCategory: 'non_cash',
+      amountCents: orig.amountCents, eventDate: iso(new Date()), reversesEventId: orig.id, status: 'verified', source: 'manual',
+      memo: `Reversal of ${orig.economicCategory} (${(orig.memo ?? '').slice(0, 60)})`, createdBy: actor,
+    })
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err // already reversed (concurrent/duplicate) → no-op
+  }
 }
 
 export type RemoveExpenseResult = { ok: boolean; error?: string; alreadyRemoved?: boolean }
@@ -203,6 +216,11 @@ export type RemoveExpenseResult = { ok: boolean; error?: string; alreadyRemoved?
  * (idempotent — repeated clicks never append a second adjustment); and an expense that is reconciled or
  * linked to a finance/accounting transaction is refused with a clear explanation (it must be unlinked by
  * the accountant first — we never silently break an accounting link or touch QuickBooks).
+ *
+ * Simultaneous requests are ATOMIC, not just sequentially guarded: the reversal, its attribution and the
+ * link to the original are one INSERT, and the partial unique index vfe_reverses_active_uniq lets only ONE
+ * active reversal per original exist. The pre-check below is a fast path for the common repeat; the index
+ * is the real guarantee — a racing second insert violates it and is caught as an already-removed no-op.
  */
 export async function removeVehicleExpense(input: { eventId: string; actor: string | null }): Promise<RemoveExpenseResult> {
   const db = getDb()
@@ -216,24 +234,30 @@ export async function removeVehicleExpense(input: { eventId: string; actor: stri
   if (orig.status === 'reconciled' || orig.finTransactionId) {
     return { ok: false, error: 'This expense is linked to a reconciled bank/accounting record, so it can’t be removed here. Ask the accountant to unlink it first — no QuickBooks record is changed.' }
   }
-  // Idempotent: if a reversal already exists for this expense, treat repeat requests as a no-op success.
+  // Fast path: if a reversal already exists, treat repeat requests as a no-op success (avoids a doomed insert).
   const [existing] = await db.select({ id: vehicleFinancialEvents.id }).from(vehicleFinancialEvents)
     .where(and(eq(vehicleFinancialEvents.reversesEventId, orig.id), ne(vehicleFinancialEvents.status, 'void'))).limit(1)
   if (existing) return { ok: true, alreadyRemoved: true }
-  await db.insert(vehicleFinancialEvents).values({
-    inventoryVehicleId: orig.inventoryVehicleId, economicCategory: 'adjustment', cashflowCategory: 'non_cash',
-    amountCents: orig.amountCents, eventDate: iso(new Date()), reversesEventId: orig.id, status: 'verified', source: 'manual',
-    memo: `Removed from vehicle — attached by mistake (${labelFor(orig.economicCategory)}${orig.vendor ? ` · ${orig.vendor}` : ''})`,
-    evidence: {
-      removal: {
-        reason: 'mistaken_vehicle_attachment', removedBy: input.actor, removedAt: new Date().toISOString(),
-        formerVehicleId: orig.inventoryVehicleId, originalEventId: orig.id,
-        originalCategory: orig.economicCategory, originalAmountCents: orig.amountCents,
-        originalVendor: orig.vendor ?? null, documentId: orig.documentId ?? null,
+  try {
+    await db.insert(vehicleFinancialEvents).values({
+      inventoryVehicleId: orig.inventoryVehicleId, economicCategory: 'adjustment', cashflowCategory: 'non_cash',
+      amountCents: orig.amountCents, eventDate: iso(new Date()), reversesEventId: orig.id, status: 'verified', source: 'manual',
+      memo: `Removed from vehicle — attached by mistake (${labelFor(orig.economicCategory)}${orig.vendor ? ` · ${orig.vendor}` : ''})`,
+      evidence: {
+        removal: {
+          reason: 'mistaken_vehicle_attachment', removedBy: input.actor, removedAt: new Date().toISOString(),
+          formerVehicleId: orig.inventoryVehicleId, originalEventId: orig.id,
+          originalCategory: orig.economicCategory, originalAmountCents: orig.amountCents,
+          originalVendor: orig.vendor ?? null, documentId: orig.documentId ?? null,
+        },
       },
-    },
-    createdBy: input.actor,
-  })
+      createdBy: input.actor,
+    })
+  } catch (err) {
+    // Lost the unique race with a simultaneous removal — the other request already recorded it.
+    if (isUniqueViolation(err)) return { ok: true, alreadyRemoved: true }
+    throw err
+  }
   return { ok: true }
 }
 

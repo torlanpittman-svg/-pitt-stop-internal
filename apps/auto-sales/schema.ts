@@ -17,6 +17,7 @@
  * modifies no existing table). Registered in the drizzle aggregator for type integration.
  */
 import { pgTable, uuid, text, varchar, integer, boolean, date, timestamp, jsonb, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { vehicles } from '@/apps/workflow/schema'
 
 // (vehicleDocuments defined at the bottom of this file — B2 Receipt Capture.)
@@ -141,6 +142,9 @@ export const vehicleFinancialEvents = pgTable(
     index('vfe_date_idx').on(t.eventDate),
     index('vfe_econ_idx').on(t.economicCategory),
     index('vfe_original_idx').on(t.originalEventId),
+    // At most ONE active (non-void) reversal per reversed event — makes removal/undo atomic under
+    // simultaneous requests (a second insert loses on this index → treated as already-removed). Migration 0046.
+    uniqueIndex('vfe_reverses_active_uniq').on(t.reversesEventId).where(sql`reverses_event_id IS NOT NULL AND status <> 'void'`),
   ]
 )
 

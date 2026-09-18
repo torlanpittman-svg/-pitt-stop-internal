@@ -24,6 +24,7 @@ export type ExpenseRow = {
   receiptUrl: string | null
   hasReceipt: boolean
   accountingLocked: boolean
+  verified: boolean            // false = pending/unverified — attached, but not yet in verified "Added costs"
 }
 
 export default function VehicleExpenses({ inventoryVehicleId, vehicleLabel, canRemove, expenses, totalCents }: {
@@ -44,6 +45,9 @@ export default function VehicleExpenses({ inventoryVehicleId, vehicleLabel, canR
       </div>
     )
   }
+
+  const pendingCents = expenses.filter((e) => !e.verified).reduce((t, e) => t + e.amountCents, 0)
+  const verifiedCents = totalCents - pendingCents
 
   function ask(id: string) { setConfirmId(id); setOpenId(null); setError(null) }
   function cancel() { setConfirmId(null); setError(null) }
@@ -96,6 +100,7 @@ export default function VehicleExpenses({ inventoryVehicleId, vehicleLabel, canR
               >
                 <div className="min-w-0">
                   <span className="text-gray-200 text-sm">{e.categoryLabel}</span>
+                  {!e.verified && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full border bg-amber-950/40 text-amber-300 border-amber-900/60" title="Not yet verified — attached, but not counted in verified “Added costs”">pending</span>}
                   {e.hasReceipt && (e.receiptUrl
                     ? <a href={e.receiptUrl} target="_blank" rel="noopener" className="text-indigo-300 no-underline ml-1" title="View receipt">📎</a>
                     : <span className="ml-1" title="receipt on file">📎</span>)}
@@ -133,9 +138,14 @@ export default function VehicleExpenses({ inventoryVehicleId, vehicleLabel, canR
         })}
       </ul>
       <div className="flex items-center justify-between border-t border-gray-800 mt-2 pt-2">
-        <span className="text-gray-400 text-sm">Total expenses</span>
+        <span className="text-gray-400 text-sm">Total attached{pendingCents > 0 ? ' (incl. pending)' : ''}</span>
         <span className="text-white text-sm font-semibold tabular-nums">{money(totalCents)}</span>
       </div>
+      {pendingCents > 0 && (
+        <p className="text-gray-500 text-[11px] mt-1">
+          Includes {money(pendingCents)} not yet verified. Only the verified {money(verifiedCents)} feeds “Added costs” in the money summary above.
+        </p>
+      )}
       {canRemove && <p className="text-gray-600 text-[11px] mt-1.5">Attached by mistake? Swipe left (or use Remove) to correct it — the receipt is kept and it stays in History.</p>}
     </div>
   )

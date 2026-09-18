@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { signEmployeeSession, EMP_COOKIE, type AuthedActor } from './employee-session'
-import { authenticatedActorFromRequest, employeeAuthorizedFromRequest, isManagerRole } from './employee-guard'
+import { authenticatedActorFromRequest, employeeAuthorizedFromRequest, isManagerRole, strictManagerDecision, authorizedManagerStrictFromRequest } from './employee-guard'
 
 const OLD = { ...process.env }
 beforeEach(() => {
@@ -71,6 +71,40 @@ describe('isManagerRole — the manager/admin authorization predicate (Auto-Sale
     expect(isManagerRole('employee')).toBe(false)  // unauthorized edits fail closed
     expect(isManagerRole(null)).toBe(false)
     expect(isManagerRole(undefined)).toBe(false)
+  })
+})
+
+describe('strictManagerDecision — genuinely fail-closed gate for destructive/correcting ops', () => {
+  const mgr: AuthedActor = { key: 'torlan', name: 'Torlan', role: 'manager' }
+  const emp: AuthedActor = { key: 'tony', name: 'Tony', role: 'employee' }
+  const admin: AuthedActor = { key: 'admin', name: 'Admin', role: 'admin' }
+  it('denies anonymous and employees regardless of configuration', () => {
+    expect(strictManagerDecision(null, true)).toBeNull()
+    expect(strictManagerDecision(null, false)).toBeNull()
+    expect(strictManagerDecision(emp, true)).toBeNull()
+  })
+  it('allows a real manager ONLY when the employee auth system is configured', () => {
+    expect(strictManagerDecision(mgr, true)).toEqual(mgr)
+    expect(strictManagerDecision(mgr, false)).toBeNull()   // unconfigured → PIN signing secret is a guessable dev fallback → NOT trusted
+  })
+  it('always allows admin Basic-Auth (a real ADMIN_PASSWORD was matched), even if PINs are unconfigured', () => {
+    expect(strictManagerDecision(admin, false)).toEqual(admin)
+    expect(strictManagerDecision(admin, true)).toEqual(admin)
+  })
+})
+
+describe('authorizedManagerStrictFromRequest — end-to-end with signed sessions (auth configured)', () => {
+  it('fails closed for an anonymous session and for an employee', async () => {
+    expect(await authorizedManagerStrictFromRequest(await reqWithSession(null))).toBeNull()
+    expect(await authorizedManagerStrictFromRequest(await reqWithSession({ key: 'tony', name: 'Tony', role: 'employee' }))).toBeNull()
+  })
+  it('allows a signed manager and admin Basic-Auth', async () => {
+    expect(await authorizedManagerStrictFromRequest(await reqWithSession({ key: 'torlan', name: 'Torlan', role: 'manager' }))).toEqual({ key: 'torlan', name: 'Torlan', role: 'manager' })
+    expect(await authorizedManagerStrictFromRequest(adminReq())).toEqual({ key: 'admin', name: 'Admin', role: 'admin' })
+  })
+  it('a forged actor cookie cannot escalate to a manager', async () => {
+    const forged = new Request('https://x/api', { headers: { cookie: 'ps_actor=' + encodeURIComponent(JSON.stringify({ id: 'x', name: 'Mallory', role: 'manager' })) } })
+    expect(await authorizedManagerStrictFromRequest(forged)).toBeNull()
   })
 })
 

@@ -68,6 +68,7 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
       vendor: e.vendor ?? (e.memo ? e.memo.slice(0, 48) : null), amountCents: e.amountCents,
       receiptUrl: attachments[e.id]?.url ?? null, hasReceipt: Boolean(attachments[e.id]),
       accountingLocked: e.status === 'reconciled' || Boolean(e.finTransactionId),
+      verified: e.status === 'verified' || e.status === 'reconciled',
     }))
   const expensesTotalCents = expenseRows.reduce((t, r) => t + r.amountCents, 0)
 

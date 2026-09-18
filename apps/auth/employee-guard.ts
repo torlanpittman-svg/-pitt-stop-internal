@@ -82,3 +82,28 @@ export async function authorizedManager(): Promise<AuthedActor | null> {
   const actor = await authenticatedActor()
   return actor && isManagerRole(actor.role) ? actor : null
 }
+
+/**
+ * Genuinely fail-closed manager decision for DESTRUCTIVE/correcting operations (e.g. removing an expense
+ * attached to a vehicle by mistake). Unlike authorizedManager(), it NEVER hands back a synthetic dev
+ * manager: when the employee auth system is unconfigured the PIN signing secret degrades to a guessable
+ * dev fallback, so a PIN-role claim is not trusted. Admin Basic-Auth still qualifies because it requires a
+ * real ADMIN_PASSWORD that was actually matched. Pure + injectable so the decision is unit-testable without
+ * next/headers. Does NOT change the shared manager-identity configuration or authorizedManager()'s behavior.
+ */
+export function strictManagerDecision(actor: AuthedActor | null, authConfigured: boolean): AuthedActor | null {
+  if (!actor) return null
+  if (actor.role === 'admin') return actor
+  return authConfigured && isManagerRole(actor.role) ? actor : null
+}
+
+/** next/headers variant for server components / actions. Fails closed for anonymous users, employees, and
+ *  a missing/unconfigured employee auth setup. */
+export async function authorizedManagerStrict(): Promise<AuthedActor | null> {
+  return strictManagerDecision(await authenticatedActor(), employeeAuthConfigured())
+}
+
+/** Request-based variant for route handlers. Same fail-closed decision. */
+export async function authorizedManagerStrictFromRequest(req: Request): Promise<AuthedActor | null> {
+  return strictManagerDecision(await authenticatedActorFromRequest(req), employeeAuthConfigured())
+}

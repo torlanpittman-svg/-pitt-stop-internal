@@ -12,7 +12,7 @@ import { revalidatePath } from 'next/cache'
 import { createAcquisition, addExpenseEvent, addReturnRefund, settleRefund, recordSale, editSale, reverseSale, editAcquisitionPrice, updateCloseout, resolveVin, saveReceipt, type VinResolveResult, type SaleInput } from './db'
 import { ECONOMIC_CATEGORIES, REFUND_KINDS, IN_SCOPE_ACCOUNTS, econForLabel, type EconomicCategory } from './types'
 import { dollarsToCents, isPaymentMethod } from './calc'
-import { employeeAuthorized, authorizedManager } from '@/apps/auth/employee-guard'
+import { employeeAuthorized, authorizedManager, authorizedManagerStrict } from '@/apps/auth/employee-guard'
 
 const revalidateVehicle = (id: string) => { revalidatePath(`/auto-sales/${id}`); revalidatePath(`/admin/auto-sales/${id}`) }
 const revalidateList = () => { revalidatePath('/auto-sales'); revalidatePath('/admin/auto-sales') }
@@ -121,7 +121,9 @@ export async function reverseSaleAction(f: { inventoryVehicleId: string; reason?
  * Idempotent: repeated clicks never create a second adjustment.
  */
 export async function removeVehicleExpenseAction(f: { inventoryVehicleId: string; eventId: string }): Promise<{ ok: boolean; error?: string; alreadyRemoved?: boolean }> {
-  const actor = await authorizedManager()
+  // Strict, genuinely fail-closed gate: anonymous/employee/unconfigured auth all denied; never a synthetic
+  // dev manager (removal is destructive). Admin Basic-Auth or a real signed manager identity only.
+  const actor = await authorizedManagerStrict()
   if (!actor) return { ok: false, error: 'Manager sign-in required to remove an expense.' }
   if (!f.eventId) return { ok: false, error: 'Missing expense.' }
   const { removeVehicleExpense } = await import('./db')

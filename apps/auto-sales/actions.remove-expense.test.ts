@@ -7,6 +7,8 @@ const guard = vi.hoisted(() => ({ manager: null as null | { name: string; role: 
 vi.mock('@/apps/auth/employee-guard', () => ({
   employeeAuthorized: vi.fn(async () => true),
   authorizedManager: vi.fn(async () => guard.manager),
+  // The removal action uses the STRICT, genuinely fail-closed gate (no synthetic dev manager).
+  authorizedManagerStrict: vi.fn(async () => guard.manager),
 }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 vi.mock('./db', () => ({

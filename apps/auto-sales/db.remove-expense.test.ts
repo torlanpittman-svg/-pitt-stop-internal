@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // A tiny chainable stand-in for the drizzle query builder so we can exercise removeVehicleExpense's
 // branching (guards, idempotency, the append shape) without a live Postgres. select() results are queued
 // in call order; insert() values are captured. eq/and/ne run for real against the real columns (harmless).
-const h = vi.hoisted(() => ({ selects: [] as unknown[][], inserts: [] as Record<string, unknown>[] }))
+const h = vi.hoisted(() => ({ selects: [] as unknown[][], inserts: [] as Record<string, unknown>[], insertError: null as unknown }))
 vi.mock('@/platform/db', () => ({
   getDb: () => {
     let i = 0
@@ -13,7 +13,10 @@ vi.mock('@/platform/db', () => ({
       b.limit = () => Promise.resolve(h.selects[i++] ?? [])
       return b
     }
-    return { select: () => builder(), insert: () => ({ values: (v: Record<string, unknown>) => { h.inserts.push(v); return Promise.resolve() } }) }
+    return {
+      select: () => builder(),
+      insert: () => ({ values: (v: Record<string, unknown>) => { if (h.insertError) return Promise.reject(h.insertError); h.inserts.push(v); return Promise.resolve() } }),
+    }
   },
 }))
 
@@ -24,7 +27,7 @@ const orig = (o: Record<string, unknown> = {}) => ({
   vendor: 'O’Reilly', memo: 'brake pads', status: 'verified', finTransactionId: null, documentId: 'doc-7', ...o,
 })
 
-beforeEach(() => { h.selects = []; h.inserts = [] })
+beforeEach(() => { h.selects = []; h.inserts = []; h.insertError = null })
 
 describe('removeVehicleExpense — mistaken-attachment correction (append-only, guarded, idempotent)', () => {
   it('appends a reversing adjustment with an attributed audit; preserves the original + receipt', async () => {
@@ -53,6 +56,21 @@ describe('removeVehicleExpense — mistaken-attachment correction (append-only, 
     const r = await removeVehicleExpense({ eventId: 'exp-1', actor: 'Darryl' })
     expect(r).toEqual({ ok: true, alreadyRemoved: true })
     expect(h.inserts).toHaveLength(0)
+  })
+
+  it('atomic under simultaneous requests — a racing insert that loses the unique index is a safe no-op', async () => {
+    // Both requests passed the pre-check (no reversal yet) at the same time; this one loses the INSERT race
+    // on vfe_reverses_active_uniq. The 23505 is caught and reported as already-removed, never surfaced.
+    h.selects = [[orig()], []]
+    h.insertError = { code: '23505', message: 'duplicate key value violates unique constraint "vfe_reverses_active_uniq"' }
+    const r = await removeVehicleExpense({ eventId: 'exp-1', actor: 'Darryl' })
+    expect(r).toEqual({ ok: true, alreadyRemoved: true })
+  })
+
+  it('a non-unique db error is NOT swallowed', async () => {
+    h.selects = [[orig()], []]
+    h.insertError = { code: '08006', message: 'connection failure' }
+    await expect(removeVehicleExpense({ eventId: 'exp-1', actor: 'Darryl' })).rejects.toBeTruthy()
   })
 
   it('refuses a non-expense (acquisition/sale/return) — those are corrected elsewhere', async () => {

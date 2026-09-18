@@ -45,6 +45,22 @@ describe('computeSummary — removing an expense nets it out of cost & profit (a
     expect(after.verifiedAdditionalCents).toBe(0)
   })
 
+  it('removing an UNVERIFIED expense never produces a negative cost (reversal excluded, not counted as a contra)', () => {
+    const acq = ev({ id: 'acq', economicCategory: 'acquisition', amountCents: 1_000_000 })
+    const part = ev({ id: 'part-1', economicCategory: 'part', amountCents: 25_000, status: 'unverified' })
+    // Before removal: an unverified expense sits in unverifiedAdditional, NOT in knownInvestment.
+    const before = computeSummary([acq, part], 'complete')
+    expect(before.knownInvestmentCents).toBe(1_000_000)
+    expect(before.verifiedAdditionalCents).toBe(0)
+    expect(before.unverifiedAdditionalCents).toBe(25_000)
+    // The reversal is written 'verified' but is EXCLUDED (has reversesEventId); the original is excluded too.
+    const reversal = ev({ id: 'rev-1', economicCategory: 'adjustment', cashflowCategory: 'non_cash', amountCents: 25_000, status: 'verified', reversesEventId: 'part-1' })
+    const after = computeSummary([acq, part, reversal], 'complete')
+    expect(after.knownInvestmentCents).toBe(1_000_000)      // unchanged
+    expect(after.verifiedAdditionalCents).toBe(0)           // NOT -25_000
+    expect(after.unverifiedAdditionalCents).toBe(0)         // the unverified original drops out cleanly
+  })
+
   it('profit reflects the removal — a mistaken cost no longer eats the margin', () => {
     const acq = ev({ id: 'acq', economicCategory: 'acquisition', amountCents: 1_000_000 })
     const part = ev({ id: 'part-1', economicCategory: 'part', amountCents: 25_000 })
