@@ -17,8 +17,8 @@ import { parseCents, categoryForLabel, type ExpenseCategory } from './types'
 export const RECEIPT_PROMPT_VERSION = 'exp_v2'
 // Bounded so a slow/hung provider call can never make capture "feel lost": the original is already saved,
 // and a timed-out read surfaces as a recoverable failure the employee can retry or bypass with manual entry.
-const EXTRACT_TIMEOUT_MS = 40_000
-const EXTRACT_MAX_RETRIES = 1
+const EXTRACT_TIMEOUT_MS = 35_000
+const EXTRACT_MAX_RETRIES = 0
 const EXTRACT_MODEL = 'gpt-4o' // gpt-4o-mini tiles vision into 12–30× the tokens with no latency gain — measured
 
 export interface ExpenseExtraction {
@@ -110,8 +110,8 @@ export function parseReceiptJson(j: unknown): ExpenseExtraction {
  *     which was the silent cause of blank vendor/date/total — a stray fence made JSON.parse throw and the
  *     whole read was discarded. A guaranteed object also means a parse failure is a genuine provider fault,
  *     surfaced as a recoverable 'failed' (not swallowed).
- *   - a bounded timeout + one retry so a hung provider call cannot make capture hang; the original is
- *     already saved before this runs, so a timeout is recoverable, never lost work.
+ *   - a bounded timeout without automatic retries so a hung provider call cannot make capture hang; the original is
+ *     already saved before this runs, so a timeout is recoverable through explicit retry, never lost work.
  */
 export async function extractExpense(imageBase64: string, mimeType: string): Promise<ExpenseExtractResult> {
   if (!process.env.OPENAI_API_KEY) return { status: 'failed', model: null, raw: { error: 'OPENAI_API_KEY not set' }, extraction: EMPTY_EXTRACTION }

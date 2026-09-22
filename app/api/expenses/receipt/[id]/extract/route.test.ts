@@ -20,6 +20,8 @@ vi.mock('@/apps/expenses/ai', () => ({ extractExpense: vi.fn() }))
 vi.mock('@/platform/blob', () => ({ getPrivateBlob: vi.fn(async () => ({ bytes: Buffer.from('img'), contentType: 'image/jpeg' })) }))
 vi.mock('@/apps/expenses/image-decode', () => ({ derivedForExtraction: vi.fn(async (b: Buffer) => ({ bytes: b, contentType: 'image/jpeg' })) }))
 
+import { extractSavedReceipt } from '@/apps/expenses/extract-saved'
+import { getPrivateBlob } from '@/platform/blob'
 import { POST } from './route'
 import { receiptUploaderFromRequest } from '@/apps/expenses/authz'
 import * as db from '@/apps/expenses/db'
@@ -99,4 +101,14 @@ describe('extract route', () => {
     expect(asMock(db.claimRetryExtraction)).not.toHaveBeenCalled()
     expect(asMock(extractExpense)).not.toHaveBeenCalled()
   })
+})
+
+
+it('the upload fast path skips storage download but uses the same extraction claim', async () => {
+  const uploader = { actor: { key: 'darryl', name: 'Darryl', role: 'manager' as const }, name: 'Darryl' }
+  const response = await extractSavedReceipt('rec-1', uploader, undefined, { bytes: Buffer.from('original'), contentType: 'image/jpeg' })
+  expect(response.status).toBe(200)
+  expect(getPrivateBlob).not.toHaveBeenCalled()
+  expect(db.claimRetryExtraction).toHaveBeenCalledOnce()
+  expect(extractExpense).toHaveBeenCalledWith(Buffer.from('original').toString('base64'), 'image/jpeg')
 })

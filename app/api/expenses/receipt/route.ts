@@ -3,16 +3,17 @@
  *
  * FAST DURABLE SAVE — separates "saved" from "read". It preserves the ORIGINAL image and creates a
  * recoverable receipt row BEFORE any AI, then returns immediately so the employee sees "photo saved" as
- * soon as the evidence is durable. The AI read is a SEPARATE step (POST .../[id]/extract) the client fires
- * next; a slow or failed read can never lose the receipt or make capture feel lost.
+ * soon as the evidence is durable. New clients receive a streamed save acknowledgement, then read the same uploaded bytes;
+ * old clients and retries use POST .../[id]/extract; a slow or failed read can never lose the receipt or make capture feel lost.
  *
  * Order: authorize → durable rate-limit → validate (magic bytes + decode + size) → hash ORIGINAL bytes →
  * capture_id / hash dedup → PRESERVE ORIGINAL (private Blob) → create PENDING row → return {receiptId,
- * fileToken}. A storage failure HARD-FAILS (never a phantom "saved"). No AI, no money movement, no QB.
+ * fileToken} → optional streamed read. A storage failure HARD-FAILS (never a phantom "saved"). No money movement or QB.
  *
  * Idempotent: a retry carries the SAME captureId, so a lost/timed-out response never creates a second
  * purchase — the retry resumes the already-saved receipt (with its extracted proposal if the read finished).
  */
+import { extractSavedReceipt } from '@/apps/expenses/extract-saved'
 import { NextResponse } from 'next/server'
 import { createHash } from 'node:crypto'
 import { uploadPrivatePhoto } from '@/platform/blob'
@@ -27,7 +28,7 @@ import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
-export const maxDuration = 30 // bounds a slow client upload of the multipart body; no AI runs here
+export const maxDuration = 60 // streamed save acknowledgement precedes the bounded read
 const APP = 'expenses:receipt'
 
 function uploadBucket(actorKey: string | null, ip: string): string {
@@ -52,6 +53,7 @@ function resumePayload(row: ReceiptRow) {
 }
 
 export async function POST(req: Request) {
+  const started = Date.now()
   try {
     // 1) Authorize (FAIL-CLOSED) BEFORE any work — verified session required even if no PIN is configured.
     const uploader = await receiptUploaderFromRequest(req)
@@ -116,9 +118,29 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, duplicate: true, alreadyCaptured: true })
     }
 
-    logger.info(APP, 'saved', { hasCapture: !!captureId })
-    // Photo is durably saved. The client now fires the extract step; a fileToken authorizes filing THIS row.
-    return NextResponse.json({ ok: true, receiptId, fileToken: signCaptureToken(receiptId), duplicate: false, aiStatus: 'pending', proposal: null })
+    logger.info(APP, 'saved', { hasCapture: !!captureId, saveMs: Date.now() - started })
+    // Photo is durably saved; acknowledge it before reading. The token authorizes THIS row.
+    const saved = { ok: true, receiptId, fileToken: signCaptureToken(receiptId), duplicate: false, aiStatus: 'pending', proposal: null }
+    // Old clients still receive the fast JSON save and use the retry endpoint.
+    if (!req.headers.get('accept')?.includes('application/x-ndjson')) return NextResponse.json(saved)
+    const encoder = new TextEncoder()
+    let disconnected = false
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (event: unknown) => { if (!disconnected) controller.enqueue(encoder.encode(JSON.stringify(event) + '\n')) }
+        send({ type: 'saved', ...saved })
+        try {
+          const result = await extractSavedReceipt(receiptId, uploader, saved.fileToken, { bytes, contentType })
+          send({ type: 'read', ...await result.json() })
+        } catch {
+          send({ type: 'read', ok: false, aiStatus: 'failed' })
+        } finally {
+          if (!disconnected) controller.close()
+        }
+      },
+      cancel() { disconnected = true },
+    })
+    return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store, no-transform' } })
   } catch (err) {
     logger.error(APP, 'failed', { code: errorCode(err) })
     return NextResponse.json({ ok: false, error: 'Could not save the photo — try again.' }, { status: 500 })

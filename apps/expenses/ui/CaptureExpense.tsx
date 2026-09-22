@@ -3,8 +3,8 @@
  * Business Receipts — employee TAP-FIRST capture + self-filing.
  *
  * SAVED is separated from READ. Snap/upload → the ORIGINAL is preserved and a recoverable receipt row is
- * created FIRST; the employee immediately sees "Photo saved — reading receipt". The AI read runs as a
- * SEPARATE step while the employee answers three quick questions, then prefills vendor/date/total. A slow or
+ * created FIRST; the employee immediately sees "Photo saved — reading receipt". The AI read continues in the
+ * same streamed request while the employee answers three quick questions, then prefills vendor/date/total. A slow or
  * failed read never makes the capture feel lost: the photo is already saved; the employee retries the read
  * (bounded) or just types the few facts. Nothing shows "photo read" unless the read actually succeeded.
  *
@@ -12,6 +12,7 @@
  * never creates a second purchase, and a small sessionStorage marker lets the employee resume an in-progress
  * capture. The employee's typed answers are authoritative — a late read never overwrites them.
  */
+import { readReceiptEvents } from '@/apps/expenses/read-events'
 import { useEffect, useRef, useState } from 'react'
 import {
   BUSINESS_ENTITIES, EXPENSE_CATEGORIES, CAPTURE_PRIMARY_CATEGORIES, CAPTURE_MORE_CATEGORIES,
@@ -163,9 +164,30 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
 
   async function doUpload(f: File) {
     setSaveState('uploading'); setReadState('idle')
+    let photoSaved = false
     try {
       const fd = new FormData(); fd.set('receipt', f); fd.set('captureId', captureId.current)
-      const res = await fetch('/api/expenses/receipt', { method: 'POST', body: fd })
+      const res = await fetch('/api/expenses/receipt', { method: 'POST', headers: { accept: 'application/x-ndjson' }, body: fd })
+      if (res.ok && res.headers.get('content-type')?.includes('application/x-ndjson') && res.body) {
+        type Event = { type: 'saved' | 'read'; ok: boolean; receiptId: string; fileToken?: string; aiStatus?: string; proposal?: Proposal; possibleDuplicate?: unknown }
+        let readFinished = false
+        for await (const event of readReceiptEvents<Event>(res.body)) {
+          if (event.type === 'saved' && event.ok && event.receiptId) {
+            const s = { receiptId: event.receiptId, fileToken: event.fileToken }
+            photoSaved = true
+            setSaved(s); setSaveState('saved'); persistResume(s)
+            setReadAttempts((n) => n + 1); setReadState('reading')
+          } else if (event.type === 'read' && photoSaved) {
+            readFinished = true
+            if (event.ok && event.aiStatus === 'extracted') {
+              applyProposal(event.proposal); setPossibleDup(!!event.possibleDuplicate); setReadState('read')
+            } else setReadState('failed')
+          }
+        }
+        if (!photoSaved) throw new Error('Missing save acknowledgement')
+        if (!readFinished) setReadState('failed')
+        return
+      }
       const j = await res.json().catch(() => ({}))
       if (!res.ok || !j.ok) { setSaveState('error'); setSaveErr(j.error || 'Could not save the photo — try again.'); return }
       if (j.alreadyCaptured || (j.duplicate && !j.receiptId)) { setSaveState('duplicate'); return }
@@ -173,7 +195,10 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
       setSaved(s); setSaveState('saved'); persistResume(s)
       if (j.resumed && j.proposal) { applyProposal(j.proposal); setReadState('read') }
       else runExtract(s.receiptId, s.fileToken)   // fire the read; the employee answers meanwhile
-    } catch { setSaveState('error'); setSaveErr('No connection — the photo did not save. Try again.') }
+    } catch {
+      if (photoSaved) setReadState('failed')
+      else { setSaveState('error'); setSaveErr('Connection interrupted — try again to save or recover this photo.') }
+    }
   }
 
   function pick(f: File | null) {

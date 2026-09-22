@@ -4,9 +4,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // validateReceiptUpload + validateDecodedMeta stay REAL, decodeImageMeta (sharp) is mocked. Exercises: auth
 // fail-closed, rate limit before work, evidence preservation (storage failure = failure), signature/decode
 // rejection, capture_id RESUME (retry after lost response → same receipt), identical-bytes duplicate, and
-// that NO AI runs in this route.
+// legacy JSON saves do not run AI; streaming clients read only after durable save.
 vi.mock('@/apps/expenses/authz', () => ({ receiptUploaderFromRequest: vi.fn() }))
 vi.mock('@/platform/blob', () => ({ uploadPrivatePhoto: vi.fn(async () => 'business-receipts/abc.jpg') }))
+vi.mock('@/apps/expenses/extract-saved', () => ({ extractSavedReceipt: vi.fn() }))
 vi.mock('@/apps/expenses/ai', () => ({ extractExpense: vi.fn() })) // must NOT be called by the save route
 vi.mock('@/apps/expenses/db', () => ({
   createPendingReceipt: vi.fn(async () => ({ id: 'rec-1', duplicate: false })),
@@ -21,6 +22,7 @@ vi.mock('@/apps/expenses/image-decode', async () => {
   return { ...actual, decodeImageMeta: vi.fn(async () => ({ format: 'jpeg', width: 800, height: 600 })) }
 })
 
+import { extractSavedReceipt } from '@/apps/expenses/extract-saved'
 import { createHash } from 'node:crypto'
 import { POST } from './route'
 import { receiptUploaderFromRequest } from '@/apps/expenses/authz'
@@ -142,4 +144,61 @@ describe('fast-save upload route', () => {
     expect(j.fileToken).toBeUndefined()
     expect(asMock(db.createPendingReceipt)).not.toHaveBeenCalled()
   })
+})
+
+
+describe('streamed save and read', () => {
+  function streamedReq() {
+    const r = uploadReq(JPEG, { captureId: 'stream-1' })
+    r.headers.set('accept', 'application/x-ndjson')
+    return r
+  }
+
+  it('acknowledges durable save before reading completes, and reuses the exact uploaded bytes', async () => {
+    let finish!: (r: Response) => void
+    asMock(extractSavedReceipt).mockReturnValue(new Promise<Response>((resolve) => { finish = resolve }))
+    const response = await POST(streamedReq())
+    expect(response.headers.get('content-type')).toBe('application/x-ndjson')
+    const reader = response.body!.getReader()
+    const saved = JSON.parse(new TextDecoder().decode((await reader.read()).value))
+    expect(saved.type).toBe('saved')
+    expect(saved.receiptId).toBe('rec-1')
+    expect(asMock(uploadPrivatePhoto)).toHaveBeenCalled()
+    expect(asMock(db.createPendingReceipt)).toHaveBeenCalled()
+    expect(asMock(extractSavedReceipt)).toHaveBeenCalledWith('rec-1', expect.anything(), saved.fileToken, { bytes: JPEG, contentType: 'image/jpeg' })
+    finish(Response.json({ ok: true, aiStatus: 'extracted', proposal: { vendor: 'Test store' } }))
+    const read = JSON.parse(new TextDecoder().decode((await reader.read()).value))
+    expect(read.type).toBe('read'); expect(read.proposal.vendor).toBe('Test store')
+    expect((await reader.read()).done).toBe(true)
+  })
+
+  it('keeps the saved acknowledgement when the read fails', async () => {
+    asMock(extractSavedReceipt).mockRejectedValue(new Error('provider unavailable'))
+    const response = await POST(streamedReq())
+    const events = (await response.text()).trim().split('\n').map((line) => JSON.parse(line))
+    expect(events.map((e) => e.type)).toEqual(['saved', 'read'])
+    expect(events[0].ok).toBe(true); expect(events[1].aiStatus).toBe('failed')
+  })
+
+  it('does not start reading if original storage fails', async () => {
+    asMock(uploadPrivatePhoto).mockRejectedValueOnce(new Error('storage unavailable'))
+    const response = await POST(streamedReq())
+    expect(response.status).toBe(502)
+    expect(asMock(extractSavedReceipt)).not.toHaveBeenCalled()
+  })
+})
+
+
+it('finishes the saved read safely if the client disconnects after acknowledgement', async () => {
+  let finish!: (r: Response) => void
+  asMock(extractSavedReceipt).mockReturnValue(new Promise<Response>((resolve) => { finish = resolve }))
+  const request = uploadReq(JPEG, { captureId: 'disconnect' })
+  request.headers.set('accept', 'application/x-ndjson')
+  const response = await POST(request)
+  const reader = response.body!.getReader()
+  expect((await reader.read()).done).toBe(false)
+  await reader.cancel()
+  finish(Response.json({ ok: true, aiStatus: 'extracted' }))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(asMock(extractSavedReceipt)).toHaveBeenCalledOnce()
 })
