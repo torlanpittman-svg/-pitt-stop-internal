@@ -83,7 +83,7 @@ export default function IdentityBar() {
   if (!id.actor) {
     return (
       <div className="w-full">
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
           <span className="text-gray-500">👤</span>
           <span className="text-gray-400">Not identified — shared session</span>
           <a href="/auto-sales/login" className="ml-auto text-xs text-gray-200 underline">Identify / Switch user</a>
@@ -94,10 +94,10 @@ export default function IdentityBar() {
 
   return (
     <div className="w-full">
-      <div className="flex items-center gap-2 text-sm">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
         <span className="text-gray-500">👤</span>
         <span className="text-gray-400">Signed in as</span>
-        <span className="text-gray-200 font-medium">{id.actor.name}</span>
+        <span className="min-w-0 break-words text-gray-200 font-medium">{id.actor.name}</span>
         {ROLE_LABEL[id.actor.role] && <span className="text-[10px] uppercase tracking-wide text-gray-500 border border-gray-700 rounded-full px-1.5 py-0.5">{ROLE_LABEL[id.actor.role]}</span>}
         <button onClick={signOut} disabled={busy} className="ml-auto text-xs text-gray-400 underline disabled:opacity-40">{busy ? 'Signing out…' : 'Sign out / Switch user'}</button>
       </div>

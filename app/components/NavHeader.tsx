@@ -23,10 +23,10 @@ export default function NavHeader({ back, title, right }: {
   right?: ReactNode
 }) {
   return (
-    <header className="sticky top-0 z-30 flex items-center gap-3 px-4 py-3 text-sm border-b border-gray-900 bg-gray-950/95 backdrop-blur shrink-0">
+    <header className="sticky top-0 z-30 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm border-b border-gray-900 bg-gray-950/95 backdrop-blur shrink-0">
       {back && <BackLink href={back.href} label={back.label} />}
-      {title && <span className="text-gray-300 font-medium truncate">{title}</span>}
-      <div className="ml-auto flex items-center gap-3">
+      {title && <span className="min-w-0 break-words text-gray-300 font-medium">{title}</span>}
+      <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center gap-3">
         {right}
         <GlobalSearch />
         <Link href="/" aria-label="Home" className="flex items-center gap-1.5 text-gray-300 hover:text-white font-medium">

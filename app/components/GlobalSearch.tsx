@@ -59,7 +59,7 @@ export default function GlobalSearch({ label = false }: { label?: boolean }) {
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Search"
-        className="flex items-center gap-2 text-gray-300 hover:text-white font-medium"
+        className="flex min-h-11 shrink-0 items-center gap-2 text-gray-300 hover:text-white font-medium"
       >
         <SearchIcon />
         {label && <span>Search</span>}
@@ -155,7 +155,7 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder="Search customers, vehicles, jobs, VIN, phone, stock #…"
-            className="flex-1 bg-transparent text-white placeholder-gray-500 outline-none text-base"
+            className="min-w-0 flex-1 bg-transparent text-white placeholder-gray-500 outline-none text-base"
             autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
             enterKeyHint="search" inputMode="search" maxLength={100}
           />
