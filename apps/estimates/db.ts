@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { and, eq, desc, isNull, or, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
-import { serviceOrders, vehicles, jobEstimates, serviceOrderEvents } from '@/apps/workflow/schema'
+import { serviceOrders, vehicles, jobEstimates, jobServices, jobLineItems, serviceOrderEvents } from '@/apps/workflow/schema'
 import { quickEntryJobs } from '@/apps/quick-entry/schema'
 import { estimateIntakes } from './schema'
 import { z } from 'zod'
+import { recomputeEstimate, getEstimateRow } from '@/apps/workflow/estimate-db'
 import { getBusinessConfig } from '@/apps/settings/db'
 
 export const intakeInput = z.object({
@@ -16,6 +17,9 @@ export const intakeInput = z.object({
   make: z.string().trim().min(1).max(100),
   model: z.string().trim().min(1).max(100),
   vin: z.union([z.string().trim().toUpperCase().regex(/^[A-HJ-NPR-Z0-9]{17}$/), z.literal('')]).default(''),
+  vehicleId: z.uuid().nullable().optional(),
+  lines: z.array(z.object({ name: z.string().trim().min(1).max(200), priceCents: z.number().int().min(0).max(100000000) })).max(100).default([]),
+  workPriceCents: z.number().int().min(0).max(100000000).nullable().optional(),
   notes: z.string().trim().max(5000).default(''),
 })
 
@@ -23,28 +27,48 @@ export async function createIntake(input: z.infer<typeof intakeInput>, actor: st
   const db = getDb()
   const id = input.requestId
   const [existing] = await db.select().from(estimateIntakes).where(eq(estimateIntakes.orderId, id))
-  if (existing) return id
-  const vehicleId = randomUUID()
+  if (existing) {
+    const estimate = await getEstimateRow(id)
+    if (estimate) await recomputeEstimate(estimate.id)
+    return id
+  }
+  const [savedVehicle] = input.vehicleId
+    ? await db.select().from(vehicles).where(eq(vehicles.id, input.vehicleId)).limit(1)
+    : input.vin ? await db.select().from(vehicles).where(eq(vehicles.vin, input.vin)).orderBy(desc(vehicles.createdAt)).limit(1) : []
+  if (input.vehicleId && !savedVehicle) throw new Error('Saved vehicle not found')
+  const vehicleId = savedVehicle?.id ?? randomUUID()
+  const vehicle = savedVehicle ?? input
+  const estimateId = randomUUID()
+  const services = input.lines.map((line, sortOrder) => ({ id: randomUUID(), jobEstimateId: estimateId, title: line.name, source: 'manual', sortOrder }))
   const cfg = await getBusinessConfig()
   // Neon batch is transactional: an estimate never appears briefly as an arrived Job,
   // and a failed contact/estimate insert cannot leave a half-created intake behind.
+  const statements = [
+    ...(!savedVehicle ? [db.insert(vehicles).values({ id: vehicleId, year: input.year, make: input.make, model: input.model, vin: input.vin || null })] : []),
+    db.insert(serviceOrders).values({ id, orderNumber: `ES-${id.replaceAll('-', '').slice(0, 16)}`, vehicleId,
+      source: 'estimate', serviceType: 'retail', status: 'estimate', customerName: input.customerName,
+      notes: input.notes || null, checkedInBy: actor }),
+    db.insert(quickEntryJobs).values({ serviceOrderId: id, vehicleId, customerName: input.customerName,
+      customerEmail: input.customerEmail || null, customerPhone: input.customerPhone || null,
+      year: vehicle.year, make: vehicle.make, model: vehicle.model, vin: vehicle.vin || null, createdBy: actor }),
+    db.insert(jobEstimates).values({ id: estimateId, serviceOrderId: id, priceMode: input.workPriceCents ? 'explicit_pretax' : 'itemized', explicitTotalCents: input.workPriceCents || null, taxRateBps: cfg.defaultTaxBps, explicitTaxCategory: 'detailing', createdBy: actor, updatedBy: actor }),
+    ...(services.length ? [
+      db.insert(jobServices).values(services),
+      db.insert(jobLineItems).values(services.map((service, i) => ({ jobServiceId: service.id, type: 'labor', name: service.title, qty: '1', unit: 'each', priceCents: input.lines[i].priceCents, taxable: false, taxCategory: 'detailing' }))),
+    ] : []),
+    db.insert(estimateIntakes).values({ orderId: id }),
+    db.insert(serviceOrderEvents).values({ serviceOrderId: id, eventType: 'estimate_intake', employeeName: actor, newStatus: 'estimate' }),
+  ]
   try {
-    await db.batch([
-      db.insert(vehicles).values({ id: vehicleId, year: input.year, make: input.make, model: input.model, vin: input.vin || null }),
-      db.insert(serviceOrders).values({ id, orderNumber: `ES-${id.replaceAll('-', '').slice(0, 16)}`, vehicleId,
-        source: 'estimate', serviceType: 'retail', status: 'estimate', customerName: input.customerName,
-        notes: input.notes || null, checkedInBy: actor }),
-      db.insert(quickEntryJobs).values({ serviceOrderId: id, vehicleId, customerName: input.customerName,
-        customerEmail: input.customerEmail || null, customerPhone: input.customerPhone || null,
-        year: input.year, make: input.make, model: input.model, vin: input.vin || null, createdBy: actor }),
-      db.insert(jobEstimates).values({ serviceOrderId: id, taxRateBps: cfg.defaultTaxBps, explicitTaxCategory: 'detailing', createdBy: actor, updatedBy: actor }),
-      db.insert(estimateIntakes).values({ orderId: id }),
-      db.insert(serviceOrderEvents).values({ serviceOrderId: id, eventType: 'estimate_intake', employeeName: actor, newStatus: 'estimate' }),
-    ])
+    // batch() requires a non-empty tuple; the service-order/job/estimate/intake/event
+    // inserts are unconditional, so `statements` always has at least those five.
+    await db.batch(statements as [(typeof statements)[number], ...(typeof statements)[number][]])
   } catch (error) {
     const [retry] = await db.select().from(estimateIntakes).where(eq(estimateIntakes.orderId, id))
     if (!retry) throw error
   }
+  const estimate = await getEstimateRow(id)
+  if (estimate) await recomputeEstimate(estimate.id)
   return id
 }
 

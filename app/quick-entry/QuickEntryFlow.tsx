@@ -41,13 +41,15 @@ const pct = (bps: number) => `${(bps / 100).toString()}%`
 const usd = (cents: number) => `$${(cents / 100).toFixed(2)}`
 const dollarsToCents = (s: string) => { const n = parseFloat(String(s).replace(/[^0-9.]/g, '')); return Number.isFinite(n) ? Math.round(n * 100) : 0 }
 
-export default function QuickEntryFlow() {
+export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick-entry' | 'estimate' }) {
+  const isEstimate = mode === 'estimate'
+  const requestId = useRef<string | null>(null)
   const router = useRouter()
   // Back target: Check In when reached via Smart Check-In (?from=check-in), else Work Board fallback.
   // Allowlist-only (no external redirect). Resolved AFTER mount (useEffect) so SSR + first client render
   // both show the fallback → no hydration mismatch; it upgrades to Check In post-mount when applicable.
   const [backTarget, setBackTarget] = useState<{ href: string; label: string }>({ href: '/work-board', label: 'Work Board' })
-  useEffect(() => { setBackTarget(resolveBack(new URLSearchParams(window.location.search).get('from'), { href: '/work-board', label: 'Work Board' })) }, [])
+  useEffect(() => { if (isEstimate) { setBackTarget({ href: '/estimates', label: 'Estimates' }); return }; setBackTarget(resolveBack(new URLSearchParams(window.location.search).get('from'), { href: '/work-board', label: 'Work Board' })) }, [isEstimate])
   const identity = useIdentity()
   const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
   const [bizCfg, setBizCfg] = useState<BizConfig | null>(null)
@@ -96,6 +98,8 @@ export default function QuickEntryFlow() {
   const [custVehicles, setCustVehicles] = useState<CustVehicle[]>([])
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null)
   const [vehicleMode, setVehicleMode] = useState<'new' | 'existing' | 'pick'>('new')
+  const customerSearchVersion = useRef(0)
+  const vinVersion = useRef(0)
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Identification is VIN-photo only (camera or upload). Plate lookup / manual entry are
@@ -124,7 +128,7 @@ export default function QuickEntryFlow() {
   // so the employee just adds customer + services. Additive; normal Quick Entry entry is unchanged.
   const resumedRef = useRef(false)
   useEffect(() => {
-    if (resumedRef.current) return
+    if (isEstimate || resumedRef.current) return
     resumedRef.current = true
     let raw: string | null = null
     try { raw = sessionStorage.getItem('ps_intake_retail') } catch { return }
@@ -141,6 +145,31 @@ export default function QuickEntryFlow() {
     setVinMsg(`VIN read ✓ ${[d.year, d.make, d.model].filter(Boolean).join(' ')}`.trim())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const selectVehicle = useCallback((vh: CustVehicle) => {
+    vinVersion.current++; if (decodeTimer.current) clearTimeout(decodeTimer.current); setVinBusy(false)
+    setVeh({ vin: vh.vin ?? '', year: vh.year ?? '', make: vh.make ?? '', model: vh.model ?? '', color: '' })
+    setSelectedVehicleId(vh.id); setVehicleMode('existing')
+    setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null })
+    idMethodRef.current = 'returning_vehicle'; audit.current.autoIdentified = true
+    setVinStatus('ok'); setVinMsg(`Saved vehicle ✓ ${vh.label}`)
+  }, [])
+  const addNewVehicle = useCallback(() => {
+    vinVersion.current++; if (decodeTimer.current) clearTimeout(decodeTimer.current); setVinBusy(false)
+    setSelectedVehicleId(null); setVeh({ vin: '', year: '', make: '', model: '', color: '' })
+    setVehicleMode('new'); setVinStatus('idle'); setVinMsg(null)
+    setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null })
+    idMethodRef.current = 'vin_camera'
+  }, [])
+  const selectCustomer = useCallback((m: CustomerMatch) => {
+    vinVersion.current++; if (decodeTimer.current) clearTimeout(decodeTimer.current); setVinBusy(false)
+    customerSearchVersion.current++; if (searchTimer.current) clearTimeout(searchTimer.current)
+    setCust({ first: m.first, last: m.last, phone: m.phone ?? '', email: m.email ?? '' })
+    setCustVehicles(m.vehicles); setMatches([])
+    if (m.vehicles.length === 1) selectVehicle(m.vehicles[0])
+    else if (m.vehicles.length > 1) { setVehicleMode('pick'); setSelectedVehicleId(null); setVeh({ vin: '', year: '', make: '', model: '', color: '' }) }
+    else addNewVehicle()
+  }, [selectVehicle, addNewVehicle])
 
   // ── VIN photo → OCR → editable candidate → auto validate/decode ─────────────
   // Runs automatically the moment a photo is selected (Take or Upload) — no extra tap.
@@ -177,9 +206,17 @@ export default function QuickEntryFlow() {
   const decodeVinValue = useCallback(async (raw: string) => {
     const vin = raw.trim().toUpperCase()
     if (vin.length !== 17) return
-    setVinBusy(true); setVinStatus('reading'); setVinMsg('Checking VIN…')
+    const version = ++vinVersion.current
+    setVinBusy(true); setVinStatus('reading'); setVinMsg('Checking saved vehicles…')
     try {
+      const savedResponse = await fetch(`/api/quick-entry/vehicles?vin=${encodeURIComponent(vin)}`)
+      if (!savedResponse.ok) throw new Error('Vehicle lookup failed')
+      const saved = await savedResponse.json()
+      if (version !== vinVersion.current) return
+      if (saved.vehicle) { selectVehicle(saved.vehicle); return }
+      setVinMsg('Decoding VIN…')
       const d = await (await fetch('/api/estimator/vin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vin }) })).json()
+      if (version !== vinVersion.current) return
       if (d.valid && (d.make || d.year)) {
         setVeh((v) => ({ ...v, vin: d.vin ?? v.vin, year: d.year ?? v.year, make: d.make ?? v.make, model: d.model ?? v.model }))
         audit.current.autoIdentified = true
@@ -187,11 +224,12 @@ export default function QuickEntryFlow() {
       } else {
         setVinStatus('review'); setVinMsg('Review the VIN. We may have misread one or more characters.')
       }
-    } catch { setVinStatus('error'); setVinMsg('Network error — check the VIN and try again.') } finally { setVinBusy(false) }
-  }, [])
+    } catch { if (version === vinVersion.current) { setVinStatus('error'); setVinMsg('Network error — check the VIN and try again.') } } finally { if (version === vinVersion.current) setVinBusy(false) }
+  }, [selectVehicle])
 
   // Debounced auto-decode as the employee corrects the VIN (no Decode button to tap).
   const onVinEdit = useCallback((raw: string) => {
+    vinVersion.current++; setVinBusy(false); setSelectedVehicleId(null)
     const vin = raw.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '').slice(0, 17)  // strip I/O/Q, spaces, punctuation
     setVeh((v) => ({ ...v, vin })); markVehicleEdited()
     if (decodeTimer.current) clearTimeout(decodeTimer.current)
@@ -201,33 +239,14 @@ export default function QuickEntryFlow() {
 
   // ── Returning-customer search + selection ──────────────────────────────────
   const searchCustomers = useCallback((q: string) => {
+    const version = ++customerSearchVersion.current
     if (searchTimer.current) clearTimeout(searchTimer.current)
     if (q.trim().length < 2) { setMatches([]); return }
     searchTimer.current = setTimeout(async () => {
-      try { const d = await (await fetch(`/api/quick-entry/customers?q=${encodeURIComponent(q.trim())}`)).json(); setMatches(d.customers ?? []) }
+      try { const d = await (await fetch(`/api/quick-entry/customers?q=${encodeURIComponent(q.trim())}`)).json(); if (version === customerSearchVersion.current) setMatches(d.customers ?? []) }
       catch { /* ignore */ }
     }, 300)
   }, [])
-  const selectVehicle = useCallback((vh: CustVehicle) => {
-    setVeh({ vin: vh.vin ?? '', year: vh.year ?? '', make: vh.make ?? '', model: vh.model ?? '', color: '' })
-    setSelectedVehicleId(vh.id); setVehicleMode('existing')
-    setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null })
-    idMethodRef.current = 'returning_vehicle'; audit.current.autoIdentified = true
-    setVinStatus('ok'); setVinMsg(`Saved vehicle ✓ ${vh.label}`)
-  }, [])
-  const addNewVehicle = useCallback(() => {
-    setSelectedVehicleId(null); setVeh({ vin: '', year: '', make: '', model: '', color: '' })
-    setVehicleMode('new'); setVinStatus('idle'); setVinMsg(null)
-    setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null })
-    idMethodRef.current = 'vin_camera'
-  }, [])
-  const selectCustomer = useCallback((m: CustomerMatch) => {
-    setCust({ first: m.first, last: m.last, phone: m.phone ?? '', email: m.email ?? '' })
-    setCustVehicles(m.vehicles); setMatches([])
-    if (m.vehicles.length === 1) selectVehicle(m.vehicles[0])
-    else if (m.vehicles.length > 1) { setVehicleMode('pick'); setSelectedVehicleId(null) }
-    else addNewVehicle()
-  }, [selectVehicle, addNewVehicle])
 
   // ── Service selection + intake pricing ───────────────────────────────────────
   // Each selected service carries an editable price. Presets prefill from the catalog; "Other" prefills
@@ -340,6 +359,22 @@ export default function QuickEntryFlow() {
   const createJob = useCallback(async () => {
     setPhase('submitting'); setError(null)
     try {
+      if (isEstimate) {
+        requestId.current ??= crypto.randomUUID()
+        const res = await fetch('/api/estimates', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ requestId: requestId.current,
+            customerName: `${cust.first} ${cust.last}`.trim(), customerPhone: cust.phone, customerEmail: cust.email,
+            ...veh, vehicleId: vehicleMode === 'existing' ? selectedVehicleId : null,
+            notes: nlNote.trim(), lines: lines.filter(l => l.name.trim()).map(l => ({ name: l.name.trim(), priceCents: l.priceCents || 0 })),
+            workPriceCents: dollarsToCents(workPrice) || null,
+          }),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || 'Could not save estimate')
+        router.push(`/orders/${data.id}/estimate`)
+        return
+      }
       const res = await fetch('/api/quick-entry/jobs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -377,13 +412,13 @@ export default function QuickEntryFlow() {
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); setPhase('review') }
     // workPrice + nlNote MUST be deps: otherwise the create closure reads their stale
     // initial values and the manager's Work Price / internal note are silently dropped.
-  }, [cust, veh, lines, tech, vehicleMode, selectedVehicleId, workPrice, nlNote, expectedTotalCents, suggByKey, isUrgent])
+  }, [cust, veh, lines, tech, vehicleMode, selectedVehicleId, workPrice, nlNote, expectedTotalCents, suggByKey, isUrgent, isEstimate, router])
 
   const input = 'w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500'
 
   return (
     <main className="min-h-screen bg-gray-950 text-white flex flex-col">
-      <NavHeader back={backTarget} title={`Quick Entry${phase === 'details' ? ' · Details' : phase === 'services' ? ' · Services' : phase === 'review' ? ' · Review' : ''}`} />
+      <NavHeader back={backTarget} title={`${isEstimate ? 'New Estimate' : 'Quick Entry'}${phase === 'details' ? ' · Details' : phase === 'services' ? ' · Services' : phase === 'review' ? ' · Review' : ''}`} />
 
       {error && <p className="text-red-400 text-sm text-center px-5 py-2">{error}</p>}
 
@@ -406,7 +441,7 @@ export default function QuickEntryFlow() {
               <div className="mt-2 rounded-2xl bg-gray-900 border border-gray-800 divide-y divide-gray-800 overflow-hidden">
                 <div className="flex items-center justify-between px-3 py-1.5">
                   <span className="text-gray-500 text-[11px] uppercase tracking-widest">Returning customers</span>
-                  <button onClick={() => setMatches([])} className="text-gray-600 text-xs">Dismiss</button>
+                  <button onClick={() => { customerSearchVersion.current++; setMatches([]) }} className="text-gray-600 text-xs">Dismiss</button>
                 </div>
                 {matches.map((m, i) => (
                   <button key={i} onClick={() => selectCustomer(m)} className="w-full text-left px-3 py-2.5 active:bg-gray-800">
@@ -492,14 +527,14 @@ export default function QuickEntryFlow() {
           </div>
 
           {/* Urgency — needs back ASAP. Independent of retail/dealer; visual + Work Board priority only. */}
-          <button type="button" onClick={() => setIsUrgent((u) => !u)}
+          {!isEstimate && <button type="button" onClick={() => setIsUrgent((u) => !u)}
             className={`w-full flex items-center gap-3 rounded-2xl border px-4 py-3.5 ${isUrgent ? 'border-amber-500 bg-amber-950/20' : 'border-gray-800 bg-gray-900'}`}>
             <span className={`w-6 h-6 rounded-md flex items-center justify-center text-sm shrink-0 ${isUrgent ? 'bg-amber-500 text-black' : 'border border-gray-600 text-transparent'}`}>✓</span>
             <span className="text-left"><span className={`font-semibold ${isUrgent ? 'text-amber-300' : 'text-white'}`}>Urgent · Needs back ASAP</span></span>
-          </button>
+          </button>}
 
           <div className="fixed bottom-0 inset-x-0 p-4 bg-gray-950/95 border-t border-gray-900">
-            <button disabled={!cust.first.trim()} onClick={() => setPhase('services')}
+            <button disabled={!cust.first.trim() || vinBusy || vehicleMode === 'pick' || (isEstimate && (!/^\d{4}$/.test(veh.year) || !veh.make.trim() || !veh.model.trim()))} onClick={() => setPhase('services')}
               className="w-full h-14 rounded-2xl bg-blue-600 active:bg-blue-700 text-white text-lg font-bold disabled:opacity-40">Continue →</button>
           </div>
         </div>
@@ -695,7 +730,7 @@ export default function QuickEntryFlow() {
           )}
           <div className="fixed bottom-0 inset-x-0 p-4 bg-gray-950/95 border-t border-gray-900 flex items-center gap-3">
             <button onClick={() => setPhase('services')} className="h-14 px-5 rounded-2xl border border-gray-700 text-gray-300 text-sm">Back</button>
-            <button onClick={createJob} className="flex-1 h-14 rounded-2xl bg-green-600 active:bg-green-700 text-white text-lg font-bold">Create Job</button>
+            <button onClick={createJob} className="flex-1 h-14 rounded-2xl bg-green-600 active:bg-green-700 text-white text-lg font-bold">{isEstimate ? 'Save Estimate' : 'Create Job'}</button>
           </div>
         </div>
       )}
@@ -703,7 +738,7 @@ export default function QuickEntryFlow() {
       {phase === 'submitting' && (
         <div className="flex-1 flex flex-col items-center justify-center gap-4">
           <div className="w-12 h-12 border-4 border-white/30 border-t-white rounded-full animate-spin" />
-          <p className="text-lg">Creating the Job…</p>
+          <p className="text-lg">{isEstimate ? 'Saving estimate…' : 'Creating the Job…'}</p>
         </div>
       )}
 
