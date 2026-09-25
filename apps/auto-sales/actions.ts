@@ -43,13 +43,26 @@ export async function acquireAction(fd: FormData) {
   revalidateList()
 }
 
-export async function addExpenseAction(fd: FormData) {
-  if (!(await employeeAuthorized())) return
-  const id = String(fd.get('inventoryVehicleId') ?? ''); const amt = Math.round(parseFloat(String(fd.get('amount') ?? '')) * 100)
+export async function addExpenseAction(fd: FormData): Promise<{ ok: boolean; error?: string }> {
+  if (!(await employeeAuthorized())) return { ok: false, error: 'Sign in again to add this expense.' }
+  const id = String(fd.get('inventoryVehicleId') ?? ''); const amt = Number(String(fd.get('amount') ?? '')) * 100
   const eventDate = String(fd.get('eventDate') ?? ''); const cat = String(fd.get('category') ?? '') as EconomicCategory
-  if (id && ECONOMIC_CATEGORIES.includes(cat) && Number.isFinite(amt) && amt > 0 && /^\d{4}-\d{2}-\d{2}$/.test(eventDate))
-    await addExpenseEvent({ inventoryVehicleId: id, economicCategory: cat, amountCents: amt, eventDate, vendor: String(fd.get('vendor') ?? '') || undefined, memo: String(fd.get('memo') ?? '') || undefined, paymentAccountRef: String(fd.get('account') ?? 'unknown'), actor: 'auto-sales' })
+  if (!id) return { ok: false, error: 'Open a vehicle before adding an expense.' }
+  if (!ECONOMIC_CATEGORIES.includes(cat)) return { ok: false, error: 'Choose an expense category.' }
+  if (!Number.isFinite(amt) || Math.round(amt) <= 0 || Math.round(amt) > 2_147_483_647)
+    return { ok: false, error: 'Enter an amount of at least $0.01 and no more than $21,474,836.47.' }
+  const parsedDate = new Date(`${eventDate}T00:00:00Z`)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate) || !Number.isFinite(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== eventDate)
+    return { ok: false, error: 'Enter a valid expense date.' }
+  try {
+    await addExpenseEvent({ inventoryVehicleId: id, economicCategory: cat, amountCents: Math.round(amt), eventDate, vendor: String(fd.get('vendor') ?? '') || undefined, memo: String(fd.get('memo') ?? '') || undefined, paymentAccountRef: String(fd.get('account') ?? 'unknown'), actor: 'auto-sales' })
+  } catch (error) {
+    console.error('Could not add vehicle expense', error)
+    return { ok: false, error: 'Could not save the expense. Your entries have been kept. Please try again.' }
+  }
   revalidateVehicle(id)
+  revalidateList()
+  return { ok: true }
 }
 
 export async function returnRefundAction(fd: FormData) {

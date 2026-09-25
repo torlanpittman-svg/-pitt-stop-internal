@@ -31,6 +31,8 @@ export default function AddExpense({ vehicleId, returnable }: { vehicleId: strin
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+  const manualSaving = useRef(false)
   // verify fields
   const [documentId, setDocumentId] = useState('')
   const [aiFailed, setAiFailed] = useState(false)
@@ -56,10 +58,29 @@ export default function AddExpense({ vehicleId, returnable }: { vehicleId: strin
     setMode('preview')
   }
   function reset() {
+    setSaved(false)
     setMode('idle'); setFile(null); setDocumentId(''); setAiFailed(false); setDup(null); setErr(null)
     setVendor(''); setDate(today()); setCategory('Parts'); setTotal(''); setAmount(''); setPaymentAccount('unknown'); setPaymentCardLast4(''); setPaymentMatched(false)
     setIsReturn(false); setRefundKind('card_refund'); setOriginalEventId(''); setReturnMatch(null); setReturnedLineRef(null); setMatchReasons([]); setReferencedReceipt(null)
     if (previewUrl) URL.revokeObjectURL(previewUrl); setPreviewUrl(null)
+  }
+
+  async function saveManual(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (manualSaving.current) return
+    const fd = new FormData(event.currentTarget)
+    manualSaving.current = true
+    setBusy(true); setErr(null); setSaved(false)
+    try {
+      const result = await addExpenseAction(fd)
+      if (!result.ok) { setErr(result.error ?? 'Could not save the expense.'); return }
+      reset(); setSaved(true); router.refresh()
+    } catch {
+      setErr('Could not confirm the save. Check this vehicle’s history before trying again.')
+    } finally {
+      manualSaving.current = false
+      setBusy(false)
+    }
   }
 
   async function usePhoto() {
@@ -131,7 +152,7 @@ export default function AddExpense({ vehicleId, returnable }: { vehicleId: strin
 
   return (
     <details className="rounded-2xl bg-gray-900 border border-gray-800 overflow-hidden" open={mode !== 'idle'}>
-      <summary className="px-4 py-4 cursor-pointer list-none text-white font-bold text-lg flex items-center justify-between">+ Add Expense <span className="text-gray-500 text-sm">▾</span></summary>
+      <summary className="px-4 py-4 cursor-pointer list-none text-white font-bold text-lg flex items-center justify-between">+ Add Expense <span className="text-gray-500 text-sm">{saved ? <span role="status" className="text-green-400">Expense added</span> : '▾'}</span></summary>
       <div className="px-4 pb-4">
         <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => pick(e.target.files?.[0] ?? null)} />
         <input ref={upRef} type="file" accept="image/*" className="hidden" onChange={(e) => pick(e.target.files?.[0] ?? null)} />
@@ -156,11 +177,12 @@ export default function AddExpense({ vehicleId, returnable }: { vehicleId: strin
         {mode === 'scanning' && <div className="py-8 text-center text-gray-400">Reading receipt…</div>}
 
         {mode === 'manual' && (
-          <form action={addExpenseAction} className="space-y-3">
+          <form onSubmit={saveManual}>
+            <fieldset disabled={busy} className="space-y-3">
             <input type="hidden" name="inventoryVehicleId" value={vehicleId} />
             <label className="text-xs text-gray-500">What was it?<br /><select name="category" className={box} defaultValue="part">{EXPENSE_CATS.map((c) => <option key={c} value={c}>{labelFor(c)}</option>)}</select></label>
             <div className="grid grid-cols-2 gap-3">
-              <label className="text-xs text-gray-500">Amount<br /><input name="amount" type="number" step="0.01" min="0" inputMode="decimal" required className={box} /></label>
+              <label className="text-xs text-gray-500">Amount<br /><input name="amount" type="number" step="0.01" min="0.01" max="21474836.47" inputMode="decimal" required className={box} /></label>
               <label className="text-xs text-gray-500">Date<br /><input name="eventDate" type="date" defaultValue={today()} required className={box} /></label>
             </div>
             <label className="text-xs text-gray-500">Vendor<br /><input name="vendor" placeholder="e.g. O’Reilly" className={box} /></label>
@@ -170,8 +192,10 @@ export default function AddExpense({ vehicleId, returnable }: { vehicleId: strin
                 <label className="text-xs text-gray-500">Note<br /><input name="memo" className={box} /></label>
               </div>
             </details>
-            <button className="w-full bg-green-600 active:bg-green-700 text-white text-lg font-bold py-4 rounded-2xl">Add Expense</button>
+            {err && <p role="alert" className="text-red-400 text-sm">{err}</p>}
+            <button type="submit" disabled={busy} className="w-full bg-green-600 active:bg-green-700 text-white text-lg font-bold py-4 rounded-2xl disabled:opacity-50">{busy ? 'Saving…' : 'Add Expense'}</button>
             <button type="button" onClick={reset} className="w-full text-gray-400 py-2">Cancel</button>
+            </fieldset>
           </form>
         )}
 
