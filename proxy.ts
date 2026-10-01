@@ -97,6 +97,9 @@ export const config = {
     // Business-expense receipt capture (employee-PIN gate here; manager gate on approve/reject inside actions).
     '/expenses/:path*',
     '/api/expenses/:path*',
+    // Customer profiles + history (the profile page renders contact/history PII server-side) and APIs.
+    '/customers/:path*',
+    '/api/customers/:path*',
     '/api/dealer-checkin/:path*',
     '/api/quick-entry/:path*',
     // Global operational search — employee-session gated (role scope enforced in the handler).

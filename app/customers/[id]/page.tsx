@@ -1,5 +1,5 @@
-import { notFound } from 'next/navigation'
-import { authenticatedActor, isManagerRole } from '@/apps/auth/employee-guard'
+import { notFound, redirect } from 'next/navigation'
+import { authenticatedActor, employeeAuthorized, isManagerRole } from '@/apps/auth/employee-guard'
 import { getCustomerProfile, getCustomerHistory, getVehicleServiceHistory, redactHistoryForEmployee } from '@/apps/directory/customer-profile'
 import CustomerDetail from './CustomerDetail'
 
@@ -8,6 +8,11 @@ export const dynamic = 'force-dynamic'
 
 export default async function CustomerPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
+
+  // Defense-in-depth: this page renders customer contact + history PII server-side. The proxy
+  // matcher gates it, but guard here too so a matcher gap can never expose a customer's data.
+  if (!(await employeeAuthorized())) redirect(`/auto-sales/login?next=${encodeURIComponent(`/customers/${id}`)}`)
+
   const profile = await getCustomerProfile(id)
   if (!profile) notFound()
 
