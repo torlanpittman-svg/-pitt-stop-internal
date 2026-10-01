@@ -274,3 +274,31 @@ export async function dealerInvoiceStatusForOrder(serviceOrderId: string): Promi
   const { mapInvoiceStatus } = await import('./attach-rules')
   return { status: mapInvoiceStatus(scan), invoiceNumber: scan?.qbInvoiceNumber ?? null }
 }
+
+/**
+ * Read-only LIVE verification: fetch the linked invoice back from QuickBooks and
+ * confirm the job's stock line is actually on it (proves the write, not just the
+ * DB linkage). Returns null when the job has no linked invoice yet.
+ */
+export async function verifyInvoiceLineForOrder(serviceOrderId: string): Promise<{
+  invoiceNumber: string | null
+  invoiceId: string | null
+  hasStockLine: boolean
+  matchedLine: string | null
+  lines: string[]
+} | null> {
+  const scan = await getScanByServiceOrderId(serviceOrderId)
+  if (!scan?.qbInvoiceNumber || !scan.dealershipId) return null
+  const dealers = await listDealerships(false)
+  const dealer = dealers.find((d) => d.id === scan.dealershipId)
+  if (!dealer?.qbCustomerId) return null
+  const invoices = await listInvoicesForCustomer(dealer.qbCustomerId)
+  const match = invoices.find((inv) => inv.docNumber === scan.qbInvoiceNumber)
+  if (!match) {
+    return { invoiceNumber: scan.qbInvoiceNumber, invoiceId: null, hasStockLine: false, matchedLine: null, lines: [] }
+  }
+  const lines = await getInvoiceLineDescriptions(match.id)
+  const token = scan.stockNumber ? `#${scan.stockNumber.trim().toUpperCase()}` : null
+  const matchedLine = token ? (lines.find((l) => l.toUpperCase().includes(token)) ?? null) : null
+  return { invoiceNumber: scan.qbInvoiceNumber, invoiceId: match.id, hasStockLine: Boolean(matchedLine), matchedLine, lines }
+}

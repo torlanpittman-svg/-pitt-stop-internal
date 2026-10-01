@@ -10,6 +10,7 @@ import SwipeRow from '@/app/components/SwipeRow'
 import { useVinDecode, type VinDecodeResult } from '@/app/hooks/useVinDecode'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import PartsSection from './PartsSection'
+import DealerInvoicePanel from './DealerInvoicePanel'
 
 // ── Status display config ─────────────────────────────────────────────────────
 
@@ -1639,6 +1640,11 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
           <p className="text-green-300 text-sm font-medium">{vehToast}</p>
         </div>
       )}
+
+      {/* Dealer invoice status + safe retry (manager/admin, dealer jobs). Lets a job
+          that reached the board without an invoice (manual/board entry, or a queued
+          check-in) be invoiced/retried idempotently — never a second job or line. */}
+      {isManager && isDealerOrder(order) && <DealerInvoicePanel orderId={order.id} />}
 
       {/* Notes — genuine notes only (not the auto-generated Quick Entry summary) */}
       {showNotes && (

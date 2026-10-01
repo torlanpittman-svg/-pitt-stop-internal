@@ -300,6 +300,15 @@ export default function DealerCheckInFlow() {
     setPhase('entry')
   }, [clearScanState])
 
+  // Manual entry — vehicles without a photographable key tag. Skip the camera/OCR
+  // entirely and go straight to the SAME editable review → confirm pipeline with
+  // blank fields (no image). Everything downstream — dealer resolve by stock prefix,
+  // pricing, duplicate check, invoice write — is identical to a scanned check-in.
+  const startManualEntry = useCallback(() => {
+    clearScanState(false)
+    setPhase('review')
+  }, [clearScanState])
+
   // ── Confirm and Send (the only production write) ────────────────────────────
   const rate = priceOverride.trim() !== ''
     ? Number(priceOverride)
@@ -409,6 +418,12 @@ export default function DealerCheckInFlow() {
             📷 Take Photo
           </button>
           <PhotoInput uploadOnly normalize={false} uploadLabel="⬆︎ Upload Photo" onCapture={(f) => processImage(f)} />
+          <div className="flex items-center gap-3 my-1">
+            <div className="h-px flex-1 bg-gray-800" /><span className="text-gray-600 text-xs uppercase tracking-widest">or</span><div className="h-px flex-1 bg-gray-800" />
+          </div>
+          <button onClick={startManualEntry} className="w-full h-16 rounded-2xl border border-gray-700 text-gray-200 text-lg font-semibold active:bg-gray-800">
+            ⌨︎ Enter Manually <span className="text-gray-500 text-sm font-normal">(no key tag)</span>
+          </button>
         </div>
       )}
 

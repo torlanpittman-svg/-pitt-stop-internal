@@ -12,7 +12,7 @@
  * explicit X-QB-Write-Approved: true header before any write. Never emails/sends.
  */
 import { NextResponse } from 'next/server'
-import { attachInvoiceForOrder, dealerInvoiceStatusForOrder } from '@/apps/dealer-checkin/attach-invoice'
+import { attachInvoiceForOrder, dealerInvoiceStatusForOrder, verifyInvoiceLineForOrder } from '@/apps/dealer-checkin/attach-invoice'
 import { getEnvironment } from '@/apps/quickbooks/config'
 import { employeeAuthorizedFromRequest, authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { logger } from '@/platform/logger'
@@ -65,8 +65,13 @@ export async function GET(req: Request) {
   if (!(await employeeAuthorizedFromRequest(req))) {
     return NextResponse.json({ ok: false, error: 'Sign in required' }, { status: 401 })
   }
-  const orderId = new URL(req.url).searchParams.get('orderId')
+  const url = new URL(req.url)
+  const orderId = url.searchParams.get('orderId')
   if (!orderId) return NextResponse.json({ ok: false, error: 'orderId is required' }, { status: 400 })
   const status = await dealerInvoiceStatusForOrder(orderId)
-  return NextResponse.json({ ok: true, serviceOrderId: orderId, ...status })
+  // ?verify=1 → also read the invoice back from QuickBooks and confirm the stock line.
+  const verify = url.searchParams.get('verify') === '1'
+    ? await verifyInvoiceLineForOrder(orderId)
+    : undefined
+  return NextResponse.json({ ok: true, serviceOrderId: orderId, ...status, ...(verify !== undefined ? { verify } : {}) })
 }
