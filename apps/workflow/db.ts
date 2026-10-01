@@ -245,6 +245,24 @@ export async function setOrderUrgent(orderId: string, urgent: boolean, actor: st
   return row
 }
 
+/**
+ * Append a line to a Job's free-text notes (space-pipe separated), preserving
+ * everything already there. Used to stamp a dealer invoice number onto an existing
+ * Job without touching status, timestamps, assignments, or progress.
+ */
+export async function appendOrderNote(orderId: string, text: string): Promise<ServiceOrderRow | null> {
+  const db = getDb()
+  const [existing] = await db.select({ notes: serviceOrders.notes }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
+  if (!existing) return null
+  const prior = (existing.notes ?? '').trim()
+  const next = prior ? `${prior} | ${text}` : text
+  const [row] = await db.update(serviceOrders)
+    .set({ notes: next, updatedAt: new Date() })
+    .where(eq(serviceOrders.id, orderId))
+    .returning()
+  return row ?? null
+}
+
 export async function findActiveOrderByVehicleId(vehicleId: string): Promise<ServiceOrderRow | null> {
   const db = getDb()
   const TERMINAL = ['delivered', 'cancelled', 'estimate']
