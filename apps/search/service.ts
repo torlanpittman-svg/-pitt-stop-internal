@@ -83,7 +83,7 @@ async function queryCustomers(p: ParsedQuery): Promise<RawCandidate[]> {
     return {
       category: 'customers',
       id: r.id,
-      href: null, // no standalone customer page — contact card w/ tap-to-call; jobs/vehicles are the navigable records
+      href: `/customers/${r.id}`, // opens the customer profile (contact + vehicles + history)
       title: name,
       subtitle: subParts.join(' · ') || '—',
       badge: r.customer_type || undefined,

@@ -9,7 +9,7 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 type ModuleGroup = 'Operations' | 'Sales' | 'Money'
-type IconKey = 'quick' | 'dealer' | 'board' | 'auto' | 'receipt' | 'estimate' | 'check'
+type IconKey = 'quick' | 'dealer' | 'board' | 'auto' | 'receipt' | 'estimate' | 'check' | 'customers'
 
 interface Module {
   href: string
@@ -27,6 +27,7 @@ const MODULES: Module[] = [
   { href: '/quick-entry', label: 'Quick Entry', sub: 'Customer + vehicle + services → Work Board in under a minute.', group: 'Operations', icon: 'quick' },
   { href: '/dealer-check-in', label: 'Dealer Check-In', sub: 'Scan a tag → confirm → done. Invoice + Work Board, automatically.', group: 'Operations', icon: 'dealer' },
   { href: '/work-board', label: 'Work Board', sub: 'Live vehicle workflow — check in, track status, assign techs.', group: 'Operations', icon: 'board' },
+  { href: '/customers', label: 'Customers', sub: 'Search a customer — contact, vehicles, and repair-order history.', group: 'Operations', icon: 'customers' },
   { href: '/auto-sales', label: 'Auto Sales Inventory', sub: 'Owned vehicles — scan a VIN, track costs, record the sale.', group: 'Sales', icon: 'auto' },
   { href: '/estimates', label: 'Estimates', sub: 'Quote a customer, send through QuickBooks, move approved work to the board.', group: 'Sales', icon: 'estimate', manager: true },
   { href: '/expenses', label: 'Receipts', sub: 'Snap a business receipt — a manager reviews and files it.', group: 'Money', icon: 'receipt' },
@@ -132,5 +133,7 @@ function ModuleIcon({ icon }: { icon: IconKey }): ReactNode {
       return <svg {...p}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M9 13h6M9 17h4" /></svg>
     case 'check':
       return <svg {...p}><rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h.01M18 12h.01" /><circle cx="12" cy="12" r="2" /></svg>
+    case 'customers':
+      return <svg {...p}><circle cx="9" cy="8" r="3.2" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0" /><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M18 20a5.5 5.5 0 0 0-3-4.9" /></svg>
   }
 }

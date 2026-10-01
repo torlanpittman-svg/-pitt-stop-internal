@@ -14,6 +14,7 @@ import { effectiveProductionDate, shopToday } from './production'
 import { shopTimezone } from './completion'
 import { removalEligibility, scanSyncStatusAfterRemoval } from './removal'
 import { getScanByServiceOrderId, updateScan, logScanEvent } from '@/apps/dealer-checkin/db'
+import { ordersWithWaitingParts } from '@/apps/parts/db'
 
 export type EmployeeRow             = typeof employees.$inferSelect
 export type LocationRow             = typeof locations.$inferSelect
@@ -26,6 +27,8 @@ export type OrderWithContext = ServiceOrderRow & {
   vehicle:     VehicleRow
   activeTechs: ServiceOrderAssignment[]
   recentEvents: ServiceOrderEvent[]
+  /** Additive Work Board signal: any outstanding (needed/ordered/partial) part. Never replaces status. */
+  partsWaiting?: boolean
 }
 
 // ── Status transition rules ────────────────────────────────────────────────────
@@ -189,6 +192,8 @@ export async function createServiceOrder(data: {
   services?:    string[]
   /** Card title: retail customer name or dealer name. Omitted → null (→ "Unknown Customer"). */
   customerName?: string | null
+  /** Canonical directory customer that authorized this repair (set when started from a profile). */
+  customerId?: string | null
   /** Operational urgency set at check-in (defaults Normal). Visual/sort only. */
   isUrgent?: boolean
 }): Promise<ServiceOrderRow> {
@@ -208,6 +213,7 @@ export async function createServiceOrder(data: {
       notes:       data.notes        ?? null,
       services:    data.services && data.services.length > 0 ? data.services : null,
       customerName: data.customerName?.trim() || null,
+      customerId:  data.customerId ?? null,
       isUrgent:    data.isUrgent ?? false,
       status:      'arrived',
       arrivedAt:   new Date(),
@@ -322,11 +328,15 @@ export async function listActiveOrders(): Promise<OrderWithContext[]> {
     if (list.length < 5) list.push(e)
   }
 
+  // Additive "waiting on parts" signal — does not change status/sort, just a card badge.
+  const waitingParts = await ordersWithWaitingParts(orderIds)
+
   return orders.map(o => ({
     ...o,
     vehicle:      vehicleMap[o.vehicleId]!,
     activeTechs:  activeTechMap[o.id] ?? [],
     recentEvents: eventMap[o.id]      ?? [],
+    partsWaiting: waitingParts.has(o.id),
   }))
 }
 

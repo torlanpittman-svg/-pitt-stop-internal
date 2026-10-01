@@ -179,6 +179,10 @@ export default function VehicleCard({
             {kind === 'dealer' && (
               <span className="text-[10px] font-semibold tracking-wider px-2 py-0.5 rounded-md bg-gray-800 text-gray-400 border border-gray-700">DEALER</span>
             )}
+            {/* Additive parts signal — the Job keeps its normal status; this just flags a blocked delivery. */}
+            {order.partsWaiting && (
+              <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30">WAITING ON PARTS</span>
+            )}
           </div>
           {/* Retail customer name → tap opens the contact popup (doesn't navigate). Dealer name is plain. */}
           {isDealer ? (

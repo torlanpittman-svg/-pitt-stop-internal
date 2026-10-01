@@ -9,6 +9,7 @@ import CustomerContactModal from '@/app/components/CustomerContactModal'
 import SwipeRow from '@/app/components/SwipeRow'
 import { useVinDecode, type VinDecodeResult } from '@/app/hooks/useVinDecode'
 import { isDealerOrder } from '@/apps/workflow/fees'
+import PartsSection from './PartsSection'
 
 // ── Status display config ─────────────────────────────────────────────────────
 
@@ -1674,6 +1675,11 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
         ) : (
           <p className="text-gray-600 text-sm italic">No services yet — tap ＋ Add Service.</p>
         )}
+      </div>
+
+      {/* Parts — purchasing & tracking against this repair order (separate from billing) */}
+      <div className="px-6 mb-6">
+        <PartsSection orderId={order.id} />
       </div>
 
       {/* Error banner */}

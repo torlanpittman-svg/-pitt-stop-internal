@@ -71,6 +71,12 @@ export const serviceOrders = pgTable(
     approvedPriceCents: integer('approved_price_cents'),
 
     notes:       text('notes'),
+    // Canonical customer directory link (apps/directory `customers.id`), set GOING FORWARD
+    // when a repair order is started from a customer profile. The actual FK is declared in
+    // migration 0043 (SQL only) to avoid a circular schema import with apps/directory. This
+    // is the person who AUTHORIZED the repair — which may differ from a vehicle's current
+    // owner (customer_vehicles). Null for legacy rows; matched by vehicle/phone/email at read.
+    customerId:  uuid('customer_id'),
     // Selected service labels for the Work Board card (Quick Entry: standard package
     // names + custom "Other" text). Display-only; null for legacy / non-Quick-Entry orders.
     services:    jsonb('services').$type<string[]>(),
@@ -99,6 +105,7 @@ export const serviceOrders = pgTable(
     index('service_orders_status_idx').on(t.status),
     index('service_orders_vehicle_idx').on(t.vehicleId),
     index('service_orders_created_idx').on(t.createdAt),
+    index('service_orders_customer_idx').on(t.customerId),
   ]
 )
 

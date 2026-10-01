@@ -22,9 +22,9 @@ function adminOk(request: NextRequest): boolean {
  * /production, etc. and carry no AI/write). /admin/* is NEVER here (it stays on ADMIN_PASSWORD).
  */
 function isEmployeeSurface(pathname: string): boolean {
-  const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in', '/orders', '/production', '/estimator', '/checks', '/expenses']
+  const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in', '/orders', '/production', '/estimator', '/checks', '/expenses', '/customers']
   if (pages.some((p) => pathname === p || pathname.startsWith(p + '/'))) return true
-  const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/', '/api/checks/', '/api/search', '/api/expenses/']
+  const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/', '/api/checks/', '/api/search', '/api/expenses/', '/api/customers/']
   if (apis.some((p) => pathname.startsWith(p)) || pathname === '/api/dealer-checkin') return true
   if (pathname === '/api/estimator/vin' || pathname === '/api/workflow/vin') return true
   return false
