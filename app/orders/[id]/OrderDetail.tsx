@@ -532,6 +532,8 @@ interface InvoiceDraftData {
   totalCents: number; role: string
   itemized: boolean
   serviceBreakdown: { title: string; cents: number }[]
+  pricingIncomplete: boolean
+  referenceCents: number | null
   qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sent: boolean; resendRecommended: boolean; sentAt: string | null }
 }
 interface SendPreview { ok: boolean; block?: string; recipient?: string | null; invoiceNumber?: string | null; draftTotalCents?: number; qbTotalCents?: number; error?: string }
@@ -765,6 +767,35 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
               </p>
             ) : (
               <>
+                {/* Incomplete itemized pricing → show the agreed amount as a reference and flag the
+                    total below as partial. Creating an invoice is blocked until pricing is finished. */}
+                {draft.pricingIncomplete && (
+                  <div className="rounded-xl border border-amber-800/70 bg-amber-950/30 px-4 py-3 mb-1">
+                    <p className="text-amber-300 text-sm font-semibold">Pricing incomplete</p>
+                    {draft.referenceCents != null && (
+                      <div className="mt-1 flex items-center justify-between text-sm">
+                        <span className="text-amber-200/80">Agreed amount (reference)</span>
+                        <span className="text-amber-100 font-bold tabular-nums">{money(draft.referenceCents)}</span>
+                      </div>
+                    )}
+                    <p className="text-amber-200/60 text-xs mt-2">Some services still need a price, so the total below is partial — not the agreed amount. Finish pricing every service in the Estimate before creating the invoice.</p>
+                  </div>
+                )}
+                {/* Complete, but the itemized total differs from the agreed amount and hasn't been
+                    accepted yet → show the difference; the manager must accept it in the Estimate. */}
+                {!draft.pricingIncomplete && draft.referenceCents != null && (
+                  <div className="rounded-xl border border-amber-800/70 bg-amber-950/30 px-4 py-3 mb-1">
+                    <p className="text-amber-300 text-sm font-semibold">Itemized work total differs from the agreed amount</p>
+                    {/* Both are pre-tax WORK prices (shop supplies / card / tax are added separately). */}
+                    <div className="mt-1 flex items-center justify-between text-sm">
+                      <span className="text-amber-200/80">Agreed work price</span><span className="text-amber-100 tabular-nums">{money(draft.referenceCents)}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-amber-200/80">Itemized work price</span><span className="text-amber-100 font-bold tabular-nums">{money(draft.workPriceCents)}</span>
+                    </div>
+                    <p className="text-amber-200/60 text-xs mt-2">Accept the itemized total in the Estimate (or adjust a service price) before creating the invoice.</p>
+                  </div>
+                )}
                 {/* Work — per-service breakdown (itemized) or a single Work total (flat) */}
                 {draft.serviceBreakdown.length > 0 ? (
                   <>
@@ -884,7 +915,12 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
                     )}
                   </div>
                   )
-                })() : qbEnabled ? (
+                })() : (draft.pricingIncomplete || draft.referenceCents != null) ? (
+                  <a href={`/orders/${orderId}/estimate`}
+                    className="mt-4 block w-full text-center text-white font-semibold text-base py-3.5 rounded-2xl bg-amber-600 active:opacity-80">
+                    {draft.pricingIncomplete ? 'Finish pricing in the Estimate →' : 'Resolve the total in the Estimate →'}
+                  </a>
+                ) : qbEnabled ? (
                   <div className="mt-4">
                     <button onClick={createQb} disabled={creating || busy}
                       className="w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
@@ -1063,6 +1099,13 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   // the action is Sync / Retry Sync / (needs review). All flags come from the Invoice Draft.
   const qb = draft?.qb
   const priced = !!draft?.priced
+  // Itemized breakdown started but not every service is priced → the total is a partial sum, not the
+  // agreed amount. Treat like "needs pricing" for invoicing and surface the agreed reference.
+  const pricingIncomplete = !!draft?.pricingIncomplete
+  // Complete, but the itemized work total still differs from the agreed reference (manager hasn't
+  // accepted it). Also blocks invoicing — the difference must be resolved in the Estimate first.
+  const referenceUnreconciled = !pricingIncomplete && draft?.referenceCents != null
+  const pricingUnfinalized = pricingIncomplete || referenceUnreconciled
   const linked = !!qb?.linked
   const isSent = !!qb?.sent
   const needsReview = !!qb?.needsReview
@@ -1096,8 +1139,26 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
               <p className="text-gray-400 text-sm">{draft?.vehicle || vehicleName}</p>
             </div>
 
-            {/* Total — authoritative Invoice Draft read model (no recalculation here) */}
-            {draft?.priced ? (
+            {/* Total — authoritative Invoice Draft read model (no recalculation here). When itemized
+                pricing is incomplete we DON'T present the partial sum as the total; we show the agreed
+                amount as a reference and flag that pricing must be finished. */}
+            {pricingIncomplete ? (
+              <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 px-4 py-3.5 mb-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-amber-300 font-semibold text-sm">Pricing incomplete</p>
+                  {draft?.referenceCents != null && <span className="text-amber-100 font-bold tabular-nums">{money(draft.referenceCents)} <span className="text-amber-300/70 text-xs font-normal">agreed</span></span>}
+                </div>
+                <p className="text-amber-200/60 text-xs mt-1">Some services still need a price. Finish pricing before invoicing — the partial total isn’t the agreed amount.</p>
+              </div>
+            ) : referenceUnreconciled ? (
+              <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 px-4 py-3.5 mb-4">
+                <p className="text-amber-300 font-semibold text-sm">Itemized total differs from agreed</p>
+                {/* pre-tax WORK prices — fees/tax are separate */}
+                <div className="mt-1 flex items-center justify-between text-sm"><span className="text-amber-200/80">Agreed work price</span><span className="text-amber-100 tabular-nums">{money(draft!.referenceCents!)}</span></div>
+                <div className="flex items-center justify-between text-sm"><span className="text-amber-200/80">Itemized work price</span><span className="text-amber-100 font-bold tabular-nums">{money(draft!.workPriceCents)}</span></div>
+                <p className="text-amber-200/60 text-xs mt-1">Accept the itemized total in the Estimate before invoicing.</p>
+              </div>
+            ) : draft?.priced ? (
               <div className="flex items-center justify-between rounded-xl bg-gray-800/60 px-4 py-3.5 mb-4">
                 <p className="text-white font-bold text-base">Total</p>
                 <span className="text-white font-bold text-lg tabular-nums">{money(draft.totalCents)}</span>
@@ -1167,10 +1228,12 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
                   )}
                   {sendErr && <p className="text-amber-400 text-sm mt-2">{sendErr}</p>}
                 </>
-              ) : !priced ? (
-                /* Not linked + unpriced → never create a $0/malformed invoice; go to Estimate. */
+              ) : !priced || pricingUnfinalized ? (
+                /* Not linked + unpriced OR partial itemized pricing OR itemized total not yet
+                   reconciled with the agreed amount → never create a $0/partial/unagreed invoice;
+                   send the manager back to resolve it in the Estimate. */
                 <>
-                  <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 text-amber-300 px-4 py-3 text-sm">Invoice needs pricing</div>
+                  <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 text-amber-300 px-4 py-3 text-sm">{pricingIncomplete ? 'Finish pricing every service before invoicing' : referenceUnreconciled ? 'Accept the itemized total (differs from agreed) before invoicing' : 'Invoice needs pricing'}</div>
                   <button onClick={() => router.push(`/orders/${orderId}/estimate`)}
                     className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80">
                     Edit Estimate

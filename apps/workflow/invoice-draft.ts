@@ -25,6 +25,11 @@ export interface InvoiceDraft {
   // Per-service price breakdown (itemized Jobs). Flat Jobs → empty until "Set prices".
   itemized: boolean
   serviceBreakdown: { title: string; cents: number }[]
+  // Itemized breakdown started but not every service is priced yet. When true the shown total is a
+  // partial running sum — NOT the agreed amount — so the invoice must not be created from it.
+  pricingIncomplete: boolean
+  // The agreed flat amount retained as a reference while itemizing is incomplete (else null).
+  referenceCents: number | null
   // Retail QuickBooks link state (P-D3.1/3.2/3.3). status: none|creating|created|sent|error|syncing.
   // `linked` = a QB invoice exists (invoice-id-first UI). `syncNeeded`/`needsReview` derive from
   // the qb_sync_error convention so the UI never parses raw error text.
@@ -73,6 +78,14 @@ export function buildInvoiceDraft(params: {
   // Dealer Jobs carry no retail draft. (Dealer billing stays in Dealer Check-In / QuickBooks.)
   const priced = !isDealer && !!full && workBasis > 0
 
+  // Itemized breakdown started but a service is still unpriced → the shown total is a partial sum,
+  // not the agreed amount. Keep the retained flat amount as a labeled reference (never present a
+  // $0/partial as final, and refuse to create a QB invoice from it — see createRetailQBInvoice).
+  const userServices = full ? full.services.filter((s) => s.source !== 'system') : []
+  const anyUnpriced = userServices.some((s) => !s.lines.some((l) => !l.generated))
+  const pricingIncomplete = !isDealer && !!est && est.priceMode === 'itemized' && userServices.length > 0 && anyUnpriced
+  const referenceCents = est && est.priceMode !== 'explicit_pretax' ? (est.explicitTotalCents ?? null) : null
+
   const base: InvoiceDraft = {
     priced, isDealer,
     customer: order.customerName?.trim() || null,
@@ -85,6 +98,8 @@ export function buildInvoiceDraft(params: {
     role,
     itemized: !!est && est.priceMode === 'itemized',
     serviceBreakdown: [],
+    pricingIncomplete,
+    referenceCents,
     qb: buildQbState(est),
   }
   if (!priced || !full || !est) return base

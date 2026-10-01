@@ -12,7 +12,7 @@ import {
   getOrCreateEstimate, getEstimateRow, getFullEstimate, recomputeEstimate,
   addService, updateService, removeService, addLine, updateLine, removeLine,
   setTaxRate, setStatus, setApproval, convertEstimate, type LineInput,
-  prepareEstimateView, getEstimateView, setServicePrice, setWorkTotal, itemizeEstimate, flagQbSyncNeededIfInvoiced,
+  prepareEstimateView, getEstimateView, setServicePrice, setWorkTotal, itemizeEstimate, acceptItemizedTotal, flagQbSyncNeededIfInvoiced,
 } from '@/apps/workflow/estimate-db'
 import type { ApprovalState, EstimateStatus } from '@/apps/workflow/estimate'
 
@@ -71,6 +71,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         await flagQbSyncNeededIfInvoiced(id, 'pricing changed')
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
+      case 'accept_total': {
+        // Manager accepts a complete itemized breakdown whose sum differs from the agreed reference.
+        await acceptItemizedTotal(await estimateId(), actor)
+        await flagQbSyncNeededIfInvoiced(id, 'the itemized total was accepted')
+        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
+      }
       case 'add_service': {
         // Custom service (optionally with a price). A priced add itemizes; a name-only add
         // on a flat Job leaves it flat.
@@ -101,7 +107,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (order.status === 'estimate') {
       // Standalone quotes use the dedicated conversion and email routes. All edits share
       // the same lock as send/conversion so a customer cannot receive a half-edited quote.
-      const allowed = ['build', 'prepare', 'set_service_price', 'set_work_total', 'itemize', 'add_service', 'remove_service']
+      const allowed = ['build', 'prepare', 'set_service_price', 'set_work_total', 'itemize', 'accept_total', 'add_service', 'remove_service']
       if (!allowed.includes(action)) return NextResponse.json({ error: 'Use the estimate actions to send or move this estimate.' }, { status: 400 })
       return await withIntakeLock(id, async () => {
         if ((await getOrderWithContext(id))?.status !== 'estimate') throw new Error('This estimate has moved to the Work Board. Refresh before editing.')

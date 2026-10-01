@@ -11,7 +11,6 @@ import {
   type LineType, type ApprovalState, type EstimateStatus, type TaxCategory,
 } from './estimate'
 import { computeFees, eligibleBasisCents, reconcilePlan, explicitPretaxTotals, effectiveFeeConfig, isDealerOrder, FEE_TAX_CATEGORY, type FeeCode } from './fees'
-import { allocateProportional } from './allocate'
 import { getBusinessConfig } from '@/apps/settings/db'
 import { suggestedPricesForTitles } from '@/apps/quick-entry/db'
 
@@ -227,24 +226,73 @@ async function upsertServicePrice(service: JobServiceRow, cents: number): Promis
   if (existing) await updateLine(existing.id, { priceCents: price, qty: 1 })
   else await addLine(service.id, { name: service.title, priceCents: price, ...DETAIL_LINE })
 }
-/** Flip the estimate to itemized mode (lines become authoritative; flat total dropped). */
-async function setItemizedMode(estimateId: string): Promise<void> {
-  await getDb().update(jobEstimates).set({ priceMode: 'itemized', explicitTotalCents: null, updatedAt: new Date() }).where(eq(jobEstimates.id, estimateId))
+/**
+ * Flip the estimate to itemized mode. By default the flat Work Total (explicit_total_cents) is
+ * RETAINED as a labeled reference so an agreed amount is never silently dropped to $0/partial while
+ * the per-service breakdown is still incomplete. Pass dropReference=true once every service is
+ * priced (a complete breakdown is authoritative on its own and no longer needs the reference).
+ */
+async function setItemizedMode(estimateId: string, dropReference = false): Promise<void> {
+  await getDb().update(jobEstimates).set({
+    priceMode: 'itemized',
+    ...(dropReference ? { explicitTotalCents: null } : {}),
+    updatedAt: new Date(),
+  }).where(eq(jobEstimates.id, estimateId))
 }
 
-/** Convert a flat (explicit_pretax) Job into itemized by allocating its Work Total across
- *  services (weighted by catalog suggestion; even split if none). Basis-preserving. */
-async function itemizeFromFlat(estimateId: string, actor: string | null): Promise<void> {
-  void actor
-  const [est] = await getDb().select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
-  const total = est?.explicitTotalCents ?? 0
+/** Every user (non-system) service has a price line → a complete itemized breakdown. A line with
+ *  an explicit $0 counts as PRICED (a free service); only a service with no line at all is unpriced. */
+async function isItemizationComplete(estimateId: string): Promise<boolean> {
   const services = await listUserServices(estimateId)
-  if (services.length === 0) { await setItemizedMode(estimateId); return }
-  const sugg = await suggestedPricesForTitles(services.map((s) => s.title))
-  const weights = services.map((s) => sugg[s.title.trim().toLowerCase()] ?? 0)
-  const alloc = allocateProportional(total, weights)
-  for (let i = 0; i < services.length; i++) await upsertServicePrice(services[i], alloc[i])
-  await setItemizedMode(estimateId)
+  if (services.length === 0) return false
+  for (const s of services) if (!(await getServicePriceLine(s.id))) return false
+  return true
+}
+
+/** Sum of the per-service (non-generated) price lines. */
+async function sumUserServiceLines(estimateId: string): Promise<number> {
+  const services = await listUserServices(estimateId)
+  let sum = 0
+  for (const s of services) { const l = await getServicePriceLine(s.id); if (l) sum += lineAmountCents(l.priceCents, l.qty) }
+  return sum
+}
+
+/**
+ * Move to itemized mode after a per-service price edit. The retained flat amount (reference) is:
+ *  - KEPT while any service is still unpriced (incomplete → shown as the agreed reference); and
+ *  - KEPT when the breakdown is complete but its sum DIFFERS from the reference, so the manager is
+ *    shown the difference and must accept the itemized total (see acceptItemizedTotal) — completing
+ *    itemization never silently replaces the agreed amount with a different total; and
+ *  - DROPPED only when complete and the itemized sum already equals the reference (nothing to
+ *    reconcile), or when there was no reference to begin with.
+ * Never fabricates or redistributes a price.
+ */
+async function syncItemizationState(estimateId: string): Promise<void> {
+  if (!(await isItemizationComplete(estimateId))) { await setItemizedMode(estimateId, false); return }
+  const [est] = await getDb().select({ ref: jobEstimates.explicitTotalCents }).from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
+  const ref = est?.ref ?? null
+  const matches = ref == null || ref === (await sumUserServiceLines(estimateId))
+  await setItemizedMode(estimateId, matches)   // drop the reference only when there is nothing to reconcile
+}
+
+/**
+ * Switch a flat (explicit_pretax) Job to itemized mode.
+ *
+ * We intentionally do NOT fabricate a per-service split from the flat Work Total. The previous
+ * behaviour allocated that total across services weighted by catalog suggestion — which silently
+ * redistributed money: services with no catalog match got weight 0 and were ZEROED, and the whole
+ * total was lumped onto the matched one(s). That is the reported "several line prices become $0 and
+ * another shows $500–$600 by itself" corruption (the total stayed correct, so it looked fine at a
+ * glance).
+ *
+ * Switching modes leaves each service unpriced for the manager to enter (catalog suggestions still
+ * appear as tap-to-fill hints in the view). The flat amount is RETAINED as a reference
+ * (explicit_total_cents) and surfaced clearly as "agreed reference" in the view/invoice while the
+ * breakdown is incomplete — so we never silently replace an agreed amount with a $0/partial total.
+ * The reference is dropped only once every service is priced. No money is ever moved between services.
+ */
+async function itemizeFromFlat(estimateId: string): Promise<void> {
+  await setItemizedMode(estimateId)   // retain the flat amount as a reference (not complete yet)
 }
 
 /** Seed suggested prices for a TRULY fresh Job (itemized, no flat total, zero saved service
@@ -262,9 +310,23 @@ export async function seedSuggestedPrices(estimateId: string): Promise<void> {
   }
 }
 
-/** Explicitly break a flat Job into per-service prices at its current Work Total. */
+/** Explicitly switch a flat Job to itemized so the manager can enter per-service prices. */
 export async function itemizeEstimate(estimateId: string, actor: string | null): Promise<void> {
-  await itemizeFromFlat(estimateId, actor)
+  void actor
+  await itemizeFromFlat(estimateId)
+  await recomputeEstimate(estimateId)
+}
+
+/**
+ * Manager acknowledges that a COMPLETE itemized breakdown is the total, accepting any difference from
+ * the agreed reference. Drops the retained reference (so the itemized sum stands on its own). No-op
+ * while still incomplete — the agreed amount is never dropped until every service is priced. Never
+ * changes a service price.
+ */
+export async function acceptItemizedTotal(estimateId: string, actor: string | null): Promise<void> {
+  void actor
+  if (!(await isItemizationComplete(estimateId))) return
+  await getDb().update(jobEstimates).set({ explicitTotalCents: null, updatedAt: new Date() }).where(eq(jobEstimates.id, estimateId))
   await recomputeEstimate(estimateId)
 }
 
@@ -272,39 +334,63 @@ export async function itemizeEstimate(estimateId: string, actor: string | null):
  *  flat Job (never on mere viewing). Recomputes fees/tax through the single engine. */
 export async function setServicePrice(estimateId: string, serviceId: string, cents: number, actor: string | null): Promise<void> {
   const [est] = await getDb().select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
-  if (est?.priceMode === 'explicit_pretax' && est.explicitTotalCents != null) await itemizeFromFlat(estimateId, actor)
+  // Editing one price on a flat Job switches it to itemized WITHOUT fabricating the other
+  // services' prices (they stay blank for the manager to enter) — never a catalog-weighted split.
+  if (est?.priceMode === 'explicit_pretax' && est.explicitTotalCents != null) await itemizeFromFlat(estimateId)
+  void actor
   const [svc] = await getDb().select().from(jobServices).where(eq(jobServices.id, serviceId)).limit(1)
   if (svc) await upsertServicePrice(svc, cents)
-  await setItemizedMode(estimateId)
+  await syncItemizationState(estimateId)   // itemized; drop the flat reference only once complete
   await recomputeEstimate(estimateId)
 }
 
-/** Set the authoritative Work Total. Flat Job → stays flat (explicit_pretax). Itemized Job
- *  with lines → proportionally reallocate so the visible prices sum EXACTLY to the total. */
+/**
+ * Set the authoritative Work Total.
+ *  - Flat Job, or a fresh itemized Job with NO priced services yet → store it as the flat
+ *    explicit_pretax total (a quick single-number price).
+ *  - Itemized Job that ALREADY has per-service prices → the Work Total is DERIVED from those
+ *    prices; it is not separately authoritative. We do NOT reallocate the entered number across
+ *    services. The old behaviour proportionally scaled every line (and, when only some services
+ *    were priced, lumped the whole total onto those few) — a silent redistribution of money the
+ *    manager never typed. To change the total now, edit the individual service prices; the UI
+ *    shows the itemized Work Total read-only for exactly this reason.
+ */
 export async function setWorkTotal(estimateId: string, cents: number, actor: string | null): Promise<void> {
   const [est] = await getDb().select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
   const services = await listUserServices(estimateId)
-  const lines: { service: JobServiceRow; line: JobLineRow }[] = []
-  for (const s of services) { const l = await getServicePriceLine(s.id); if (l) lines.push({ service: s, line: l }) }
-  if (est?.priceMode === 'itemized' && lines.length > 0) {
-    const weights = lines.map(({ line }) => lineAmountCents(line.priceCents, line.qty))
-    const alloc = allocateProportional(cents, weights)
-    for (let i = 0; i < lines.length; i++) await updateLine(lines[i].line.id, { priceCents: Math.max(0, alloc[i]), qty: 1 })
-    await setItemizedMode(estimateId)
-  } else {
-    await setExplicitPrice(estimateId, cents, actor)   // flat stays flat / fresh-no-lines becomes flat
+  let hasPricedLine = false
+  for (const s of services) {
+    const l = await getServicePriceLine(s.id)
+    if (l && lineAmountCents(l.priceCents, l.qty) > 0) { hasPricedLine = true; break }
   }
+  if (est?.priceMode === 'itemized' && hasPricedLine) {
+    // Derived total — ignore the override so per-service prices are never silently redistributed.
+    await recomputeEstimate(estimateId)
+    return
+  }
+  await setExplicitPrice(estimateId, cents, actor)   // flat, or fresh-no-lines → flat single price
   await recomputeEstimate(estimateId)
 }
 
 /** A clean view for the mobile Estimate page — title + price per service, plus the one
  *  authoritative Work Total. Hides line types / cost / tax / approval entirely. */
 export interface EstimateServiceView { id: string; title: string; priceCents: number | null; suggestedCents: number | null }
-export interface EstimateView { exists: boolean; flat: boolean; workTotalCents: number; services: EstimateServiceView[] }
+export interface EstimateView {
+  exists: boolean
+  flat: boolean
+  workTotalCents: number
+  services: EstimateServiceView[]
+  /** Itemized breakdown started but not every service is priced yet. When true the itemized
+   *  workTotalCents is only a partial running sum — not the agreed amount. */
+  incomplete: boolean
+  /** The agreed flat amount retained as a reference while itemizing is incomplete (null if the Job
+   *  never had a flat price, or once the breakdown is complete). Shown clearly as "agreed reference". */
+  referenceCents: number | null
+}
 
 export async function getEstimateView(orderId: string): Promise<EstimateView> {
   const full = await getFullEstimate(orderId)
-  if (!full) return { exists: false, flat: false, workTotalCents: 0, services: [] }
+  if (!full) return { exists: false, flat: false, workTotalCents: 0, services: [], incomplete: false, referenceCents: null }
   const est = full.estimate
   const services = full.services.filter((s) => s.source !== 'system')
   const sugg = await suggestedPricesForTitles(services.map((s) => s.title))
@@ -318,7 +404,11 @@ export async function getEstimateView(orderId: string): Promise<EstimateView> {
   })
   const flat = est.priceMode === 'explicit_pretax' && est.explicitTotalCents != null
   const eligible = views.reduce((sum, v) => sum + (v.priceCents ?? 0), 0)
-  return { exists: true, flat, workTotalCents: flat ? est.explicitTotalCents! : eligible, services: views }
+  // Itemized but some service still unpriced → incomplete. Surface the retained flat amount as a
+  // labeled reference so the UI never presents the partial sum as the agreed total.
+  const incomplete = !flat && views.length > 0 && views.some((v) => v.priceCents == null)
+  const referenceCents = !flat ? (est.explicitTotalCents ?? null) : null
+  return { exists: true, flat, workTotalCents: flat ? est.explicitTotalCents! : eligible, services: views, incomplete, referenceCents }
 }
 
 /** Page entry: ensure the estimate exists, mirror the Job's services, seed suggestions for a
