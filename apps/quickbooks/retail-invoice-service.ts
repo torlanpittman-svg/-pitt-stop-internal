@@ -113,6 +113,12 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
   const [full, cfg] = await Promise.all([getFullEstimate(orderId), getBusinessConfig()])
   const draft = buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: 'admin' })
   if (!draft.priced) return { ok: false, status: 'refused', error: 'Add a Work Price before invoicing.' }
+  // Never invoice a partial itemized breakdown: some services are still unpriced, so the total is a
+  // running sum, not the agreed amount. Finish pricing every service (or use a flat Work Price).
+  if (draft.pricingIncomplete) return { ok: false, status: 'refused', error: 'Finish pricing every service (or set a flat Work Price) before invoicing.' }
+  // Complete, but the itemized sum still differs from the agreed reference and the manager has not
+  // accepted the new total yet — don't silently invoice a total that differs from what was agreed.
+  if (draft.referenceCents != null) return { ok: false, status: 'refused', error: 'The itemized total differs from the agreed amount. Accept the itemized total in the Estimate before invoicing.' }
 
   // (2) Compare-and-set lock — only one creator proceeds.
   const locked = await db.update(jobEstimates)
