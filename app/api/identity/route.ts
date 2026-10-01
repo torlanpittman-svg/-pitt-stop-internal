@@ -10,7 +10,8 @@
  * Admin AREA (/admin/*) stays behind ADMIN_PASSWORD (proxy.ts) — never unlocked here.
  */
 import { NextResponse } from 'next/server'
-import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
+import { authenticatedActorFromRequest, isManagerRole } from '@/apps/auth/employee-guard'
+import { partsVisibleFor } from '@/apps/parts/visibility'
 import { identityEnabled } from '@/apps/workflow/identity'
 import { completionEnabled } from '@/apps/workflow/completion'
 import { estimateEnabled } from '@/apps/workflow/estimate'
@@ -31,6 +32,8 @@ export async function GET(req: Request) {
     completionEnabled: completionEnabled(),
     estimateEnabled: estimateEnabled(),
     completionInvoiceEnabled: await completionInvoiceEnabled(),
+    // Reversible rollout gate: managers/admins always see parts; employees only once the flag is on.
+    partsVisible: partsVisibleFor(isManagerRole(actor?.role)),
   })
 }
 

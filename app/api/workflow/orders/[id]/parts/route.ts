@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { authenticatedActorFromRequest, isManagerRole } from '@/apps/auth/employee-guard'
+import { employeeAuthorizedFromRequest, shopActorFromRequest, isManagerRole } from '@/apps/auth/employee-guard'
+import { partsVisibleFor } from '@/apps/parts/visibility'
 import {
   listPartsForOrder,
   addPart,
@@ -22,19 +23,39 @@ function redact(parts: Part[], manager: boolean): Part[] {
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const actor = await authenticatedActorFromRequest(req)
-  if (!actor) return NextResponse.json({ ok: false, error: 'Sign in required' }, { status: 401 })
+  // Gate on a VALID employee session (individual OR legacy shared-PIN), matching every other shop tool.
+  // A shared-PIN session is anonymous (no resolved actor) but still authorized — treat it as an employee.
+  if (!(await employeeAuthorizedFromRequest(req))) {
+    return NextResponse.json({ ok: false, error: 'Sign in required' }, { status: 401 })
+  }
   const { id } = await params
-  const manager = isManagerRole(actor.role)
+  const actor = await shopActorFromRequest(req)
+  const manager = isManagerRole(actor?.role)
+  // Reversible rollout gate: until parts ships to employees, a non-manager sees nothing (data is
+  // preserved in the DB, just not surfaced). Managers/admins always see it so they can test.
+  if (!partsVisibleFor(manager)) {
+    return NextResponse.json({ ok: true, parts: [], manager: false, visible: false })
+  }
   const parts = await listPartsForOrder(id)
-  return NextResponse.json({ ok: true, parts: redact(parts, manager), manager })
+  return NextResponse.json({ ok: true, parts: redact(parts, manager), manager, visible: true })
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const actor = await authenticatedActorFromRequest(req)
-  if (!actor) return NextResponse.json({ ok: false, error: 'Sign in required' }, { status: 401 })
+  // Same gate as GET: any valid employee session may record parts. Manager-only fields/actions (cost,
+  // sell price, credits, bill-to-invoice) are enforced below via `manager`, which requires a resolved
+  // manager role — an anonymous shared-PIN session is an employee and cannot set or see those.
+  if (!(await employeeAuthorizedFromRequest(req))) {
+    return NextResponse.json({ ok: false, error: 'Sign in required' }, { status: 401 })
+  }
   const { id } = await params
-  const manager = isManagerRole(actor.role)
+  const actor = await shopActorFromRequest(req)
+  const manager = isManagerRole(actor?.role)
+  const actorName = actor?.name ?? 'Employee'
+  // Same rollout gate as GET: while parts are hidden from employees, they cannot mutate them either
+  // (keeps a manual-first parts workflow off employees' phones until the permanent flow ships).
+  if (!partsVisibleFor(manager)) {
+    return NextResponse.json({ ok: false, error: 'Parts are not available yet.' }, { status: 403 })
+  }
   const body = await req.json().catch(() => ({})) as Record<string, unknown>
   const action = String(body.action ?? '')
 
@@ -61,7 +82,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           sellPriceCents: manager ? intOrNull(body.sellPriceCents) : null,
           isCore: body.isCore === true,
           notes: str(body.notes),
-          actor: actor.name,
+          actor: actorName,
         })
         break
       }
@@ -76,7 +97,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           sellPriceCents: manager && body.sellPriceCents !== undefined ? intOrNull(body.sellPriceCents) : undefined,
           isCore: body.isCore !== undefined ? body.isCore === true : undefined,
           notes: body.notes !== undefined ? str(body.notes) : undefined,
-          actor: actor.name,
+          actor: actorName,
         })
         break
       }
@@ -85,13 +106,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           supplier: str(body.supplier),
           supplierOrderNumber: str(body.supplierOrderNumber),
           expectedArrival: str(body.expectedArrival),
-          actor: actor.name,
+          actor: actorName,
         })
         if (!r.ok) return NextResponse.json(r, { status: 400 })
         break
       }
       case 'receive': {
-        const r = await receivePart(partId!, posNum(body.receiveQuantity, 0), actor.name)
+        const r = await receivePart(partId!, posNum(body.receiveQuantity, 0), actorName)
         if (!r.ok) return NextResponse.json(r, { status: 400 })
         break
       }
@@ -101,18 +122,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           returnCreditCents: manager ? intOrNull(body.returnCreditCents) : null,
           isCore: body.isCore === true ? true : undefined,
           coreCreditCents: manager ? intOrNull(body.coreCreditCents) : null,
-          actor: actor.name,
+          actor: actorName,
         })
         if (!r.ok) return NextResponse.json(r, { status: 400 })
         break
       }
       case 'cancel': {
-        await cancelPart(partId!, actor.name)
+        await cancelPart(partId!, actorName)
         break
       }
       case 'bill': {
         if (!manager) return NextResponse.json({ ok: false, error: 'Managers only.' }, { status: 403 })
-        const r = await billPart(partId!, actor.name)
+        const r = await billPart(partId!, actorName)
         if (!r.ok) return NextResponse.json(r, { status: 400 })
         break
       }

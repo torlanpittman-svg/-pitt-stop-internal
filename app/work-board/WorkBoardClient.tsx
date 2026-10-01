@@ -175,6 +175,7 @@ export default function WorkBoardClient({
               order={order}
               highlighted={order.id === highlightId}
               removable={isManager && tab === 'active'}
+              showPartsBadge={identity.partsVisible}
               onRemoved={handleRemoved}
             />
           ))

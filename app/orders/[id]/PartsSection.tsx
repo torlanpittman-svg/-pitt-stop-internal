@@ -43,6 +43,7 @@ function dollarsToCents(s: string): number | null {
 export default function PartsSection({ orderId }: { orderId: string }) {
   const [parts, setParts] = useState<Part[]>([])
   const [manager, setManager] = useState(false)
+  const [visible, setVisible] = useState(true)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -56,6 +57,7 @@ export default function PartsSection({ orderId }: { orderId: string }) {
       .then((d) => {
         if (!ok) return
         if (!d.ok) { setErr(d.error || 'Could not load parts.'); return }
+        if (d.visible === false) { setVisible(false); return }
         setParts(d.parts); setManager(!!d.manager); setErr(null)
       })
       .catch(() => { if (ok) setErr('Network error loading parts.') })
@@ -78,6 +80,10 @@ export default function PartsSection({ orderId }: { orderId: string }) {
   }, [orderId])
 
   const waitingCount = parts.filter((p) => p.waiting).length
+
+  // Backstop for the reversible rollout gate: if the server says parts aren't visible to this viewer,
+  // render nothing (OrderDetail also gates mounting; this covers any direct mount). Data is preserved.
+  if (!visible) return null
 
   return (
     <div>

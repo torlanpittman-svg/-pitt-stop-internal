@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { signEmployeeSession, EMP_COOKIE, type AuthedActor } from './employee-session'
-import { authenticatedActorFromRequest, employeeAuthorizedFromRequest, isManagerRole, strictManagerDecision, authorizedManagerStrictFromRequest } from './employee-guard'
+import { authenticatedActorFromRequest, employeeAuthorizedFromRequest, isManagerRole, strictManagerDecision, authorizedManagerStrictFromRequest, shopActorFromRequest } from './employee-guard'
 
 const OLD = { ...process.env }
 beforeEach(() => {
@@ -105,6 +105,29 @@ describe('authorizedManagerStrictFromRequest — end-to-end with signed sessions
   it('a forged actor cookie cannot escalate to a manager', async () => {
     const forged = new Request('https://x/api', { headers: { cookie: 'ps_actor=' + encodeURIComponent(JSON.stringify({ id: 'x', name: 'Mallory', role: 'manager' })) } })
     expect(await authorizedManagerStrictFromRequest(forged)).toBeNull()
+  })
+})
+
+describe('shopActorFromRequest — shop-surface identity without locking out shared-PIN devices', () => {
+  // Regression: the Parts API once gated on authenticatedActorFromRequest(), which is null for an
+  // anonymous legacy shared-PIN session — so a signed-in shared-PIN employee got 401 "Sign in required"
+  // on parts while every other tool worked. The shop surface must authorize any VALID session and treat
+  // the anonymous case as a plain employee (manager-only fields still require a resolved manager).
+  it('passes a resolved manager through unchanged', async () => {
+    const req = await reqWithSession({ key: 'torlan', name: 'Torlan', role: 'manager' })
+    expect(await shopActorFromRequest(req)).toEqual({ key: 'torlan', name: 'Torlan', role: 'manager' })
+  })
+  it('an anonymous shared-PIN session is AUTHORIZED but resolves to no actor (a plain employee)', async () => {
+    const req = await reqWithSession(null)
+    expect(await employeeAuthorizedFromRequest(req)).toBe(true) // the gate the route uses: admitted
+    expect(await shopActorFromRequest(req)).toBeNull()          // employee, not manager; not a 401
+    expect(isManagerRole((await shopActorFromRequest(req))?.role)).toBe(false)
+  })
+  it('falls back to a dev-open manager when NO employee gate is configured (local testability)', async () => {
+    delete process.env.PIN_DARRYL
+    delete process.env.EMPLOYEE_PIN
+    const req = new Request('https://x/api', { headers: {} })
+    expect(await shopActorFromRequest(req)).toEqual({ key: 'dev', name: 'Dev (open)', role: 'manager' })
   })
 })
 

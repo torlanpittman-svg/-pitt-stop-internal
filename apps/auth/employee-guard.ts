@@ -65,6 +65,23 @@ export async function authenticatedActor(): Promise<AuthedActor | null> {
 // flows are testable locally, and audit attribution is never blank. Never occurs in production (PINs set).
 const DEV_MANAGER_ACTOR: AuthedActor = { key: 'dev', name: 'Dev (open)', role: 'manager' }
 
+/**
+ * Request variant of the shop-surface identity for handlers that gate on employeeAuthorizedFromRequest()
+ * (a VALID session, individual OR legacy-shared) and then need WHO for role + attribution. Returns the
+ * signed-in identity; or the dev-open manager when no gate is configured (local testability parity with
+ * authorizedManager()); or null for an authenticated-but-ANONYMOUS legacy shared-PIN session. A null here
+ * means "authorized plain employee", NOT unauthenticated — callers must have confirmed authorization
+ * separately. This keeps the shop surface from being stricter for shared-PIN devices than every other
+ * employee tool (which only require a valid session), while manager-only fields still require a resolved
+ * manager role.
+ */
+export async function shopActorFromRequest(req: Request): Promise<AuthedActor | null> {
+  const actor = await authenticatedActorFromRequest(req)
+  if (actor) return actor
+  if (!employeeAuthConfigured()) return DEV_MANAGER_ACTOR
+  return null
+}
+
 /** True for operational managers and admins (admin ⊇ manager). */
 export function isManagerRole(role: EmployeeRole | null | undefined): boolean {
   return role === 'manager' || role === 'admin'

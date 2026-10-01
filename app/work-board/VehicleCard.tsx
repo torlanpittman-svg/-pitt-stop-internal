@@ -90,12 +90,15 @@ export default function VehicleCard({
   order,
   highlighted = false,
   removable = false,
+  showPartsBadge = false,
   onRemoved,
 }: {
   order: OrderWithContext
   highlighted?: boolean
   /** Manager/admin on the Active tab → allow swipe-to-remove. */
   removable?: boolean
+  /** Reversible rollout gate: show the WAITING ON PARTS badge (managers always; employees only when on). */
+  showPartsBadge?: boolean
   onRemoved?: (orderId: string) => void
 }) {
   const { vehicle } = order
@@ -179,8 +182,9 @@ export default function VehicleCard({
             {kind === 'dealer' && (
               <span className="text-[10px] font-semibold tracking-wider px-2 py-0.5 rounded-md bg-gray-800 text-gray-400 border border-gray-700">DEALER</span>
             )}
-            {/* Additive parts signal — the Job keeps its normal status; this just flags a blocked delivery. */}
-            {order.partsWaiting && (
+            {/* Additive parts signal — the Job keeps its normal status; this just flags a blocked delivery.
+                Gated by the reversible rollout flag so employees don't see it until parts ships to them. */}
+            {order.partsWaiting && showPartsBadge && (
               <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30">WAITING ON PARTS</span>
             )}
           </div>

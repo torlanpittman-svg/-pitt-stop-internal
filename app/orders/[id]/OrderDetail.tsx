@@ -1677,10 +1677,14 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
         )}
       </div>
 
-      {/* Parts — purchasing & tracking against this repair order (separate from billing) */}
-      <div className="px-6 mb-6">
-        <PartsSection orderId={order.id} />
-      </div>
+      {/* Parts — purchasing & tracking against this repair order (separate from billing). Gated by the
+          reversible rollout flag: managers/admins always; employees only once PARTS_EMPLOYEE_VISIBLE is
+          on. Hidden by default until the permanent PartsTech-backed Find-Parts flow ships. */}
+      {identity.partsVisible && (
+        <div className="px-6 mb-6">
+          <PartsSection orderId={order.id} />
+        </div>
+      )}
 
       {/* Error banner */}
       {error && (
