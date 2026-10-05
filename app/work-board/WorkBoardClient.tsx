@@ -77,6 +77,9 @@ export default function WorkBoardClient({
     setOrders((prev) => prev.filter((o) => o.id !== orderId))
     void refresh()
   }, [refresh])
+  // Moving a vehicle to Estimates also leaves the board (status becomes 'estimate'). Drop it
+  // immediately so the card disappears and the counts update, then reconcile with the server.
+  const handleMoved = handleRemoved
 
   const counts = {
     active: orders.filter(o => isActiveWorkStatus(o.status)).length,
@@ -175,8 +178,10 @@ export default function WorkBoardClient({
               order={order}
               highlighted={order.id === highlightId}
               removable={isManager && tab === 'active'}
+              movable={isManager && tab === 'active'}
               showPartsBadge={identity.partsVisible}
               onRemoved={handleRemoved}
+              onMoved={handleMoved}
             />
           ))
         )}

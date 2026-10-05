@@ -8,7 +8,8 @@ import NavHeader from '@/app/components/NavHeader'
 import CustomerContactModal from '@/app/components/CustomerContactModal'
 import SwipeRow from '@/app/components/SwipeRow'
 import { useVinDecode, type VinDecodeResult } from '@/app/hooks/useVinDecode'
-import { isDealerOrder } from '@/apps/workflow/fees'
+import { isDealerOrder, orderSourceKind } from '@/apps/workflow/fees'
+import type { MovePreview } from '@/apps/estimates/move-to-estimates'
 import PartsSection from './PartsSection'
 import DealerInvoicePanel from './DealerInvoicePanel'
 import OrderPhotos from '@/app/components/OrderPhotos'
@@ -1407,8 +1408,24 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
   const [showInvoice, setShowInvoice] = useState(false)   // Invoice Draft (manager/admin)
   const [showContact, setShowContact] = useState(false)   // customer contact popup (all staff)
   const [summaryOpen, setSummaryOpen] = useState(false)   // Phase A: post-Finish billing handoff
+  const [confirmMove, setConfirmMove] = useState(false)      // move-to-estimates confirm sheet
+  const [moveBusy, setMoveBusy] = useState(false)
+  const [movePreview, setMovePreview] = useState<MovePreview | null>(null)
+  const [movePreviewLoading, setMovePreviewLoading] = useState(false)
   const identity = useIdentity()
   const isManager = identity.effectiveRole === 'manager' || identity.effectiveRole === 'admin'
+
+  // Open the Move-to-Estimates sheet and fetch the live preview (what will happen, or why it's blocked).
+  const openMoveConfirm = useCallback(async () => {
+    setError(null); setMovePreview(null); setMovePreviewLoading(true); setConfirmMove(true)
+    try {
+      const r = await fetch(`/api/workflow/orders/${order.id}/move-to-estimates`, { cache: 'no-store' })
+      const d = await r.json().catch(() => null)
+      if (r.ok && d?.ok && d.preview) setMovePreview(d.preview as MovePreview)
+      else if (d?.error) setError(d.error)
+    } catch { /* preview is best-effort; the POST re-checks and fails closed if needed */ }
+    finally { setMovePreviewLoading(false) }
+  }, [order.id])
 
   const { vehicle } = order
   const statusCfg   = STATUS_CONFIG[order.status] ?? { label: order.status, color: 'text-gray-400' }
@@ -1746,6 +1763,14 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
             <a href={`/orders/${order.id}/estimate`} className="inline-block text-blue-400 text-sm font-semibold active:opacity-70 mb-4">Build / Edit Estimate →</a>
           )}
 
+          {/* Move to Estimates — correct a retail vehicle that was checked in but should be a quote.
+              Only while it's still waiting (arrived, untouched); the confirm sheet explains + fails closed. */}
+          {identity.estimateEnabled && orderSourceKind(order) === 'retail' && order.status === 'arrived' && !order.startedAt && !order.completedAt && (
+            <button disabled={moveBusy} onClick={openMoveConfirm} className="w-full text-sky-300 font-semibold text-sm py-3 rounded-2xl border border-sky-800/60 bg-sky-950/30 active:opacity-80 disabled:opacity-50 mb-4">
+              {moveBusy ? 'Moving…' : 'Move to Estimates'}
+            </button>
+          )}
+
           {/* Production Date — move a completed Job to a different Daily Production day
               (override; never changes completed_at). Self-hides for non-completed Jobs. */}
           {order.completedAt && <ProductionDateSection orderId={order.id} onChanged={reload} />}
@@ -1828,6 +1853,59 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
       {/* Customer contact popup (all staff) */}
       {showContact && (
         <CustomerContactModal orderId={order.id} customerName={title} onClose={() => setShowContact(false)} />
+      )}
+
+      {/* Move-to-Estimates confirm — shows customer + vehicle, the plain-language explanation, and the
+          LIVE consequence (void an unsent invoice) or the specific reason the move is blocked. */}
+      {confirmMove && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-4" onClick={() => !moveBusy && setConfirmMove(false)}>
+          <div className="w-full max-w-md rounded-2xl bg-gray-900 border border-gray-800 p-5" onClick={(e) => e.stopPropagation()}>
+            <p className="text-white font-bold text-lg">Move to Estimates?</p>
+            <p className="text-white text-base font-semibold mt-1">{title}</p>
+            <p className="text-gray-400 text-sm">{vehicleName}</p>
+            <p className="text-gray-300 text-sm mt-3">This removes the job from the Work Board and keeps its information in Estimates — customer, services, prices, notes, photos, and history are all kept.</p>
+
+            {movePreviewLoading && <p className="text-gray-500 text-sm mt-4">Checking QuickBooks…</p>}
+            {!movePreviewLoading && movePreview && !movePreview.eligible && (
+              <div className="rounded-xl border border-red-900/60 bg-red-950/30 px-4 py-3 mt-4">
+                <p className="text-red-300 text-sm">{movePreview.reason ?? 'This job can’t move to Estimates right now.'}</p>
+              </div>
+            )}
+            {!movePreviewLoading && movePreview?.eligible && movePreview.willVoidInvoice && (
+              <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 px-4 py-3 mt-4">
+                <p className="text-amber-200 text-sm">This job has QuickBooks invoice #{movePreview.invoiceNumber} (not yet sent to the customer). Moving it will void that invoice.</p>
+              </div>
+            )}
+            {!movePreviewLoading && movePreview?.eligible && movePreview.qbUnreachable && (
+              <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 px-4 py-3 mt-4">
+                <p className="text-amber-300 text-sm">Couldn’t reach QuickBooks to check the invoice. You can try again — nothing is changed unless the invoice can be verified.</p>
+              </div>
+            )}
+            {error && <p className="text-red-400 text-sm mt-3">{error}</p>}
+
+            <div className="flex gap-2 mt-5">
+              <button onClick={() => setConfirmMove(false)} disabled={moveBusy} className="flex-1 h-12 rounded-2xl bg-gray-800 active:bg-gray-700 text-gray-200 font-semibold disabled:opacity-40">
+                {movePreview && !movePreview.eligible ? 'Close' : 'Cancel'}
+              </button>
+              {(!movePreview || movePreview.eligible) && (
+                <button disabled={moveBusy || movePreviewLoading} onClick={async () => {
+                  setMoveBusy(true); setError(null)
+                  try {
+                    const response = await fetch(`/api/workflow/orders/${order.id}/move-to-estimates`, { method: 'POST' })
+                    const data = await response.json()
+                    if (!response.ok) throw new Error(data.error || 'Unable to move this job.')
+                    setConfirmMove(false)
+                    router.push(data.href); router.refresh()
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : 'Unable to move this job.')
+                  } finally { setMoveBusy(false) }
+                }} className="flex-[2] h-12 rounded-2xl bg-blue-600 active:bg-blue-700 disabled:opacity-40 text-white font-bold">
+                  {moveBusy ? 'Moving…' : 'Move to Estimates'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Invoice Draft (manager/admin) */}
