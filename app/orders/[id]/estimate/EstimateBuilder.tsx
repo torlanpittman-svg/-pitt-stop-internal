@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import NavHeader from '@/app/components/NavHeader'
 import EstimateActions from '@/app/estimates/EstimateActions'
 import SwipeRow from '@/app/components/SwipeRow'
+import OrderPhotos from '@/app/components/OrderPhotos'
 
 /**
  * Simplified mobile Estimate — "what are we doing, and what are we charging?".
@@ -149,6 +150,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
             </div>
             {header.vehicleDetails.bodyClass && <div><dt className="text-gray-500">Body style</dt><dd className="text-gray-200">{header.vehicleDetails.bodyClass}</dd></div>}
           </dl>
+          <div className="mt-4"><OrderPhotos orderId={header.id} /></div>
         </section>
 
         {/* Services */}

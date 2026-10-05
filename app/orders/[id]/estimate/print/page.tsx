@@ -8,6 +8,9 @@ import { authenticatedActor } from '@/apps/auth/employee-guard'
 import { estimateEnabled } from '@/apps/workflow/estimate'
 import { getOrderWithContext } from '@/apps/workflow/db'
 import { getFullEstimate } from '@/apps/workflow/estimate-db'
+import { listOrderPhotos } from '@/apps/order-photos/db'
+import PhotoPrintSheets from '@/app/components/PhotoPrintSheets'
+import PhotoPrintControls from '@/app/components/PhotoPrintControls'
 
 export const dynamic = 'force-dynamic'
 const fmt = (c: number) => `$${((c || 0) / 100).toFixed(2)}`
@@ -25,10 +28,12 @@ export default async function EstimatePrintPage({ params }: { params: Promise<{ 
   const e = full.estimate
   const customer = order.customerName?.trim() || 'Customer'
   const vehicle = [order.vehicle.year, order.vehicle.make, order.vehicle.model].filter(Boolean).join(' ') || 'Vehicle'
+  const photos = await listOrderPhotos(id)
 
   return (
-    <main style={{ background: '#fff', color: '#111', minHeight: '100vh', padding: '32px', fontFamily: 'system-ui, sans-serif' }}>
+    <main className="photo-document" style={{ background: '#fff', color: '#111', minHeight: '100vh', padding: '32px', fontFamily: 'system-ui, sans-serif' }}>
       <div style={{ maxWidth: 760, margin: '0 auto' }}>
+        <PhotoPrintControls backHref={`/orders/${id}/estimate`} />
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2px solid #111', paddingBottom: 12 }}>
           <div><h1 style={{ margin: 0, fontSize: 24 }}>Pitt Stop — Estimate</h1><p style={{ margin: '4px 0', color: '#555' }}>{customer} · {vehicle}</p></div>
           <div style={{ textAlign: 'right', color: '#555', fontSize: 13 }}>Status: {e.status.replace(/_/g, ' ')}<br />{new Date().toLocaleDateString()}</div>
@@ -65,6 +70,7 @@ export default async function EstimatePrintPage({ params }: { params: Promise<{ 
         </div>
         {e.needsTaxReview && <p style={{ color: '#a70', fontSize: 12, marginTop: 12 }}>⚠ Some lines are flagged for tax review — final tax treatment to be confirmed.</p>}
         <p style={{ color: '#999', fontSize: 11, marginTop: 24 }}>Estimate only — not an invoice. Prices subject to confirmation.</p>
+        <PhotoPrintSheets photos={photos} details={{ customer, vehicle, vin: order.vehicle.vin, orderNumber: order.orderNumber }} />
       </div>
     </main>
   )

@@ -11,6 +11,7 @@ import { useVinDecode, type VinDecodeResult } from '@/app/hooks/useVinDecode'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import PartsSection from './PartsSection'
 import DealerInvoicePanel from './DealerInvoicePanel'
+import OrderPhotos from '@/app/components/OrderPhotos'
 
 // ── Status display config ─────────────────────────────────────────────────────
 
@@ -1691,6 +1692,8 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
           <PartsSection orderId={order.id} />
         </div>
       )}
+
+      {isManager && <div className="px-6 mb-6"><OrderPhotos orderId={order.id} /></div>}
 
       {/* Error banner */}
       {error && (

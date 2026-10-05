@@ -59,7 +59,7 @@ interface PhotoInputProps {
   uploadLabel?: string
 }
 
-async function normalizeImage(file: File, maxDimension: number, quality: number): Promise<File> {
+export async function normalizeImage(file: File, maxDimension: number, quality: number): Promise<File> {
   try {
     const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' } as ImageBitmapOptions)
     const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height))
