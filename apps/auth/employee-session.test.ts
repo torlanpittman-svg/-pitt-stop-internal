@@ -5,7 +5,7 @@ import {
 } from './employee-session'
 
 // Throwaway TEST PINs — NOT the production values. Real PINs live only in the deploy env.
-const TEST_PINS = { darryl: '4001', tony: '4002', torlan: '4003', bart: '4004' }
+const TEST_PINS = { darryl: '4001', tony: '4002', torlan: '4003', bart: '4004', thomas: '4005' }
 
 const OLD = { ...process.env }
 function clearAuthEnv() {
@@ -19,6 +19,7 @@ beforeEach(() => {
   process.env.PIN_TONY = TEST_PINS.tony
   process.env.PIN_TORLAN = TEST_PINS.torlan
   process.env.PIN_BART = TEST_PINS.bart
+  process.env.PIN_THOMAS = TEST_PINS.thomas
 })
 afterEach(() => { process.env = { ...OLD } })
 
@@ -28,6 +29,19 @@ describe('resolveIdentityByPin — a PIN identifies WHO (server-side)', () => {
     expect(resolveIdentityByPin(TEST_PINS.tony)).toEqual({ key: 'tony', name: 'Tony', role: 'manager' })
     expect(resolveIdentityByPin(TEST_PINS.torlan)).toEqual({ key: 'torlan', name: 'Torlan', role: 'manager' })
     expect(resolveIdentityByPin(TEST_PINS.bart)).toEqual({ key: 'bart', name: 'Bart', role: 'manager' })
+    expect(resolveIdentityByPin(TEST_PINS.thomas)).toEqual({ key: 'thomas', name: 'Thomas', role: 'manager' })
+  })
+  it('Thomas authenticates as his OWN identity (manager, never mapped to another manager or admin)', () => {
+    const thomas = resolveIdentityByPin(TEST_PINS.thomas)!
+    expect(thomas).toEqual({ key: 'thomas', name: 'Thomas', role: 'manager' })
+    // Thomas gets the SAME operational role as the existing managers — no more, no less.
+    expect(thomas.role).toBe(resolveIdentityByPin(TEST_PINS.torlan)!.role)
+    expect(thomas.role).not.toBe('admin')
+    // Thomas's PIN never resolves to any other manager's identity.
+    expect(thomas.key).not.toBe('torlan')
+    expect(thomas.key).not.toBe('darryl')
+    expect(thomas.key).not.toBe('tony')
+    expect(thomas.key).not.toBe('bart')
   })
   it('Bart authenticates as his OWN identity (not mapped to another manager)', () => {
     const bart = resolveIdentityByPin(TEST_PINS.bart)!
@@ -37,18 +51,21 @@ describe('resolveIdentityByPin — a PIN identifies WHO (server-side)', () => {
     expect(bart.key).not.toBe('darryl')
     expect(bart.key).not.toBe('tony')
   })
-  it('Darryl, Tony, Torlan, and Bart are ALL managers with identical role (no manager tiers)', () => {
+  it('Darryl, Tony, Torlan, Bart, and Thomas are ALL managers with identical role (no manager tiers)', () => {
     const darryl = resolveIdentityByPin(TEST_PINS.darryl)!
     const tony = resolveIdentityByPin(TEST_PINS.tony)!
     const torlan = resolveIdentityByPin(TEST_PINS.torlan)!
     const bart = resolveIdentityByPin(TEST_PINS.bart)!
+    const thomas = resolveIdentityByPin(TEST_PINS.thomas)!
     expect(darryl.role).toBe('manager')
     expect(tony.role).toBe('manager')
     expect(torlan.role).toBe('manager')
     expect(bart.role).toBe('manager')
+    expect(thomas.role).toBe('manager')
     expect(darryl.role).toBe(torlan.role)
     expect(tony.role).toBe(torlan.role)
     expect(bart.role).toBe(torlan.role) // Bart === existing managers' operational role
+    expect(thomas.role).toBe(torlan.role) // Thomas === existing managers' operational role
   })
   it('manager is NEVER admin — no PIN resolves to the admin role', () => {
     for (const p of Object.values(TEST_PINS)) {

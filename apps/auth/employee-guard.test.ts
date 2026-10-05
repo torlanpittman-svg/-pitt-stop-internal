@@ -47,6 +47,7 @@ describe('manager is NEVER admin — a manager PIN session grants no admin autho
       { key: 'tony', name: 'Tony', role: 'manager' as const },
       { key: 'torlan', name: 'Torlan', role: 'manager' as const },
       { key: 'bart', name: 'Bart', role: 'manager' as const },
+      { key: 'thomas', name: 'Thomas', role: 'manager' as const },
     ]) {
       const actor = await authenticatedActorFromRequest(await reqWithSession(m))
       expect(actor?.role).toBe('manager')
@@ -116,6 +117,13 @@ describe('shopActorFromRequest — shop-surface identity without locking out sha
   it('passes a resolved manager through unchanged', async () => {
     const req = await reqWithSession({ key: 'torlan', name: 'Torlan', role: 'manager' })
     expect(await shopActorFromRequest(req)).toEqual({ key: 'torlan', name: 'Torlan', role: 'manager' })
+  })
+  it('admits Thomas to manager-gated surfaces exactly like the existing managers — no more, no less', async () => {
+    const req = await reqWithSession({ key: 'thomas', name: 'Thomas', role: 'manager' })
+    const actor = await shopActorFromRequest(req)
+    expect(actor).toEqual({ key: 'thomas', name: 'Thomas', role: 'manager' })
+    expect(isManagerRole(actor?.role)).toBe(true)   // passes authorizedManager()/managerFromRequest() gates
+    expect(actor?.role).not.toBe('admin')           // grants no admin authority (/admin/* stays ADMIN_PASSWORD)
   })
   it('an anonymous shared-PIN session is AUTHORIZED but resolves to no actor (a plain employee)', async () => {
     const req = await reqWithSession(null)

@@ -37,7 +37,7 @@ const MODULES: Module[] = [
 const GROUP_ORDER: ModuleGroup[] = ['Operations', 'Sales', 'Money']
 
 export default async function Home() {
-  // Manager visibility (Torlan/Darryl/Tony/Bart) — not authorization; the routes gate themselves.
+  // Manager visibility (Torlan/Darryl/Tony/Bart/Thomas) — not authorization; the routes gate themselves.
   const manager = await managerActor()
   const visible = MODULES.filter((m) => !m.manager || manager)
 

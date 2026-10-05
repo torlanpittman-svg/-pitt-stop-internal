@@ -27,13 +27,14 @@ export interface AuthedActor { key: string; name: string; role: EmployeeRole }
  * ONLY in the referenced env var (pinEnv), set locally in .env.local and in the production environment.
  */
 export const EMPLOYEE_IDENTITIES: ReadonlyArray<{ key: string; name: string; role: EmployeeRole; pinEnv: string }> = [
-  // Darryl, Tony, Torlan, and Bart are all operational MANAGERS with identical permissions (Invoice
-  // Draft, Estimate, Production Date, Reopen, Activity, Write-a-Check, removal, etc.). 'manager' is NEVER
-  // 'admin': /admin/* stays behind ADMIN_PASSWORD (proxy.ts) — a manager PIN grants no admin access.
+  // Darryl, Tony, Torlan, Bart, and Thomas are all operational MANAGERS with identical permissions
+  // (Invoice Draft, Estimate, Production Date, Reopen, Activity, Write-a-Check, removal, etc.). 'manager'
+  // is NEVER 'admin': /admin/* stays behind ADMIN_PASSWORD (proxy.ts) — a manager PIN grants no admin access.
   { key: 'darryl', name: 'Darryl', role: 'manager', pinEnv: 'PIN_DARRYL' },
   { key: 'tony',   name: 'Tony',   role: 'manager', pinEnv: 'PIN_TONY' },
   { key: 'torlan', name: 'Torlan', role: 'manager', pinEnv: 'PIN_TORLAN' },
   { key: 'bart',   name: 'Bart',   role: 'manager', pinEnv: 'PIN_BART' },
+  { key: 'thomas', name: 'Thomas', role: 'manager', pinEnv: 'PIN_THOMAS' },
 ]
 
 const PIN_RE = /^\d{4,8}$/

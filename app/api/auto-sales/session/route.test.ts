@@ -3,7 +3,7 @@ import { POST, DELETE } from './route'
 import { EMP_COOKIE, verifyEmployeeToken, authedActorFromToken } from '@/apps/auth/employee-session'
 
 // Throwaway TEST PINs — NOT production values.
-const TEST_PINS = { darryl: '4001', tony: '4002', torlan: '4003', bart: '4004' }
+const TEST_PINS = { darryl: '4001', tony: '4002', torlan: '4003', bart: '4004', thomas: '4005' }
 const OLD = { ...process.env }
 beforeEach(() => {
   process.env.IDENTITY_SECRET = 'test-secret'
@@ -12,6 +12,7 @@ beforeEach(() => {
   process.env.PIN_TONY = TEST_PINS.tony
   process.env.PIN_TORLAN = TEST_PINS.torlan
   process.env.PIN_BART = TEST_PINS.bart
+  process.env.PIN_THOMAS = TEST_PINS.thomas
 })
 afterEach(() => { process.env = { ...OLD } })
 
@@ -62,14 +63,22 @@ describe('POST /api/auto-sales/session — PIN login mints the signed identity',
     expect(j.actor).toEqual({ name: 'Bart', role: 'manager' })
     expect(await actorFromResponse(res)).toEqual({ key: 'bart', name: 'Bart', role: 'manager' })
   })
-  it('all four managers receive an identical role (no tiers)', async () => {
+  it('valid Thomas PIN authenticates as Thomas (manager) with his own signed identity', async () => {
+    const res = await POST(loginReq(TEST_PINS.thomas, '10.0.0.5'))
+    const j = await res.json()
+    expect(res.status).toBe(200)
+    expect(j.ok).toBe(true)
+    expect(j.actor).toEqual({ name: 'Thomas', role: 'manager' })
+    expect(await actorFromResponse(res)).toEqual({ key: 'thomas', name: 'Thomas', role: 'manager' })
+  })
+  it('all five managers receive an identical role (no tiers)', async () => {
     const roles = await Promise.all(
-      [TEST_PINS.darryl, TEST_PINS.tony, TEST_PINS.torlan, TEST_PINS.bart].map(async (p, i) => {
+      [TEST_PINS.darryl, TEST_PINS.tony, TEST_PINS.torlan, TEST_PINS.bart, TEST_PINS.thomas].map(async (p, i) => {
         const res = await POST(loginReq(p, `10.1.0.${i}`))
         return (await res.json()).actor.role
       }),
     )
-    expect(roles).toEqual(['manager', 'manager', 'manager', 'manager'])
+    expect(roles).toEqual(['manager', 'manager', 'manager', 'manager', 'manager'])
   })
   it('a valid PIN never resolves to admin', async () => {
     const res = await POST(loginReq(TEST_PINS.torlan, '10.2.0.1'))
