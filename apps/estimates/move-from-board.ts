@@ -2,7 +2,13 @@ import { sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { getBusinessConfig } from '@/apps/settings/db'
 
-/** One atomic correction; retains the original job and all its linked detail. */
+/**
+ * One atomic status correction: move an accidental Work Board entry back to Estimates, retaining the
+ * SAME job and ALL its linked detail (customer, vehicle, VIN, services, pricing, notes, photos,
+ * history — and any existing QuickBooks invoice, which is left untouched and linked exactly as-is).
+ * This is a Pitt Stop workflow move only; it never reads or mutates QuickBooks. An existing invoice
+ * does NOT block the move — a manager may freely reorganize a job between the two boards.
+ */
 export async function moveBoardOrderToEstimates(id: string, actor: string) {
   const db = getDb()
   const config = await getBusinessConfig()
@@ -19,8 +25,6 @@ export async function moveBoardOrderToEstimates(id: string, actor: string) {
           OR lower(so.service_type) LIKE 'retail%')
         AND NOT EXISTS (SELECT 1 FROM service_order_assignments a WHERE a.service_order_id = so.id)
         AND NOT EXISTS (SELECT 1 FROM dealer_scans d WHERE d.service_order_id = so.id)
-        AND NOT EXISTS (SELECT 1 FROM job_estimates e WHERE e.service_order_id = so.id
-          AND (e.qb_invoice_id IS NOT NULL OR e.qb_status <> 'none'))
         AND NOT EXISTS (SELECT 1 FROM estimate_intakes i WHERE i.order_id = so.id
           AND i.locked_at > now() - interval '10 minutes')
       RETURNING so.*
@@ -48,5 +52,5 @@ export async function moveBoardOrderToEstimates(id: string, actor: string) {
   const existing = await db.execute(sql`SELECT so.id FROM service_orders so
     JOIN estimate_intakes i ON i.order_id = so.id WHERE so.id = ${id}::uuid AND so.status = 'estimate'`)
   if (existing.rows.length) return
-  throw new Error('Only retail jobs that have not started and have no invoice can move to Estimates. Refresh the job and try again.')
+  throw new Error('Only retail jobs that have not started can move to Estimates. Refresh the job and try again.')
 }

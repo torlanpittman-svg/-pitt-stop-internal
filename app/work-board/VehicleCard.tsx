@@ -287,7 +287,8 @@ export default function VehicleCard({
       {contactOpen && <CustomerContactModal orderId={order.id} customerName={title} onClose={() => setContactOpen(false)} />}
 
       {/* Move-to-Estimates confirm — required before anything moves. Shows the customer + vehicle, the
-          plain-language explanation, and the LIVE consequence (void an unsent invoice, or why it's blocked). */}
+          plain-language explanation, or the specific reason the move is blocked. A Pitt Stop status
+          move only: QuickBooks is never touched, and a linked invoice stays exactly as it is. */}
       {moveOpen && (
         <div className="fixed inset-0 z-[70] flex flex-col justify-end bg-black/70" onClick={() => !moving && setMoveOpen(false)}>
           <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10" onClick={(e) => e.stopPropagation()}>
@@ -295,22 +296,12 @@ export default function VehicleCard({
             <p className="text-white text-base font-semibold">{title}</p>
             <p className="text-gray-400 text-sm mb-3">{vehicleName}</p>
 
-            <p className="text-gray-300 text-sm mb-4">This removes the job from the Work Board and keeps its information in Estimates — customer, services, prices, notes, photos, and history are all kept.</p>
+            <p className="text-gray-300 text-sm mb-4">This removes the job from the Work Board and keeps its information in Estimates — customer, vehicle, services, prices, notes, photos, and history are all kept. Any QuickBooks invoice is left unchanged.</p>
 
-            {movePreviewLoading && <p className="text-gray-500 text-sm mb-4">Checking QuickBooks…</p>}
+            {movePreviewLoading && <p className="text-gray-500 text-sm mb-4">Checking…</p>}
             {!movePreviewLoading && movePreview && !movePreview.eligible && (
               <div className="rounded-xl border border-red-900/60 bg-red-950/30 px-4 py-3 mb-4">
                 <p className="text-red-300 text-sm">{movePreview.reason ?? 'This job can’t move to Estimates right now.'}</p>
-              </div>
-            )}
-            {!movePreviewLoading && movePreview?.eligible && movePreview.willVoidInvoice && (
-              <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 px-4 py-3 mb-4">
-                <p className="text-amber-200 text-sm">This job has QuickBooks invoice #{movePreview.invoiceNumber} (not yet sent to the customer). Moving it will void that invoice.</p>
-              </div>
-            )}
-            {!movePreviewLoading && movePreview?.eligible && movePreview.qbUnreachable && (
-              <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 px-4 py-3 mb-4">
-                <p className="text-amber-300 text-sm">Couldn’t reach QuickBooks to check the invoice. You can try again — nothing is changed unless the invoice can be verified.</p>
               </div>
             )}
 

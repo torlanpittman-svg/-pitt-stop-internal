@@ -4,8 +4,8 @@ import { managerFromRequest } from '@/apps/checks/authz'
 import { estimateEnabled } from '@/apps/workflow/estimate'
 import { planMoveToEstimates, executeMoveToEstimates } from '@/apps/estimates/move-to-estimates'
 
-/** Read-only preview: customer + vehicle + exactly what the move will do (and why it's blocked, in
- *  plain language). The confirm sheet calls this when it opens; the POST re-checks and fails closed. */
+/** Read-only preview: customer + vehicle, or the specific plain-language reason the move is blocked.
+ *  The confirm sheet calls this when it opens; the POST re-checks eligibility. */
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const actor = await managerFromRequest(req)
   if (!actor) return NextResponse.json({ error: 'Manager access required.' }, { status: 403 })
@@ -30,5 +30,5 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const status = result.block === 'not_found' ? 404 : 409
     return NextResponse.json({ error: result.error ?? 'Unable to move this job.', code: result.code }, { status })
   }
-  return NextResponse.json({ ok: true, href: `/orders/${id}/estimate`, qbAction: result.qbAction, invoiceNumber: result.invoiceNumber })
+  return NextResponse.json({ ok: true, href: `/orders/${id}/estimate` })
 }

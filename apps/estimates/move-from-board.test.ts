@@ -18,7 +18,7 @@ beforeAll(async () => {
     CREATE TABLE dealer_scans(service_order_id uuid);
     CREATE TABLE job_estimates(service_order_id uuid UNIQUE, status text DEFAULT 'draft', tax_rate_bps int,
       explicit_tax_category text, created_by text, updated_by text, decided_at timestamptz, converted_at timestamptz,
-      updated_at timestamptz, qb_invoice_id text, qb_status text DEFAULT 'none', total_cents int);
+      updated_at timestamptz, qb_invoice_id text, qb_invoice_number text, qb_status text DEFAULT 'none', total_cents int);
     CREATE TABLE estimate_intakes(order_id uuid PRIMARY KEY, locked_at timestamptz);
     CREATE TABLE quick_entry_jobs(service_order_id uuid, vehicle_id uuid, customer_name text, year text, make text,
       model text, vin text, created_by text, customer_email text);
@@ -52,13 +52,22 @@ it('creates missing intake, contact and estimate together', async () => {
   expect((await pg.query(`SELECT * FROM estimate_intakes i JOIN job_estimates e ON e.service_order_id=i.order_id
     JOIN quick_entry_jobs q ON q.service_order_id=i.order_id WHERE i.order_id=$1`, [id])).rows).toHaveLength(1)
 })
+// An existing QuickBooks invoice must NOT block the move — a manager may freely reorganize a job
+// between the Work Board and Estimates, and the invoice link is left exactly as it was.
+it('moves a job that already has a QuickBooks invoice, leaving the invoice link untouched', async () => {
+  const id = await fixture()
+  await pg.query(`INSERT INTO job_estimates(service_order_id, qb_invoice_id, qb_invoice_number, qb_status) VALUES ($1, '24167', '100897', 'created')`, [id])
+  await moveBoardOrderToEstimates(id, 'Manager')
+  const { rows } = await pg.query(`SELECT so.status, e.qb_invoice_id, e.qb_invoice_number, e.qb_status
+    FROM service_orders so JOIN job_estimates e ON e.service_order_id = so.id WHERE so.id = $1`, [id])
+  expect(rows).toEqual([expect.objectContaining({ status: 'estimate', qb_invoice_id: '24167', qb_invoice_number: '100897', qb_status: 'created' })])
+})
+
 for (const [label, change] of [
   ['started', `UPDATE service_orders SET started_at=now() WHERE id=$1`],
   ['completed', `UPDATE service_orders SET completed_at=now() WHERE id=$1`],
   ['dealer', `UPDATE service_orders SET source='dealer_checkin' WHERE id=$1`],
   ['assigned', `INSERT INTO service_order_assignments VALUES ($1)`],
-  ['invoiced', `INSERT INTO job_estimates(service_order_id, qb_invoice_id) VALUES ($1, 'QB1')`],
-  ['invoice in flight', `INSERT INTO job_estimates(service_order_id, qb_status) VALUES ($1, 'creating')`],
   ['locked', `INSERT INTO estimate_intakes VALUES ($1, now())`],
 ]) {
   it(`leaves ${label} jobs untouched`, async () => {
