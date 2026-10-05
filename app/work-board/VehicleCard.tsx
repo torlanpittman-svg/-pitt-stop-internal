@@ -4,7 +4,6 @@ import Link from 'next/link'
 import { useState, useCallback } from 'react'
 import type { OrderWithContext } from '@/apps/workflow/db'
 import type { RemovalPreview } from '@/apps/workflow/order-removal'
-import type { MovePreview } from '@/apps/estimates/move-to-estimates'
 import { isDealerOrder, orderSourceKind } from '@/apps/workflow/fees'
 import CustomerContactModal from '@/app/components/CustomerContactModal'
 import SwipeRow from '@/app/components/SwipeRow'
@@ -91,21 +90,16 @@ export default function VehicleCard({
   order,
   highlighted = false,
   removable = false,
-  movable = false,
   showPartsBadge = false,
   onRemoved,
-  onMoved,
 }: {
   order: OrderWithContext
   highlighted?: boolean
   /** Manager/admin on the Active tab → allow swipe-to-remove. */
   removable?: boolean
-  /** Manager/admin on the Active tab → offer "Move to Estimates" for an eligible retail card. */
-  movable?: boolean
   /** Reversible rollout gate: show the WAITING ON PARTS badge (managers always; employees only when on). */
   showPartsBadge?: boolean
   onRemoved?: (orderId: string) => void
-  onMoved?: (orderId: string) => void
 }) {
   const { vehicle } = order
   const style = simpleStatus(order.status)
@@ -116,12 +110,6 @@ export default function VehicleCard({
   // What removal will do to QuickBooks — fetched live from the preview endpoint when the sheet opens.
   const [preview, setPreview] = useState<RemovalPreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
-  // Move-to-Estimates confirm sheet + its live preview (customer/vehicle, blocked reason, invoice void).
-  const [moveOpen, setMoveOpen] = useState(false)
-  const [moving, setMoving] = useState(false)
-  const [moveErr, setMoveErr] = useState<string | null>(null)
-  const [movePreview, setMovePreview] = useState<MovePreview | null>(null)
-  const [movePreviewLoading, setMovePreviewLoading] = useState(false)
 
   // Year Make Model, plus the existing authoritative color (helps tell apart same-YMM
   // vehicles at the shop). Color is appended only when present — no empty separator, no
@@ -138,10 +126,6 @@ export default function VehicleCard({
   // Swipe-to-remove is offered to manager/admin on any active card — RETAIL and DEALER alike
   // (an accidental check-in of either kind can be corrected). The confirm + tap are still required.
   const canRemove = removable
-  // "Move to Estimates" corrects a RETAIL vehicle that was checked in but should be a quote. Offered
-  // only while it's still waiting (arrived, untouched); the exact invoice/assignment gate is resolved
-  // live by the preview when the sheet opens, so the manager always sees the real reason.
-  const canMove = movable && kind === 'retail' && order.status === 'arrived' && !order.startedAt && !order.completedAt
 
   // Open the confirmation and ask the server exactly what removal will do to QuickBooks (remove one
   // line from a multi-vehicle invoice, void a standalone invoice, nothing, or block on payment).
@@ -168,32 +152,6 @@ export default function VehicleCard({
     } catch { setErr('Network error — please try again.') }
     finally { setRemoving(false) }
   }, [order.id, removing, onRemoved])
-
-  // Open the Move sheet and ask the server for the live preview (customer/vehicle, whether an unsent
-  // invoice will be voided, or the exact reason the move is blocked).
-  const openMove = useCallback(async () => {
-    setMoveErr(null); setMovePreview(null); setMovePreviewLoading(true); setMoveOpen(true)
-    try {
-      const r = await fetch(`/api/workflow/orders/${order.id}/move-to-estimates`, { cache: 'no-store' })
-      const d = await r.json().catch(() => null)
-      if (r.ok && d?.ok && d.preview) setMovePreview(d.preview as MovePreview)
-      else if (d?.error) setMoveErr(d.error)
-    } catch { /* preview is best-effort; the POST re-checks and fails closed if needed */ }
-    finally { setMovePreviewLoading(false) }
-  }, [order.id])
-
-  const doMove = useCallback(async () => {
-    if (moving) return
-    setMoving(true); setMoveErr(null)
-    try {
-      const r = await fetch(`/api/workflow/orders/${order.id}/move-to-estimates`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
-      const d = await r.json().catch(() => ({}))
-      if (!r.ok || !d.ok) { setMoveErr(d.error ?? 'Could not move this vehicle.'); return }
-      setMoveOpen(false)
-      onMoved?.(order.id)   // parent drops it from the board immediately
-    } catch { setMoveErr('Network error — please try again.') }
-    finally { setMoving(false) }
-  }, [order.id, moving, onMoved])
 
   // Visual hierarchy: URGENT has the STRONGEST priority (amber outline + rail, overrides the normal
   // retail/dealer accent — the badges below still keep the source visible). Otherwise RETAIL draws the
@@ -273,52 +231,7 @@ export default function VehicleCard({
         ? <SwipeRow onRemove={openConfirm} busy={removing}>{card}</SwipeRow>
         : card}
 
-      {/* Manager/admin retail correction: send a vehicle that should be a quote to Estimates. Discreet
-          so it never competes with the job itself; a confirm sheet (below) explains before anything moves. */}
-      {canMove && (
-        <div className="px-1 pt-1">
-          <button onClick={openMove} disabled={moving}
-            className="inline-flex items-center gap-1 text-xs font-medium text-sky-400 active:text-sky-300 disabled:opacity-50 py-1.5">
-            {moving ? 'Moving…' : '→ Move to Estimates'}
-          </button>
-        </div>
-      )}
-
       {contactOpen && <CustomerContactModal orderId={order.id} customerName={title} onClose={() => setContactOpen(false)} />}
-
-      {/* Move-to-Estimates confirm — required before anything moves. Shows the customer + vehicle, the
-          plain-language explanation, or the specific reason the move is blocked. A Pitt Stop status
-          move only: QuickBooks is never touched, and a linked invoice stays exactly as it is. */}
-      {moveOpen && (
-        <div className="fixed inset-0 z-[70] flex flex-col justify-end bg-black/70" onClick={() => !moving && setMoveOpen(false)}>
-          <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-white font-bold text-lg mb-2">Move this vehicle to Estimates?</h3>
-            <p className="text-white text-base font-semibold">{title}</p>
-            <p className="text-gray-400 text-sm mb-3">{vehicleName}</p>
-
-            <p className="text-gray-300 text-sm mb-4">This removes the job from the Work Board and keeps its information in Estimates — customer, vehicle, services, prices, notes, photos, and history are all kept. Any QuickBooks invoice is left unchanged.</p>
-
-            {movePreviewLoading && <p className="text-gray-500 text-sm mb-4">Checking…</p>}
-            {!movePreviewLoading && movePreview && !movePreview.eligible && (
-              <div className="rounded-xl border border-red-900/60 bg-red-950/30 px-4 py-3 mb-4">
-                <p className="text-red-300 text-sm">{movePreview.reason ?? 'This job can’t move to Estimates right now.'}</p>
-              </div>
-            )}
-
-            {moveErr && <p className="text-red-400 text-sm mb-3">{moveErr}</p>}
-            <div className="flex gap-3">
-              <button onClick={() => setMoveOpen(false)} disabled={moving} className="flex-1 py-3.5 rounded-2xl border border-gray-700 text-gray-300 font-semibold active:opacity-70 disabled:opacity-40">
-                {movePreview && !movePreview.eligible ? 'Close' : 'Cancel'}
-              </button>
-              {(!movePreview || movePreview.eligible) && (
-                <button onClick={doMove} disabled={moving || movePreviewLoading} className="flex-1 py-3.5 rounded-2xl bg-blue-600 text-white font-bold active:bg-blue-700 disabled:opacity-50">
-                  {moving ? 'Moving…' : 'Move to Estimates'}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Confirmation — required before anything is removed. Shows the LIVE QuickBooks consequence
           (no link / remove one line / void standalone / blocked by payment / ambiguous). */}

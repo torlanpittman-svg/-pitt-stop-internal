@@ -1864,7 +1864,7 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
             <p className="text-white font-bold text-lg">Move to Estimates?</p>
             <p className="text-white text-base font-semibold mt-1">{title}</p>
             <p className="text-gray-400 text-sm">{vehicleName}</p>
-            <p className="text-gray-300 text-sm mt-3">This removes the job from the Work Board and keeps its information in Estimates — customer, vehicle, services, prices, notes, photos, and history are all kept. Any QuickBooks invoice is left unchanged.</p>
+            <p className="text-gray-300 text-sm mt-3">This removes the job from the Work Board and keeps its information in Estimates — customer, services, prices, notes, photos, and history are all kept. Any QuickBooks invoice is left unchanged.</p>
 
             {movePreviewLoading && <p className="text-gray-500 text-sm mt-4">Checking…</p>}
             {!movePreviewLoading && movePreview && !movePreview.eligible && (
