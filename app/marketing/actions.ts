@@ -216,11 +216,19 @@ export async function resolveConversationAction(fd: FormData): Promise<void> {
 const MARKETING_SETTING_KEYS = [
   'marketing_enabled', 'marketing_require_approval', 'marketing_send_daily_cap',
   'marketing_attribution_window_days', 'marketing_high_value_cents', 'marketing_default_offer',
+  // A2P / SMS
+  'marketing_sms_live', 'marketing_sms_brand_name', 'marketing_sms_help_text', 'marketing_sms_frequency',
+  'marketing_privacy_url', 'marketing_terms_url', 'marketing_sms_quiet_start_hour',
+  'marketing_sms_quiet_end_hour', 'marketing_sms_global_cap',
 ]
 
 export async function updateMarketingSettingsAction(fd: FormData): Promise<void> {
   const actor = await actorName()
-  for (const key of MARKETING_SETTING_KEYS) {
+  // A form declares which keys it owns via a hidden `__keys` field, so multiple settings forms on the
+  // page don't clobber each other's booleans (an unchecked box is absent from the POST).
+  const scoped = String(fd.get('__keys') ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+  const keys = scoped.length ? scoped.filter((k) => MARKETING_SETTING_KEYS.includes(k)) : MARKETING_SETTING_KEYS
+  for (const key of keys) {
     const def = SETTINGS[key]
     if (!def) continue
     const raw = def.type === 'bool' ? fd.get(key) === 'on' : fd.get(key)
