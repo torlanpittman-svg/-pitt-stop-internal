@@ -22,9 +22,9 @@ function adminOk(request: NextRequest): boolean {
  * /production, etc. and carry no AI/write). /admin/* is NEVER here (it stays on ADMIN_PASSWORD).
  */
 function isEmployeeSurface(pathname: string): boolean {
-  const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in', '/orders', '/production', '/estimator', '/checks', '/expenses', '/customers']
+  const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in', '/orders', '/production', '/estimator', '/checks', '/expenses', '/customers', '/marketing']
   if (pages.some((p) => pathname === p || pathname.startsWith(p + '/'))) return true
-  const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/', '/api/checks/', '/api/search', '/api/expenses/', '/api/customers/']
+  const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/', '/api/checks/', '/api/search', '/api/expenses/', '/api/customers/', '/api/marketing/']
   if (apis.some((p) => pathname.startsWith(p)) || pathname === '/api/dealer-checkin') return true
   if (pathname === '/api/estimator/vin' || pathname === '/api/workflow/vin') return true
   return false
@@ -100,6 +100,10 @@ export const config = {
     // Customer profiles + history (the profile page renders contact/history PII server-side) and APIs.
     '/customers/:path*',
     '/api/customers/:path*',
+    // Marketing Agent (manager-only; server-side managerActor() gate inside every page/action/route).
+    // Note: '/unsubscribe' is intentionally NOT gated — it is a public, token-scoped opt-out link.
+    '/marketing/:path*',
+    '/api/marketing/:path*',
     '/api/dealer-checkin/:path*',
     '/api/quick-entry/:path*',
     // Global operational search — employee-session gated (role scope enforced in the handler).
