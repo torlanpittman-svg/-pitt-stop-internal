@@ -9,7 +9,8 @@ import { revalidatePath } from 'next/cache'
 import { managerActor } from '@/apps/checks/authz'
 import { updateSetting, SETTINGS } from '@/apps/settings/db'
 import { createCampaign, updateCampaignCopy, transitionCampaign, getCampaign } from '@/apps/marketing/db'
-import { buildCampaignRecipients, sendCampaign } from '@/apps/marketing/campaigns'
+import { buildCampaignRecipients } from '@/apps/marketing/campaigns'
+import { dispatchCampaign } from '@/apps/marketing/dispatch'
 import { generateCampaignCopy } from '@/apps/marketing/ai/campaign-copy'
 import { generateSocialPost } from '@/apps/marketing/ai/social-post'
 import { createPost, updatePost, findContentCandidates } from '@/apps/marketing/content'
@@ -98,7 +99,9 @@ export async function approveCampaignAction(fd: FormData): Promise<void> {
 export async function sendCampaignAction(fd: FormData): Promise<void> {
   const actor = await actorName()
   const id = str(fd, 'id')
-  await sendCampaign(id, { actor })
+  // Goes through the send-safety layer: live only when sms_live is on AND Twilio is configured AND
+  // within quiet hours; otherwise a dry-run preview. Never a silent live send.
+  await dispatchCampaign(id, { actor })
   revalidatePath(`/marketing/campaigns/${id}`)
 }
 

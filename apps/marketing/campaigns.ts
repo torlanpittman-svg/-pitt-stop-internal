@@ -96,14 +96,14 @@ export async function buildCampaignRecipients(campaignId: string, opts: { actor?
   return { matched: matched.length, pending, excluded, inserted }
 }
 
-export interface SendSummary { dryRun: boolean; sent: number; suppressed: number; failed: number; total: number; alreadySent?: boolean }
+export interface SendSummary { dryRun: boolean; sent: number; suppressed: number; failed: number; total: number; capped?: number; alreadySent?: boolean }
 
 /**
  * Send a campaign. Must be a manager-approved campaign (ready/scheduled) — the caller enforces role;
  * here we enforce the state machine. Processes only `pending` recipients. A dry-run (no live provider)
  * suppresses every recipient and reports dryRun:true — nothing external happens, nothing is faked.
  */
-export async function sendCampaign(campaignId: string, opts: { actor?: string | null; providers?: Providers; now?: number } = {}): Promise<SendSummary> {
+export async function sendCampaign(campaignId: string, opts: { actor?: string | null; providers?: Providers; now?: number; cap?: number; composeSms?: (body: string) => string } = {}): Promise<SendSummary> {
   const campaign = await getCampaign(campaignId)
   if (!campaign) throw new Error('Campaign not found')
 
@@ -117,22 +117,30 @@ export async function sendCampaign(campaignId: string, opts: { actor?: string | 
   const providers = opts.providers ?? getProviders()
   if (campaign.status !== 'sending') await transitionCampaign(campaignId, 'sending', opts.actor ?? null)
 
-  const pending = await listRecipients(campaignId, 'pending')
+  const allPending = await listRecipients(campaignId, 'pending')
+  // Send-safety cap: process at most `cap` recipients; the rest stay pending (re-runnable) and are logged.
+  const cap = opts.cap != null && opts.cap >= 0 ? opts.cap : allPending.length
+  const pending = allPending.slice(0, cap)
+  const cappedOut = allPending.length - pending.length
   let sent = 0, suppressed = 0, failed = 0, anyLive = false
 
   for (const r of pending) {
-    const body = r.renderedBody ?? ''
+    let body = r.renderedBody ?? ''
     const address = r.addressSnapshot ?? ''
-    const result = r.channel === 'sms'
-      ? await providers.sms.send(address, body)
-      : await providers.email.send(address, campaign.emailSubject ?? '', body)
+    let result
+    if (r.channel === 'sms') {
+      if (opts.composeSms) body = opts.composeSms(body)   // brand + STOP opt-out language
+      result = await providers.sms.send(address, body)
+    } else {
+      result = await providers.email.send(address, campaign.emailSubject ?? '', body)
+    }
 
     if (result.status === 'sent') {
-      await markRecipient(r.id, { status: 'sent', sentAt: new Date() })
+      await markRecipient(r.id, { status: 'sent', sentAt: new Date(), providerMessageId: result.providerMessageId ?? null, deliveryStatus: 'sent', renderedBody: body })
       if (r.customerId) await touchLastContacted(r.customerId)
       sent++; anyLive = true
     } else if (result.status === 'failed') {
-      await markRecipient(r.id, { status: 'failed', exclusionReason: (result.error ?? 'send_failed').slice(0, 60) })
+      await markRecipient(r.id, { status: 'failed', exclusionReason: (result.error ?? 'send_failed').slice(0, 60), errorCode: (result.error ?? '').slice(0, 20) })
       failed++
     } else {
       await markRecipient(r.id, { status: 'suppressed', exclusionReason: 'dry_run' })
@@ -142,12 +150,13 @@ export async function sendCampaign(campaignId: string, opts: { actor?: string | 
 
   await refreshCampaignCounts(campaignId)
   const dryRun = !anyLive
-  await transitionCampaign(campaignId, 'sent', opts.actor ?? null, { dryRun, sentCount: sent })
+  // Only finalize to 'sent' when the whole list is processed; if capped, keep it 'sending' (resumable).
+  if (cappedOut === 0) await transitionCampaign(campaignId, 'sent', opts.actor ?? null, { dryRun, sentCount: sent })
   await logEvent('campaign_sent', {
     entityType: 'campaign', entityId: campaignId, actor: opts.actor ?? null,
-    meta: { dryRun, sent, suppressed, failed, total: pending.length },
+    meta: { dryRun, sent, suppressed, failed, total: pending.length, cappedOut },
   })
-  return { dryRun, sent, suppressed, failed, total: pending.length }
+  return { dryRun, sent, suppressed, failed, total: pending.length, capped: cappedOut }
 }
 
 async function touchLastContacted(customerId: string): Promise<void> {

@@ -156,8 +156,17 @@ export async function listRecipients(campaignId: string, status?: Recipient['sta
   return db.select().from(marketingCampaignRecipients).where(where).orderBy(marketingCampaignRecipients.createdAt)
 }
 
-export async function markRecipient(id: string, patch: Partial<Pick<Recipient, 'status' | 'exclusionReason' | 'sentAt' | 'respondedAt' | 'bookedOrderId' | 'completedRevenueCents'>>): Promise<void> {
+export async function markRecipient(id: string, patch: Partial<Pick<Recipient, 'status' | 'exclusionReason' | 'renderedBody' | 'sentAt' | 'respondedAt' | 'bookedOrderId' | 'completedRevenueCents' | 'providerMessageId' | 'deliveryStatus' | 'errorCode'>>): Promise<void> {
   await getDb().update(marketingCampaignRecipients).set(patch).where(eq(marketingCampaignRecipients.id, id))
+}
+
+/** Update a recipient's delivery status from a provider status callback (looked up by message id). */
+export async function updateDeliveryByProviderId(providerMessageId: string, deliveryStatus: string, errorCode?: string | null): Promise<string | null> {
+  const [row] = await getDb().update(marketingCampaignRecipients)
+    .set({ deliveryStatus, errorCode: errorCode ?? null })
+    .where(eq(marketingCampaignRecipients.providerMessageId, providerMessageId))
+    .returning({ id: marketingCampaignRecipients.id })
+  return row?.id ?? null
 }
 
 /** Recompute the denormalized campaign counters from the recipients table. */

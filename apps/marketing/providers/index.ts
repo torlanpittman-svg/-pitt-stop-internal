@@ -13,6 +13,8 @@
  * and only returns a live adapter when they are present (none are, today).
  */
 
+import { TwilioSmsProvider, twilioConfigFromEnv } from './twilio'
+
 export type SendStatus = 'sent' | 'dry_run' | 'failed'
 export interface SendResult { status: SendStatus; providerMessageId?: string; error?: string }
 
@@ -101,9 +103,9 @@ export interface ProviderStatus {
  * implementing the interface and returning it here — nothing else in the module changes.
  */
 export function getProviders(env: NodeJS.ProcessEnv = process.env): Providers {
-  const sms: SmsProvider = env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM_NUMBER
-    ? new DryRunSmsProvider() // placeholder: real TwilioSmsProvider slots in here once wired + reviewed
-    : new DryRunSmsProvider()
+  // Real Twilio SMS when a Messaging Service (or from-number) + credentials are present; else dry-run.
+  const twilioCfg = twilioConfigFromEnv(env)
+  const sms: SmsProvider = twilioCfg ? new TwilioSmsProvider(twilioCfg) : new DryRunSmsProvider()
 
   const email: EmailProvider = env.MARKETING_EMAIL_PROVIDER === 'resend' && env.RESEND_API_KEY
     ? new DryRunEmailProvider() // placeholder: real ResendEmailProvider slots in here once wired + reviewed
@@ -122,4 +124,9 @@ export function getProviders(env: NodeJS.ProcessEnv = process.env): Providers {
 
 export function providerStatus(p: Providers): ProviderStatus {
   return { sms: p.sms.live, email: p.email.live, facebook: p.facebook.live, googleAds: p.googleAds.live }
+}
+
+/** All-dry-run providers — used to FORCE a preview send even when live credentials exist. */
+export function dryRunProviders(): Providers {
+  return { sms: new DryRunSmsProvider(), email: new DryRunEmailProvider(), facebook: new DryRunFacebookProvider(), googleAds: new DryRunGoogleAdsProvider() }
 }
