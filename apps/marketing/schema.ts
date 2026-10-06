@@ -13,8 +13,15 @@ import { pgTable, uuid, text, varchar, integer, boolean, jsonb, timestamp, date,
 export const marketingPreferences = pgTable('marketing_preferences', {
   id:                uuid('id').primaryKey().defaultRandom(),
   customerId:        uuid('customer_id').notNull(),
+  // `smsEligible` is a manager HARD-BLOCK override (false = never SMS even with consent). Real SMS
+  // eligibility is driven by `smsConsentStatus` below — a present phone is NOT consent (0047).
   smsEligible:       boolean('sms_eligible').notNull().default(true),
   emailEligible:     boolean('email_eligible').notNull().default(true),
+  // Proven promotional-SMS consent. Default 'unknown' ⇒ NOT eligible. Only 'granted' can receive SMS.
+  smsConsentStatus:  varchar('sms_consent_status', { length: 10 }).notNull().default('unknown'), // unknown | granted | revoked
+  smsConsentSource:  varchar('sms_consent_source', { length: 40 }),
+  smsConsentAt:      timestamp('sms_consent_at', { withTimezone: true }),
+  smsConsentVersion: varchar('sms_consent_version', { length: 40 }),
   unsubscribedAt:    timestamp('unsubscribed_at', { withTimezone: true }),
   unsubscribeReason: text('unsubscribe_reason'),
   unsubscribeScope:  varchar('unsubscribe_scope', { length: 10 }).notNull().default('all'),
@@ -26,6 +33,27 @@ export const marketingPreferences = pgTable('marketing_preferences', {
 }, (t) => [
   uniqueIndex('marketing_preferences_customer_uniq').on(t.customerId),
   uniqueIndex('marketing_preferences_token_uniq').on(t.unsubscribeToken),
+])
+
+// Append-only consent audit trail (how a customer's SMS/email consent state got where it is).
+export const marketingConsentEvents = pgTable('marketing_consent_events', {
+  id:             uuid('id').primaryKey().defaultRandom(),
+  customerId:     uuid('customer_id'),
+  channel:        varchar('channel', { length: 10 }).notNull(),   // sms | email
+  event:          varchar('event', { length: 16 }).notNull(),     // opt_in | opt_out | import_verified | help
+  source:         varchar('source', { length: 40 }).notNull(),
+  wordingVersion: varchar('wording_version', { length: 40 }),
+  consentText:    text('consent_text'),
+  phone:          varchar('phone', { length: 40 }),
+  actor:          varchar('actor', { length: 200 }),
+  ip:             varchar('ip', { length: 64 }),
+  userAgent:      text('user_agent'),
+  meta:           jsonb('meta'),
+  createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('marketing_consent_customer_idx').on(t.customerId),
+  index('marketing_consent_channel_idx').on(t.channel, t.event),
+  index('marketing_consent_created_idx').on(t.createdAt),
 ])
 
 export const marketingCampaigns = pgTable('marketing_campaigns', {

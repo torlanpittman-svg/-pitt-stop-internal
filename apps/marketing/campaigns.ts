@@ -41,6 +41,8 @@ function reach(contact: ContactAggregate, channel: SendChannel): { ok: boolean; 
   if (channel === 'sms') {
     if (!contact.phone) return { ok: false, address: null, reason: 'no_phone' }
     if (!contact.smsEligible) return { ok: false, address: contact.phone, reason: 'sms_ineligible' }
+    // A present phone number is NOT consent — promotional SMS requires proven opt-in (0047).
+    if (!contact.smsConsent) return { ok: false, address: contact.phone, reason: 'no_sms_consent' }
     return { ok: true, address: contact.phone, reason: null }
   }
   if (!contact.email) return { ok: false, address: null, reason: 'no_email' }

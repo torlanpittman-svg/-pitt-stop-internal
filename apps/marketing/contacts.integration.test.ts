@@ -8,6 +8,7 @@ vi.mock('@/platform/db', () => ({ getDb: vi.fn() }))
 import { getDb } from '@/platform/db'
 import { contactAggregates, listMarketingContacts } from './contacts'
 import { applySegment, estimateSegment, NAMED_SEGMENTS } from './segments'
+import { grantSmsConsent, revokeSmsConsent } from './consent'
 
 const pg = new PGlite()
 const NOW = Date.now()
@@ -35,9 +36,9 @@ const custD = randomUUID()  // no orders, no contact info
 
 beforeAll(async () => {
   await pg.exec(PARENTS)
-  const migration = readFileSync('drizzle/migrations/manual/0046_marketing.sql', 'utf8')
-  await pg.exec(migration)
-  await pg.exec(migration) // re-running the deployment migration is safe (idempotent)
+  await pg.exec(readFileSync('drizzle/migrations/manual/0046_marketing.sql', 'utf8'))
+  await pg.exec(readFileSync('drizzle/migrations/manual/0047_marketing_sms_consent.sql', 'utf8'))
+  await pg.exec(readFileSync('drizzle/migrations/manual/0047_marketing_sms_consent.sql', 'utf8')) // idempotent re-run
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
 })
 afterAll(() => pg.close())
@@ -103,6 +104,19 @@ describe('contact aggregates from canonical data', () => {
     expect(a.smsEligible).toBe(true)
     expect(a.emailEligible).toBe(true)
     expect(a.unsubscribed).toBe(false)
+  })
+
+  it('a phone number alone is NOT SMS consent (default smsConsent=false)', async () => {
+    const a = (await contactAggregates()).find((x) => x.customerId === custA)!
+    expect(a.phone).toBeTruthy()
+    expect(a.smsConsent).toBe(false) // has a phone, but never opted in
+  })
+
+  it('granting SMS consent flips smsConsent to true; revoking flips it back', async () => {
+    await grantSmsConsent(custA, { source: 'website_form', phone: '5120000001', actor: 'test' })
+    expect((await contactAggregates()).find((x) => x.customerId === custA)!.smsConsent).toBe(true)
+    await revokeSmsConsent(custA, { source: 'sms_keyword' })
+    expect((await contactAggregates()).find((x) => x.customerId === custA)!.smsConsent).toBe(false)
   })
 })
 

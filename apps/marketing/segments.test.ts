@@ -11,7 +11,7 @@ function contact(over: Partial<ContactAggregate> = {}): ContactAggregate {
   return {
     customerId: 'c1', name: 'Test', phone: '5125551234', email: 'a@b.com',
     lastVisitAt: daysAgo(30), totalVisits: 1, lifetimeRevenueCents: 50_000, avgTicketCents: 50_000,
-    categories: [], smsEligible: true, emailEligible: true, unsubscribed: false, ...over,
+    categories: [], smsEligible: true, emailEligible: true, smsConsent: true, unsubscribed: false, ...over,
   }
 }
 
@@ -47,6 +47,21 @@ describe('segment matching', () => {
     expect(matchesSegment(contact({ smsEligible: false }), { requireSmsEligible: true }, NOW)).toBe(false)
     expect(matchesSegment(contact({ phone: null }), { requireSmsEligible: true }, NOW)).toBe(false)
     expect(matchesSegment(contact({ email: null }), { requireEmailEligible: true }, NOW)).toBe(false)
+  })
+
+  it('requireSmsConsent: a phone number is NOT consent — only proven opt-in qualifies', () => {
+    expect(matchesSegment(contact({ smsConsent: true }), { requireSmsConsent: true }, NOW)).toBe(true)
+    expect(matchesSegment(contact({ smsConsent: false }), { requireSmsConsent: true }, NOW)).toBe(false)
+    expect(matchesSegment(contact({ smsConsent: true, phone: null }), { requireSmsConsent: true }, NOW)).toBe(false)
+  })
+
+  it('SMS reach estimate counts only consented contacts', () => {
+    const contacts = [
+      contact({ customerId: 'a', smsConsent: true }),
+      contact({ customerId: 'b', smsConsent: false }), // has phone, no consent → not reachable by SMS
+    ]
+    const est = estimateSegment(contacts, { requireContactable: true }, NOW)
+    expect(est.smsReachable).toBe(1)
   })
 })
 

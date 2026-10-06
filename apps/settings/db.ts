@@ -103,6 +103,21 @@ export const SETTINGS: Record<string, SettingDef> = {
   marketing_high_value_cents:   { key: 'marketing_high_value_cents',   type: 'int',    def: 100000, env: 'MARKETING_HIGH_VALUE_CENTS' },
   // Default approved offer text (blank = no standing offer; AI never invents one).
   marketing_default_offer:      { key: 'marketing_default_offer',      type: 'string', def: '',    env: 'MARKETING_DEFAULT_OFFER' },
+  // A2P 10DLC SMS identity + disclosures (shown in opt-in UI and appended to outbound SMS). URLs must
+  // be REAL public pages — never invented. Blank privacy/terms URLs are a blocking A2P requirement.
+  marketing_sms_brand_name:     { key: 'marketing_sms_brand_name',     type: 'string', def: 'Pitt Stop Detail', env: 'MARKETING_SMS_BRAND_NAME' },
+  marketing_sms_help_text:      { key: 'marketing_sms_help_text',      type: 'string', def: 'Reply HELP for help. Msg & data rates may apply.', env: 'MARKETING_SMS_HELP_TEXT' },
+  marketing_sms_frequency:      { key: 'marketing_sms_frequency',      type: 'string', def: 'Msg frequency varies (about 1–2/month).', env: 'MARKETING_SMS_FREQUENCY' },
+  marketing_privacy_url:        { key: 'marketing_privacy_url',        type: 'string', def: '',    env: 'MARKETING_PRIVACY_URL' },
+  marketing_terms_url:          { key: 'marketing_terms_url',          type: 'string', def: '',    env: 'MARKETING_TERMS_URL' },
+  // Twilio SMS send (Phase 4). Default OFF — campaigns stay dry-run until this is on AND Twilio
+  // Messaging Service credentials are present in server env.
+  marketing_sms_live:           { key: 'marketing_sms_live',           type: 'bool',   def: false, env: 'MARKETING_SMS_LIVE' },
+  // Quiet hours (local) — promotional SMS is blocked outside [start,end). TCPA-friendly default 9–20.
+  marketing_sms_quiet_start_hour: { key: 'marketing_sms_quiet_start_hour', type: 'int', def: 9,  env: 'MARKETING_SMS_QUIET_START_HOUR' },
+  marketing_sms_quiet_end_hour:   { key: 'marketing_sms_quiet_end_hour',   type: 'int', def: 20, env: 'MARKETING_SMS_QUIET_END_HOUR' },
+  // Global per-run SMS safety cap (hard ceiling on messages a single send will process).
+  marketing_sms_global_cap:     { key: 'marketing_sms_global_cap',     type: 'int',    def: 250,   env: 'MARKETING_SMS_GLOBAL_CAP' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
@@ -237,6 +252,16 @@ export interface MarketingConfig {
   attributionWindowDays: number
   highValueCents: number
   defaultOffer: string
+  // A2P / SMS
+  smsLive: boolean
+  smsBrandName: string
+  smsHelpText: string
+  smsFrequency: string
+  privacyUrl: string
+  termsUrl: string
+  smsQuietStartHour: number
+  smsQuietEndHour: number
+  smsGlobalCap: number
 }
 
 /** Resolve the marketing operational config in one DB read. */
@@ -251,6 +276,15 @@ export async function getMarketingConfig(): Promise<MarketingConfig> {
     attributionWindowDays: g('marketing_attribution_window_days') as number,
     highValueCents:        g('marketing_high_value_cents') as number,
     defaultOffer:          g('marketing_default_offer') as string,
+    smsLive:               g('marketing_sms_live') as boolean,
+    smsBrandName:          g('marketing_sms_brand_name') as string,
+    smsHelpText:           g('marketing_sms_help_text') as string,
+    smsFrequency:          g('marketing_sms_frequency') as string,
+    privacyUrl:            g('marketing_privacy_url') as string,
+    termsUrl:              g('marketing_terms_url') as string,
+    smsQuietStartHour:     g('marketing_sms_quiet_start_hour') as number,
+    smsQuietEndHour:       g('marketing_sms_quiet_end_hour') as number,
+    smsGlobalCap:          g('marketing_sms_global_cap') as number,
   }
 }
 

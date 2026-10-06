@@ -16,8 +16,9 @@ export interface ContactAggregate {
   lifetimeRevenueCents: number
   avgTicketCents: number
   categories: ServiceCategory[]   // premium categories ever purchased
-  smsEligible: boolean
+  smsEligible: boolean            // manager hard-block flag (false = blocked)
   emailEligible: boolean
+  smsConsent: boolean             // proven promotional-SMS opt-in (phone presence is NOT consent)
   unsubscribed: boolean
 }
 
@@ -34,6 +35,8 @@ export interface SegmentCriteria {
   missingCategory?: ServiceCategory
   requireSmsEligible?: boolean
   requireEmailEligible?: boolean
+  /** Must have proven promotional-SMS consent (A2P/TCPA). */
+  requireSmsConsent?: boolean
   /** Must be reachable (has a phone or email) and not unsubscribed. */
   requireContactable?: boolean
 }
@@ -70,6 +73,7 @@ export function matchesSegment(contact: ContactAggregate, criteria: SegmentCrite
   if (criteria.missingCategory && contact.categories.includes(criteria.missingCategory)) return false
 
   if (criteria.requireSmsEligible && (!contact.smsEligible || contact.unsubscribed || !contact.phone)) return false
+  if (criteria.requireSmsConsent && (!contact.smsConsent || !contact.phone)) return false
   if (criteria.requireEmailEligible && (!contact.emailEligible || contact.unsubscribed || !contact.email)) return false
   if (criteria.requireContactable) {
     const reachable = (!!contact.phone || !!contact.email) && !contact.unsubscribed
@@ -89,7 +93,8 @@ export function estimateSegment(contacts: ContactAggregate[], criteria: SegmentC
   const matched = applySegment(contacts, criteria, now)
   let sms = 0, email = 0
   for (const c of matched) {
-    if (c.smsEligible && !c.unsubscribed && c.phone) sms++
+    // SMS reach requires PROVEN consent, not merely a phone number.
+    if (c.smsConsent && c.phone) sms++
     if (c.emailEligible && !c.unsubscribed && c.email) email++
   }
   return { total: matched.length, smsReachable: sms, emailReachable: email }
@@ -138,6 +143,10 @@ export const NAMED_SEGMENTS: Record<string, NamedSegment> = {
   repeat_customers: {
     key: 'repeat_customers', label: 'Repeat customers', description: 'Two or more completed visits.',
     criteria: { minVisits: 2, requireContactable: true },
+  },
+  sms_subscribers: {
+    key: 'sms_subscribers', label: 'SMS subscribers (opted in)', description: 'Customers with proven promotional-SMS consent — the only ones a text campaign can reach.',
+    criteria: { requireSmsConsent: true, requireContactable: true },
   },
 }
 

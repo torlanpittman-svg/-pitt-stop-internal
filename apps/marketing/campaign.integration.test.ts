@@ -9,6 +9,7 @@ import { getDb } from '@/platform/db'
 import { createCampaign, getCampaign, listRecipients, transitionCampaign, InvalidTransitionError } from './db'
 import { buildCampaignRecipients, sendCampaign } from './campaigns'
 import { linkRecipientOutcome, campaignFunnel } from './attribution'
+import { grantSmsConsent } from './consent'
 import type { Providers, SendResult } from './providers'
 
 const pg = new PGlite()
@@ -30,8 +31,8 @@ const noContact = randomUUID()// no phone/email
 
 beforeAll(async () => {
   await pg.exec(PARENTS)
-  const migration = readFileSync('drizzle/migrations/manual/0046_marketing.sql', 'utf8')
-  await pg.exec(migration)
+  await pg.exec(readFileSync('drizzle/migrations/manual/0046_marketing.sql', 'utf8'))
+  await pg.exec(readFileSync('drizzle/migrations/manual/0047_marketing_sms_consent.sql', 'utf8'))
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
 })
 afterAll(() => pg.close())
@@ -52,6 +53,9 @@ beforeEach(async () => {
       [randomUUID(), id, 'delivered', daysAgo(10), 50000, JSON.stringify(['Full detail'])])
   }
   await pg.query('INSERT INTO marketing_preferences (id, customer_id, unsubscribed_at) VALUES ($1,$2,$3)', [randomUUID(), optout, new Date(NOW).toISOString()])
+  // SMS consent is required to receive texts. Grant it ONLY to `both` — `smsOnly` has a phone but no
+  // consent, proving a phone number alone never qualifies.
+  await grantSmsConsent(both, { source: 'website_form', phone: '5120000001', actor: 'test' })
 })
 
 async function newBuiltCampaign(channel: 'sms' | 'email' | 'both' = 'both', criteria: Record<string, unknown> = { requireContactable: true }) {
@@ -71,10 +75,11 @@ describe('recipient building + consent', () => {
     const { campaign, summary } = await newBuiltCampaign('both', {})
     const recips = await listRecipients(campaign!.id)
     const byReason = recips.filter((r) => r.status === 'excluded').map((r) => r.exclusionReason)
-    // optout → unsubscribed on both channels; noContact → no_phone/no_email; smsOnly → no_email.
+    // optout → unsubscribed; noContact → no_phone/no_email; smsOnly → no_sms_consent (phone, no opt-in) + no_email.
     expect(byReason).toContain('unsubscribed')
     expect(byReason).toContain('no_email')
     expect(byReason).toContain('no_phone')
+    expect(byReason).toContain('no_sms_consent') // a phone number is NOT consent
     expect(summary.matched).toBeGreaterThan(0)
     // Nobody unsubscribed is ever pending.
     const optoutRows = recips.filter((r) => r.customerId === optout)

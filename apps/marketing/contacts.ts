@@ -30,6 +30,7 @@ interface RawRow {
   serviceLabels: unknown
   smsEligible: boolean
   emailEligible: boolean
+  smsConsent: boolean
   unsubscribed: boolean
 }
 
@@ -63,6 +64,7 @@ function toAggregate(row: RawRow): ContactAggregate {
     categories: classifyServices(flattenLabels(row.serviceLabels)),
     smsEligible: row.smsEligible !== false,
     emailEligible: row.emailEligible !== false,
+    smsConsent: row.smsConsent === true,
     unsubscribed: row.unsubscribed === true,
   }
 }
@@ -81,6 +83,9 @@ export async function contactAggregates(): Promise<ContactAggregate[]> {
       serviceLabels: sql<unknown>`coalesce(jsonb_agg(${serviceOrders.services}) filter (where ${serviceOrders.services} is not null), '[]'::jsonb)`,
       smsEligible: sql<boolean>`coalesce(bool_and(coalesce(${marketingPreferences.smsEligible}, true)), true)`,
       emailEligible: sql<boolean>`coalesce(bool_and(coalesce(${marketingPreferences.emailEligible}, true)), true)`,
+      // Proven SMS consent only: granted status AND not manager-blocked AND not unsubscribed. A present
+      // phone number does NOT imply consent — missing/unknown ⇒ false.
+      smsConsent: sql<boolean>`coalesce(bool_and(coalesce(${marketingPreferences.smsConsentStatus}, 'unknown') = 'granted' and coalesce(${marketingPreferences.smsEligible}, true) and ${marketingPreferences.unsubscribedAt} is null), false)`,
       unsubscribed: sql<boolean>`bool_or(${marketingPreferences.unsubscribedAt} is not null)`,
     })
     .from(customers)
