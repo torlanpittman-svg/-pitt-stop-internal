@@ -119,13 +119,18 @@ DO $$ BEGIN
     ALTER TABLE marketing_social_posts ADD CONSTRAINT marketing_posts_order_fk
       FOREIGN KEY (service_order_id) REFERENCES service_orders(id) ON DELETE SET NULL;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'marketing_posts_before_fk') THEN
-    ALTER TABLE marketing_social_posts ADD CONSTRAINT marketing_posts_before_fk
-      FOREIGN KEY (before_photo_id) REFERENCES order_photos(id) ON DELETE SET NULL;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'marketing_posts_after_fk') THEN
-    ALTER TABLE marketing_social_posts ADD CONSTRAINT marketing_posts_after_fk
-      FOREIGN KEY (after_photo_id) REFERENCES order_photos(id) ON DELETE SET NULL;
+  -- order_photos lives in a separate module that may not be deployed in every environment yet.
+  -- Add the photo FKs only when that table exists; otherwise the columns remain plain uuids and
+  -- marketing is fully usable without it. (Content candidate detection degrades gracefully too.)
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'order_photos') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'marketing_posts_before_fk') THEN
+      ALTER TABLE marketing_social_posts ADD CONSTRAINT marketing_posts_before_fk
+        FOREIGN KEY (before_photo_id) REFERENCES order_photos(id) ON DELETE SET NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'marketing_posts_after_fk') THEN
+      ALTER TABLE marketing_social_posts ADD CONSTRAINT marketing_posts_after_fk
+        FOREIGN KEY (after_photo_id) REFERENCES order_photos(id) ON DELETE SET NULL;
+    END IF;
   END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS marketing_posts_status_idx    ON marketing_social_posts(status);

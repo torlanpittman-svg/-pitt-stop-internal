@@ -4,11 +4,9 @@
  * system — a completed order with 2+ photos and a known premium service becomes a DRAFT post opportunity
  * (never auto-published; a manager approves). We only ever describe the service actually performed.
  */
-import { and, desc, eq, gte, isNull, lte, sql } from 'drizzle-orm'
+import { and, desc, eq, gte, lte, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { marketingSocialPosts } from './schema'
-import { serviceOrders } from '@/apps/workflow/schema'
-import { orderPhotos } from '@/apps/order-photos/schema'
 import { logEvent } from './events'
 import { primaryServiceCategory } from './services'
 import type { ContentPillar, PostStatus, ServiceCategory } from './types'
@@ -88,41 +86,60 @@ export interface ContentCandidate {
   afterPhotoId: string
 }
 
+interface CandidateRow {
+  service_order_id: string
+  vehicle_label: string | null
+  services: unknown
+  photo_count: number
+  before_photo_id: string
+  after_photo_id: string
+}
+
 /**
  * Completed jobs with strong before/after assets and a known premium service that do NOT yet have a
  * post. Earliest photo = "before", latest = "after". Returns draft-post opportunities only.
+ *
+ * `order_photos` belongs to a separate module (apps/order-photos) that is not deployed in every
+ * environment, so this queries it BY NAME (no compile-time import) and degrades to [] when the table
+ * is absent — marketing never hard-depends on order-photos being present.
  */
 export async function findContentCandidates(limit = 25): Promise<ContentCandidate[]> {
   const db = getDb()
-  // Orders that are delivered/ready with >= 2 live photos and no existing post.
-  const rows = await db.select({
-    serviceOrderId: serviceOrders.id,
-    vehicleLabel: serviceOrders.customerName,
-    services: serviceOrders.services,
-    photoCount: sql<number>`count(${orderPhotos.id})::int`,
-    beforePhotoId: sql<string>`(array_agg(${orderPhotos.id} order by ${orderPhotos.createdAt} asc))[1]`,
-    afterPhotoId: sql<string>`(array_agg(${orderPhotos.id} order by ${orderPhotos.createdAt} desc))[1]`,
-  })
-    .from(serviceOrders)
-    .innerJoin(orderPhotos, and(eq(orderPhotos.serviceOrderId, serviceOrders.id), isNull(orderPhotos.removedAt)))
-    .where(sql`${serviceOrders.status} in ('ready','delivered')
-      and not exists (select 1 from marketing_social_posts p where p.service_order_id = ${serviceOrders.id})`)
-    .groupBy(serviceOrders.id, serviceOrders.customerName, serviceOrders.services)
-    .having(sql`count(${orderPhotos.id}) >= 2`)
-    .orderBy(desc(sql`max(${orderPhotos.createdAt})`))
-    .limit(limit)
+  let result: { rows?: CandidateRow[] } | CandidateRow[]
+  try {
+    result = await db.execute(sql`
+      SELECT so.id              AS service_order_id,
+             so.customer_name   AS vehicle_label,
+             so.services        AS services,
+             count(op.id)::int  AS photo_count,
+             (array_agg(op.id ORDER BY op.created_at ASC))[1]  AS before_photo_id,
+             (array_agg(op.id ORDER BY op.created_at DESC))[1] AS after_photo_id
+      FROM service_orders so
+      JOIN order_photos op ON op.service_order_id = so.id AND op.removed_at IS NULL
+      WHERE so.status IN ('ready','delivered')
+        AND NOT EXISTS (SELECT 1 FROM marketing_social_posts p WHERE p.service_order_id = so.id)
+      GROUP BY so.id, so.customer_name, so.services
+      HAVING count(op.id) >= 2
+      ORDER BY max(op.created_at) DESC
+      LIMIT ${limit}
+    `) as unknown as { rows?: CandidateRow[] } | CandidateRow[]
+  } catch {
+    // order_photos (apps/order-photos) not present in this environment — no candidates.
+    return []
+  }
 
+  const rows: CandidateRow[] = Array.isArray(result) ? result : (result.rows ?? [])
   const out: ContentCandidate[] = []
   for (const r of rows) {
     const category = primaryServiceCategory(Array.isArray(r.services) ? (r.services as string[]) : [])
     if (category === 'other') continue // only promote known services; never invent one
     out.push({
-      serviceOrderId: r.serviceOrderId,
-      vehicleLabel: r.vehicleLabel ?? null,
+      serviceOrderId: r.service_order_id,
+      vehicleLabel: r.vehicle_label ?? null,
       category,
-      photoCount: r.photoCount,
-      beforePhotoId: r.beforePhotoId,
-      afterPhotoId: r.afterPhotoId,
+      photoCount: Number(r.photo_count) || 0,
+      beforePhotoId: r.before_photo_id,
+      afterPhotoId: r.after_photo_id,
     })
   }
   return out
