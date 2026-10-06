@@ -89,6 +89,20 @@ export const SETTINGS: Record<string, SettingDef> = {
   // NON-SENSITIVE MICR geometry (safe): y position of the MICR band + left start, inches. Field ORDER
   // and the actual numbers come from micr.ts (secure). Tuned during calibration against the bank spec.
   micr_layout:                  { key: 'micr_layout',                  type: 'json',   def: '{}', env: 'MICR_LAYOUT' },
+  // Marketing Agent V1. Ships DARK: the home tile + /marketing render only when enabled, and even then
+  // every external send stays dry-run until a provider is configured (apps/marketing/providers). These
+  // are operational toggles only — durable brand knowledge lives in apps/marketing/profile.ts.
+  marketing_enabled:            { key: 'marketing_enabled',            type: 'bool',   def: false, env: 'MARKETING_ENABLED' },
+  // Require a manager-approved (Ready) campaign before any send. Default ON — do not relax lightly.
+  marketing_require_approval:   { key: 'marketing_require_approval',   type: 'bool',   def: true,  env: 'MARKETING_REQUIRE_APPROVAL' },
+  // Safety cap on recipients processed per send (belt-and-suspenders against an accidental mass blast).
+  marketing_send_daily_cap:     { key: 'marketing_send_daily_cap',     type: 'int',    def: 500,   env: 'MARKETING_SEND_DAILY_CAP' },
+  // Attribution lookback window (days) for crediting a marketing touch to a completed job.
+  marketing_attribution_window_days: { key: 'marketing_attribution_window_days', type: 'int', def: 30, env: 'MARKETING_ATTRIBUTION_WINDOW_DAYS' },
+  // Lifetime-revenue threshold (cents) for the "high value" segment.
+  marketing_high_value_cents:   { key: 'marketing_high_value_cents',   type: 'int',    def: 100000, env: 'MARKETING_HIGH_VALUE_CENTS' },
+  // Default approved offer text (blank = no standing offer; AI never invents one).
+  marketing_default_offer:      { key: 'marketing_default_offer',      type: 'string', def: '',    env: 'MARKETING_DEFAULT_OFFER' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
@@ -208,6 +222,36 @@ export async function getAllSettings(): Promise<SettingView[]> {
       description: row?.description ?? null,
     }
   })
+}
+
+/** Marketing Agent V1 feature flag (default OFF). */
+export async function marketingEnabled(): Promise<boolean> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'marketing_enabled'))
+  return resolve(SETTINGS.marketing_enabled, rows[0]?.value) as boolean
+}
+
+export interface MarketingConfig {
+  enabled: boolean
+  requireApproval: boolean
+  sendDailyCap: number
+  attributionWindowDays: number
+  highValueCents: number
+  defaultOffer: string
+}
+
+/** Resolve the marketing operational config in one DB read. */
+export async function getMarketingConfig(): Promise<MarketingConfig> {
+  const rows = await getDb().select().from(appSettings)
+  const map = new Map(rows.map((r) => [r.key, r.value]))
+  const g = (k: keyof typeof SETTINGS) => resolve(SETTINGS[k], map.get(k))
+  return {
+    enabled:               g('marketing_enabled') as boolean,
+    requireApproval:       g('marketing_require_approval') as boolean,
+    sendDailyCap:          g('marketing_send_daily_cap') as number,
+    attributionWindowDays: g('marketing_attribution_window_days') as number,
+    highValueCents:        g('marketing_high_value_cents') as number,
+    defaultOffer:          g('marketing_default_offer') as string,
+  }
 }
 
 /** Upsert one setting (admin edit). Coerces to the registry type. Rejects unknown keys. */

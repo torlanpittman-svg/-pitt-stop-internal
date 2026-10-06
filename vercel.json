@@ -7,6 +7,14 @@
     {
       "path": "/api/cron/finance-sync",
       "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/marketing-weekly-report",
+      "schedule": "0 7 * * 1"
+    },
+    {
+      "path": "/api/cron/marketing-content-candidates",
+      "schedule": "0 10 * * *"
     }
   ]
 }

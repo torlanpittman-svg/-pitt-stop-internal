@@ -4,12 +4,13 @@ import IdentityBar, { AdminLink } from '@/app/components/IdentityBar'
 import GlobalSearch from '@/app/components/GlobalSearch'
 import { PageContainer } from '@/app/components/ui/PageHeader'
 import { managerActor } from '@/apps/checks/authz'
+import { marketingEnabled } from '@/apps/settings/db'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 type ModuleGroup = 'Operations' | 'Sales' | 'Money'
-type IconKey = 'quick' | 'dealer' | 'board' | 'auto' | 'receipt' | 'estimate' | 'check' | 'customers'
+type IconKey = 'quick' | 'dealer' | 'board' | 'auto' | 'receipt' | 'estimate' | 'check' | 'customers' | 'marketing'
 
 interface Module {
   href: string
@@ -32,6 +33,7 @@ const MODULES: Module[] = [
   { href: '/estimates', label: 'Estimates', sub: 'Quote a customer, send through QuickBooks, move approved work to the board.', group: 'Sales', icon: 'estimate', manager: true },
   { href: '/expenses', label: 'Receipts', sub: 'Snap a business receipt — a manager reviews and files it.', group: 'Money', icon: 'receipt' },
   { href: '/checks', label: 'Write a Check', sub: 'Pay a vendor by check — QuickBooks + shop printer. Manager only.', group: 'Money', icon: 'check', manager: true },
+  { href: '/marketing', label: 'Marketing', sub: 'Campaigns, content, Google Ads and attributed revenue. Manager only.', group: 'Money', icon: 'marketing', manager: true },
 ]
 
 const GROUP_ORDER: ModuleGroup[] = ['Operations', 'Sales', 'Money']
@@ -39,7 +41,9 @@ const GROUP_ORDER: ModuleGroup[] = ['Operations', 'Sales', 'Money']
 export default async function Home() {
   // Manager visibility (Torlan/Darryl/Tony/Bart/Thomas) — not authorization; the routes gate themselves.
   const manager = await managerActor()
-  const visible = MODULES.filter((m) => !m.manager || manager)
+  // Marketing ships dark — its tile appears only when the feature flag is on (and for a manager).
+  const mktEnabled = await marketingEnabled()
+  const visible = MODULES.filter((m) => (!m.manager || manager) && (m.href !== '/marketing' || mktEnabled))
 
   return (
     <main className="flex min-h-screen flex-col bg-gray-950">
@@ -135,5 +139,7 @@ function ModuleIcon({ icon }: { icon: IconKey }): ReactNode {
       return <svg {...p}><rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h.01M18 12h.01" /><circle cx="12" cy="12" r="2" /></svg>
     case 'customers':
       return <svg {...p}><circle cx="9" cy="8" r="3.2" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0" /><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M18 20a5.5 5.5 0 0 0-3-4.9" /></svg>
+    case 'marketing':
+      return <svg {...p}><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1z" /><path d="M15 8a4 4 0 0 1 0 8" /></svg>
   }
 }
