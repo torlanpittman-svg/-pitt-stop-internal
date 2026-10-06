@@ -118,6 +118,20 @@ export const SETTINGS: Record<string, SettingDef> = {
   marketing_sms_quiet_end_hour:   { key: 'marketing_sms_quiet_end_hour',   type: 'int', def: 20, env: 'MARKETING_SMS_QUIET_END_HOUR' },
   // Global per-run SMS safety cap (hard ceiling on messages a single send will process).
   marketing_sms_global_cap:     { key: 'marketing_sms_global_cap',     type: 'int',    def: 250,   env: 'MARKETING_SMS_GLOBAL_CAP' },
+  // PUBLIC customer-facing base URL where opt-in/privacy/terms are published (e.g. the business
+  // website/domain). Drives every customer-facing + A2P URL. Blank ⇒ readiness flags it; NEVER guessed.
+  marketing_public_base_url:    { key: 'marketing_public_base_url',    type: 'string', def: '',    env: 'MARKETING_PUBLIC_BASE_URL' },
+  // A2P brand identity (used only in the manager A2P packet; EIN is NOT stored here — keep it in Twilio).
+  marketing_legal_name:         { key: 'marketing_legal_name',         type: 'string', def: 'Pitt Stop Detail & Auto Sales', env: 'MARKETING_LEGAL_NAME' },
+  marketing_business_website:   { key: 'marketing_business_website',   type: 'string', def: '',    env: 'MARKETING_BUSINESS_WEBSITE' },
+  marketing_support_contact:    { key: 'marketing_support_contact',    type: 'string', def: '',    env: 'MARKETING_SUPPORT_CONTACT' },
+  // External/manual A2P readiness confirmations — env credentials ALONE never mean "ready to send".
+  // A manager flips these only after the real external steps are verified. All default false.
+  marketing_a2p_brand_approved:    { key: 'marketing_a2p_brand_approved',    type: 'bool', def: false, env: 'MARKETING_A2P_BRAND_APPROVED' },
+  marketing_a2p_campaign_approved: { key: 'marketing_a2p_campaign_approved', type: 'bool', def: false, env: 'MARKETING_A2P_CAMPAIGN_APPROVED' },
+  marketing_advanced_optout_configured: { key: 'marketing_advanced_optout_configured', type: 'bool', def: false, env: 'MARKETING_ADVANCED_OPTOUT_CONFIGURED' },
+  marketing_privacy_published:     { key: 'marketing_privacy_published',     type: 'bool', def: false, env: 'MARKETING_PRIVACY_PUBLISHED' },
+  marketing_terms_published:       { key: 'marketing_terms_published',       type: 'bool', def: false, env: 'MARKETING_TERMS_PUBLISHED' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
@@ -262,6 +276,15 @@ export interface MarketingConfig {
   smsQuietStartHour: number
   smsQuietEndHour: number
   smsGlobalCap: number
+  publicBaseUrl: string
+  legalName: string
+  businessWebsite: string
+  supportContact: string
+  a2pBrandApproved: boolean
+  a2pCampaignApproved: boolean
+  advancedOptOutConfigured: boolean
+  privacyPublished: boolean
+  termsPublished: boolean
 }
 
 /** Resolve the marketing operational config in one DB read. */
@@ -285,6 +308,15 @@ export async function getMarketingConfig(): Promise<MarketingConfig> {
     smsQuietStartHour:     g('marketing_sms_quiet_start_hour') as number,
     smsQuietEndHour:       g('marketing_sms_quiet_end_hour') as number,
     smsGlobalCap:          g('marketing_sms_global_cap') as number,
+    publicBaseUrl:         g('marketing_public_base_url') as string,
+    legalName:             g('marketing_legal_name') as string,
+    businessWebsite:       g('marketing_business_website') as string,
+    supportContact:        g('marketing_support_contact') as string,
+    a2pBrandApproved:      g('marketing_a2p_brand_approved') as boolean,
+    a2pCampaignApproved:   g('marketing_a2p_campaign_approved') as boolean,
+    advancedOptOutConfigured: g('marketing_advanced_optout_configured') as boolean,
+    privacyPublished:      g('marketing_privacy_published') as boolean,
+    termsPublished:        g('marketing_terms_published') as boolean,
   }
 }
 

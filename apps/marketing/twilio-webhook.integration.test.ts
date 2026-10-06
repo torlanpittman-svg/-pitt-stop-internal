@@ -33,25 +33,45 @@ beforeEach(async () => {
   await pg.query('INSERT INTO customers (id, display_name, phone, normalized_phone) VALUES ($1,$2,$3,$4)', [cust, 'Webhook Cust', '+15125550123', '5125550123'])
 })
 
-describe('inbound SMS webhook', () => {
-  it('STOP immediately revokes SMS consent and sends no custom reply (Twilio handles the ack)', async () => {
+describe('inbound SMS webhook — Advanced Opt-Out (OptOutType present)', () => {
+  it('STOP + OptOutType revokes consent and sends NO duplicate reply', async () => {
     await grantSmsConsent(cust, { source: 'website_form' })
-    const res = await handleInboundSms({ From: '+15125550123', Body: 'STOP', MessageSid: 'SM1' })
+    const res = await handleInboundSms({ From: '+15125550123', Body: 'STOP', MessageSid: 'SM1', OptOutType: 'STOP' })
     expect(res.action).toBe('stop')
-    expect(res.reply).toBeNull() // no double STOP response
+    expect(res.twilioHandled).toBe(true)
+    expect(res.reply).toBeNull() // Twilio already sent the STOP confirmation
     expect((await getPreferences(cust))?.smsConsentStatus).toBe('revoked')
   })
 
-  it('START re-grants consent', async () => {
-    const res = await handleInboundSms({ From: '+15125550123', Body: 'START', MessageSid: 'SM2' })
+  it('START + OptOutType re-grants consent and sends NO duplicate reply', async () => {
+    const res = await handleInboundSms({ From: '+15125550123', Body: 'START', MessageSid: 'SM2', OptOutType: 'START' })
     expect(res.action).toBe('start')
+    expect(res.twilioHandled).toBe(true)
+    expect(res.reply).toBeNull()
     expect((await getPreferences(cust))?.smsConsentStatus).toBe('granted')
   })
 
-  it('HELP replies with help text and identifies the sender', async () => {
-    const res = await handleInboundSms({ From: '+15125550123', Body: 'HELP', MessageSid: 'SM3' })
+  it('HELP + OptOutType records nothing extra and sends NO duplicate reply', async () => {
+    const res = await handleInboundSms({ From: '+15125550123', Body: 'HELP', MessageSid: 'SM3', OptOutType: 'HELP' })
     expect(res.action).toBe('help')
-    expect(res.reply).toBeTruthy()
+    expect(res.twilioHandled).toBe(true)
+    expect(res.reply).toBeNull()
+  })
+})
+
+describe('inbound SMS webhook — without Advanced Opt-Out (fallback)', () => {
+  it('STOP (no OptOutType) still revokes and sends our own confirmation', async () => {
+    await grantSmsConsent(cust, { source: 'website_form' })
+    const res = await handleInboundSms({ From: '+15125550123', Body: 'STOP', MessageSid: 'SM1b' })
+    expect(res.action).toBe('stop')
+    expect(res.twilioHandled).toBe(false)
+    expect(res.reply).toMatch(/unsubscribed/i) // we acknowledge since Twilio didn't
+    expect((await getPreferences(cust))?.smsConsentStatus).toBe('revoked')
+  })
+
+  it('HELP (no OptOutType) replies with help text identifying the sender', async () => {
+    const res = await handleInboundSms({ From: '+15125550123', Body: 'HELP', MessageSid: 'SM3b' })
+    expect(res.twilioHandled).toBe(false)
     expect(res.reply).toMatch(/stop/i)
   })
 

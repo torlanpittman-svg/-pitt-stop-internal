@@ -38,7 +38,7 @@ export async function ensurePreferences(customerId: string): Promise<Preferences
 
 /** Append a consent event to the audit trail (never updated/deleted). */
 export async function recordConsentEvent(input: {
-  customerId: string
+  customerId: string | null
   channel: 'sms' | 'email'
   event: 'opt_in' | 'opt_out' | 'import_verified' | 'help'
   source: ConsentSource

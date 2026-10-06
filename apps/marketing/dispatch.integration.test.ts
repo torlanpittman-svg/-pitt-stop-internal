@@ -24,7 +24,10 @@ function baseCfg(over: Partial<MarketingConfig> = {}): MarketingConfig {
   return {
     enabled: true, requireApproval: true, sendDailyCap: 500, attributionWindowDays: 30, highValueCents: 100000, defaultOffer: '',
     smsLive: false, smsBrandName: 'Pitt Stop Detail', smsHelpText: 'Reply HELP for help.', smsFrequency: '1-2/mo',
-    privacyUrl: '', termsUrl: '', smsQuietStartHour: 9, smsQuietEndHour: 20, smsGlobalCap: 250, ...over,
+    privacyUrl: '', termsUrl: '', smsQuietStartHour: 9, smsQuietEndHour: 20, smsGlobalCap: 250,
+    publicBaseUrl: '', legalName: 'Pitt Stop Detail & Auto Sales', businessWebsite: '', supportContact: '',
+    a2pBrandApproved: false, a2pCampaignApproved: false, advancedOptOutConfigured: false,
+    privacyPublished: false, termsPublished: false, ...over,
   }
 }
 
