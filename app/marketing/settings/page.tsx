@@ -6,7 +6,7 @@ import { MARKETING_PROFILE } from '@/apps/marketing/profile'
 import { a2pProfile, smsDisclosureText } from '@/apps/marketing/compliance'
 import { smsSubscriberCount } from '@/apps/marketing/optin'
 import { money, count } from '@/app/lib/format'
-import { Badge } from '@/app/components/ui'
+import { Badge } from '@/app/components/ui/Badge'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'

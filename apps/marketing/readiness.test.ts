@@ -9,16 +9,21 @@ function cfg(over: Partial<MarketingConfig> = {}): MarketingConfig {
     smsLive: false, smsBrandName: 'Pitt Stop Detail', smsHelpText: 'Reply HELP for help.', smsFrequency: 'Up to 3 marketing messages per month.',
     privacyUrl: '', termsUrl: '', smsQuietStartHour: 9, smsQuietEndHour: 20, smsGlobalCap: 250,
     publicBaseUrl: '', legalName: 'Pitt Stop Detail & Auto Sales', businessWebsite: '', supportContact: '',
-    a2pBrandApproved: false, a2pCampaignApproved: false, advancedOptOutConfigured: false, privacyPublished: false, termsPublished: false, ...over,
+    a2pBrandApproved: false, a2pCampaignApproved: false, advancedOptOutConfigured: false, optInPublished: false, webhooksVerified: false, privacyPublished: false, termsPublished: false, ...over,
   }
 }
 
 const allApproved: Partial<MarketingConfig> = {
   publicBaseUrl: 'https://pittstopdetail.com', businessWebsite: 'https://pittstopdetail.com', supportContact: 'text us',
-  privacyPublished: true, termsPublished: true, advancedOptOutConfigured: true, a2pBrandApproved: true, a2pCampaignApproved: true, smsLive: true,
+  optInPublished: true, privacyPublished: true, termsPublished: true, advancedOptOutConfigured: true, a2pBrandApproved: true, a2pCampaignApproved: true, smsLive: true,
 }
 
 describe('SMS launch readiness', () => {
+  it('can finish preflight after real webhook verification is recorded', () => {
+    const r = smsLaunchReadiness({ cfg: cfg({ ...allApproved, webhooksVerified: true }), providerLive: true, webhookBaseConfigured: true, subscriberCount: 1 })
+    expect(r.canGoLive).toBe(true)
+    expect(r.blockers).toEqual([])
+  })
   it('is NOT ready when A2P brand/campaign are unapproved (even if everything else is set)', () => {
     const r = smsLaunchReadiness({ cfg: cfg({ ...allApproved, a2pBrandApproved: false, a2pCampaignApproved: false }), providerLive: true, webhookBaseConfigured: true, subscriberCount: 5 })
     expect(r.canGoLive).toBe(false)

@@ -9,7 +9,7 @@ import { a2pProfile, composeSmsBody } from '@/apps/marketing/compliance'
 import { smsSubscriberCount } from '@/apps/marketing/optin'
 import { contactAggregates } from '@/apps/marketing/contacts'
 import { estimateSegment, NAMED_SEGMENTS } from '@/apps/marketing/segments'
-import { Badge } from '@/app/components/ui'
+import { Badge } from '@/app/components/ui/Badge'
 import { CopyButton } from '@/app/components/CopyButton'
 import { QrCode, OptInCta } from '@/app/components/OptInCta'
 import { count } from '@/app/lib/format'
@@ -24,7 +24,7 @@ export default async function SmsLaunchPage() {
   await requireMarketingManager('/marketing/sms')
   const cfg = await getMarketingConfig()
   const providerLive = providerStatus(getProviders()).sms
-  const webhookBaseConfigured = !!(process.env.TWILIO_WEBHOOK_BASE_URL || cfg.publicBaseUrl)
+  const webhookBaseConfigured = !!process.env.TWILIO_WEBHOOK_BASE_URL
   const subscriberCount = await smsSubscriberCount()
   const readiness = smsLaunchReadiness({ cfg, providerLive, webhookBaseConfigured, subscriberCount })
   const packet = buildA2pPacket(cfg)
@@ -57,7 +57,7 @@ export default async function SmsLaunchPage() {
       <Section title="Business identity, public URLs & A2P confirmations">
         <p className="mb-3 text-xs text-gray-500">URLs must point at the PUBLIC customer-facing domain where /sms-opt-in, /privacy and /terms are published. The approval toggles are confirmed manually AFTER the real external steps — credentials alone never mark SMS ready.</p>
         <form action={updateMarketingSettingsAction} className="space-y-3">
-          <input type="hidden" name="__keys" value="marketing_public_base_url,marketing_legal_name,marketing_business_website,marketing_support_contact,marketing_a2p_brand_approved,marketing_a2p_campaign_approved,marketing_advanced_optout_configured,marketing_privacy_published,marketing_terms_published" />
+          <input type="hidden" name="__keys" value="marketing_public_base_url,marketing_legal_name,marketing_business_website,marketing_support_contact,marketing_a2p_brand_approved,marketing_a2p_campaign_approved,marketing_advanced_optout_configured,marketing_privacy_published,marketing_terms_published,marketing_webhooks_verified,marketing_optin_published" />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div><label className="mb-1 block text-xs uppercase tracking-wide text-gray-500">Public base URL</label><input name="marketing_public_base_url" defaultValue={cfg.publicBaseUrl} placeholder="https://pittstopdetail.com" className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm" /></div>
             <div><label className="mb-1 block text-xs uppercase tracking-wide text-gray-500">Business website</label><input name="marketing_business_website" defaultValue={cfg.businessWebsite} className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm" /></div>
@@ -66,9 +66,11 @@ export default async function SmsLaunchPage() {
           </div>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {[
+              ['marketing_optin_published', 'Public signup page verified', cfg.optInPublished],
               ['marketing_privacy_published', 'Privacy Policy published (with SMS section)', cfg.privacyPublished],
               ['marketing_terms_published', 'SMS Terms published', cfg.termsPublished],
               ['marketing_advanced_optout_configured', 'Twilio Advanced Opt-Out configured', cfg.advancedOptOutConfigured],
+              ['marketing_webhooks_verified', 'Signed inbound and status callbacks verified', cfg.webhooksVerified],
               ['marketing_a2p_brand_approved', 'A2P Brand approved', cfg.a2pBrandApproved],
               ['marketing_a2p_campaign_approved', 'A2P Campaign approved', cfg.a2pCampaignApproved],
             ].map(([key, label, val]) => (

@@ -226,7 +226,7 @@ const MARKETING_SETTING_KEYS = [
   // Public URLs + business identity + external A2P approval confirmations
   'marketing_public_base_url', 'marketing_legal_name', 'marketing_business_website', 'marketing_support_contact',
   'marketing_a2p_brand_approved', 'marketing_a2p_campaign_approved', 'marketing_advanced_optout_configured',
-  'marketing_privacy_published', 'marketing_terms_published',
+  'marketing_privacy_published', 'marketing_terms_published', 'marketing_webhooks_verified', 'marketing_optin_published',
 ]
 
 export async function updateMarketingSettingsAction(fd: FormData): Promise<void> {

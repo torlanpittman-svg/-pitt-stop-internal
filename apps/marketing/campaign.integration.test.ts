@@ -9,7 +9,7 @@ import { getDb } from '@/platform/db'
 import { createCampaign, getCampaign, listRecipients, transitionCampaign, InvalidTransitionError } from './db'
 import { buildCampaignRecipients, sendCampaign } from './campaigns'
 import { linkRecipientOutcome, campaignFunnel } from './attribution'
-import { grantSmsConsent } from './consent'
+import { grantSmsConsent, revokeSmsConsent } from './consent'
 import type { Providers, SendResult } from './providers'
 
 const pg = new PGlite()
@@ -123,6 +123,17 @@ describe('dry-run send never pretends to send', () => {
 })
 
 describe('live send (fake live provider)', () => {
+  it('rechecks consent after building, so STOP prevents an already queued send', async () => {
+    const { campaign } = await newBuiltCampaign('sms')
+    await transitionCampaign(campaign!.id, 'ready', 'Torlan')
+    await revokeSmsConsent(both, { source: 'sms_keyword', reason: 'STOP' })
+    const providers = liveProviders()
+    const send = vi.spyOn(providers.sms, 'send')
+    const result = await sendCampaign(campaign!.id, { providers })
+    expect(send).not.toHaveBeenCalled()
+    expect(result.sent).toBe(0)
+    expect((await listRecipients(campaign!.id)).find(r => r.customerId === both)?.exclusionReason).toBe('consent_revoked_before_send')
+  })
   function liveProviders(): Providers {
     const ok = async (): Promise<SendResult> => ({ status: 'sent', providerMessageId: 'x1' })
     return {

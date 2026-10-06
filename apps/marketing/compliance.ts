@@ -9,7 +9,7 @@
 import type { MarketingConfig } from '@/apps/settings/db'
 
 /** Bump when the disclosure wording materially changes; stored on each consent event for audit. */
-export const SMS_OPT_IN_VERSION = 'v1-2026-10'
+export const SMS_OPT_IN_VERSION = 'v2-2026-10-06'
 
 /** Approved program constants (truthful, conservative). */
 export const SMS_MAX_PER_MONTH = 3
@@ -71,16 +71,14 @@ export function stopConfirmation(p: A2pProfile): string {
 
 /** The approved affirmative opt-in checkbox label (shown immediately next to the unchecked box). */
 export function optInCheckboxLabel(p: A2pProfile): string {
-  return `Yes, I'd like to receive recurring promotional text messages from ${p.legalName} about services, appointment opportunities and offers. ${p.messageFrequency} Message and data rates may apply. Reply STOP to unsubscribe or HELP for help. Consent is not a condition of purchase.`
+  return `Yes, I agree to receive recurring promotional text messages, including messages sent by automated technology, from ${p.legalName} about services, appointment opportunities and offers. ${p.messageFrequency} Msg & data rates may apply. Reply STOP to unsubscribe or HELP for help. Consent is not a condition of purchase.`
 }
 
 /** The exact disclosure a customer agrees to at opt-in (also stored as consent_text). */
 export function smsDisclosureText(p: A2pProfile): string {
   const links = [p.privacyUrl ? `Privacy: ${p.privacyUrl}` : '', p.termsUrl ? `Terms: ${p.termsUrl}` : ''].filter(Boolean).join('  ')
   return [
-    `By checking this box you agree to receive promotional text messages from ${p.brandName} at the number provided, including messages sent by autodialer. Consent is not a condition of any purchase.`,
-    p.messageFrequency,
-    'Msg & data rates may apply. Reply STOP to opt out, HELP for help.',
+    optInCheckboxLabel(p),
     links,
   ].filter(Boolean).join(' ')
 }
@@ -104,7 +102,7 @@ export function composeSmsBody(body: string, p: A2pProfile): string {
 export type InboundKeyword = 'stop' | 'start' | 'help' | null
 
 // Carrier-standard keywords. Matched on the first word, case-insensitive, punctuation-tolerant.
-const STOP_WORDS = new Set(['stop', 'stopall', 'unsubscribe', 'cancel', 'end', 'quit', 'optout'])
+const STOP_WORDS = new Set(['stop', 'stopall', 'unsubscribe', 'cancel', 'end', 'quit', 'optout', 'revoke'])
 const START_WORDS = new Set(['start', 'unstop', 'yes', 'optin', 'subscribe'])
 const HELP_WORDS = new Set(['help', 'info'])
 

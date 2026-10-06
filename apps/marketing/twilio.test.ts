@@ -23,6 +23,18 @@ describe('toE164', () => {
 })
 
 describe('TwilioSmsProvider.send', () => {
+  it('keeps launch testing restricted to the designated number', async () => {
+    const { fn, calls } = fakeFetch({ ok: true, status: 201, body: { sid: 'SM123' } })
+    const provider = new TwilioSmsProvider({ ...CFG, testRecipient: '+15125550123' }, fn)
+    expect((await provider.send('5125550999', 'hello')).error).toBe('test_recipient_only')
+    expect(calls).toHaveLength(0)
+    expect((await provider.send('(512) 555-0123', 'hello')).status).toBe('sent')
+    expect(calls).toHaveLength(1)
+  })
+  it('uses the actual public status route and the dedicated webhook base', () => {
+    const cfg = twilioConfigFromEnv({ TWILIO_ACCOUNT_SID: 'AC', TWILIO_AUTH_TOKEN: 'token', TWILIO_MESSAGING_SERVICE_SID: 'MG', TWILIO_WEBHOOK_BASE_URL: 'https://internal.example.com/', MARKETING_PUBLIC_BASE_URL: 'https://text.example.com' } as unknown as NodeJS.ProcessEnv)
+    expect(cfg?.statusCallbackUrl).toBe('https://internal.example.com/api/twilio/sms/status')
+  })
   it('posts to the Messaging Service and returns the provider message id', async () => {
     const { fn, calls } = fakeFetch({ ok: true, status: 201, body: { sid: 'SM123' } })
     const res = await new TwilioSmsProvider(CFG, fn).send('5125550123', 'Pitt Stop Detail: hello. Reply STOP to opt out.')

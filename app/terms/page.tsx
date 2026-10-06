@@ -1,17 +1,21 @@
+import { headers } from 'next/headers'
+import { isMarketingPublicHost } from '@/apps/marketing/public-host'
+import { PublicSmsPolicy } from '@/app/components/PublicSmsPolicy'
 import { getMarketingConfig } from '@/apps/settings/db'
 import { a2pProfile } from '@/apps/marketing/compliance'
 import { SmsTermsSection } from '@/app/components/SmsProgramDisclosures'
 
-export const metadata = { title: 'Terms of Service — Pitt Stop OS' }
+export const metadata = { title: 'Terms of Service — Pitt Stop Detail & Auto Sales' }
 export const dynamic = 'force-dynamic'
 
 export default async function TermsPage() {
   const profile = a2pProfile(await getMarketingConfig())
+  if (isMarketingPublicHost((await headers()).get('host') || '')) return <PublicSmsPolicy profile={profile} kind="terms" />
   return (
     <main className="min-h-screen bg-gray-950 text-gray-200 px-6 py-12">
       <div className="max-w-2xl mx-auto">
         <h1 className="text-2xl font-bold text-white mb-2">Terms of Service &amp; End User License Agreement</h1>
-        <p className="text-gray-500 text-sm mb-8">Last updated: 2026-07-29</p>
+        <p className="text-gray-500 text-sm mb-8">Last updated: 2026-10-06</p>
 
         <p className="mb-4">
           Pitt Stop OS (“the App”) is proprietary internal software operated by Pitt Stop

@@ -39,7 +39,7 @@ export async function POST(req: Request) {
     return new NextResponse(twiml(result.reply), { status: 200, headers: { 'content-type': 'text/xml' } })
   } catch (err) {
     logger.error('twilio:inbound', 'failed', { error: String(err) })
-    // Return empty TwiML (200) so Twilio doesn't retry-storm; the error is logged.
-    return new NextResponse(twiml(null), { status: 200, headers: { 'content-type': 'text/xml' } })
+    // Never acknowledge a failed consent write; expose failure so delivery can be retried.
+    return new NextResponse(twiml(null), { status: 503, headers: { 'content-type': 'text/xml' } })
   }
 }

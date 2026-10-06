@@ -27,7 +27,7 @@ function baseCfg(over: Partial<MarketingConfig> = {}): MarketingConfig {
     privacyUrl: '', termsUrl: '', smsQuietStartHour: 9, smsQuietEndHour: 20, smsGlobalCap: 250,
     publicBaseUrl: '', legalName: 'Pitt Stop Detail & Auto Sales', businessWebsite: '', supportContact: '',
     a2pBrandApproved: false, a2pCampaignApproved: false, advancedOptOutConfigured: false,
-    privacyPublished: false, termsPublished: false, ...over,
+    optInPublished: false, webhooksVerified: false, privacyPublished: false, termsPublished: false, ...over,
   }
 }
 
@@ -71,6 +71,21 @@ describe('withinQuietHours', () => {
 })
 
 describe('dispatch send-safety', () => {
+  it.each(['a2pBrandApproved', 'a2pCampaignApproved', 'advancedOptOutConfigured', 'optInPublished', 'privacyPublished', 'termsPublished', 'webhooksVerified', 'enabled'] as const)('blocks live SMS while %s is false', async (key) => {
+    cfg = baseCfg({ smsLive: true, publicBaseUrl: 'https://text.example.com', supportContact: 'shop@example.com', a2pBrandApproved: true, a2pCampaignApproved: true, advancedOptOutConfigured: true, optInPublished: true, privacyPublished: true, termsPublished: true, webhooksVerified: true, [key]: false })
+    vi.stubEnv('TWILIO_ACCOUNT_SID', 'AC')
+    vi.stubEnv('TWILIO_AUTH_TOKEN', 'token')
+    vi.stubEnv('TWILIO_MESSAGING_SERVICE_SID', 'MG')
+    vi.stubEnv('TWILIO_WEBHOOK_BASE_URL', 'https://internal.example.com')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const id = await readyCampaign(1)
+    const result = await dispatchCampaign(id, { now: new Date('2026-10-06T18:00:00Z') })
+    expect(result.reason).toBe('launch_not_ready')
+    expect((await getCampaign(id))?.status).toBe('ready')
+    expect(fetchSpy).not.toHaveBeenCalled()
+    fetchSpy.mockRestore()
+    vi.unstubAllEnvs()
+  })
   it('forces DRY-RUN when sms_live is off — nothing is sent even though recipients are ready', async () => {
     const id = await readyCampaign(2)
     const r = await dispatchCampaign(id, { actor: 'test' })

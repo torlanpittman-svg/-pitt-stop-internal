@@ -9,8 +9,8 @@ import {
   optInConfirmation, stopConfirmation, helpReply, type A2pProfile,
 } from './compliance'
 
-export const OPT_OUT_KEYWORDS = ['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT']
-export const OPT_IN_KEYWORDS = ['START', 'UNSTOP']
+export const OPT_OUT_KEYWORDS = ['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT', 'OPTOUT', 'REVOKE']
+export const OPT_IN_KEYWORDS = ['START', 'UNSTOP', 'YES']
 export const HELP_KEYWORDS = ['HELP', 'INFO']
 
 export interface A2pPacket {
@@ -32,8 +32,8 @@ function messageFlow(p: A2pProfile): string {
   return (
     `Customers opt in by visiting Pitt Stop's public SMS sign-up page (${optIn}), entering their mobile ` +
     `number, and checking an optional, unchecked SMS-marketing consent box that is not required to book or ` +
-    `buy. The same opt-in page is reachable from a QR code shown at the counter and on printed estimates, ` +
-    `and from a "Get Pitt Stop specials by text" link. Consent is recorded with the exact disclosure wording, ` +
+    `buy. The page displays links to the SMS Privacy Policy and Terms alongside the consent disclosure, ` +
+    `including frequency, rates, STOP/HELP instructions, and that consent is not a condition of purchase. Consent is recorded with the exact disclosure wording, ` +
     `a timestamp, and the source. Customers can also text START to re-subscribe and STOP at any time to opt out.`
   )
 }

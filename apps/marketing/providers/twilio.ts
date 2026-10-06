@@ -13,6 +13,7 @@ export interface TwilioConfig {
   messagingServiceSid?: string
   fromNumber?: string
   statusCallbackUrl?: string
+  testRecipient?: string
 }
 
 type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: string }) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>
@@ -31,6 +32,7 @@ export class TwilioSmsProvider implements SmsProvider {
   async send(to: string, body: string): Promise<SendResult> {
     const e164 = toE164(to)
     if (!e164) return { status: 'failed', error: 'invalid_phone' }
+    if (this.cfg.testRecipient && e164 !== toE164(this.cfg.testRecipient)) return { status: 'failed', error: 'test_recipient_only' }
     if (!this.cfg.messagingServiceSid && !this.cfg.fromNumber) return { status: 'failed', error: 'no_sender_configured' }
 
     const params = new URLSearchParams()
@@ -76,9 +78,10 @@ export function twilioConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Twili
   const messagingServiceSid = env.TWILIO_MESSAGING_SERVICE_SID
   const fromNumber = env.TWILIO_FROM_NUMBER
   if (!accountSid || !authToken || (!messagingServiceSid && !fromNumber)) return null
-  const base = env.MARKETING_PUBLIC_BASE_URL || env.NEXT_PUBLIC_BASE_URL || ''
+  const base = env.TWILIO_WEBHOOK_BASE_URL || ''
   return {
     accountSid, authToken, messagingServiceSid, fromNumber,
-    statusCallbackUrl: base ? `${base.replace(/\/$/, '')}/api/marketing/twilio/status` : undefined,
+    testRecipient: env.MARKETING_SMS_TEST_TO,
+    statusCallbackUrl: base ? `${base.replace(/\/$/, '')}/api/twilio/sms/status` : undefined,
   }
 }

@@ -6,6 +6,7 @@
  *      marks the recipient `suppressed` (reason 'dry_run') and is reported as such; nothing is ever
  *      recorded as `sent` unless a LIVE provider actually accepted it.
  */
+import { getPreferences, hasSmsConsent } from './consent'
 import { getDb } from '@/platform/db'
 import { marketingPreferences } from './schema'
 import { contactAggregates } from './contacts'
@@ -125,6 +126,14 @@ export async function sendCampaign(campaignId: string, opts: { actor?: string | 
   let sent = 0, suppressed = 0, failed = 0, anyLive = false
 
   for (const r of pending) {
+    // Consent can change after recipient building. Re-read immediately before contacting anyone.
+    const pref = r.customerId ? await getPreferences(r.customerId) : null
+    const eligible = r.channel === 'sms' ? hasSmsConsent(pref) : !pref?.unsubscribedAt && pref?.emailEligible !== false
+    if (!eligible) {
+      await markRecipient(r.id, { status: 'suppressed', exclusionReason: 'consent_revoked_before_send' })
+      suppressed++
+      continue
+    }
     let body = r.renderedBody ?? ''
     const address = r.addressSnapshot ?? ''
     let result

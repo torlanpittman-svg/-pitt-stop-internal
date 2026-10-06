@@ -9,7 +9,7 @@ import { redirect } from 'next/navigation'
 import { managerActor } from '@/apps/checks/authz'
 import { marketingEnabled } from '@/apps/settings/db'
 import NavHeader from '@/app/components/NavHeader'
-import { Badge } from '@/app/components/ui'
+import { Badge } from '@/app/components/ui/Badge'
 import type { AuthedActor } from '@/apps/auth/employee-session'
 
 /** Gate every marketing page: feature flag on + manager/admin, else redirect. */

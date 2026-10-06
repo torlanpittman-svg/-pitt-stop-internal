@@ -10,6 +10,7 @@ import { a2pProfile, smsDisclosureText, optInCheckboxLabel, SMS_OPT_IN_VERSION }
 import { recordPublicOptIn, ConsentNotGivenError, InvalidPhoneError } from '@/apps/marketing/optin'
 import { SmsConsentDisclosure } from '@/app/components/SmsConsentDisclosure'
 
+export const metadata = { title: 'Text Updates — Pitt Stop Detail & Auto Sales', description: 'Optional Pitt Stop promotional texts. Consent is never required to purchase.' }
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
@@ -58,18 +59,20 @@ export default async function SmsOptInPage({ searchParams }: { searchParams: Pro
             {error === 'error' && <p className="mt-2 text-sm text-red-400">Something went wrong. Please try again.</p>}
             <form action={submitOptIn} className="mt-4 space-y-3">
               <div>
-                <label className="mb-1 block text-xs uppercase tracking-wide text-gray-500">Name (optional)</label>
-                <input name="name" className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm" />
+                <label htmlFor="sms-name" className="mb-1 block text-xs uppercase tracking-wide text-gray-500">Name (optional)</label>
+                <input id="sms-name" name="name" className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm" />
               </div>
               <div>
-                <label className="mb-1 block text-xs uppercase tracking-wide text-gray-500">Mobile number</label>
-                <input name="phone" inputMode="tel" required placeholder="(512) 555-0123" className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm" />
+                <label htmlFor="sms-phone" className="mb-1 block text-xs uppercase tracking-wide text-gray-500">Mobile number</label>
+                <input id="sms-phone" name="phone" inputMode="tel" required placeholder="(512) 555-0123" className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm" />
               </div>
               <SmsConsentDisclosure disclosure={label} privacyUrl={p.privacyUrl || undefined} termsUrl={p.termsUrl || undefined} />
               <button className="w-full rounded-lg bg-blue-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-blue-500">Subscribe to texts</button>
             </form>
           </>
         )}
+        <p className="mt-5 text-xs text-gray-400">Questions? {p.supportContact}</p>
+        {p.website && <a className="mt-3 inline-block text-sm text-blue-300 underline" href={p.website}>Visit the Pitt Stop website</a>}
       </div>
     </main>
   )

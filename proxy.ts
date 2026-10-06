@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
+import { isMarketingPublicHost, publicMarketingRoute } from '@/apps/marketing/public-host'
 import { EMP_COOKIE, employeeAuthConfigured, verifyEmployeeToken } from '@/apps/auth/employee-session'
 
 /** Valid admin Basic-Auth? (password-only; trimmed). Admin always satisfies any gate below. */
@@ -32,6 +33,13 @@ function isEmployeeSurface(pathname: string): boolean {
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
+  // Customer subdomains never expose the OS, its login, or its operational APIs.
+  if (isMarketingPublicHost(request.nextUrl.hostname)) {
+    const decision = publicMarketingRoute(pathname, request.method)
+    if (decision === 'allow') return NextResponse.next()
+    if (decision === 'redirect') return NextResponse.redirect(new URL('/sms-opt-in', request.url))
+    return new NextResponse('Not found', { status: 404 })
+  }
 
   // ── Employee operational surface (Auto Sales + Work Board + Check In + Quick Entry + Dealer Check-In) ──
   // Gated by the shared EMPLOYEE_PIN session (or admin Basic-Auth). The login page + session API are
@@ -78,6 +86,7 @@ export const config = {
   // /api/auth/quickbooks/*, and the normal Dealer Check-In flow (which calls invoice-write
   // functions directly, never these HTTP routes).
   matcher: [
+    { source: '/:path*', has: [{ type: 'host', value: 'text\\.pittstopdetailandautosales\\.com' }] },
     '/admin/:path*',
     // Employee operational surface — pages + server-action POSTs + AI/mutation APIs. Gated by the shared
     // EMPLOYEE_PIN session (login surfaces exempted inside proxy()). Broadly-shared read APIs like

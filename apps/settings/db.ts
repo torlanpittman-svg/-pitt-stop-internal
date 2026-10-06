@@ -131,6 +131,8 @@ export const SETTINGS: Record<string, SettingDef> = {
   marketing_a2p_campaign_approved: { key: 'marketing_a2p_campaign_approved', type: 'bool', def: false, env: 'MARKETING_A2P_CAMPAIGN_APPROVED' },
   marketing_advanced_optout_configured: { key: 'marketing_advanced_optout_configured', type: 'bool', def: false, env: 'MARKETING_ADVANCED_OPTOUT_CONFIGURED' },
   marketing_privacy_published:     { key: 'marketing_privacy_published',     type: 'bool', def: false, env: 'MARKETING_PRIVACY_PUBLISHED' },
+  marketing_optin_published: { key: 'marketing_optin_published', type: 'bool', def: false, env: 'MARKETING_OPTIN_PUBLISHED' },
+  marketing_webhooks_verified: { key: 'marketing_webhooks_verified', type: 'bool', def: false, env: 'MARKETING_WEBHOOKS_VERIFIED' },
   marketing_terms_published:       { key: 'marketing_terms_published',       type: 'bool', def: false, env: 'MARKETING_TERMS_PUBLISHED' },
 }
 
@@ -283,6 +285,8 @@ export interface MarketingConfig {
   a2pBrandApproved: boolean
   a2pCampaignApproved: boolean
   advancedOptOutConfigured: boolean
+  optInPublished: boolean
+  webhooksVerified: boolean
   privacyPublished: boolean
   termsPublished: boolean
 }
@@ -315,6 +319,8 @@ export async function getMarketingConfig(): Promise<MarketingConfig> {
     a2pBrandApproved:      g('marketing_a2p_brand_approved') as boolean,
     a2pCampaignApproved:   g('marketing_a2p_campaign_approved') as boolean,
     advancedOptOutConfigured: g('marketing_advanced_optout_configured') as boolean,
+    optInPublished:        g('marketing_optin_published') as boolean,
+    webhooksVerified:      g('marketing_webhooks_verified') as boolean,
     privacyPublished:      g('marketing_privacy_published') as boolean,
     termsPublished:        g('marketing_terms_published') as boolean,
   }

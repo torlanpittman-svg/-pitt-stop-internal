@@ -37,6 +37,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, ...result })
   } catch (err) {
     logger.error('twilio:status', 'failed', { error: String(err) })
-    return NextResponse.json({ ok: false }, { status: 200 })
+    return NextResponse.json({ ok: false }, { status: 503 })
   }
 }

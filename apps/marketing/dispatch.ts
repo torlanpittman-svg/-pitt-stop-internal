@@ -16,7 +16,7 @@ import { getCampaign } from './db'
 export interface DispatchResult {
   ok: boolean
   live: boolean
-  reason?: 'sms_not_configured' | 'quiet_hours' | 'not_approved' | 'not_found'
+  reason?: 'sms_not_configured' | 'quiet_hours' | 'not_approved' | 'not_found' | 'launch_not_ready'
   summary?: SendSummary
 }
 
@@ -52,6 +52,13 @@ export async function dispatchCampaign(campaignId: string, opts: { actor?: strin
   // Quiet-hours block applies only to a genuine live SMS send.
   if (wantsSms && canLiveSms && !withinQuietHours(now, cfg.smsQuietStartHour, cfg.smsQuietEndHour)) {
     return { ok: false, live: true, reason: 'quiet_hours' }
+  }
+
+  if (wantsSms && canLiveSms && (!cfg.enabled || !cfg.publicBaseUrl || !cfg.supportContact ||
+    !cfg.optInPublished || !cfg.privacyPublished || !cfg.termsPublished || !cfg.advancedOptOutConfigured ||
+    !cfg.a2pBrandApproved || !cfg.a2pCampaignApproved || !cfg.webhooksVerified ||
+    !process.env.TWILIO_MESSAGING_SERVICE_SID || !process.env.TWILIO_WEBHOOK_BASE_URL)) {
+    return { ok: false, live: false, reason: 'launch_not_ready' }
   }
 
   const live = canLiveSms
