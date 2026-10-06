@@ -4,11 +4,13 @@ This release isolates the ten Marketing V1/A2P commits from cleanup/usability-pa
 
 ## Public domain
 
-Pitt Stop controls pittstopdetailandautosales.com, not pittstopdetail.com. The customer surface is https://text.pittstopdetailandautosales.com with /sms-opt-in, /privacy, /terms and token-scoped /unsubscribe. Its root redirects to signup. A hostname-specific proxy allowlist rejects the OS, login, operational APIs, service worker and manifest on that hostname. The main WordPress site and internal Vercel hostname retain their existing routing.
+Pitt Stop controls pittstopdetailandautosales.com, not pittstopdetail.com. The public pages are published on the existing WordPress website at https://www.pittstopdetailandautosales.com/sms-opt-in/, /privacy/, and /terms/. The site-wide footer links to all three. The signup page opens the dedicated, unauthenticated consent form at https://pitt-stop-internal.vercel.app/sms-opt-in; that form links back to the public website policies. This two-step path avoids the WordPress theme's incompatible iframe lazy loading. No DNS or main-domain routing changes were made.
+
+A dormant hostname-specific proxy allowlist remains for text.pittstopdetailandautosales.com if a dedicated subdomain is configured later. No such subdomain is attached. The internal OS retains its existing authorization and routing.
 
 Business website: https://www.pittstopdetailandautosales.com
 Support: (979) 696-6640; Pittstopdetailbcs@gmail.com
-Webhooks remain on https://pitt-stop-internal.vercel.app/api/twilio/sms/inbound and /status.
+Webhooks remain on https://pitt-stop-internal.vercel.app/api/twilio/sms/inbound and https://pitt-stop-internal.vercel.app/api/twilio/sms/status.
 
 ## Launch fixes
 
@@ -21,7 +23,7 @@ Webhooks remain on https://pitt-stop-internal.vercel.app/api/twilio/sms/inbound 
 - Return HTTP 503 when a webhook's database operation fails, instead of falsely acknowledging consent persistence.
 - Use the displayed affirmative checkbox wording in the consent audit record, version v2-2026-10-06.
 - Public SMS policy pages use customer-facing business wording and contact details while existing OS policy content remains on the internal hostname.
-- The registration packet describes the implemented web signup flow, without claiming a QR code has already been placed at the counter or on estimates.
+- The registration packet describes the website footer, public signup page, and linked consent form, without claiming a QR code has already been placed at the counter or on estimates.
 
 ## Activation and rollback
 

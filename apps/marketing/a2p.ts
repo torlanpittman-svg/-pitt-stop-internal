@@ -30,8 +30,10 @@ export interface A2pPacket {
 function messageFlow(p: A2pProfile): string {
   const optIn = p.optInUrl || '[set public base URL]'
   return (
-    `Customers opt in by visiting Pitt Stop's public SMS sign-up page (${optIn}), entering their mobile ` +
-    `number, and checking an optional, unchecked SMS-marketing consent box that is not required to book or ` +
+    `Customers visit Pitt Stop's public SMS sign-up page (${optIn}), accessible from the business website's ` +
+    `"Join our text offers" footer link. They select "Open SMS signup form" to open the dedicated consent form at ` +
+    `https://pitt-stop-internal.vercel.app/sms-opt-in, enter their mobile number, and check an optional, ` +
+    `unchecked SMS-marketing consent box that is not required to book or ` +
     `buy. The page displays links to the SMS Privacy Policy and Terms alongside the consent disclosure, ` +
     `including frequency, rates, STOP/HELP instructions, and that consent is not a condition of purchase. Consent is recorded with the exact disclosure wording, ` +
     `a timestamp, and the source. Customers can also text START to re-subscribe and STOP at any time to opt out.`

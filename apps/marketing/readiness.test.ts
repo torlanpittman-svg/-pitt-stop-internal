@@ -14,7 +14,7 @@ function cfg(over: Partial<MarketingConfig> = {}): MarketingConfig {
 }
 
 const allApproved: Partial<MarketingConfig> = {
-  publicBaseUrl: 'https://pittstopdetail.com', businessWebsite: 'https://pittstopdetail.com', supportContact: 'text us',
+  publicBaseUrl: 'https://www.pittstopdetailandautosales.com', businessWebsite: 'https://www.pittstopdetailandautosales.com', supportContact: 'text us',
   optInPublished: true, privacyPublished: true, termsPublished: true, advancedOptOutConfigured: true, a2pBrandApproved: true, a2pCampaignApproved: true, smsLive: true,
 }
 
@@ -74,13 +74,13 @@ describe('A2P registration packet', () => {
   })
   it('includes Advanced Opt-Out confirmation copy with program terms + URLs', () => {
     expect(packet.confirmations.optIn).toMatch(/subscribed/i)
-    expect(packet.confirmations.optIn).toContain('pittstopdetail.com')
+    expect(packet.confirmations.optIn).toContain('www.pittstopdetailandautosales.com')
     expect(packet.confirmations.optOut).toMatch(/unsubscribed/i)
   })
   it('opt-in URL points at the real public /sms-opt-in route', () => {
-    expect(packet.urls.optIn).toBe('https://pittstopdetail.com/sms-opt-in')
-    expect(packet.urls.privacy).toBe('https://pittstopdetail.com/privacy')
-    expect(packet.urls.terms).toBe('https://pittstopdetail.com/terms')
+    expect(packet.urls.optIn).toBe('https://www.pittstopdetailandautosales.com/sms-opt-in')
+    expect(packet.urls.privacy).toBe('https://www.pittstopdetailandautosales.com/privacy')
+    expect(packet.urls.terms).toBe('https://www.pittstopdetailandautosales.com/terms')
   })
   it('flags missing required fields when URLs/contact are blank', () => {
     const blank = buildA2pPacket(cfg())
