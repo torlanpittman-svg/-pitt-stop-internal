@@ -31,6 +31,7 @@ const TABS: Array<{ href: string; label: string }> = [
   { href: '/marketing/google-ads', label: 'Google Ads' },
   { href: '/marketing/attribution', label: 'Attribution' },
   { href: '/marketing/report', label: 'Weekly Report' },
+  { href: '/marketing/sms', label: 'SMS Launch' },
   { href: '/marketing/settings', label: 'Settings' },
 ]
 

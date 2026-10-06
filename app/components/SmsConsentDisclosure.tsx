@@ -9,15 +9,20 @@
  */
 import type { ReactNode } from 'react'
 
+const DEFAULT_LABEL =
+  "Yes, I'd like to receive recurring promotional text messages from Pitt Stop Detail & Auto Sales about " +
+  'services, appointment opportunities and offers. Up to 3 marketing messages per month. Message and data ' +
+  'rates may apply. Reply STOP to unsubscribe or HELP for help. Consent is not a condition of purchase.'
+
 export function SmsConsentDisclosure({
   name = 'smsConsent',
-  disclosure,
+  disclosure = DEFAULT_LABEL,
   privacyUrl,
   termsUrl,
   children,
 }: {
   name?: string
-  disclosure: string
+  disclosure?: string
   privacyUrl?: string
   termsUrl?: string
   children?: ReactNode

@@ -1,6 +1,12 @@
-export const metadata = { title: 'Terms of Service — Pitt Stop OS' }
+import { getMarketingConfig } from '@/apps/settings/db'
+import { a2pProfile } from '@/apps/marketing/compliance'
+import { SmsTermsSection } from '@/app/components/SmsProgramDisclosures'
 
-export default function TermsPage() {
+export const metadata = { title: 'Terms of Service — Pitt Stop OS' }
+export const dynamic = 'force-dynamic'
+
+export default async function TermsPage() {
+  const profile = a2pProfile(await getMarketingConfig())
   return (
     <main className="min-h-screen bg-gray-950 text-gray-200 px-6 py-12">
       <div className="max-w-2xl mx-auto">
@@ -40,8 +46,10 @@ export default function TermsPage() {
           Pitt Stop OS is not affiliated with or endorsed by Intuit.
         </p>
 
+        <SmsTermsSection profile={profile} />
+
         <h2 className="text-lg font-semibold text-white mt-8 mb-2">Contact</h2>
-        <p className="text-gray-300">Questions: torlanpittman@gmail.com</p>
+        <p className="text-gray-300">Questions: {profile.supportContact || 'torlanpittman@gmail.com'}</p>
       </div>
     </main>
   )

@@ -223,6 +223,10 @@ const MARKETING_SETTING_KEYS = [
   'marketing_sms_live', 'marketing_sms_brand_name', 'marketing_sms_help_text', 'marketing_sms_frequency',
   'marketing_privacy_url', 'marketing_terms_url', 'marketing_sms_quiet_start_hour',
   'marketing_sms_quiet_end_hour', 'marketing_sms_global_cap',
+  // Public URLs + business identity + external A2P approval confirmations
+  'marketing_public_base_url', 'marketing_legal_name', 'marketing_business_website', 'marketing_support_contact',
+  'marketing_a2p_brand_approved', 'marketing_a2p_campaign_approved', 'marketing_advanced_optout_configured',
+  'marketing_privacy_published', 'marketing_terms_published',
 ]
 
 export async function updateMarketingSettingsAction(fd: FormData): Promise<void> {

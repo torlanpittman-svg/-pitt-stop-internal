@@ -6,7 +6,7 @@
 import { redirect } from 'next/navigation'
 import { headers } from 'next/headers'
 import { getMarketingConfig } from '@/apps/settings/db'
-import { a2pProfile, smsDisclosureText, SMS_OPT_IN_VERSION } from '@/apps/marketing/compliance'
+import { a2pProfile, smsDisclosureText, optInCheckboxLabel, SMS_OPT_IN_VERSION } from '@/apps/marketing/compliance'
 import { recordPublicOptIn, ConsentNotGivenError, InvalidPhoneError } from '@/apps/marketing/optin'
 import { SmsConsentDisclosure } from '@/app/components/SmsConsentDisclosure'
 
@@ -40,7 +40,7 @@ export default async function SmsOptInPage({ searchParams }: { searchParams: Pro
   const { done, error } = await searchParams
   const cfg = await getMarketingConfig()
   const p = a2pProfile(cfg)
-  const disclosure = smsDisclosureText(p)
+  const label = optInCheckboxLabel(p) // shown next to the box; full legal text is stored on consent
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-gray-950 px-4 py-10 text-white">
@@ -65,7 +65,7 @@ export default async function SmsOptInPage({ searchParams }: { searchParams: Pro
                 <label className="mb-1 block text-xs uppercase tracking-wide text-gray-500">Mobile number</label>
                 <input name="phone" inputMode="tel" required placeholder="(512) 555-0123" className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm" />
               </div>
-              <SmsConsentDisclosure disclosure={disclosure} privacyUrl={p.privacyUrl || undefined} termsUrl={p.termsUrl || undefined} />
+              <SmsConsentDisclosure disclosure={label} privacyUrl={p.privacyUrl || undefined} termsUrl={p.termsUrl || undefined} />
               <button className="w-full rounded-lg bg-blue-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-blue-500">Subscribe to texts</button>
             </form>
           </>
