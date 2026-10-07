@@ -92,6 +92,14 @@ export const SETTINGS: Record<string, SettingDef> = {
   // Marketing Agent V1. Ships DARK: the home tile + /marketing render only when enabled, and even then
   // every external send stays dry-run until a provider is configured (apps/marketing/providers). These
   // are operational toggles only — durable brand knowledge lives in apps/marketing/profile.ts.
+  marketing_autopilot_enabled: { key: 'marketing_autopilot_enabled', type: 'bool', def: false, env: 'MARKETING_AUTOPILOT_ENABLED' },
+  marketing_email_live: { key: 'marketing_email_live', type: 'bool', def: false, env: 'MARKETING_EMAIL_LIVE' },
+  marketing_facebook_live: { key: 'marketing_facebook_live', type: 'bool', def: false, env: 'MARKETING_FACEBOOK_LIVE' },
+  marketing_autopilot_policy: { key: 'marketing_autopilot_policy', type: 'string', def: '', env: 'MARKETING_AUTOPILOT_POLICY' },
+  marketing_launch_date: { key: 'marketing_launch_date', type: 'string', def: '2026-10-07', env: 'MARKETING_LAUNCH_DATE' },
+  marketing_email_audience_reviewed: { key: 'marketing_email_audience_reviewed', type: 'bool', def: false, env: 'MARKETING_EMAIL_AUDIENCE_REVIEWED' },
+  marketing_email_test_verified: { key: 'marketing_email_test_verified', type: 'bool', def: false, env: 'MARKETING_EMAIL_TEST_VERIFIED' },
+  marketing_facebook_test_verified: { key: 'marketing_facebook_test_verified', type: 'bool', def: false, env: 'MARKETING_FACEBOOK_TEST_VERIFIED' },
   marketing_enabled:            { key: 'marketing_enabled',            type: 'bool',   def: false, env: 'MARKETING_ENABLED' },
   // Require a manager-approved (Ready) campaign before any send. Default ON — do not relax lightly.
   marketing_require_approval:   { key: 'marketing_require_approval',   type: 'bool',   def: true,  env: 'MARKETING_REQUIRE_APPROVAL' },

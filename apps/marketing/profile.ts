@@ -40,10 +40,10 @@ export interface MarketingProfile {
 export const MARKETING_PROFILE: MarketingProfile = {
   companyName: 'Pitt Stop Detail & Auto Sales',
   shortName: 'Pitt Stop',
-  serviceArea: 'Central Texas',
-  hours: 'Mon–Sat, by appointment and walk-in',
-  phone: '',          // set via app_settings / env — never hard-coded as a claim
-  website: 'pittstopdetail.com',
+  serviceArea: 'Bryan–College Station, Texas',
+  hours: 'Contact the shop for current hours and availability',
+  phone: '979-696-6640',
+  website: 'https://www.pittstopdetailandautosales.com',
 
   brandVoice: [
     'knowledgeable and straightforward — explain the "why" behind the work',
@@ -91,14 +91,14 @@ export const MARKETING_PROFILE: MarketingProfile = {
   ],
 
   faqs: [
-    { q: 'hours', a: 'We are open Monday through Saturday, by appointment and walk-in. Send us a message and we will get you scheduled.' },
+    { q: 'hours', a: 'Please contact the shop to confirm current hours and availability.' },
     { q: 'location', a: 'We are located in Central Texas. Reply here or send your phone number and we will share directions and availability.' },
     { q: 'trucks', a: 'Yes — we work on trucks, SUVs, and larger vehicles regularly. Pricing depends on size and condition; send a few photos or your year/make/model for a tighter estimate.' },
     { q: 'ceramic', a: 'Ceramic coating bonds to your paint for longer-term protection, easier washing, and lasting gloss. We can inspect your vehicle and tell you honestly whether it is a good fit.' },
     { q: 'paint_correction', a: 'Paint correction removes swirl marks, oxidation, and haze by machine-polishing the paint you already have. It makes the biggest difference on dark paint that looks swirled under sunlight.' },
     { q: 'stains', a: 'We handle most interior stains and odor with a deep interior detail and, when needed, ozone treatment. Send a photo of the problem area and we will tell you what is realistic.' },
     { q: 'estimate', a: 'For a tight estimate, send a few photos or your phone number and year/make/model. Condition drives the price, so photos help us get you an accurate number.' },
-    { q: 'availability', a: 'We usually have a few openings each week. Reply with what you are looking to get done and we will find a time.' },
+    { q: 'availability', a: 'Contact us with the service you need and your preferred date so we can confirm availability.' },
   ],
 
   prohibitedClaims: [

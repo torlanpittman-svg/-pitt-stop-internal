@@ -23,6 +23,7 @@ export async function requireMarketingManager(path = '/marketing'): Promise<Auth
 
 const TABS: Array<{ href: string; label: string }> = [
   { href: '/marketing', label: 'Overview' },
+  { href: '/marketing/launch', label: 'Launch & Autopilot' },
   { href: '/marketing/campaigns', label: 'Campaigns' },
   { href: '/marketing/segments', label: 'Segments' },
   { href: '/marketing/content', label: 'Content' },

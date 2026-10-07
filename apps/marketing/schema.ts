@@ -242,3 +242,18 @@ export const marketingConversations = pgTable('marketing_conversations', {
 }, (t) => [
   index('marketing_conversations_state_idx').on(t.state),
 ])
+
+/** Each recurring slot owns one existing campaign/post with the same UUID. */
+export const marketingAutomationJobs = pgTable('marketing_automation_jobs', {
+  id: uuid('id').primaryKey(),
+  slotKey: varchar('slot_key', { length: 80 }).notNull().unique(),
+  channel: varchar('channel', { length: 16 }).notNull(),
+  scheduledDate: date('scheduled_date').notNull(),
+  status: varchar('status', { length: 24 }).notNull().default('planned'),
+  policyVersion: varchar('policy_version', { length: 40 }).notNull(),
+  externalRef: varchar('external_ref', { length: 160 }),
+  error: text('error'),
+  metrics: jsonb('metrics'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})

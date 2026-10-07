@@ -15,6 +15,10 @@
     {
       "path": "/api/cron/marketing-content-candidates",
       "schedule": "0 10 * * *"
+    },
+    {
+      "path": "/api/cron/marketing-autopilot",
+      "schedule": "0 16 * * *"
     }
   ]
 }
