@@ -541,6 +541,8 @@ interface InvoiceDraftData {
   qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sent: boolean; resendRecommended: boolean; sentAt: string | null }
 }
 interface SendPreview { ok: boolean; block?: string; recipient?: string | null; invoiceNumber?: string | null; draftTotalCents?: number; qbTotalCents?: number; error?: string }
+/** A colliding QB customer offered to the manager when email/name resolution is ambiguous. */
+interface QbCandidate { id: string; displayName: string | null; email: string | null; phone: string | null; active: boolean | null }
 const money = (c: number) => `$${(c / 100).toFixed(2)}`
 const SEND_BLOCK_MSG: Record<string, string> = {
   no_invoice: 'No QuickBooks invoice is linked. Create it first.',
@@ -628,6 +630,9 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
   const [syncing, setSyncing] = useState(false)
   const [syncMsg, setSyncMsg] = useState<string | null>(null)
   const [confirmSentSync, setConfirmSentSync] = useState(false)   // two-tap confirm for a sent invoice
+  // Ambiguous QB customer: the colliding candidates to choose from (null = picker closed).
+  const [custCandidates, setCustCandidates] = useState<QbCandidate[] | null>(null)
+  const [savingCust, setSavingCust] = useState(false)
 
   useEffect(() => {
     let ok = true
@@ -719,11 +724,32 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
         body: JSON.stringify({ requestId: createReqId.current }),
       })
       const data = await res.json()
-      if (!res.ok || !data.ok) setErr(data.error ?? 'Could not create the QuickBooks invoice.')
+      // Ambiguous QB customer → open the picker (manager chooses the right one) instead of a dead end.
+      if (data.status === 'ambiguous' && Array.isArray(data.candidates) && data.candidates.length) {
+        setCustCandidates(data.candidates); setErr(data.error ?? null)
+      } else if (!res.ok || !data.ok) setErr(data.error ?? 'Could not create the QuickBooks invoice.')
       await refetch()
     } catch { setErr('Network error — please try again.') }
     finally { setCreating(false) }
   }, [orderId, creating, refetch])
+
+  // Persist the manager's chosen QB customer (directory cache), then re-run Create so the invoice
+  // is created against that exact CustomerRef. Future invoices reuse the mapping automatically.
+  const chooseCustomer = useCallback(async (qbCustomerId: string) => {
+    if (savingCust) return
+    setSavingCust(true); setErr(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/invoice/customer`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ qbCustomerId }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) { setErr(data.error ?? 'Could not save the QuickBooks customer.'); return }
+      setCustCandidates(null)
+      await createQb()
+    } catch { setErr('Network error — please try again.') }
+    finally { setSavingCust(false) }
+  }, [orderId, savingCust, createQb])
 
   const override = useCallback(async (field: 'shop_supplies' | 'payment' | 'tax_exempt', removed: boolean, reason?: string) => {
     setBusy(true); setErr(null)
@@ -962,6 +988,38 @@ function InvoiceDraftModal({ orderId, onClose }: { orderId: string; onClose: () 
           </div>
         )}
 
+        {/* Ambiguous QB customer — manager chooses the right existing customer; the choice is
+            saved so future invoices for this person skip the email ambiguity. */}
+        {custCandidates && (
+          <div className="fixed inset-0 z-[60] flex flex-col justify-end bg-black/70" onClick={() => !savingCust && setCustCandidates(null)}>
+            <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10 max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-white font-bold text-lg mb-1">Choose the QuickBooks customer</h3>
+              <p className="text-gray-400 text-sm mb-1">
+                {draft?.customer ? <>“{draft.customer}” matches </> : 'This customer matches '}
+                more than one QuickBooks customer, so we won’t guess. Pick the right one — we’ll use it for this invoice and remember it next time.
+              </p>
+              <p className="text-amber-300/80 text-xs mb-4">Not sure? Check the email, phone, and past invoices in QuickBooks before choosing.</p>
+              <div className="space-y-2.5">
+                {custCandidates.map((c) => (
+                  <button key={c.id} onClick={() => chooseCustomer(c.id)} disabled={savingCust}
+                    className="w-full text-left rounded-2xl border border-gray-700 bg-gray-800/40 px-4 py-3 active:opacity-70 disabled:opacity-40">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white font-semibold text-base">{c.displayName || '(no name)'}</span>
+                      <span className="text-gray-500 text-xs tabular-nums">QB #{c.id}{c.active === false ? ' · inactive' : ''}</span>
+                    </div>
+                    {c.email && <div className="text-gray-400 text-sm mt-0.5">{c.email}</div>}
+                    {c.phone && <div className="text-gray-400 text-sm">{c.phone}</div>}
+                  </button>
+                ))}
+              </div>
+              <button onClick={() => setCustCandidates(null)} disabled={savingCust}
+                className="mt-5 w-full py-3.5 rounded-2xl border border-gray-700 text-gray-300 font-semibold active:opacity-70 disabled:opacity-40">
+                {savingCust ? 'Saving…' : 'Cancel'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {err && <p className="text-red-400 text-sm mt-4">{err}</p>}
       </div>
     </div>
@@ -997,6 +1055,9 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   const [sendErr, setSendErr] = useState<string | null>(null)
   const [sendPreview, setSendPreview] = useState<{ recipient: string | null; totalCents: number; invoiceNumber: string | null; resend: boolean } | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  // Ambiguous QB customer: the colliding candidates to choose from (null = picker closed).
+  const [custCandidates, setCustCandidates] = useState<QbCandidate[] | null>(null)
+  const [savingCust, setSavingCust] = useState(false)
   // Stable per-mount requestId (generated once on first Create) so double-taps / browser
   // retries dedupe on the server.
   const createReqId = useRef<string | null>(null)
@@ -1073,12 +1134,32 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
         body: JSON.stringify({ requestId: createReqId.current }),
       })
       const d = await res.json().catch(() => ({}))
-      if (!res.ok || !d.ok) { setCreateErr(d.error ?? 'Could not create the QuickBooks invoice.') }
+      // Ambiguous QB customer → open the picker instead of a dead-end error.
+      if (d.status === 'ambiguous' && Array.isArray(d.candidates) && d.candidates.length) {
+        setCustCandidates(d.candidates); setCreateErr(d.error ?? null)
+      } else if (!res.ok || !d.ok) { setCreateErr(d.error ?? 'Could not create the QuickBooks invoice.') }
       else { setToast('QuickBooks invoice created'); setTimeout(() => setToast(null), 5000) }
       await loadDraft()
     } catch { setCreateErr('Network error — please try again.') }
     finally { setCreating(false) }
   }, [orderId, creating, loadDraft])
+
+  // Persist the manager's chosen QB customer (directory cache), then re-run Create against it.
+  const chooseCustomer = useCallback(async (qbCustomerId: string) => {
+    if (savingCust) return
+    setSavingCust(true); setCreateErr(null)
+    try {
+      const res = await fetch(`/api/workflow/orders/${orderId}/invoice/customer`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ qbCustomerId }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok || !d.ok) { setCreateErr(d.error ?? 'Could not save the QuickBooks customer.'); return }
+      setCustCandidates(null)
+      await createInvoice()
+    } catch { setCreateErr('Network error — please try again.') }
+    finally { setSavingCust(false) }
+  }, [orderId, savingCust, createInvoice])
 
   // Sync (UPDATE) the EXISTING linked invoice via the idempotent sync endpoint. Never creates a
   // second invoice. An already-sent invoice returns confirm_required → we open a confirm sheet.
@@ -1305,6 +1386,37 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
               <button onClick={() => setConfirmSentOpen(false)} disabled={syncing} className="flex-1 py-3.5 rounded-2xl border border-gray-700 text-gray-300 font-semibold active:opacity-70 disabled:opacity-40">Cancel</button>
               <button onClick={() => syncInvoice(true)} disabled={syncing} className="flex-1 py-3.5 rounded-2xl bg-amber-600 text-white font-bold active:opacity-80 disabled:opacity-50">{syncing ? 'Syncing…' : 'Sync anyway'}</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Ambiguous QB customer — manager chooses the right existing customer; saved for next time. */}
+      {custCandidates && (
+        <div className="fixed inset-0 z-[60] flex flex-col justify-end bg-black/70" onClick={() => !savingCust && setCustCandidates(null)}>
+          <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10 max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white font-bold text-lg mb-1">Choose the QuickBooks customer</h3>
+            <p className="text-gray-400 text-sm mb-1">
+              {customerName ? <>“{customerName}” matches </> : 'This customer matches '}
+              more than one QuickBooks customer, so we won’t guess. Pick the right one — we’ll use it for this invoice and remember it next time.
+            </p>
+            <p className="text-amber-300/80 text-xs mb-4">Not sure? Check the email, phone, and past invoices in QuickBooks before choosing.</p>
+            <div className="space-y-2.5">
+              {custCandidates.map((c) => (
+                <button key={c.id} onClick={() => chooseCustomer(c.id)} disabled={savingCust}
+                  className="w-full text-left rounded-2xl border border-gray-700 bg-gray-800/40 px-4 py-3 active:opacity-70 disabled:opacity-40">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-white font-semibold text-base">{c.displayName || '(no name)'}</span>
+                    <span className="text-gray-500 text-xs tabular-nums">QB #{c.id}{c.active === false ? ' · inactive' : ''}</span>
+                  </div>
+                  {c.email && <div className="text-gray-400 text-sm mt-0.5">{c.email}</div>}
+                  {c.phone && <div className="text-gray-400 text-sm">{c.phone}</div>}
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setCustCandidates(null)} disabled={savingCust}
+              className="mt-5 w-full py-3.5 rounded-2xl border border-gray-700 text-gray-300 font-semibold active:opacity-70 disabled:opacity-40">
+              {savingCust ? 'Saving…' : 'Cancel'}
+            </button>
           </div>
         </div>
       )}

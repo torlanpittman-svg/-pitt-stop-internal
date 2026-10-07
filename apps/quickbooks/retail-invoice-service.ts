@@ -27,7 +27,7 @@ import { getBusinessConfig, shopSuppliesLabel } from '@/apps/settings/db'
 import { buildRetailPayload, decideSendRecipient, RetailTotalMismatchError, type RetailWorkService, type RetailPayload } from './retail-invoice'
 import { serviceDescription, extractPsid } from './retail-format'
 import { loadRetailItemIndex } from './retail-item-map'
-import { resolveRetailCustomer, resolveRetailCustomerIdentity } from './retail-customer'
+import { resolveRetailCustomer, resolveRetailCustomerIdentity, findRetailCustomerCandidates, persistRetailCustomerChoice, AmbiguousCustomerError, type QbCustomerCandidate } from './retail-customer'
 import { resolveRetailItems, createRetailInvoiceInQB, findRetailInvoiceByPsid, getRetailInvoiceRaw, updateRetailInvoiceInQB, fillRetailInvoiceEmail, sendRetailInvoiceInQB } from './retail-invoice-write'
 import { QBApiError } from './errors'
 import { logger } from '@/platform/logger'
@@ -36,7 +36,7 @@ const APP = 'quickbooks:retail-invoice-service'
 
 export interface CreateRetailResult {
   ok: boolean
-  status: 'created' | 'creating' | 'error' | 'refused'
+  status: 'created' | 'creating' | 'error' | 'refused' | 'ambiguous'
   invoiceId?: string | null
   invoiceNumber?: string | null
   totalCents?: number
@@ -44,6 +44,8 @@ export interface CreateRetailResult {
   adopted?: boolean
   alreadyExisted?: boolean
   error?: string
+  /** On status 'ambiguous': the colliding QB customers for the manager to choose from. */
+  candidates?: QbCustomerCandidate[]
 }
 
 const safeErr = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 300)
@@ -198,8 +200,88 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
   } catch (err) {
     const msg = err instanceof RetailTotalMismatchError ? err.message : safeErr(err)
     await markError(msg)
+    // Ambiguous customer: fail closed as before, but hand the colliding QB customers back so a
+    // manager can pick the right one (persisted to the directory cache) instead of hitting a
+    // dead-end. No invoice was created.
+    if (err instanceof AmbiguousCustomerError) {
+      logger.warn(APP, 'create_ambiguous_customer', { orderId, candidates: err.candidates.length })
+      return { ok: false, status: 'ambiguous', error: msg, candidates: err.candidates }
+    }
     logger.error(APP, 'create_failed', { orderId, error: msg })
     return { ok: false, status: 'error', error: msg }
+  }
+}
+
+// ── Manager QB-customer disambiguation (list candidates + persist the chosen mapping) ─────────
+export interface RetailCustomerCandidatesResult {
+  ok: boolean
+  contact?: { name: string; email: string | null; phone: string | null }
+  emailMatches?: QbCustomerCandidate[]
+  nameMatches?: QbCustomerCandidate[]
+  alreadyLinked?: boolean          // directory already caches a QB id for this contact
+  hasInvoice?: boolean             // a QB invoice already exists (customer is locked to it)
+  error?: string
+}
+
+/**
+ * READ-ONLY: the QB customers this Job's retail contact matches, for the manager picker. Does not
+ * create, pick, or write anything. Returns the candidate sets plus whether the contact is already
+ * linked (directory cache) or the Job already has an invoice.
+ */
+export async function listRetailCustomerCandidates(orderId: string): Promise<RetailCustomerCandidatesResult> {
+  const est = await getEstimateRow(orderId)
+  if (!est) return { ok: false, error: 'No estimate for this Job.' }
+  const order = await getOrderWithContext(orderId)
+  if (!order) return { ok: false, error: 'Job not found.' }
+  if (isDealerOrder(order)) return { ok: false, error: 'Dealer Jobs are invoiced through Dealer Check-In.' }
+  const contact = await jobContact(orderId, order.customerName ?? '')
+  const { emailMatches, nameMatches } = await findRetailCustomerCandidates(contact)
+  const ident = await resolveRetailCustomerIdentity(contact).catch(() => ({ qbCustomerId: null, matchedBy: 'none' as const }))
+  return {
+    ok: true, contact, emailMatches, nameMatches,
+    alreadyLinked: ident.matchedBy === 'directory-cache' && !!ident.qbCustomerId,
+    hasInvoice: !!est.qbInvoiceId,
+  }
+}
+
+export interface SetRetailCustomerResult {
+  ok: boolean
+  qbCustomerId?: string
+  displayName?: string | null
+  directoryCustomerId?: string | null
+  error?: string
+}
+
+/**
+ * Persist a MANAGER-CHOSEN QB CustomerRef for this Job's retail contact (directory cache), so the
+ * next Create resolves via directory-cache (CASE 1) and the email/name ambiguity never blocks
+ * invoicing again. Validates the id against QB; never creates/renames/merges a QB customer; refuses
+ * once an invoice exists (the customer is then locked to that invoice). Append-only audit event.
+ */
+export async function setRetailCustomerChoice(params: { orderId: string; qbCustomerId: string; actor: string | null }): Promise<SetRetailCustomerResult> {
+  const { orderId, actor } = params
+  const qbCustomerId = (params.qbCustomerId ?? '').trim()
+  if (!qbCustomerId) return { ok: false, error: 'Choose a QuickBooks customer.' }
+  const est = await getEstimateRow(orderId)
+  if (!est) return { ok: false, error: 'No estimate for this Job.' }
+  if (est.qbInvoiceId) return { ok: false, error: 'This Job already has a QuickBooks invoice — the customer is locked to it.' }
+  const order = await getOrderWithContext(orderId)
+  if (!order) return { ok: false, error: 'Job not found.' }
+  if (isDealerOrder(order)) return { ok: false, error: 'Dealer Jobs are invoiced through Dealer Check-In.' }
+  const contact = await jobContact(orderId, order.customerName ?? '')
+  try {
+    const res = await persistRetailCustomerChoice(contact, qbCustomerId)
+    await logEvent({ serviceOrderId: orderId, eventType: 'qb_customer_mapped', employeeName: actor, note: `"${contact.name}" → QuickBooks customer ${res.displayName ?? '?'} (${res.qbCustomerId})` })
+    // Clear the prior ambiguity error so the Create button no longer shows the dead-end message.
+    if (est.qbStatus === 'error' && /resolve the QuickBooks customer/i.test(est.qbSyncError ?? '')) {
+      await getDb().update(jobEstimates).set({ qbStatus: 'none', qbSyncError: null, updatedAt: new Date() }).where(eq(jobEstimates.id, est.id))
+    }
+    logger.info(APP, 'customer_mapped', { orderId, qbCustomerId: res.qbCustomerId })
+    return { ok: true, qbCustomerId: res.qbCustomerId, displayName: res.displayName, directoryCustomerId: res.directoryCustomerId }
+  } catch (err) {
+    const msg = safeErr(err)
+    logger.error(APP, 'customer_map_failed', { orderId, error: msg })
+    return { ok: false, error: msg }
   }
 }
 

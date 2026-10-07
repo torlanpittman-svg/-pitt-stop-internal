@@ -69,8 +69,21 @@ export function sanitizeContact(c: RetailContact): RetailContact {
   return { name: c.name, email: usableEmail(c.email), phone: usablePhone(c.phone) }
 }
 
+/** A QB customer surfaced to a manager to disambiguate (read-only projection — never mutated). */
+export interface QbCustomerCandidate {
+  id: string
+  displayName: string | null
+  email: string | null
+  phone: string | null
+  active: boolean | null
+}
+
 export class AmbiguousCustomerError extends Error {
-  constructor(message: string) { super(message); this.name = 'AmbiguousCustomerError' }
+  /** The exact QB customers that collided, so a manager can pick the right one (never auto-picked). */
+  candidates: QbCustomerCandidate[]
+  constructor(message: string, candidates: QbCustomerCandidate[] = []) {
+    super(message); this.name = 'AmbiguousCustomerError'; this.candidates = candidates
+  }
 }
 
 export interface ResolvedCustomer {
@@ -104,9 +117,11 @@ async function findDirectoryCustomer(c: RetailContact): Promise<DirRow | null> {
   return null
 }
 
-interface QbCust { id: string; email: string | null; syncToken: string }
-const mapCust = (c: { Id: string; PrimaryEmailAddr?: { Address?: string }; SyncToken: string }): QbCust =>
-  ({ id: c.Id, email: c.PrimaryEmailAddr?.Address ?? null, syncToken: c.SyncToken })
+interface QbCust { id: string; email: string | null; syncToken: string; displayName?: string | null; phone?: string | null; active?: boolean | null }
+const mapCust = (c: { Id: string; DisplayName?: string; PrimaryEmailAddr?: { Address?: string }; PrimaryPhone?: { FreeFormNumber?: string }; Active?: boolean; SyncToken: string }): QbCust =>
+  ({ id: c.Id, email: c.PrimaryEmailAddr?.Address ?? null, syncToken: c.SyncToken, displayName: c.DisplayName ?? null, phone: c.PrimaryPhone?.FreeFormNumber ?? null, active: c.Active ?? null })
+/** Read-only projection of a QB customer for the manager picker. */
+const toCandidate = (c: QbCust): QbCustomerCandidate => ({ id: c.id, displayName: c.displayName ?? null, email: c.email, phone: c.phone ?? null, active: c.active ?? null })
 
 /** ALL QB customers with this exact PrimaryEmailAddr (caller detects ambiguity; never blindly [0]). */
 async function qbFindByEmail(email: string): Promise<QbCust[]> {
@@ -249,7 +264,13 @@ export async function resolveRetailCustomer(c0: RetailContact, deps: ResolveDeps
     dirCacheId: null, emailUsable, emailMatchIds: emailMatches.map((m) => m.id), nameMatchIds: nameMatches.map((m) => m.id),
   })
   if (decision.action === 'ambiguous') {
-    throw new AmbiguousCustomerError(`Cannot safely resolve the QuickBooks customer for "${c.name}" (${decision.reason}). Resolve the customer in QuickBooks before invoicing.`)
+    // Surface the exact colliding QB customers so a manager can pick the right one (CASE 1
+    // directory-cache next time) — never auto-picked here.
+    const colliding = emailUsable && emailMatches.length > 1 ? emailMatches : nameMatches
+    throw new AmbiguousCustomerError(
+      `Cannot safely resolve the QuickBooks customer for "${c.name}" (${decision.reason}). Resolve the customer in QuickBooks before invoicing.`,
+      colliding.map(toCandidate),
+    )
   }
 
   let cust: QbCust
@@ -266,4 +287,42 @@ export async function resolveRetailCustomer(c0: RetailContact, deps: ResolveDeps
     logger.warn(APP, 'cache_failed', { error: String(e) }); return dir?.id ?? null
   })
   return { qbCustomerId: cust.id, created, matchedBy, directoryCustomerId, ...rec }
+}
+
+/**
+ * READ-ONLY: the QB customers this contact matches by exact email and by exact DisplayName —
+ * the candidate set a manager chooses from when resolution is ambiguous. Placeholder email is
+ * ignored (never evidence). Never writes, never picks, never creates.
+ */
+export async function findRetailCustomerCandidates(
+  c0: RetailContact, deps: ResolveDeps = defaultDeps,
+): Promise<{ emailMatches: QbCustomerCandidate[]; nameMatches: QbCustomerCandidate[] }> {
+  const c = sanitizeContact(c0)
+  const email = normEmail(c.email)
+  const emailMatches = email ? await deps.qbFindByEmail(email) : []
+  const nameMatches = c.name.trim() ? await deps.qbFindByName(c.name.trim()) : []
+  return { emailMatches: emailMatches.map(toCandidate), nameMatches: nameMatches.map(toCandidate) }
+}
+
+/**
+ * Persist a MANAGER-CHOSEN QB CustomerRef for this contact onto the Pitt Stop customer directory
+ * (the same cache resolveRetailCustomer consults FIRST). After this, every future invoice for this
+ * contact resolves via directory-cache (CASE 1) and the ambiguous email/name search is bypassed —
+ * so the same collision never blocks invoicing again. The chosen id is validated against QB first.
+ * This NEVER creates, renames, merges, or otherwise mutates any QuickBooks customer; it only records
+ * which existing QB customer this Pitt Stop contact maps to.
+ */
+export async function persistRetailCustomerChoice(
+  c0: RetailContact, qbCustomerId: string, deps: ResolveDeps = defaultDeps,
+): Promise<{ qbCustomerId: string; displayName: string | null; directoryCustomerId: string | null }> {
+  const c = sanitizeContact(c0)
+  const id = (qbCustomerId ?? '').trim()
+  if (!id) throw new Error('A QuickBooks customer id is required.')
+  const cust = await deps.qbGetCustomer(id)
+  if (!cust) throw new Error(`QuickBooks customer ${id} was not found.`)
+  // Write onto the SAME directory row resolveRetailCustomer would match for this contact (or insert
+  // a minimal retail row) — guaranteeing the directory-cache hit on the next resolve.
+  const dir = await deps.findDirectory(c)
+  const directoryCustomerId = await deps.cacheToDirectory(dir, c, cust.id)
+  return { qbCustomerId: cust.id, displayName: cust.displayName ?? null, directoryCustomerId }
 }
