@@ -42,7 +42,7 @@ export function planSlots(startDate: string, from: Date, days = 45): PlanSlot[] 
     for (const channel of ['facebook','email'] as const) {
       if (channel === 'facebook' ? ![2,5].includes(dow) : date !== emailDate) continue
       const key = channel === 'email' ? `email:${month}` : `facebook:${date}`
-      const index = channel === 'email' ? (d.getUTCMonth() + 3) % TOPICS.length : Math.floor((+d - Date.UTC(2026,9,6,12)) / 86400000 / 3.5)
+      const index = channel === 'email' ? (d.getUTCMonth() + 3) % TOPICS.length : Math.floor((+d - Date.UTC(2026,9,6,12)) / 86400000 / 7) * 2 + (dow === 5 ? 1 : 0)
       const topic = TOPICS[((index % TOPICS.length) + TOPICS.length) % TOPICS.length]
       slots.push({ ...topic, key, id: stableId(key), channel, date,
         subject: channel === 'email' && month === '2026-10' ? 'Your next detail, tailored to your vehicle' : topic.subject,

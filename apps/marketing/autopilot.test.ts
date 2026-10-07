@@ -11,6 +11,7 @@ describe('standing cadence',()=>{
     expect(slots.filter(s=>s.channel==='facebook').every(s=>[2,5].includes(new Date(s.date).getUTCDay()))).toBe(true)
     expect(slots.filter(s=>s.channel==='facebook'&&s.date.startsWith('2026-10'))).toHaveLength(7)
     expect(new Set(slots.map(s=>s.id)).size).toBe(slots.length)
+    expect(new Set(slots.filter(s=>s.channel==='facebook').slice(0,8).map(s=>s.body)).size).toBe(8)
   })
   it('stable month IDs prevent a second email after launch date changes',()=>{
     const a=planSlots('2026-10-07',NOW).find(s=>s.channel==='email')!
