@@ -45,6 +45,15 @@ export async function pauseAutopilotAction() {
   await logEvent('automation_settings_changed',{entityType:'automation',actor:name,meta:{enabled:false}})
   finish('Autopilot paused. A provider request already accepted may still complete.')
 }
+export async function reviewEmailAudienceAction(form:FormData) {
+  const name=await actor()
+  const reviewed=form.get('reviewed')==='on'
+  // Records the owner's explicit confirmation that the MailerLite group IS the intended eligible
+  // audience. It does NOT change any customer's eligibility; local unsubscribes/inactive remain excluded.
+  await updateSetting('marketing_email_audience_reviewed',reviewed,name)
+  await logEvent('automation_settings_changed',{entityType:'automation',actor:name,meta:{emailAudienceReviewed:reviewed}})
+  finish(reviewed?'Email audience marked reviewed. Local unsubscribes and inactive records are still excluded automatically on every send.':'Email audience review cleared; manual email sending is paused until it is reviewed again.')
+}
 export async function prepareAutopilotAction() {
   await actor()
   const result=await prepareAutopilotPlan()

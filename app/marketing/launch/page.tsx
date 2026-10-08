@@ -7,7 +7,7 @@ import { MarketingShell, Section, StatusChip } from '../_components'
 import { getAutopilotConfig, channelBlockers } from '@/apps/marketing/autopilot-config'
 import { AUTOPILOT_POLICY, SHOP_PHONE } from '@/apps/marketing/autopilot-plan'
 import { listAutopilotJobs } from '@/apps/marketing/autopilot'
-import { saveAutopilotAction, pauseAutopilotAction, prepareAutopilotAction, skipAutopilotAction } from './actions'
+import { saveAutopilotAction, pauseAutopilotAction, prepareAutopilotAction, skipAutopilotAction, reviewEmailAudienceAction } from './actions'
 export const dynamic='force-dynamic'
 const button='rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold hover:bg-blue-500'
 export default async function LaunchPage({searchParams}:{searchParams:Promise<{notice?:string}>}) {
@@ -38,7 +38,11 @@ export default async function LaunchPage({searchParams}:{searchParams:Promise<{n
     </Section>
     <div className="grid gap-4 md:grid-cols-2">{([{name:'Email',live:cfg.emailLive,blockers:email},{name:'Facebook',live:cfg.facebookLive,blockers:facebook}]).map(c=><Section key={c.name} title={`${c.name} · ${c.live?'enabled':'paused'}`}>
       {c.blockers.length?<ul className="list-disc space-y-2 pl-4 text-sm text-amber-200">{c.blockers.map(b=><li key={b}>{b}</li>)}</ul>:<p className="text-sm text-green-300">Launch checks passed.</p>}
-      {c.name==='Email' && <p className="mt-3 text-xs text-gray-400">MailerLite must approve the account and authenticated sender. Use a dedicated group of eligible customers, preserve previous opt-outs, and verify an owner-only test before activation. No automatic imports or re-subscriptions.</p>}
+      {c.name==='Email' && <p className="mt-3 text-xs text-gray-400">MailerLite must approve the account and authenticated sender. Use a dedicated group of eligible customers, preserve previous opt-outs, and verify an owner-only test before activation. No automatic imports or re-subscriptions. Verify plan access to API-created HTML email: API documentation calls the required tier <span className="text-gray-200">Advanced</span>; current billing uses Power. Trial access has not been verified.</p>}
+      {c.name==='Email' && <form action={reviewEmailAudienceAction} className="mt-3 rounded-lg border border-gray-800 bg-gray-950 p-3">
+        <label className="flex items-start gap-2 text-sm"><input type="checkbox" name="reviewed" defaultChecked={cfg.audienceReviewed} className="mt-1"/><span>I reviewed the MailerLite group and confirm it is the intended eligible audience. Manual and monthly email send to <span className="font-semibold">that MailerLite group</span> — not Pitt Stop&apos;s customer database — and local unsubscribes/inactive records are excluded automatically on every send. This does not grant eligibility to anyone.</span></label>
+        <button className="mt-3 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold hover:bg-blue-500">Save audience review</button>
+      </form>}
       {c.name==='Facebook' && <p className="mt-3 text-xs text-gray-400">The server needs the Pitt Stop Page connection and a successful publishing test. Browser sign-in alone does not enable background posting.</p>}
     </Section>)}</div>
     <Section title="Upcoming content & history" right={<form action={prepareAutopilotAction}><button className={button}>Prepare next 45 days</button></form>}>

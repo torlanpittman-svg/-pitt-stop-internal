@@ -2,10 +2,11 @@ import { requireMarketingManager, MarketingShell, Section, StatTile, StatusChip,
 import { money, count, shortDate } from '@/app/lib/format'
 import {
   updateCampaignCopyAction, generateCopyAction, buildRecipientsAction,
-  approveCampaignAction, sendCampaignAction, cancelCampaignAction,
+  approveCampaignAction, sendCampaignAction, cancelCampaignAction, sendCampaignEmailAction,
 } from '@/app/marketing/actions'
 import { getCampaign, listRecipients, countRecipients } from '@/apps/marketing/db'
 import { campaignFunnel } from '@/apps/marketing/attribution'
+import { emailSendReadiness } from '@/apps/marketing/manual-send'
 import { CHANNELS } from '@/apps/marketing/types'
 
 export const runtime = 'nodejs'
@@ -15,11 +16,11 @@ const PAGE_SIZE = 50
 
 export default async function CampaignDetailPage({ params, searchParams }: {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ page?: string; err?: string; msg?: string }>
+  searchParams: Promise<{ page?: string; err?: string; msg?: string; send?: string }>
 }) {
   await requireMarketingManager('/marketing/campaigns')
   const { id } = await params
-  const { page: pageRaw, err, msg } = await searchParams
+  const { page: pageRaw, err, msg, send } = await searchParams
   const campaign = await getCampaign(id)
 
   if (!campaign) {
@@ -40,6 +41,9 @@ export default async function CampaignDetailPage({ params, searchParams }: {
   const canApprove = campaign.status === 'draft'
   const canSend = campaign.status === 'ready' || campaign.status === 'scheduled'
   const canCancel = !['sent', 'completed', 'cancelled'].includes(campaign.status)
+  const isEmailCampaign = campaign.channel === 'email' || campaign.channel === 'both'
+  // Only fetch the authoritative MailerLite audience when the manager explicitly opens the send step.
+  const emailReady = isEmailCampaign && send === '1' ? await emailSendReadiness(id) : null
 
   const idInput = <input type="hidden" name="id" value={campaign.id} />
 
@@ -50,9 +54,9 @@ export default async function CampaignDetailPage({ params, searchParams }: {
       <FlashBanner err={err} msg={msg} />
 
       <div className="mb-4 rounded-xl border border-amber-700/60 bg-amber-950/30 px-4 py-3 text-sm text-amber-300">
-        Preview-only (V1) — SMS is deferred and there is no live email channel, so &ldquo;Preview&rdquo; is a
-        <span className="font-semibold"> non-destructive</span> dry-run: it never texts/emails anyone and never changes a
-        recipient or the campaign status, regardless of settings.
+        &ldquo;Preview (dry-run)&rdquo; is <span className="font-semibold">non-destructive</span>: it never contacts anyone and never
+        changes a recipient or the campaign status. SMS stays deferred. To actually send this email, use the manager-confirmed
+        &ldquo;Send email (MailerLite)&rdquo; step below.
       </div>
 
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -142,6 +146,60 @@ export default async function CampaignDetailPage({ params, searchParams }: {
           )}
         </div>
       </Section>
+
+      {isEmailCampaign && (
+        <Section title="Send email (MailerLite · manual, live)">
+          <p className="mb-3 text-xs text-amber-300">
+            This sends to your authoritative <span className="font-semibold">MailerLite group</span> audience — NOT the {count(total)} campaign
+            recipient rows above. It is a real, manager-confirmed live send (not the dry-run preview). SMS stays off.
+          </p>
+          {send !== '1' || !emailReady ? (
+            <a href={`/marketing/campaigns/${campaign.id}?send=1`} className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm font-semibold text-white hover:bg-gray-700">
+              Prepare to send email…
+            </a>
+          ) : (
+            <div className="space-y-3">
+              {emailReady.blockers.length > 0 && (
+                <ul className="list-disc space-y-1 pl-5 text-sm text-amber-200">{emailReady.blockers.map((b) => <li key={b}>{b}</li>)}</ul>
+              )}
+              {emailReady.contentIssues.length > 0 && (
+                <ul className="list-disc space-y-1 pl-5 text-sm text-amber-200">{emailReady.contentIssues.map((b) => <li key={b}>{b}</li>)}</ul>
+              )}
+              <div className="rounded-lg border border-gray-800 bg-gray-950 p-3 text-sm">
+                <span className="text-gray-400">MailerLite audience: </span>
+                {emailReady.audience?.ok
+                  ? <span className="font-semibold text-emerald-300">{emailReady.audience.count} active subscriber(s) in the group</span>
+                  : <span className="text-amber-300">unavailable{emailReady.audience?.error ? ` (${emailReady.audience.error})` : ''}</span>}
+                <span className="text-gray-500"> · unsubscribed/inactive are rejected before sending.</span>
+              </div>
+              <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
+                <div className="text-xs uppercase tracking-wide text-gray-500">Subject</div>
+                <div className="text-sm text-white">{emailReady.subject || '—'}</div>
+                <div className="mt-2 text-xs uppercase tracking-wide text-gray-500">Body (sent wrapped in branded HTML with an unsubscribe link)</div>
+                <p className="mt-1 whitespace-pre-line text-sm text-gray-300">{emailReady.body || '—'}</p>
+              </div>
+              {emailReady.job && (
+                <p className="text-xs text-gray-400">Send status: {emailReady.job.status}{emailReady.job.externalRef ? ` · ref ${emailReady.job.externalRef}` : ''}{emailReady.job.error ? ` · ${emailReady.job.error}` : ''}</p>
+              )}
+              {emailReady.canSend ? (
+                <form action={sendCampaignEmailAction}>
+                  <input type="hidden" name="id" value={campaign.id} />
+                  <input type="hidden" name="confirm" value="send-email" />
+                  {/* Bind the confirmation to exactly what is shown; an edit/audience change rejects it. */}
+                  <input type="hidden" name="contentHash" value={emailReady.contentHash} />
+                  <input type="hidden" name="audienceHash" value={emailReady.audienceHash ?? ''} />
+                  <button type="submit" className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600">
+                    Send email now to {emailReady.audience?.count} subscriber(s)
+                  </button>
+                </form>
+              ) : (
+                <p className="text-sm text-gray-400">Resolve the items above to enable sending. Nothing is sent until you confirm.</p>
+              )}
+              <p className="text-xs text-gray-500">Prerequisite: verify access to API-created HTML email on your MailerLite plan. API documentation calls this tier <span className="text-gray-300">Advanced</span>; current billing uses Power. Saved credentials alone do not verify sending readiness.</p>
+            </div>
+          )}
+        </Section>
+      )}
 
       <Section title="Recipients" right={<span className="text-xs text-gray-500">{count(total)} total · {count(excluded)} excluded · {count(sent)} sent</span>}>
         {total === 0 ? <EmptyRow>No recipients built yet. Use “Build recipients” to populate from the segment.</EmptyRow> : (

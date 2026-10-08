@@ -21,6 +21,8 @@ import { linkLeadOutcome } from '@/apps/marketing/attribution'
 import { upsertAdMetric, upsertSearchTerm } from '@/apps/marketing/ads'
 import { ingestComment, updateConversation } from '@/apps/marketing/comments'
 import { weekStart } from '@/apps/marketing/report'
+import { confirmSendEmail, confirmPublishFacebook, manualErrorMessage } from '@/apps/marketing/manual-send'
+import { PublishingError } from '@/apps/marketing/providers/publishing'
 import { validateCampaignCopy } from '@/apps/marketing/guardrails'
 import {
   enumValue, optionalEnumValue, requiredText, optionalText, optionalYmdDate, ymdDate,
@@ -265,6 +267,53 @@ export async function linkLeadOrderAction(fd: FormData): Promise<void> {
     await linkLeadOutcome(leadId, { serviceOrderId }, actor)
     redirect('/marketing/leads?msg=' + encodeURIComponent('Lead linked to order. Revenue will appear once the job completes + is invoiced.'))
   } catch (e) { fail('/marketing/leads', e) }
+}
+
+// ── Manual sending (explicit, manager-confirmed, LIVE) ─────────────────────────
+
+/** Surface manual-send failures (provider blockers / unknown outcomes) as a readable flash. */
+function manualFail(path: string, e: unknown): never {
+  if (e instanceof MarketingInputError) redirect(`${path}?err=${encodeURIComponent(e.message)}`)
+  if (e instanceof PublishingError) redirect(`${path}?err=${encodeURIComponent(manualErrorMessage(e.code))}`)
+  throw e
+}
+
+/** Required preview fingerprint (sha-256 hex). The user-facing action CANNOT skip preview binding. */
+function requireHex64(fd: FormData, key: string): string {
+  const v = str(fd, key)
+  if (!/^[0-9a-f]{64}$/i.test(v)) throw new MarketingInputError('Re-open the preview and confirm the current version before sending.')
+  return v
+}
+
+/** Explicitly send an approved email campaign to the MailerLite group audience. Never a dry-run. */
+export async function sendCampaignEmailAction(fd: FormData): Promise<void> {
+  const actor = await actorName()
+  const id = str(fd, 'id')
+  const path = `/marketing/campaigns/${id}`
+  try {
+    uuidValue(id, 'campaign id')
+    if (str(fd, 'confirm') !== 'send-email') throw new MarketingInputError('Confirm the send to proceed.')
+    // Bind the confirmation to exactly what was previewed; both fingerprints are REQUIRED here.
+    const res = await confirmSendEmail(id, actor, { expected: { contentHash: requireHex64(fd, 'contentHash'), audienceHash: requireHex64(fd, 'audienceHash') } })
+    const note = res.alreadySent
+      ? 'Already sent — no duplicate was created.'
+      : `Email handed to MailerLite for ${res.audienceCount} subscriber(s). Check MailerLite for delivery — accepted is not the same as delivered.`
+    redirect(`${path}?msg=${encodeURIComponent(note)}`)
+  } catch (e) { manualFail(path, e) }
+}
+
+/** Explicitly publish an approved post to the Pitt Stop Facebook Page. Never a dry-run. */
+export async function publishPostFacebookAction(fd: FormData): Promise<void> {
+  const actor = await actorName()
+  const id = str(fd, 'id')
+  const path = '/marketing/content'
+  try {
+    uuidValue(id, 'post id')
+    if (str(fd, 'confirm') !== 'publish-facebook') throw new MarketingInputError('Confirm the publish to proceed.')
+    const res = await confirmPublishFacebook(id, actor, { expected: { contentHash: requireHex64(fd, 'contentHash') } })
+    const note = res.alreadySent ? 'Already published — no duplicate was created.' : `Published to Facebook (reference ${res.externalRef}).`
+    redirect(`${path}?msg=${encodeURIComponent(note)}`)
+  } catch (e) { manualFail(path, e) }
 }
 
 // ── Google Ads (manual import) ────────────────────────────────────────────────

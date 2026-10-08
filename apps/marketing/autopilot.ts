@@ -1,5 +1,5 @@
 /** Recurring execution uses durable claims. An uncertain network outcome is NEVER retried automatically. */
-import { and, or, eq, lt, inArray, desc, sql } from 'drizzle-orm'
+import { and, or, eq, lt, inArray, desc, notLike, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { getDb } from '@/platform/db'
 import { customers } from '@/apps/directory/schema'
@@ -31,8 +31,10 @@ export async function prepareAutopilotPlan(now = new Date()) {
   return {added}
 }
 export async function listAutopilotJobs() {
+  // Manual (manager-initiated) send claims share this table but are NOT autopilot schedule items.
   return getDb().select({job:jobs,subject:marketingCampaigns.emailSubject,emailBody:marketingCampaigns.emailBody,postCopy:marketingSocialPosts.copy})
-    .from(jobs).leftJoin(marketingCampaigns,eq(jobs.id,marketingCampaigns.id)).leftJoin(marketingSocialPosts,eq(jobs.id,marketingSocialPosts.id)).orderBy(desc(jobs.scheduledDate)).limit(80)
+    .from(jobs).leftJoin(marketingCampaigns,eq(jobs.id,marketingCampaigns.id)).leftJoin(marketingSocialPosts,eq(jobs.id,marketingSocialPosts.id))
+    .where(notLike(jobs.slotKey,'manual-%')).orderBy(desc(jobs.scheduledDate)).limit(80)
 }
 export async function claimJob(id:string, from:'planned'|'ready', to:'preparing'|'publishing'):Promise<boolean> {
   const rows=await getDb().update(jobs).set({status:to,updatedAt:new Date()}).where(and(eq(jobs.id,id),eq(jobs.status,from))).returning({id:jobs.id})

@@ -5,8 +5,9 @@ import { listConversations } from '@/apps/marketing/comments'
 import { WEEKLY_FACEBOOK_PLAN } from '@/apps/marketing/calendar'
 import {
   createPostAction, generatePostAction, postFromCandidateAction, updatePostAction,
-  ingestCommentAction, resolveConversationAction, seedWeeklyPlanAction,
+  ingestCommentAction, resolveConversationAction, seedWeeklyPlanAction, publishPostFacebookAction,
 } from '@/app/marketing/actions'
+import { manualFacebookBlockers, facebookConnection, contentFingerprint } from '@/apps/marketing/manual-send'
 import {
   CONTENT_PILLARS, SERVICE_CATEGORIES, SERVICE_CATEGORY_LABELS,
   type ServiceCategory,
@@ -25,9 +26,9 @@ const svcLabel = (s: string | null | undefined): string =>
   s ? (SERVICE_CATEGORY_LABELS[s as ServiceCategory] ?? s) : '—'
 const toYmd = (d: Date | null | undefined): string | null => (d ? d.toISOString().slice(0, 10) : null)
 
-export default async function MarketingContent({ searchParams }: { searchParams: Promise<{ page?: string; err?: string; msg?: string }> }) {
+export default async function MarketingContent({ searchParams }: { searchParams: Promise<{ page?: string; err?: string; msg?: string; fb?: string }> }) {
   await requireMarketingManager('/marketing/content')
-  const { page: pageRaw, err, msg } = await searchParams
+  const { page: pageRaw, err, msg, fb } = await searchParams
   const page = Math.max(1, parseInt(pageRaw ?? '1', 10) || 1)
   const [posts, postTotal, candidates, conversations] = await Promise.all([
     listPosts({ limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),
@@ -35,6 +36,10 @@ export default async function MarketingContent({ searchParams }: { searchParams:
     findContentCandidates(25),
     listConversations(),
   ])
+  const fbBlockers = manualFacebookBlockers()
+  const publishable = posts.filter((p) => ['approved', 'scheduled'].includes(p.status) && !p.externalPostRef && !p.beforePhotoId && !p.afterPhotoId)
+  // Confirm the Page identity read-only (verify) only when the manager asks — never inferred from env.
+  const fbConn = fb === '1' && fbBlockers.length === 0 ? await facebookConnection() : null
 
   return (
     <MarketingShell active="/marketing/content" title="Content">
@@ -209,6 +214,42 @@ export default async function MarketingContent({ searchParams }: { searchParams:
           </table>
         )}
         <Pager basePath="/marketing/content" page={page} pageSize={PAGE_SIZE} total={postTotal} />
+      </Section>
+
+      <Section title="Publish to Facebook (manual, live)">
+        <p className="mb-3 text-xs text-gray-500">
+          Publishes the exact approved copy to the Pitt Stop Page with a tracked link — a real, manager-confirmed action,
+          not a dry-run. Photo posts aren&apos;t published here: post the image on Facebook directly, then record the link in the queue.
+        </p>
+        {fbBlockers.length > 0 ? (
+          <ul className="mb-3 list-disc space-y-1 pl-5 text-sm text-amber-200">{fbBlockers.map((b) => <li key={b}>{b}</li>)}</ul>
+        ) : !fbConn ? (
+          <a href="/marketing/content?fb=1" className="mb-3 inline-block rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm font-semibold text-white hover:bg-gray-700">Check Facebook connection…</a>
+        ) : fbConn.connected ? (
+          <p className="mb-3 text-sm text-emerald-300">Connected to Page <span className="font-semibold">{fbConn.pageName}</span> (ID {fbConn.pageId}).</p>
+        ) : (
+          <p className="mb-3 text-sm text-amber-300">Facebook Page not verified{fbConn.error ? ` (${fbConn.error})` : ''}. Resolve this before publishing; env credentials alone do not confirm a connection.</p>
+        )}
+        {publishable.length === 0 ? (
+          <EmptyRow>No approved text posts awaiting publish. Approve a post in the queue above first.</EmptyRow>
+        ) : (
+          <div className="space-y-3">
+            {publishable.map((p) => (
+              <article key={p.id} className="rounded-xl border border-gray-800 bg-gray-950 p-3">
+                <div className="flex items-center gap-2 text-xs"><StatusChip status={p.status} /><span className="uppercase text-gray-500">{p.pillar}{p.targetService ? ` · ${svcLabel(p.targetService)}` : ''}</span></div>
+                <p className="mt-2 whitespace-pre-line text-sm text-gray-300">{p.copy}</p>
+                {fbConn?.connected && (
+                  <form action={publishPostFacebookAction} className="mt-2">
+                    <input type="hidden" name="id" value={p.id} />
+                    <input type="hidden" name="confirm" value="publish-facebook" />
+                    <input type="hidden" name="contentHash" value={contentFingerprint('', (p.copy ?? '').trim())} />
+                    <button type="submit" className="rounded-lg bg-emerald-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-600">Publish to Facebook now</button>
+                  </form>
+                )}
+              </article>
+            ))}
+          </div>
+        )}
       </Section>
 
       <Section title="Comment assistant queue">

@@ -9,6 +9,7 @@ import { marketingEvents } from './schema'
 
 export type MarketingEventType =
   | 'automation_settings_changed' | 'automation_planned' | 'automation_prepared' | 'automation_accepted' | 'automation_blocked' | 'automation_skipped'
+  | 'manual_email_sent' | 'manual_facebook_published' | 'manual_send_blocked'
   | 'campaign_created' | 'campaign_copy_updated' | 'campaign_approved' | 'campaign_scheduled'
   | 'campaign_sending' | 'campaign_sent' | 'campaign_paused' | 'campaign_cancelled' | 'campaign_completed'
   | 'recipients_built' | 'recipient_excluded' | 'recipient_sent' | 'recipient_failed'
