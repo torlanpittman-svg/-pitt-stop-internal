@@ -16,8 +16,10 @@
 import crypto from 'node:crypto'
 import { and, eq, isNull, inArray, desc } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
-import { jobEstimates } from '@/apps/workflow/schema'
+import { jobEstimates, serviceOrders } from '@/apps/workflow/schema'
+import { customers } from '@/apps/directory/schema'
 import { quickEntryJobs } from '@/apps/quick-entry/schema'
+import { chooseInvoiceParty, type InvoiceParty } from './invoice-party'
 import { getOrderWithContext, logEvent, type OrderWithContext } from '@/apps/workflow/db'
 import { getEstimateRow, getFullEstimate, itemizeEstimate, type FullEstimate } from '@/apps/workflow/estimate-db'
 import { buildInvoiceDraft, type InvoiceDraft } from '@/apps/workflow/invoice-draft'
@@ -50,10 +52,32 @@ export interface CreateRetailResult {
 
 const safeErr = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 300)
 
-async function jobContact(orderId: string, fallbackName: string) {
-  const [row] = await getDb().select({ name: quickEntryJobs.customerName, email: quickEntryJobs.customerEmail, phone: quickEntryJobs.customerPhone })
+/**
+ * Who this order's QB invoice is BILLED to and SENT to. For ordinary jobs this is the service/job
+ * contact (unchanged). For an occasional third-party-billed job (service_orders.billing_customer_id
+ * set) it is the payer's directory identity, with the per-order recipient email steering BillEmail.
+ * Shared by CREATE/SEND/SYNC so all three agree on the billed customer (no false "identity changed").
+ */
+async function invoiceParty(orderId: string, fallbackName: string): Promise<InvoiceParty> {
+  const db = getDb()
+  const [ord] = await db.select({ billingCustomerId: serviceOrders.billingCustomerId, recipient: serviceOrders.invoiceRecipientEmail })
+    .from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
+  const [row] = await db.select({ name: quickEntryJobs.customerName, email: quickEntryJobs.customerEmail, phone: quickEntryJobs.customerPhone })
     .from(quickEntryJobs).where(eq(quickEntryJobs.serviceOrderId, orderId)).orderBy(desc(quickEntryJobs.createdAt)).limit(1)
-  return { name: (row?.name || fallbackName || 'Customer').trim(), email: row?.email ?? null, phone: row?.phone ?? null }
+  const serviceContact = { name: (row?.name || fallbackName || 'Customer').trim(), email: row?.email ?? null, phone: row?.phone ?? null }
+
+  let billingCustomer: { displayName: string | null; email: string | null; phone: string | null } | null = null
+  if (ord?.billingCustomerId) {
+    const [c] = await db.select({ displayName: customers.displayName, email: customers.email, phone: customers.phone })
+      .from(customers).where(eq(customers.id, ord.billingCustomerId)).limit(1)
+    billingCustomer = c ?? null
+  }
+  return chooseInvoiceParty({ serviceContact, billingCustomer, recipientEmailOverride: ord?.recipient ?? null })
+}
+
+/** Back-compat shim: the billed-customer identity only (CREATE/SEND/SYNC identity + the picker). */
+async function jobContact(orderId: string, fallbackName: string) {
+  return (await invoiceParty(orderId, fallbackName)).contact
 }
 
 /**
@@ -155,14 +179,18 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
     const { payload, fallbacks } = await buildRetailWorkPayload({ estimateId: est0.id, order, full: fullNow, draft: draftNow })
     const draft2 = draftNow
 
-    // Resolve + cache the QB customer (with email reconciliation policy).
-    const contact = await jobContact(orderId, draft2.customer ?? '')
+    // Resolve + cache the QB customer (with email reconciliation policy). For a third-party-billed
+    // Job this resolves the PAYER (billing_customer_id); the per-order recipient steers BillEmail
+    // ONLY (never written onto the payer's customer record). Ordinary Jobs are unchanged.
+    const party = await invoiceParty(orderId, draft2.customer ?? '')
+    const contact = party.contact
     const customer = await resolveRetailCustomer(contact)
+    const billEmail = party.recipientEmail ?? customer.billEmail
 
     // (3) PSID adoption — never duplicate a create that already succeeded in QB.
     const adopted = await findRetailInvoiceByPsid(customer.qbCustomerId, est0.id)
     if (adopted) {
-      const hash = contentHash(customer.qbCustomerId, payload, customer.billEmail)
+      const hash = contentHash(customer.qbCustomerId, payload, billEmail)
       await db.update(jobEstimates).set({
         qbInvoiceId: adopted.invoiceId, qbInvoiceNumber: adopted.invoiceNumber, qbSyncToken: adopted.syncToken,
         qbStatus: 'created', qbContentHash: hash, qbSyncedAt: new Date(), qbSyncError: null, updatedAt: new Date(),
@@ -175,7 +203,7 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
     // (vehicle) + BillEmail. PSID stays internal in PrivateNote.
     const inv = await createRetailInvoiceInQB({
       customerId: customer.qbCustomerId, lines: payload.lines, privateNote: payload.privateNote,
-      customerMemo: payload.customerMemo, billEmail: customer.billEmail,
+      customerMemo: payload.customerMemo, billEmail,
     })
 
     // Post-write invariant — QB TotalAmt must equal the Pitt Stop draft total exactly.
@@ -186,13 +214,13 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
       return { ok: false, status: 'error', invoiceId: inv.invoiceId, invoiceNumber: inv.invoiceNumber, error: msg }
     }
 
-    const hash = contentHash(customer.qbCustomerId, payload, customer.billEmail)
+    const hash = contentHash(customer.qbCustomerId, payload, billEmail)
     await db.update(jobEstimates).set({
       qbInvoiceId: inv.invoiceId, qbInvoiceNumber: inv.invoiceNumber, qbSyncToken: inv.syncToken,
       qbStatus: 'created', qbContentHash: hash, qbSyncedAt: new Date(), qbLastRequestId: requestId,
       qbSyncError: null, updatedAt: new Date(),
     }).where(eq(jobEstimates.id, est0.id))
-    const emailNote = customer.emailConflict ? ' · EMAIL CONFLICT (review before Send)' : (customer.billEmail ? '' : ' · no email (Send blocked)')
+    const emailNote = customer.emailConflict ? ' · EMAIL CONFLICT (review before Send)' : (billEmail ? '' : ' · no email (Send blocked)')
     const itemNote = fallbacks.length ? ` · Labor fallback: ${fallbacks.join(', ')}` : ''
     await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_created', employeeName: actor, note: `#${inv.invoiceNumber} (${inv.invoiceId}) total $${(draft2.totalCents / 100).toFixed(2)} · ${customer.matchedBy}${customer.created ? '+created' : ''}${emailNote}${itemNote}` })
     logger.info(APP, 'created', { orderId, invoiceId: inv.invoiceId, number: inv.invoiceNumber, total: draft2.totalCents, emailStatus: customer.emailStatus, fallbacks })

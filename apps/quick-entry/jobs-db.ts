@@ -9,6 +9,7 @@ import { quickEntryJobs } from './schema'
 import { getFullCatalog, listTechnicianInstructions, type FullCatalogItem, type TechRow } from './db'
 import { serviceLabels } from './job-lines'
 import { findOrCreateVehicle, getVehicleById, createServiceOrder } from '@/apps/workflow/db'
+import { findOrCreateIntakeCustomer } from '@/apps/directory/intake-customer'
 import { getOrCreateEstimate, promoteTextServices, recomputeEstimate, setExplicitPrice, setAgreedPrice, setInternalNote } from '@/apps/workflow/estimate-db'
 import { searchServiceHistory, type HistoryEntry, type ServiceMatch } from './service-history'
 
@@ -117,10 +118,27 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
   const labels = serviceLabels(input.lines)
   const services = labels.join(', ')
   const notes = `Quick Entry · ${input.customerName} · ${vehicleLabel}${services ? ` · ${services}` : ''}`.slice(0, 500)
+
+  // Promote the customer into the canonical directory and link the vehicle, so they are searchable
+  // on /customers and this Job attaches to their profile/history. Best-effort: a directory hiccup
+  // must NEVER fail Job creation (the Quick Entry contract) — on failure customerId stays null, i.e.
+  // the pre-fix behaviour. Reuses the QB resolver's unique-evidence match rule so no duplicate row.
+  let customerId: string | null = null
+  try {
+    const link = await findOrCreateIntakeCustomer(
+      { name: input.customerName, phone: input.customerPhone ?? null, email: input.customerEmail ?? null },
+      vehicle.id,
+    )
+    customerId = link?.id ?? null
+  } catch (err) {
+    console.error('[quick-entry] directory customer link failed (Job still created):', err)
+  }
+
   const order = await createServiceOrder({
     vehicleId: vehicle.id, source: 'quick_entry', serviceType: 'retail',
     checkedInBy: input.createdBy ?? 'quick_entry', notes, services: labels,
     customerName: input.customerName,  // Work Board card title
+    customerId,                        // canonical directory link (null if resolution failed)
     isUrgent: input.isUrgent ?? false,
   })
 

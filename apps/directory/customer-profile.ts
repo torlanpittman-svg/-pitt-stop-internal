@@ -154,10 +154,10 @@ export interface HistoryPage {
   offset: number
 }
 
-function normalizePhone(v: string | null | undefined): string {
+export function normalizePhone(v: string | null | undefined): string {
   return (v ?? '').replace(/\D/g, '').replace(/^1(\d{10})$/, '$1')
 }
-function normalizeEmail(v: string | null | undefined): string {
+export function normalizeEmail(v: string | null | undefined): string {
   return (v ?? '').trim().toLowerCase()
 }
 
@@ -237,7 +237,7 @@ interface HistoryRow {
 
 // Obvious placeholder contacts that must never be treated as a unique identity (see the shared
 // no@no.com QuickBooks bug). A phone shorter than 7 digits is too ambiguous to key on.
-const PLACEHOLDER_EMAILS = new Set(['no@no.com', 'none@none.com', 'na@na.com', 'test@test.com'])
+export const PLACEHOLDER_EMAILS = new Set(['no@no.com', 'none@none.com', 'na@na.com', 'test@test.com'])
 
 /**
  * The customer's phone/email ONLY if it uniquely identifies them in the directory. A phone/email

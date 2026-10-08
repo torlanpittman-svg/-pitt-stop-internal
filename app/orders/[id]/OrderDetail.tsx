@@ -526,6 +526,124 @@ function CustomerEditModal({ orderId, onClose, onSaved }: { orderId: string; onC
   )
 }
 
+// ── Third-party billing (manager) — "Different person/company paying?" ────────
+// Occasional: a company/payer who is NOT the vehicle owner covers this one job. Sets who the QB
+// invoice is billed to + sent to, for THIS order only. Never changes the vehicle owner or history.
+function BillingModal({ orderId, onClose, onSaved }: { orderId: string; onClose: () => void; onSaved: (msg: string) => void }) {
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [enabled, setEnabled] = useState(false)
+  const [billingCustomerId, setBillingCustomerId] = useState<string | null>(null)
+  const [billingName, setBillingName] = useState<string>('')
+  const [recipient, setRecipient] = useState('')
+  const [contactName, setContactName] = useState('')
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState<Array<{ id: string; name: string; subtitle: string }>>([])
+
+  useEffect(() => {
+    fetch(`/api/workflow/orders/${orderId}/invoice/billing`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.ok && d.billing) {
+          setEnabled(!!d.billing.billingCustomerId)
+          setBillingCustomerId(d.billing.billingCustomerId)
+          setBillingName(d.billing.billingCustomerName ?? '')
+          setRecipient(d.billing.invoiceRecipientEmail ?? '')
+          setContactName(d.billing.jobContactName ?? '')
+        }
+      })
+      .catch(() => setErr('Could not load billing.'))
+      .finally(() => setLoading(false))
+  }, [orderId])
+
+  // Pick the payer from the EXISTING directory (never auto-creates a customer here).
+  useEffect(() => {
+    const query = q.trim()
+    if (query.length < 2) { setResults([]); return }
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/customers/search?q=${encodeURIComponent(query)}`, { cache: 'no-store' })
+        const d = await r.json()
+        if (d.ok) setResults((d.results || []).map((x: { id: string; name: string; subtitle: string }) => ({ id: x.id, name: x.name, subtitle: x.subtitle })))
+      } catch { /* ignore */ }
+    }, 250)
+    return () => clearTimeout(t)
+  }, [q])
+
+  const save = async () => {
+    setBusy(true); setErr(null)
+    try {
+      const payload = enabled
+        ? { billingCustomerId, invoiceRecipientEmail: recipient, jobContactName: contactName }
+        : { billingCustomerId: null, invoiceRecipientEmail: null, jobContactName: null }
+      if (enabled && !billingCustomerId) { setErr('Select the company/person paying.'); setBusy(false); return }
+      const res = await fetch(`/api/workflow/orders/${orderId}/invoice/billing`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      })
+      const d = await res.json()
+      if (!res.ok || !d.ok) { setErr(d.error ?? 'Could not save.'); return }
+      onSaved(enabled ? 'Billing updated' : 'Billing cleared')
+    } catch { setErr('Network error — try again.') } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
+      <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-white font-bold text-xl">Different person/company paying?</h2>
+          <button onClick={onClose} className="text-gray-500 text-sm">Cancel</button>
+        </div>
+        <p className="text-gray-500 text-xs mb-4">For this job only. The vehicle owner and their service history don’t change — only who the invoice is billed to and sent to.</p>
+        {loading ? (
+          <p className="text-gray-400">Loading…</p>
+        ) : (
+          <div className="space-y-4">
+            <label className="flex items-center gap-3">
+              <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="w-5 h-5" />
+              <span className="text-white text-base">Yes — bill a different customer</span>
+            </label>
+            {enabled && (
+              <>
+                <div>
+                  <p className="text-gray-400 text-sm mb-1">Billing customer {billingName && <span className="text-white font-semibold">· {billingName}</span>}</p>
+                  <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search customers…"
+                    className="w-full h-12 rounded-xl bg-gray-800 text-white px-4 outline-none" />
+                  {results.length > 0 && (
+                    <div className="mt-2 rounded-xl border border-gray-800 divide-y divide-gray-800 overflow-hidden">
+                      {results.map((r) => (
+                        <button key={r.id} onClick={() => { setBillingCustomerId(r.id); setBillingName(r.name); setQ(''); setResults([]) }}
+                          className="w-full text-left px-4 py-3 active:bg-gray-800">
+                          <span className="text-white text-sm font-semibold">{r.name}</span>
+                          <span className="text-gray-500 text-xs block">{r.subtitle}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-gray-600 text-xs mt-1">Payer must already be in Customers. Add them there first if needed.</p>
+                </div>
+                <div>
+                  <p className="text-gray-400 text-sm mb-1">Invoice recipient email</p>
+                  <input value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="who receives the invoice" inputMode="email"
+                    className="w-full h-12 rounded-xl bg-gray-800 text-white px-4 outline-none" />
+                </div>
+                <div>
+                  <p className="text-gray-400 text-sm mb-1">Contact / service advisor (optional)</p>
+                  <input value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="who brought the vehicle in"
+                    className="w-full h-12 rounded-xl bg-gray-800 text-white px-4 outline-none" />
+                </div>
+              </>
+            )}
+            {err && <p className="text-red-400 text-sm">{err}</p>}
+            <button onClick={save} disabled={busy}
+              className="w-full h-14 rounded-2xl bg-green-600 active:bg-green-700 text-white text-lg font-bold disabled:opacity-40">{busy ? 'Saving…' : 'Save'}</button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 interface InvoiceDraftData {
   priced: boolean; isDealer: boolean
   customer: string | null; vehicle: string; services: string[]
@@ -1516,6 +1634,7 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
   const [acked,       setAcked]       = useState<Set<string>>(new Set())  // to-do checkoffs
   const [editingVehicle, setEditingVehicle] = useState(false)
   const [editingCustomer, setEditingCustomer] = useState(false)
+  const [editingBilling, setEditingBilling] = useState(false)
   const [vehToast,    setVehToast]    = useState<string | null>(null)
   const [showInvoice, setShowInvoice] = useState(false)   // Invoice Draft (manager/admin)
   const [showContact, setShowContact] = useState(false)   // customer contact popup (all staff)
@@ -1739,6 +1858,7 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
               <div className="flex items-center gap-4 mt-1">
                 <button onClick={() => setEditingVehicle(true)} className="text-blue-400 text-sm font-semibold active:opacity-70">Edit Vehicle</button>
                 {!isDealerOrder(order) && <button onClick={() => setEditingCustomer(true)} className="text-blue-400 text-sm font-semibold active:opacity-70">Edit Customer</button>}
+                {!isDealerOrder(order) && <button onClick={() => setEditingBilling(true)} className="text-blue-400 text-sm font-semibold active:opacity-70">Billing</button>}
               </div>
             )}
           </div>
@@ -2042,6 +2162,15 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
           orderId={order.id}
           onClose={() => setEditingCustomer(false)}
           onSaved={async (msg) => { setEditingCustomer(false); setVehToast(msg); await reload(); setTimeout(() => setVehToast(null), 6000) }}
+        />
+      )}
+
+      {/* Third-party billing (manager) — occasional different payer for this job only */}
+      {editingBilling && (
+        <BillingModal
+          orderId={order.id}
+          onClose={() => setEditingBilling(false)}
+          onSaved={async (msg) => { setEditingBilling(false); setVehToast(msg); await reload(); setTimeout(() => setVehToast(null), 6000) }}
         />
       )}
 

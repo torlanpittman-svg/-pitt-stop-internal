@@ -85,6 +85,20 @@ export const serviceOrders = pgTable(
     customerName: varchar('customer_name', { length: 200 }),
     checkedInBy: varchar('checked_in_by', { length: 200 }),
 
+    // ── Occasional third-party billing (migration 0049) ──────────────────────────────────────
+    // When someone OTHER than the service customer pays (a company covering a resident's repair, a
+    // body shop account, etc.). All NULL for ordinary jobs → bill the service customer as today.
+    // These NEVER change vehicle ownership (customer_vehicles) or whose history this is (customerId).
+    // Canonical directory customer to BILL (the payer). FK declared in migration 0049 (SQL only) to
+    // avoid a circular schema import with apps/directory. Null → bill the service customer.
+    billingCustomerId: uuid('billing_customer_id'),
+    // Address the QB invoice is SENT to (Invoice.BillEmail only — never written onto the billing
+    // customer record, so a company's main email is never overwritten by a specific advisor).
+    invoiceRecipientEmail: varchar('invoice_recipient_email', { length: 240 }),
+    // The specific person who brought the vehicle in on behalf of the payer (service advisor), for
+    // THIS order only. Display/record; does not change identity matching.
+    jobContactName: varchar('job_contact_name', { length: 200 }),
+
     arrivedAt:   timestamp('arrived_at',   { withTimezone: true }),
     startedAt:   timestamp('started_at',   { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }), // true completion (Ready); count-once
