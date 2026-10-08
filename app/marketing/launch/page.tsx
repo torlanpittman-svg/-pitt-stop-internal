@@ -1,6 +1,8 @@
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { managerActor } from '@/apps/checks/authz'
+import { getMarketingConfig } from '@/apps/settings/db'
+import { updateMarketingSettingsAction } from '../actions'
 import { MarketingShell, Section, StatusChip } from '../_components'
 import { getAutopilotConfig, channelBlockers } from '@/apps/marketing/autopilot-config'
 import { AUTOPILOT_POLICY, SHOP_PHONE } from '@/apps/marketing/autopilot-plan'
@@ -10,10 +12,18 @@ export const dynamic='force-dynamic'
 const button='rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold hover:bg-blue-500'
 export default async function LaunchPage({searchParams}:{searchParams:Promise<{notice?:string}>}) {
   if(!await managerActor()) redirect('/auto-sales/login?next=/marketing/launch')
-  const [cfg,items,params]=await Promise.all([getAutopilotConfig(),listAutopilotJobs(),searchParams])
+  const [cfg,items,params,marketing]=await Promise.all([getAutopilotConfig(),listAutopilotJobs(),searchParams,getMarketingConfig()])
   const email=channelBlockers(cfg,'email'),facebook=channelBlockers(cfg,'facebook')
   return <MarketingShell active="/marketing/launch" title="Launch & Autopilot" actions={<form action={pauseAutopilotAction}><button className="rounded-lg border border-red-700 px-4 py-2 text-sm">Pause autopilot</button></form>}>
     {params.notice && <p role="status" className="mb-4 rounded-xl border border-blue-800 bg-blue-950 p-3 text-sm">{params.notice}</p>}
+    <Section title="Marketing workspace">
+      <p className="mb-3 text-sm text-gray-300">Enable the manager workspace for manual use. This does not enable SMS, email sending, Facebook publishing, or autopilot.</p>
+      {marketing.enabled ? <Link href="/marketing" className={button}>Open Marketing</Link> : <form action={updateMarketingSettingsAction}>
+        <input type="hidden" name="__keys" value="marketing_enabled" />
+        <input type="hidden" name="marketing_enabled" value="on" />
+        <button className={button}>Enable Marketing workspace</button>
+      </form>}
+    </Section>
     <Section title={cfg.enabled?'Autopilot is active':'Autopilot is paused'}>
       <p className="text-sm text-gray-300">Two Facebook posts each week, on Tuesday and Friday. One email each month to the reviewed audience. The first email uses your launch date; later emails run on the 15th. Publishing runs daily around 10–11 a.m. Central, and missed dates are skipped.</p>
       <p className="mt-2 text-sm text-gray-400">General service education only. No automatic discounts, prices, appointment promises, customer stories, or job photos. SMS and advertising spend are separate and remain off for this launch.</p>
