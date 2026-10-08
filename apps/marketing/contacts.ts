@@ -10,7 +10,7 @@
  * thousands, promote this to a refreshed `marketing_contact` rollup table (same shape) — the
  * ContactAggregate contract here is deliberately storage-agnostic so that swap is localized.
  */
-import { and, eq, ne, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { customers } from '@/apps/directory/schema'
 import { serviceOrders, jobEstimates } from '@/apps/workflow/schema'
@@ -77,8 +77,11 @@ export async function contactAggregates(): Promise<ContactAggregate[]> {
       name: sql<string>`coalesce(nullif(${customers.displayName}, ''), nullif(trim(concat_ws(' ', ${customers.firstName}, ${customers.lastName})), ''), 'Unknown')`,
       phone: customers.phone,
       email: customers.email,
-      lastVisitAt: sql<string | null>`max(coalesce(${serviceOrders.completedAt}, ${serviceOrders.createdAt}))`,
+      // Only COMPLETED, non-cancelled jobs are real visits/value — never incomplete/in-progress estimates.
+      lastVisitAt: sql<string | null>`max(${serviceOrders.completedAt})`,
       totalVisits: sql<number>`count(${serviceOrders.id})::int`,
+      // Completed-job VALUE (QB invoice total when present, else the order's approved price). This is a
+      // historical customer-value basis for segmentation — it is not labeled "invoiced" or "collected".
       lifetimeRevenueCents: sql<number>`coalesce(sum(coalesce(${jobEstimates.totalCents}, ${serviceOrders.approvedPriceCents}, 0)), 0)::int`,
       serviceLabels: sql<unknown>`coalesce(jsonb_agg(${serviceOrders.services}) filter (where ${serviceOrders.services} is not null), '[]'::jsonb)`,
       smsEligible: sql<boolean>`coalesce(bool_and(coalesce(${marketingPreferences.smsEligible}, true)), true)`,
@@ -89,7 +92,12 @@ export async function contactAggregates(): Promise<ContactAggregate[]> {
       unsubscribed: sql<boolean>`bool_or(${marketingPreferences.unsubscribedAt} is not null)`,
     })
     .from(customers)
-    .leftJoin(serviceOrders, and(eq(serviceOrders.customerId, customers.id), ne(serviceOrders.status, 'cancelled')))
+    .leftJoin(serviceOrders, and(
+      eq(serviceOrders.customerId, customers.id),
+      inArray(serviceOrders.status, ['ready', 'delivered']),
+      isNotNull(serviceOrders.completedAt),
+      isNull(serviceOrders.cancelledAt),
+    ))
     .leftJoin(jobEstimates, eq(jobEstimates.serviceOrderId, serviceOrders.id))
     .leftJoin(marketingPreferences, eq(marketingPreferences.customerId, customers.id))
     .where(eq(customers.active, true))

@@ -1,4 +1,4 @@
-import { requireMarketingManager, MarketingShell, Section } from '@/app/marketing/_components'
+import { requireMarketingManager, MarketingShell, Section, FlashBanner } from '@/app/marketing/_components'
 import { createCampaignAction } from '@/app/marketing/actions'
 import { listNamedSegments } from '@/apps/marketing/segments'
 import { CAMPAIGN_TYPES, CHANNELS, SERVICE_CATEGORIES, SERVICE_CATEGORY_LABELS } from '@/apps/marketing/types'
@@ -6,12 +6,14 @@ import { CAMPAIGN_TYPES, CHANNELS, SERVICE_CATEGORIES, SERVICE_CATEGORY_LABELS }
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-export default async function NewCampaignPage() {
+export default async function NewCampaignPage({ searchParams }: { searchParams: Promise<{ err?: string }> }) {
   await requireMarketingManager('/marketing/campaigns')
+  const { err } = await searchParams
   const segments = await listNamedSegments()
 
   return (
     <MarketingShell active="/marketing/campaigns" title="New campaign">
+      <FlashBanner err={err} />
       <Section title="Campaign details">
         <form action={createCampaignAction} className="max-w-xl space-y-4">
           <div>

@@ -1,8 +1,10 @@
 /**
  * MarketingRecommendationEngine — deterministic, explainable recommendations over Google Ads data.
- * V1 goal is PROFITABLE COMPLETED-JOB REVENUE, not clicks. Everything here is a RECOMMENDATION only;
- * nothing changes a budget or a keyword automatically. Rules are pure + testable (no AI needed), so
- * the owner always sees the number and the reason behind each suggestion.
+ * All revenue/ROAS here is GOOGLE-ADS-REPORTED (what the platform reports / the owner imported), NOT
+ * Pitt Stop collected cash and NOT profit — shop costs aren't included, so "ROAS" is a reported
+ * revenue-to-spend ratio, a directional signal only. Everything here is a RECOMMENDATION; nothing
+ * changes a budget or keyword automatically. Rules are pure + testable (no AI), so the owner always
+ * sees the number and the reason behind each suggestion.
  */
 import { SERVICE_CATEGORY_LABELS } from './types'
 import type { CategoryAdRollup } from './ads'
@@ -51,7 +53,7 @@ export function buildAdRecommendations(input: AdRecommendationInput): Recommenda
         id: `budget_shift:${worst.c.serviceCategory}->${best.c.serviceCategory}`,
         type: 'budget_shift', severity: 'info',
         title: `Shift budget toward ${label(best.c.serviceCategory)}`,
-        detail: `${label(worst.c.serviceCategory)} spent ${dollars(worst.c.spendCents)} and produced ${dollars(worst.c.revenueCents)} (${worst.r.toFixed(1)}x), while ${label(best.c.serviceCategory)} spent ${dollars(best.c.spendCents)} and produced ${dollars(best.c.revenueCents)} (${best.r.toFixed(1)}x).`,
+        detail: `${label(worst.c.serviceCategory)} spent ${dollars(worst.c.spendCents)} and reported ${dollars(worst.c.revenueCents)} (${worst.r.toFixed(1)}x), while ${label(best.c.serviceCategory)} spent ${dollars(best.c.spendCents)} and reported ${dollars(best.c.revenueCents)} (${best.r.toFixed(1)}x). Figures are Google-Ads-reported, not profit.`,
         action: `Consider moving budget from ${label(worst.c.serviceCategory)} to ${label(best.c.serviceCategory)}.`,
       })
     }
@@ -63,16 +65,16 @@ export function buildAdRecommendations(input: AdRecommendationInput): Recommenda
     if (c.revenueCents === 0) {
       recs.push({
         id: `underperformer:${c.serviceCategory}`, type: 'underperformer', severity: 'warn',
-        title: `${label(c.serviceCategory)} has spend but no attributed revenue`,
-        detail: `${label(c.serviceCategory)} spent ${dollars(c.spendCents)} across ${c.clicks} clicks with ${c.conversions} conversions and $0 attributed completed revenue in this period.`,
+        title: `${label(c.serviceCategory)} has spend but no reported revenue`,
+        detail: `${label(c.serviceCategory)} spent ${dollars(c.spendCents)} across ${c.clicks} clicks with ${c.conversions} conversions and $0 Google-Ads-reported revenue in this period.`,
         action: 'Review landing page, call tracking, and whether jobs are being attributed back — or pause until fixed.',
       })
     } else if (r != null && r < 1) {
       recs.push({
         id: `underperformer:${c.serviceCategory}`, type: 'underperformer', severity: 'warn',
-        title: `${label(c.serviceCategory)} is running below break-even`,
-        detail: `${label(c.serviceCategory)} spent ${dollars(c.spendCents)} and produced ${dollars(c.revenueCents)} (${r.toFixed(1)}x ROAS).`,
-        action: 'Tighten keywords/audience or reduce budget until the return improves.',
+        title: `${label(c.serviceCategory)}: reported revenue is below ad spend`,
+        detail: `${label(c.serviceCategory)} spent ${dollars(c.spendCents)} and reported ${dollars(c.revenueCents)} (${r.toFixed(1)}x reported revenue vs spend — not profit).`,
+        action: 'Tighten keywords/audience or reduce budget until the reported return improves.',
       })
     }
   }

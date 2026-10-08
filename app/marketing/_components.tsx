@@ -32,9 +32,38 @@ const TABS: Array<{ href: string; label: string }> = [
   { href: '/marketing/google-ads', label: 'Google Ads' },
   { href: '/marketing/attribution', label: 'Attribution' },
   { href: '/marketing/report', label: 'Weekly Report' },
-  { href: '/marketing/sms', label: 'SMS Launch' },
+  // 'SMS Launch' intentionally removed from primary nav — SMS is deferred in V1 (see /marketing/sms,
+  // reachable by direct link, which shows the deferred notice). Re-add here when SMS activates.
   { href: '/marketing/settings', label: 'Settings' },
 ]
+
+/** Reusable paginator for the larger marketing tables (leads, recipients, posts). */
+export function Pager({ basePath, page, pageSize, total, params = {} }: {
+  basePath: string; page: number; pageSize: number; total: number; params?: Record<string, string>
+}) {
+  const lastPage = Math.max(1, Math.ceil(total / pageSize))
+  if (total <= pageSize) return null
+  const q = (p: number) => {
+    const sp = new URLSearchParams({ ...params, page: String(p) })
+    return `${basePath}?${sp.toString()}`
+  }
+  const from = (page - 1) * pageSize + 1
+  const to = Math.min(total, page * pageSize)
+  return (
+    <div className="mt-3 flex items-center justify-between gap-3 text-xs text-gray-400">
+      <span>{from}–{to} of {total}</span>
+      <div className="flex items-center gap-2">
+        {page > 1
+          ? <Link href={q(page - 1)} className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 font-semibold text-white hover:bg-gray-700">← Prev</Link>
+          : <span className="rounded-lg border border-gray-900 bg-gray-950 px-3 py-1.5 text-gray-600">← Prev</span>}
+        <span>Page {page} / {lastPage}</span>
+        {page < lastPage
+          ? <Link href={q(page + 1)} className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 font-semibold text-white hover:bg-gray-700">Next →</Link>
+          : <span className="rounded-lg border border-gray-900 bg-gray-950 px-3 py-1.5 text-gray-600">Next →</span>}
+      </div>
+    </div>
+  )
+}
 
 export function MarketingShell({ active, title, actions, children }: { active: string; title: string; actions?: ReactNode; children: ReactNode }) {
   return (
@@ -96,4 +125,15 @@ export function StatusChip({ status }: { status: string }) {
 
 export function EmptyRow({ children }: { children: ReactNode }) {
   return <div className="rounded-xl border border-dashed border-gray-800 bg-gray-950 px-4 py-8 text-center text-sm text-gray-500">{children}</div>
+}
+
+/** Readable flash banner for action results. `err` = a validation failure; `msg` = an info/success note. */
+export function FlashBanner({ err, msg }: { err?: string; msg?: string }) {
+  if (err) {
+    return <div className="mb-4 rounded-xl border border-red-800 bg-red-950/40 px-4 py-3 text-sm text-red-200">{err}</div>
+  }
+  if (msg) {
+    return <div className="mb-4 rounded-xl border border-emerald-800 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-200">{msg}</div>
+  }
+  return null
 }

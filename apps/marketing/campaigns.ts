@@ -1,22 +1,19 @@
 /**
- * Campaign recipient building + sending. Two guarantees matter most here:
+ * Campaign recipient building + preview. Two guarantees matter most here:
  *   1. Consent is enforced at build time — ineligible / unsubscribed / unreachable customers become
  *      `excluded` rows (with a reason) and are NEVER sent to.
- *   2. Sending is idempotent and honest — only `pending` recipients are processed, a dry-run send
- *      marks the recipient `suppressed` (reason 'dry_run') and is reported as such; nothing is ever
- *      recorded as `sent` unless a LIVE provider actually accepted it.
+ *   2. There is NO send path in V1. SMS and email are deferred, so the only runtime operation is a
+ *      NON-DESTRUCTIVE preview (`previewCampaign`) that writes nothing — it never contacts a provider,
+ *      never marks a recipient, and never marks a campaign `sent`. The provider abstraction is kept for
+ *      a future activation pass but is not invoked from here.
  */
-import { getPreferences, hasSmsConsent } from './consent'
-import { getDb } from '@/platform/db'
-import { marketingPreferences } from './schema'
 import { contactAggregates } from './contacts'
 import { applySegment, resolveSegmentCriteria } from './segments'
 import {
-  getCampaign, insertRecipients, listRecipients, markRecipient, refreshCampaignCounts,
-  transitionCampaign, type Campaign, type RecipientSeed,
+  getCampaign, insertRecipients, listRecipients, refreshCampaignCounts,
+  type Campaign, type RecipientSeed,
 } from './db'
 import { logEvent } from './events'
-import { getProviders, type Providers } from './providers'
 import type { ContactAggregate } from './segments'
 import type { SendChannel } from './types'
 
@@ -97,80 +94,31 @@ export async function buildCampaignRecipients(campaignId: string, opts: { actor?
   return { matched: matched.length, pending, excluded, inserted }
 }
 
-export interface SendSummary { dryRun: boolean; sent: number; suppressed: number; failed: number; total: number; capped?: number; alreadySent?: boolean }
-
-/**
- * Send a campaign. Must be a manager-approved campaign (ready/scheduled) — the caller enforces role;
- * here we enforce the state machine. Processes only `pending` recipients. A dry-run (no live provider)
- * suppresses every recipient and reports dryRun:true — nothing external happens, nothing is faked.
- */
-export async function sendCampaign(campaignId: string, opts: { actor?: string | null; providers?: Providers; now?: number; cap?: number; composeSms?: (body: string) => string } = {}): Promise<SendSummary> {
-  const campaign = await getCampaign(campaignId)
-  if (!campaign) throw new Error('Campaign not found')
-
-  if (campaign.status === 'sent' || campaign.status === 'completed' || campaign.status === 'cancelled') {
-    return { dryRun: campaign.dryRun, sent: campaign.sentCount, suppressed: 0, failed: 0, total: campaign.recipientCount, alreadySent: true }
-  }
-  if (campaign.status !== 'ready' && campaign.status !== 'scheduled' && campaign.status !== 'sending') {
-    throw new Error(`Campaign must be approved (ready/scheduled) before sending; it is ${campaign.status}`)
-  }
-
-  const providers = opts.providers ?? getProviders()
-  if (campaign.status !== 'sending') await transitionCampaign(campaignId, 'sending', opts.actor ?? null)
-
-  const allPending = await listRecipients(campaignId, 'pending')
-  // Send-safety cap: process at most `cap` recipients; the rest stay pending (re-runnable) and are logged.
-  const cap = opts.cap != null && opts.cap >= 0 ? opts.cap : allPending.length
-  const pending = allPending.slice(0, cap)
-  const cappedOut = allPending.length - pending.length
-  let sent = 0, suppressed = 0, failed = 0, anyLive = false
-
-  for (const r of pending) {
-    // Consent can change after recipient building. Re-read immediately before contacting anyone.
-    const pref = r.customerId ? await getPreferences(r.customerId) : null
-    const eligible = r.channel === 'sms' ? hasSmsConsent(pref) : !pref?.unsubscribedAt && pref?.emailEligible !== false
-    if (!eligible) {
-      await markRecipient(r.id, { status: 'suppressed', exclusionReason: 'consent_revoked_before_send' })
-      suppressed++
-      continue
-    }
-    let body = r.renderedBody ?? ''
-    const address = r.addressSnapshot ?? ''
-    let result
-    if (r.channel === 'sms') {
-      if (opts.composeSms) body = opts.composeSms(body)   // brand + STOP opt-out language
-      result = await providers.sms.send(address, body)
-    } else {
-      result = await providers.email.send(address, campaign.emailSubject ?? '', body)
-    }
-
-    if (result.status === 'sent') {
-      await markRecipient(r.id, { status: 'sent', sentAt: new Date(), providerMessageId: result.providerMessageId ?? null, deliveryStatus: 'sent', renderedBody: body })
-      if (r.customerId) await touchLastContacted(r.customerId)
-      sent++; anyLive = true
-    } else if (result.status === 'failed') {
-      await markRecipient(r.id, { status: 'failed', exclusionReason: (result.error ?? 'send_failed').slice(0, 60), errorCode: (result.error ?? '').slice(0, 20) })
-      failed++
-    } else {
-      await markRecipient(r.id, { status: 'suppressed', exclusionReason: 'dry_run' })
-      suppressed++
-    }
-  }
-
-  await refreshCampaignCounts(campaignId)
-  const dryRun = !anyLive
-  // Only finalize to 'sent' when the whole list is processed; if capped, keep it 'sending' (resumable).
-  if (cappedOut === 0) await transitionCampaign(campaignId, 'sent', opts.actor ?? null, { dryRun, sentCount: sent })
-  await logEvent('campaign_sent', {
-    entityType: 'campaign', entityId: campaignId, actor: opts.actor ?? null,
-    meta: { dryRun, sent, suppressed, failed, total: pending.length, cappedOut },
-  })
-  return { dryRun, sent, suppressed, failed, total: pending.length, capped: cappedOut }
+export interface PreviewSummary {
+  dryRun: true
+  total: number        // pending recipients
+  wouldSend: number    // within the per-run cap
+  capped: number       // held back by the cap
+  excluded: number
+  samples: Array<{ channel: string; address: string | null; body: string }>
 }
 
-async function touchLastContacted(customerId: string): Promise<void> {
-  // Only called on a genuine live send.
-  await getDb().insert(marketingPreferences)
-    .values({ customerId, lastContactedAt: new Date() })
-    .onConflictDoUpdate({ target: marketingPreferences.customerId, set: { lastContactedAt: new Date(), updatedAt: new Date() } })
+/**
+ * NON-DESTRUCTIVE preview of what a send WOULD do. Writes nothing: it does not transition the
+ * campaign and does not touch recipient rows (they stay `pending`). This is the only path the UI/cron
+ * use in V1 (via dispatchCampaign), because SMS/email are deferred and a preview must never mutate state.
+ */
+export async function previewCampaign(campaignId: string, opts: { cap?: number; composeSms?: (body: string) => string; sampleSize?: number } = {}): Promise<PreviewSummary> {
+  const campaign = await getCampaign(campaignId)
+  if (!campaign) throw new Error('Campaign not found')
+  const pending = await listRecipients(campaignId, 'pending')
+  const excluded = (await listRecipients(campaignId, 'excluded')).length
+  const cap = opts.cap != null && opts.cap >= 0 ? opts.cap : pending.length
+  const wouldSend = Math.min(pending.length, cap)
+  const samples = pending.slice(0, opts.sampleSize ?? 3).map((r) => {
+    let body = r.renderedBody ?? ''
+    if (r.channel === 'sms' && opts.composeSms) body = opts.composeSms(body)
+    return { channel: r.channel, address: r.addressSnapshot, body }
+  })
+  return { dryRun: true, total: pending.length, wouldSend, capped: pending.length - wouldSend, excluded, samples }
 }

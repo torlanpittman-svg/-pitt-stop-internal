@@ -22,7 +22,7 @@ const PARENTS = `
   );
   CREATE TABLE service_orders (
     id uuid PRIMARY KEY, customer_id uuid, status text NOT NULL DEFAULT 'delivered',
-    completed_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
+    completed_at timestamptz, cancelled_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
     approved_price_cents integer, services jsonb
   );
   CREATE TABLE order_photos (id uuid PRIMARY KEY);
@@ -70,6 +70,14 @@ beforeEach(async () => {
   // Alice has a precise invoice total on one order (overrides approved price for that order).
   await pg.query('INSERT INTO job_estimates (id, service_order_id, total_cents) VALUES ($1,$2,$3)', [randomUUID(), o1, 90000])
 
+  // An INCOMPLETE (in-progress) order for Bob must NOT count as a visit/revenue/category — even though
+  // it carries a big price and a ceramic service, it is not completed work.
+  await pg.query(
+    `INSERT INTO service_orders (id, customer_id, status, completed_at, created_at, approved_price_cents, services)
+       VALUES ($1,$2,'in_progress',NULL,$3,$4,$5)`,
+    [randomUUID(), custB, daysAgo(2), 999900, JSON.stringify(['Ceramic Coating'])],
+  )
+
   // Carol unsubscribed.
   await pg.query(
     'INSERT INTO marketing_preferences (id, customer_id, unsubscribed_at, unsubscribe_reason) VALUES ($1,$2,$3,$4)',
@@ -92,6 +100,13 @@ describe('contact aggregates from canonical data', () => {
     const b = byId.get(custB)!
     expect(b.categories).toEqual(['paint_correction'])
     expect(b.totalVisits).toBe(1)
+  })
+
+  it('excludes incomplete/in-progress jobs from visits, revenue, and categories', async () => {
+    const b = (await contactAggregates()).find((x) => x.customerId === custB)!
+    expect(b.totalVisits).toBe(1)              // only the one completed paint order
+    expect(b.lifetimeRevenueCents).toBe(55000) // the 999900 in-progress order is ignored
+    expect(b.categories).toEqual(['paint_correction']) // the in-progress ceramic service is ignored
   })
 
   it('reflects unsubscribe consent from marketing_preferences', async () => {

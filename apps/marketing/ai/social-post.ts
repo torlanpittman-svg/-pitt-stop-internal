@@ -42,9 +42,14 @@ function systemPrompt(): string {
     'You are the social content writer for a premium auto-detailing shop.',
     brandContext(),
     'Write ONE Facebook post. No hashtags spam, at most one emoji, no fake urgency.',
-    'educate = teach something; proof = show a real transformation; sell = clear, calm call to action.',
+    'educate = teach something; proof = describe a real job factually; sell = clear, calm call to action.',
     'Return JSON: {"copy","targetService","reasoningSummary","warnings"}.',
-    'Only describe the service that was actually performed. Invite year/make/model or photos for estimates.',
+    // Hard safety: never invent results/conditions that were not supplied.
+    'NEVER state results, outcomes, or vehicle conditions that were not explicitly provided. Do NOT say paint',
+    'was restored, swirls/oxidation were removed, or gloss was brought back unless that exact service was given',
+    'as "service performed". If a vehicle is given, you may name the vehicle and the service performed, nothing',
+    'more. If no service performed is supplied, educate about the service and invite an estimate instead of',
+    'claiming any outcome. Always invite year/make/model or photos for an estimate.',
   ].join('\n')
 }
 
@@ -53,26 +58,34 @@ function userPrompt(req: PostRequest): string {
   return [
     `Pillar: ${req.pillar}.`,
     `Service: ${SERVICE_CATEGORY_LABELS[req.targetService] ?? req.targetService}.`,
-    svc ? `Service facts: ${svc.summary} Benefit: ${svc.benefit}` : '',
+    svc ? `Service facts (general, not a claim about any specific job): ${svc.summary} Benefit: ${svc.benefit}` : '',
     req.vehicle ? `Real job vehicle: ${req.vehicle}.` : '',
-    req.servicePerformed ? `Service actually performed: ${req.servicePerformed}.` : '',
+    req.servicePerformed
+      ? `Service actually performed on this vehicle: ${req.servicePerformed}. Describe only this — no other outcomes.`
+      : 'No specific service outcome was supplied — do NOT claim any result; educate and invite an estimate.',
   ].filter(Boolean).join('\n')
 }
 
 export function templatePost(req: PostRequest): SocialPostCopy {
   const svc = serviceKnowledge(req.targetService)
+  const label = SERVICE_CATEGORY_LABELS[req.targetService] ?? req.targetService
   const v = req.vehicle?.trim()
+  const performed = req.servicePerformed?.trim()
   let copy: string
-  if (req.pillar === 'proof' && v) {
-    copy = `${v} didn't need new paint — it needed the paint it already had restored.\n\nWe removed years of wash marks, oxidation, and haze and brought the gloss back.\n\nIf your paint looks dull under sunlight, send us your year/make/model and we'll tell you what level of correction it needs.`
+  if (req.pillar === 'proof' && v && performed) {
+    // Factual ONLY: the vehicle + the service that was actually performed. No unobserved results.
+    copy = `${v} — ${performed} at Pitt Stop.\n\nWant the same for your vehicle? Send your year/make/model or a few photos and we'll get you a tight estimate.`
+  } else if (req.pillar === 'proof') {
+    // No confirmed outcome ⇒ do NOT claim a result. Educate about the service + invite an estimate.
+    copy = `${label} at Pitt Stop.\n\n${[svc?.summary, svc?.benefit].filter(Boolean).join(' ')}\n\nWant to know if it's right for your vehicle? Send your year/make/model or a few photos and we'll tell you honestly.`
   } else if (req.pillar === 'educate') {
     copy = req.targetService === 'paint_correction'
-      ? `If your black paint looks great in the shade but covered in swirls under sunlight, that's usually something paint correction can dramatically improve.\n\nCorrection machine-polishes the paint you already have to remove swirls, oxidation, and haze. Want to know what your vehicle would need? Send a few photos.`
-      : `${svc?.summary ?? ''} ${svc?.benefit ?? ''}\n\nNot sure if it's right for your vehicle? Send your year/make/model and we'll tell you honestly.`
+      ? `If your paint looks great in the shade but shows swirls under sunlight, that's usually something paint correction can improve.\n\nCorrection machine-polishes the paint you already have. Want to know what your vehicle would need? Send a few photos.`
+      : `${[svc?.summary, svc?.benefit].filter(Boolean).join(' ')}\n\nNot sure if it's right for your vehicle? Send your year/make/model and we'll tell you honestly.`
   } else {
-    copy = `${SERVICE_CATEGORY_LABELS[req.targetService]} done right.\n\n${svc?.benefit ?? ''} Reply or send a few photos of your vehicle and we'll get you a tight estimate.`
+    copy = `${label} done right.\n\n${svc?.benefit ?? ''} Reply or send a few photos of your vehicle and we'll get you a tight estimate.`
   }
-  return { copy, targetService: req.targetService, reasoningSummary: 'Deterministic template (model unavailable or declined).', warnings: [] }
+  return { copy: copy.replace(/\n{3,}/g, '\n\n').trim(), targetService: req.targetService, reasoningSummary: 'Deterministic template (model unavailable or declined).', warnings: [] }
 }
 
 export async function generateSocialPost(req: PostRequest, opts: { complete?: RawCompletion } = {}): Promise<PostDraftResult> {

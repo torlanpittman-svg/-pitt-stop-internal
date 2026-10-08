@@ -2,7 +2,8 @@
  * GET /api/cron/marketing-content-candidates
  * Detects completed jobs with strong before/after assets + a known premium service that could become
  * proof posts. Read-only — it DOES NOT create or publish anything (a manager turns a candidate into a
- * draft from the Content page). Same fall-open-unless-CRON_SECRET auth as the other crons.
+ * draft from the Content page). FAIL-CLOSED auth: CRON_SECRET (Vercel Cron) or MARKETING_CRON_TOKEN is
+ * REQUIRED; if neither is configured the endpoint denies all requests (never falls open).
  */
 import { NextResponse } from 'next/server'
 import { findContentCandidates } from '@/apps/marketing/content'
@@ -16,9 +17,8 @@ function authorized(req: Request): boolean {
   const secret = process.env.CRON_SECRET
   const token = process.env.MARKETING_CRON_TOKEN
   const auth = req.headers.get('authorization') ?? ''
-  const bearerOk = (!!secret && auth === `Bearer ${secret}`) || (!!token && auth === `Bearer ${token}`)
-  if (secret) return bearerOk
-  return true
+  if (!secret && !token) return false  // fail-closed: no secret configured → deny
+  return (!!secret && auth === `Bearer ${secret}`) || (!!token && auth === `Bearer ${token}`)
 }
 
 export async function GET(req: Request) {

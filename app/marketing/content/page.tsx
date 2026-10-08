@@ -1,11 +1,11 @@
-import { requireMarketingManager, MarketingShell, Section, StatusChip, EmptyRow } from '@/app/marketing/_components'
+import { requireMarketingManager, MarketingShell, Section, StatusChip, EmptyRow, Pager, FlashBanner } from '@/app/marketing/_components'
 import { shortDate } from '@/app/lib/format'
-import { listPosts, findContentCandidates } from '@/apps/marketing/content'
+import { listPosts, findContentCandidates, countPosts } from '@/apps/marketing/content'
 import { listConversations } from '@/apps/marketing/comments'
 import { WEEKLY_FACEBOOK_PLAN } from '@/apps/marketing/calendar'
 import {
   createPostAction, generatePostAction, postFromCandidateAction, updatePostAction,
-  ingestCommentAction, resolveConversationAction,
+  ingestCommentAction, resolveConversationAction, seedWeeklyPlanAction,
 } from '@/app/marketing/actions'
 import {
   CONTENT_PILLARS, SERVICE_CATEGORIES, SERVICE_CATEGORY_LABELS,
@@ -18,26 +18,45 @@ export const dynamic = 'force-dynamic'
 const INPUT = 'w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm'
 const PRIMARY = 'rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500'
 const POST_STATUS_OPTIONS = ['draft', 'approved', 'scheduled', 'posted', 'archived'] as const
+const CONVERSATION_STATES = ['answered', 'archived'] as const
+const PAGE_SIZE = 25
 
 const svcLabel = (s: string | null | undefined): string =>
   s ? (SERVICE_CATEGORY_LABELS[s as ServiceCategory] ?? s) : '—'
 const toYmd = (d: Date | null | undefined): string | null => (d ? d.toISOString().slice(0, 10) : null)
 
-export default async function MarketingContent() {
+export default async function MarketingContent({ searchParams }: { searchParams: Promise<{ page?: string; err?: string; msg?: string }> }) {
   await requireMarketingManager('/marketing/content')
-  const [posts, candidates, conversations] = await Promise.all([
-    listPosts({ limit: 100 }),
+  const { page: pageRaw, err, msg } = await searchParams
+  const page = Math.max(1, parseInt(pageRaw ?? '1', 10) || 1)
+  const [posts, postTotal, candidates, conversations] = await Promise.all([
+    listPosts({ limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),
+    countPosts(),
     findContentCandidates(25),
     listConversations(),
   ])
 
   return (
     <MarketingShell active="/marketing/content" title="Content">
+      <FlashBanner err={err} msg={msg} />
       <p className="mb-4 text-sm text-gray-500">
         Three Facebook posts a week — educate, proof, sell. Nothing auto-publishes; a manager approves every post.
       </p>
 
-      <Section title="This week's Facebook plan">
+      <Section
+        title="This week's Facebook plan"
+        right={
+          <form action={seedWeeklyPlanAction}>
+            <button type="submit" className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm font-semibold text-white hover:bg-gray-700">
+              Add this week&apos;s 3 posts
+            </button>
+          </form>
+        }
+      >
+        <p className="mb-3 text-xs text-gray-500">
+          &ldquo;Add this week&apos;s 3 posts&rdquo; seeds Mon/Wed/Fri drafts on their cadence days. It&apos;s idempotent —
+          pressing it again (or next visit) never creates duplicate drafts for a day already seeded.
+        </p>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           {WEEKLY_FACEBOOK_PLAN.map((p) => (
             <div key={p.day} className="rounded-xl border border-gray-800 bg-gray-950 p-3">
@@ -106,8 +125,13 @@ export default async function MarketingContent() {
       </div>
 
       <Section title="Content candidates from completed jobs">
+        <p className="mb-3 text-xs text-gray-500">
+          Completed jobs with a known premium service and 2+ photos. &ldquo;Create proof post&rdquo; drafts the copy only —
+          it does <span className="text-gray-300">not</span> guess which photo is before vs after (photos carry no such role).
+          A manager must pick and verify the before/after shots before anything is published.
+        </p>
         {candidates.length === 0 ? (
-          <EmptyRow>No completed jobs with before/after photos yet.</EmptyRow>
+          <EmptyRow>No completed jobs with 2+ photos and a known premium service yet.</EmptyRow>
         ) : (
           <table className="w-full text-sm">
             <thead>
@@ -158,15 +182,25 @@ export default async function MarketingContent() {
                   <td className="py-2 uppercase text-gray-400">{p.pillar}</td>
                   <td className="py-2">{svcLabel(p.targetService)}</td>
                   <td className="py-2"><StatusChip status={p.status} /></td>
-                  <td className="py-2 whitespace-nowrap text-gray-400">{shortDate(toYmd(p.createdAt))}</td>
-                  <td className="py-2 max-w-xs"><span className="line-clamp-2 text-gray-400">{p.copy || '—'}</span></td>
-                  <td className="py-2 text-right">
-                    <form action={updatePostAction} className="flex items-center justify-end gap-2">
+                  <td className="py-2 whitespace-nowrap text-gray-400">
+                    {shortDate(toYmd(p.createdAt))}
+                    {p.scheduledAt && <div className="text-[11px] text-blue-400">→ {shortDate(toYmd(p.scheduledAt))}</div>}
+                    {p.externalPostRef && <div className="max-w-[12rem] truncate text-[11px] text-emerald-400" title={p.externalPostRef}>published: {p.externalPostRef}</div>}
+                  </td>
+                  <td className="py-2" colSpan={2}>
+                    <form action={updatePostAction} className="space-y-2">
                       <input type="hidden" name="id" value={p.id} />
-                      <select name="status" className="rounded-lg border border-gray-700 bg-gray-950 px-2 py-1 text-xs" defaultValue={p.status}>
-                        {POST_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                      <button type="submit" className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm hover:bg-gray-700">Save</button>
+                      <textarea name="copy" rows={2} defaultValue={p.copy} className={INPUT} placeholder="Edit the post copy…" />
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select name="status" className="rounded-lg border border-gray-700 bg-gray-950 px-2 py-1 text-xs" defaultValue={p.status}>
+                          {POST_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                        <label className="text-[11px] text-gray-500">Schedule
+                          <input type="date" name="scheduledAt" defaultValue={toYmd(p.scheduledAt) ?? ''} className="ml-1 rounded-lg border border-gray-700 bg-gray-950 px-2 py-1 text-xs" />
+                        </label>
+                        <input name="externalPostRef" defaultValue={p.externalPostRef ?? ''} placeholder="published FB post link (when Posted)" className="w-56 rounded-lg border border-gray-700 bg-gray-950 px-2 py-1 text-xs" />
+                        <button type="submit" className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm hover:bg-gray-700">Save</button>
+                      </div>
                     </form>
                   </td>
                 </tr>
@@ -174,6 +208,7 @@ export default async function MarketingContent() {
             </tbody>
           </table>
         )}
+        <Pager basePath="/marketing/content" page={page} pageSize={PAGE_SIZE} total={postTotal} />
       </Section>
 
       <Section title="Comment assistant queue">
@@ -213,15 +248,25 @@ export default async function MarketingContent() {
                   <td className="py-2 text-gray-400">{c.topic || '—'}</td>
                   <td className="py-2"><StatusChip status={c.state} /></td>
                   <td className="py-2 max-w-xs">
-                    <span className="line-clamp-2 text-gray-400">
-                      {c.escalationReason ? '— escalated —' : (c.suggestedReply || '—')}
-                    </span>
+                    {c.escalationReason
+                      ? <span className="text-amber-400">— escalated: {c.escalationReason} — handle personally</span>
+                      : <span className="line-clamp-3 text-gray-400">{c.suggestedReply || '—'}</span>}
                   </td>
-                  <td className="py-2 text-right">
-                    {c.state !== 'answered' && (
-                      <form action={resolveConversationAction} className="inline">
+                  <td className="py-2">
+                    {c.state === 'answered' || c.state === 'archived' ? (
+                      <span className="text-xs text-gray-500">{c.handledBy ? `by ${c.handledBy}` : 'done'}</span>
+                    ) : (
+                      <form action={resolveConversationAction} className="space-y-2">
                         <input type="hidden" name="id" value={c.id} />
-                        <button type="submit" className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm hover:bg-gray-700">Mark answered</button>
+                        {!c.escalationReason && (
+                          <textarea name="suggestedReply" rows={2} defaultValue={c.suggestedReply ?? ''} className={INPUT} placeholder="Edit the reply you'll post…" />
+                        )}
+                        <div className="flex items-center gap-2">
+                          <select name="state" defaultValue="answered" className="rounded-lg border border-gray-700 bg-gray-950 px-2 py-1 text-xs">
+                            {CONVERSATION_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                          <button type="submit" className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm hover:bg-gray-700">Save</button>
+                        </div>
                       </form>
                     )}
                   </td>

@@ -1,4 +1,4 @@
-import { requireMarketingManager, MarketingShell, Section, StatTile } from '../_components'
+import { requireMarketingManager, MarketingShell, Section, StatTile, FlashBanner } from '../_components'
 import { updateMarketingSettingsAction } from '../actions'
 import { getMarketingConfig } from '@/apps/settings/db'
 import { getProviders, providerStatus } from '@/apps/marketing/providers'
@@ -23,8 +23,9 @@ function ProviderRow({ label, live, note }: { label: string; live: boolean; note
   )
 }
 
-export default async function MarketingSettings() {
+export default async function MarketingSettings({ searchParams }: { searchParams: Promise<{ err?: string }> }) {
   await requireMarketingManager('/marketing/settings')
+  const { err } = await searchParams
   const cfg = await getMarketingConfig()
   const status = providerStatus(getProviders())
   const a2p = a2pProfile(cfg)
@@ -36,6 +37,7 @@ export default async function MarketingSettings() {
 
   return (
     <MarketingShell active="/marketing/settings" title="Settings">
+      <FlashBanner err={err} />
       <Section title="Feature + guardrails">
         <form action={updateMarketingSettingsAction} className="space-y-3">
           <input type="hidden" name="__keys" value="marketing_enabled,marketing_require_approval,marketing_send_daily_cap,marketing_attribution_window_days,marketing_high_value_cents,marketing_default_offer" />
@@ -72,7 +74,13 @@ export default async function MarketingSettings() {
       <Section title="Provider connections">
         <p className="mb-3 text-xs text-gray-500">Every channel is dry-run until real credentials are set in server env (never in the browser). Marketing never sends externally while dry-run.</p>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <ProviderRow label="SMS" live={status.sms} note="Set TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER" />
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-950 px-3 py-2.5">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-white">SMS</div>
+              <div className="text-xs text-gray-500">Deferred in V1 — dispatch forces dry-run regardless of any Twilio credentials.</div>
+            </div>
+            <Badge tone="warn">Deferred</Badge>
+          </div>
           <ProviderRow label="Email" live={status.email} note="Set MARKETING_EMAIL_PROVIDER=resend + RESEND_API_KEY (or QB bridge)" />
           <ProviderRow label="Facebook" live={status.facebook} note="Set FACEBOOK_PAGE_ID / FACEBOOK_PAGE_ACCESS_TOKEN" />
           <ProviderRow label="Google Ads" live={status.googleAds} note="Set GOOGLE_ADS_DEVELOPER_TOKEN / GOOGLE_ADS_CUSTOMER_ID (read-only)" />
@@ -80,9 +88,14 @@ export default async function MarketingSettings() {
       </Section>
 
       <Section title="SMS consent & A2P 10DLC readiness">
+        <div className="mb-3 rounded-lg border border-amber-700/60 bg-amber-950/40 p-3 text-sm text-amber-200">
+          <span className="font-semibold">SMS is deferred in V1.</span> Sending cannot be activated from here — dispatch forces dry-run
+          regardless of this setting. These fields are preserved as reference for a future activation pass. See the
+          <code className="mx-1">SMS — Deferred</code> page (direct link <code>/marketing/sms</code>) for details.
+        </div>
         <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <StatTile label="SMS subscribers (opted in)" value={count(subscribers)} />
-          <StatTile label="SMS sending" value={cfg.smsLive ? 'LIVE' : 'Dry-run'} />
+          <StatTile label="SMS sending" value="Deferred" />
           <StatTile label="Quiet hours" value={`${cfg.smsQuietStartHour}:00–${cfg.smsQuietEndHour}:00`} />
           <StatTile label="Per-run cap" value={count(cfg.smsGlobalCap)} />
         </div>
@@ -94,11 +107,7 @@ export default async function MarketingSettings() {
           </div>
         )}
         <form action={updateMarketingSettingsAction} className="space-y-3">
-          <input type="hidden" name="__keys" value="marketing_sms_live,marketing_sms_brand_name,marketing_sms_help_text,marketing_sms_frequency,marketing_privacy_url,marketing_terms_url,marketing_sms_quiet_start_hour,marketing_sms_quiet_end_hour,marketing_sms_global_cap" />
-          <label className="flex items-center gap-3 rounded-lg border border-gray-800 bg-gray-950 px-3 py-2.5">
-            <input type="checkbox" name="marketing_sms_live" defaultChecked={cfg.smsLive} className="h-5 w-5" />
-            <span><span className="block text-sm font-semibold text-white">SMS sending LIVE</span><span className="text-xs text-gray-500">Off = dry-run (nothing sends). Requires Twilio creds + a Ready campaign. Never silently flips.</span></span>
-          </label>
+          <input type="hidden" name="__keys" value="marketing_sms_brand_name,marketing_sms_help_text,marketing_sms_frequency,marketing_privacy_url,marketing_terms_url,marketing_sms_quiet_start_hour,marketing_sms_quiet_end_hour,marketing_sms_global_cap" />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div><label className="mb-1 block text-xs uppercase tracking-wide text-gray-500">SMS brand name</label><input name="marketing_sms_brand_name" defaultValue={cfg.smsBrandName} className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm" /></div>
             <div><label className="mb-1 block text-xs uppercase tracking-wide text-gray-500">Message frequency text</label><input name="marketing_sms_frequency" defaultValue={cfg.smsFrequency} className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm" /></div>

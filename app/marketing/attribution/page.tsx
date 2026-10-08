@@ -32,15 +32,16 @@ export default async function AttributionPage() {
       <p className="mb-4 text-sm text-gray-500">This month ({ymd(from)} → {ymd(now)}).</p>
 
       <p className="mb-5 max-w-3xl text-sm text-gray-400">
-        Attribution links a marketing touch to real completed revenue. Both first-touch and last-touch
-        are stored, but this V1 reporting view credits revenue by <span className="text-gray-200">last-touch</span>.
-        Each link carries an explicit confidence: <span className="text-gray-200">direct</span> (we have the full
-        chain from touch to completed job), <span className="text-gray-200">assisted</span> (a plausible touch), or
-        <span className="text-gray-200"> unknown</span>. A source we can&apos;t establish stays unknown — it is never guessed.
+        Each row is a <span className="text-gray-200">unique completed job</span> (service order) credited to the marketing touch
+        that produced it — counted ONCE even if it had several touches. Revenue is the canonical <span className="text-gray-200">invoiced</span> value
+        of that job (collected/paid is not tracked locally and never invented). The representative touch is chosen
+        last-touch first, then by confidence: <span className="text-gray-200">direct</span> (full chain from touch to completed job),
+        <span className="text-gray-200"> assisted</span> (a plausible touch), or <span className="text-gray-200">unknown</span> — a source we
+        can&apos;t establish stays unknown and is never guessed. Unverified touches with no linked completed order never appear here.
       </p>
 
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatTile label="Attributed revenue" value={bigMoney(totalRevenue)} />
+        <StatTile label="Attributed revenue" value={bigMoney(totalRevenue)} note="invoiced" />
         <StatTile label="Direct" value={count(totalDirect)} />
         <StatTile label="Assisted" value={count(totalAssisted)} />
         <StatTile label="Unknown" value={count(totalUnknown)} />

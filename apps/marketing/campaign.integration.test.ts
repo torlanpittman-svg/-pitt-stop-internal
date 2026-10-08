@@ -7,10 +7,9 @@ import { drizzle } from 'drizzle-orm/pglite'
 vi.mock('@/platform/db', () => ({ getDb: vi.fn() }))
 import { getDb } from '@/platform/db'
 import { createCampaign, getCampaign, listRecipients, transitionCampaign, InvalidTransitionError } from './db'
-import { buildCampaignRecipients, sendCampaign } from './campaigns'
+import { buildCampaignRecipients, previewCampaign } from './campaigns'
 import { linkRecipientOutcome, campaignFunnel } from './attribution'
-import { grantSmsConsent, revokeSmsConsent } from './consent'
-import type { Providers, SendResult } from './providers'
+import { grantSmsConsent } from './consent'
 
 const pg = new PGlite()
 const NOW = Date.now()
@@ -19,9 +18,9 @@ const daysAgo = (n: number) => new Date(NOW - n * 86_400_000).toISOString()
 const PARENTS = `
   CREATE TABLE customers (id uuid PRIMARY KEY, display_name text, first_name text, last_name text, phone text, email text, active boolean NOT NULL DEFAULT true);
   CREATE TABLE service_orders (id uuid PRIMARY KEY, customer_id uuid, status text NOT NULL DEFAULT 'delivered',
-    completed_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), approved_price_cents integer, services jsonb);
+    completed_at timestamptz, cancelled_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), approved_price_cents integer, services jsonb);
   CREATE TABLE order_photos (id uuid PRIMARY KEY);
-  CREATE TABLE job_estimates (id uuid PRIMARY KEY, service_order_id uuid, total_cents integer);
+  CREATE TABLE job_estimates (id uuid PRIMARY KEY, service_order_id uuid, total_cents integer, qb_invoice_id text);
 `
 
 const both = randomUUID()     // phone + email, eligible
@@ -105,60 +104,20 @@ describe('recipient building + consent', () => {
   })
 })
 
-describe('dry-run send never pretends to send', () => {
-  it('suppresses recipients, records zero real sends, and flags dry_run', async () => {
+describe('preview is pure + non-destructive (no send mechanism exists in V1)', () => {
+  it('reports what would send without touching recipients or the campaign', async () => {
     const { campaign } = await newBuiltCampaign('both')
     await transitionCampaign(campaign!.id, 'ready', 'Torlan')
-    const result = await sendCampaign(campaign!.id, { actor: 'Torlan' }) // default providers = dry-run
-    expect(result.dryRun).toBe(true)
-    expect(result.sent).toBe(0)
-    expect(result.suppressed).toBeGreaterThan(0)
+    const before = await listRecipients(campaign!.id)
+    const preview = await previewCampaign(campaign!.id)
+    expect(preview.dryRun).toBe(true)
+    expect(preview.total).toBeGreaterThanOrEqual(0)
     const after = await getCampaign(campaign!.id)
-    expect(after!.status).toBe('sent')
-    expect(after!.dryRun).toBe(true)
+    expect(after!.status).toBe('ready')      // not transitioned to sent
     expect(after!.sentCount).toBe(0)
-    const sentRows = (await listRecipients(campaign!.id)).filter((r) => r.status === 'sent')
-    expect(sentRows).toHaveLength(0) // nothing is ever marked sent in dry-run
-  })
-})
-
-describe('live send (fake live provider)', () => {
-  it('rechecks consent after building, so STOP prevents an already queued send', async () => {
-    const { campaign } = await newBuiltCampaign('sms')
-    await transitionCampaign(campaign!.id, 'ready', 'Torlan')
-    await revokeSmsConsent(both, { source: 'sms_keyword', reason: 'STOP' })
-    const providers = liveProviders()
-    const send = vi.spyOn(providers.sms, 'send')
-    const result = await sendCampaign(campaign!.id, { providers })
-    expect(send).not.toHaveBeenCalled()
-    expect(result.sent).toBe(0)
-    expect((await listRecipients(campaign!.id)).find(r => r.customerId === both)?.exclusionReason).toBe('consent_revoked_before_send')
-  })
-  function liveProviders(): Providers {
-    const ok = async (): Promise<SendResult> => ({ status: 'sent', providerMessageId: 'x1' })
-    return {
-      sms: { name: 'fake-sms', live: true, send: ok },
-      email: { name: 'fake-email', live: true, send: ok },
-      facebook: { name: 'f', live: false, publishPost: async () => ({ status: 'dry_run' }), fetchComments: async () => [] },
-      googleAds: { name: 'g', live: false, fetchMetrics: async () => [] },
-    }
-  }
-
-  it('marks recipients sent, counts real sends, and is idempotent on re-send', async () => {
-    const { campaign } = await newBuiltCampaign('sms')
-    await transitionCampaign(campaign!.id, 'ready', 'Torlan')
-    const res = await sendCampaign(campaign!.id, { actor: 'Torlan', providers: liveProviders() })
-    expect(res.dryRun).toBe(false)
-    expect(res.sent).toBeGreaterThan(0)
-    const after = await getCampaign(campaign!.id)
-    expect(after!.status).toBe('sent')
-    expect(after!.dryRun).toBe(false)
-    expect(after!.sentCount).toBe(res.sent)
-
-    // Re-sending a sent campaign is a safe no-op (no duplicate sends).
-    const reSend = await sendCampaign(campaign!.id, { actor: 'Torlan', providers: liveProviders() })
-    expect(reSend.alreadySent).toBe(true)
-    expect(reSend.sent).toBe(res.sent)
+    const afterRecips = await listRecipients(campaign!.id)
+    expect(afterRecips.map((r) => r.status).sort()).toEqual(before.map((r) => r.status).sort()) // unchanged
+    expect(afterRecips.some((r) => r.status === 'sent' || r.status === 'suppressed')).toBe(false)
   })
 })
 
@@ -173,21 +132,22 @@ describe('attribution funnel', () => {
   it('links a booking + revenue and reports it in the funnel', async () => {
     const { campaign } = await newBuiltCampaign('sms')
     await transitionCampaign(campaign!.id, 'ready', 'Torlan')
-    await sendCampaign(campaign!.id, { actor: 'Torlan' })
     const recips = await listRecipients(campaign!.id)
     const target = recips.find((r) => r.customerId === both || r.customerId === smsOnly)!
 
+    // A completed + QB-invoiced order — completion and revenue are canonical, not a manual figure.
     const orderId = randomUUID()
-    await pg.query('INSERT INTO service_orders (id, customer_id, status) VALUES ($1,$2,$3)', [orderId, target.customerId, 'delivered'])
-    await linkRecipientOutcome(target.id, { bookedOrderId: orderId, completedRevenueCents: 65000 }, 'Torlan')
+    await pg.query('INSERT INTO service_orders (id, customer_id, status, completed_at) VALUES ($1,$2,$3,now())', [orderId, target.customerId, 'delivered'])
+    await pg.query('INSERT INTO job_estimates (id, service_order_id, total_cents, qb_invoice_id) VALUES ($1,$2,$3,$4)', [randomUUID(), orderId, 65000, 'INV-F'])
+    await linkRecipientOutcome(target.id, { bookedOrderId: orderId }, 'Torlan') // no manual revenue
 
     const funnel = await campaignFunnel(campaign!.id)
     expect(funnel.appointments).toBe(1)
     expect(funnel.completedJobs).toBe(1)
-    expect(funnel.completedRevenueCents).toBe(65000)
+    expect(funnel.invoicedRevenueCents).toBe(65000)
 
-    // A direct attribution row was recorded.
-    const attr = await pg.query('SELECT source, confidence, revenue_cents FROM marketing_attribution')
+    // A single direct attribution row was recorded (idempotent credit).
+    const attr = await pg.query('SELECT source, confidence FROM marketing_attribution')
     expect(attr.rows).toHaveLength(1)
     expect((attr.rows[0] as { confidence: string }).confidence).toBe('direct')
   })

@@ -12,7 +12,7 @@ let cfg: MarketingConfig
 vi.mock('@/apps/settings/db', () => ({ getMarketingConfig: vi.fn(async () => cfg) }))
 
 import { getDb } from '@/platform/db'
-import { dispatchCampaign, withinQuietHours } from './dispatch'
+import { dispatchCampaign, withinQuietHours, SEND_DEFERRED } from './dispatch'
 import { createCampaign, insertRecipients, transitionCampaign, getCampaign } from './db'
 
 const pg = new PGlite()
@@ -70,56 +70,51 @@ describe('withinQuietHours', () => {
   })
 })
 
-describe('dispatch send-safety', () => {
-  it.each(['a2pBrandApproved', 'a2pCampaignApproved', 'advancedOptOutConfigured', 'optInPublished', 'privacyPublished', 'termsPublished', 'webhooksVerified', 'enabled'] as const)('blocks live SMS while %s is false', async (key) => {
-    cfg = baseCfg({ smsLive: true, publicBaseUrl: 'https://text.example.com', supportContact: 'shop@example.com', a2pBrandApproved: true, a2pCampaignApproved: true, advancedOptOutConfigured: true, optInPublished: true, privacyPublished: true, termsPublished: true, webhooksVerified: true, [key]: false })
-    vi.stubEnv('TWILIO_ACCOUNT_SID', 'AC')
-    vi.stubEnv('TWILIO_AUTH_TOKEN', 'token')
-    vi.stubEnv('TWILIO_MESSAGING_SERVICE_SID', 'MG')
-    vi.stubEnv('TWILIO_WEBHOOK_BASE_URL', 'https://internal.example.com')
-    const fetchSpy = vi.spyOn(globalThis, 'fetch')
-    const id = await readyCampaign(1)
-    const result = await dispatchCampaign(id, { now: new Date('2026-10-06T18:00:00Z') })
-    expect(result.reason).toBe('launch_not_ready')
-    expect((await getCampaign(id))?.status).toBe('ready')
-    expect(fetchSpy).not.toHaveBeenCalled()
-    fetchSpy.mockRestore()
-    vi.unstubAllEnvs()
+async function statuses(campaignId: string): Promise<string[]> {
+  const res = await pg.query('SELECT status FROM marketing_campaign_recipients WHERE campaign_id = $1', [campaignId])
+  return (res.rows as { status: string }[]).map((r) => r.status)
+}
+
+describe('dispatch — non-destructive preview, SMS deferred in V1', () => {
+  it('SEND_DEFERRED is a hard, reviewed constant (not env/settings driven)', () => {
+    expect(SEND_DEFERRED).toBe(true)
   })
-  it('forces DRY-RUN when sms_live is off — nothing is sent even though recipients are ready', async () => {
+
+  it('previews without mutating: campaign stays ready, recipients stay pending', async () => {
     const id = await readyCampaign(2)
-    const r = await dispatchCampaign(id, { actor: 'test' })
+    const r = await dispatchCampaign(id)
     expect(r.ok).toBe(true)
     expect(r.live).toBe(false)
-    expect(r.summary?.dryRun).toBe(true)
-    expect(r.summary?.sent).toBe(0)
-    expect((await getCampaign(id))?.dryRun).toBe(true)
+    expect(r.deferred).toBe(true)
+    expect(r.preview?.dryRun).toBe(true)
+    expect(r.preview?.total).toBe(2)
+    expect(r.preview?.wouldSend).toBe(2)
+    const c = await getCampaign(id)
+    expect(c?.status).toBe('ready')   // NOT transitioned to sending/sent
+    expect(c?.sentCount).toBe(0)
+    expect(await statuses(id)).toEqual(['pending', 'pending']) // nothing suppressed
   })
 
-  it('refuses a live SMS send when Twilio is NOT configured (sms_live on, no creds)', async () => {
-    cfg = baseCfg({ smsLive: true })
-    const id = await readyCampaign(1)
-    const r = await dispatchCampaign(id, { actor: 'test' })
-    expect(r.ok).toBe(false)
-    expect(r.reason).toBe('sms_not_configured')
-    expect((await getCampaign(id))?.status).toBe('ready') // not sent
-  })
-
-  it('blocks a live send outside quiet hours (configured Twilio, overnight)', async () => {
+  it('stays a non-destructive preview even with sms_live ON and Twilio configured (no live config bypass)', async () => {
     cfg = baseCfg({ smsLive: true })
     process.env.TWILIO_ACCOUNT_SID = 'AC'; process.env.TWILIO_AUTH_TOKEN = 'tok'; process.env.TWILIO_MESSAGING_SERVICE_SID = 'MG'
-    const id = await readyCampaign(1)
-    const r = await dispatchCampaign(id, { actor: 'test', now: new Date('2026-10-06T08:00:00Z') }) // ~3am Central
-    expect(r.ok).toBe(false)
-    expect(r.reason).toBe('quiet_hours')
-    expect((await getCampaign(id))?.status).toBe('ready') // nothing sent
+    const id = await readyCampaign(2)
+    const r = await dispatchCampaign(id) // live config present, overnight — still a preview
+    expect(r.ok).toBe(true)
+    expect(r.live).toBe(false)
+    expect(r.preview?.dryRun).toBe(true)
+    const c = await getCampaign(id)
+    expect(c?.status).toBe('ready')
+    expect(await statuses(id)).toEqual(['pending', 'pending'])
   })
 
-  it('enforces the per-run SMS cap (dry-run): extra recipients stay pending', async () => {
+  it('reports the per-run cap without changing anything', async () => {
     cfg = baseCfg({ smsGlobalCap: 1 })
     const id = await readyCampaign(3)
-    const r = await dispatchCampaign(id, { actor: 'test' })
-    expect(r.summary?.capped).toBe(2)       // 3 pending, cap 1 → 2 held back
-    expect((await getCampaign(id))?.status).toBe('sending') // not finalized while capped
+    const r = await dispatchCampaign(id)
+    expect(r.preview?.wouldSend).toBe(1)
+    expect(r.preview?.capped).toBe(2)
+    expect((await getCampaign(id))?.status).toBe('ready') // non-destructive
+    expect(await statuses(id)).toEqual(['pending', 'pending', 'pending'])
   })
 })

@@ -1,8 +1,8 @@
-import { requireMarketingManager, MarketingShell, Section, StatTile, StatusChip, EmptyRow } from '@/app/marketing/_components'
+import { requireMarketingManager, MarketingShell, Section, StatTile, StatusChip, EmptyRow, FlashBanner } from '@/app/marketing/_components'
 import { money, bigMoney } from '@/app/lib/format'
 import { adMetricsByCategory, listSearchTerms } from '@/apps/marketing/ads'
 import { buildAdRecommendations } from '@/apps/marketing/recommendations'
-import { importAdMetricAction } from '@/app/marketing/actions'
+import { importAdMetricAction, importSearchTermAction } from '@/app/marketing/actions'
 import { SERVICE_CATEGORIES, SERVICE_CATEGORY_LABELS } from '@/apps/marketing/types'
 
 export const runtime = 'nodejs'
@@ -20,8 +20,9 @@ const label = (cat: string) => SERVICE_CATEGORY_LABELS[cat as keyof typeof SERVI
 const inputClass = 'w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm'
 const primaryBtn = 'rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500'
 
-export default async function GoogleAdsPage() {
+export default async function GoogleAdsPage({ searchParams }: { searchParams: Promise<{ err?: string }> }) {
   await requireMarketingManager('/marketing/google-ads')
+  const { err } = await searchParams
   const now = new Date()
   const { from, to } = monthRange(now)
 
@@ -35,7 +36,8 @@ export default async function GoogleAdsPage() {
 
   return (
     <MarketingShell active="/marketing/google-ads" title="Google Ads">
-      <p className="mb-4 text-sm text-gray-500">This month ({ymd(from)} → {ymd(now)}). Revenue is attributed completed revenue — never estimated.</p>
+      <FlashBanner err={err} />
+      <p className="mb-4 text-sm text-gray-500">This month ({ymd(from)} → {ymd(now)}). Spend/revenue/conversions here are what you enter from Google Ads (the platform&apos;s own reported numbers) — not Pitt Stop collected cash, and ad conversions are not counted as completed jobs.</p>
 
       <Section title="Connection status">
         <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm text-amber-200">
@@ -176,6 +178,46 @@ export default async function GoogleAdsPage() {
           </div>
         </form>
         <p className="mt-2 text-xs text-gray-500">Idempotent per service category + date — re-importing the same day overwrites that row.</p>
+      </Section>
+
+      <Section title="Add search term (manual)">
+        <p className="mb-3 text-xs text-gray-500">Enter the search terms Google Ads shows are triggering your ads, with their spend/clicks/conversions, to feed the recommendations below. No budgets are changed — this is data entry only.</p>
+        <form action={importSearchTermAction} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <label className="block sm:col-span-2 lg:col-span-1">
+            <span className="mb-1 block text-xs uppercase text-gray-500">Search term</span>
+            <input type="text" name="term" placeholder="ceramic coating near me" className={inputClass} />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs uppercase text-gray-500">Service category</span>
+            <select name="serviceCategory" className={inputClass} defaultValue="">
+              <option value="">— Unspecified —</option>
+              {SERVICE_CATEGORIES.map((c) => <option key={c} value={c}>{SERVICE_CATEGORY_LABELS[c]}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs uppercase text-gray-500">Period (e.g. 2026-10)</span>
+            <input type="text" name="statPeriod" placeholder="2026-10" className={inputClass} />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs uppercase text-gray-500">Spend ($)</span>
+            <input type="text" inputMode="decimal" name="spend" placeholder="0.00" className={inputClass} />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs uppercase text-gray-500">Clicks</span>
+            <input type="text" inputMode="numeric" name="clicks" placeholder="0" className={inputClass} />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs uppercase text-gray-500">Conversions</span>
+            <input type="text" inputMode="numeric" name="conversions" placeholder="0" className={inputClass} />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs uppercase text-gray-500">Revenue ($)</span>
+            <input type="text" inputMode="decimal" name="revenue" placeholder="0.00" className={inputClass} />
+          </label>
+          <div className="flex items-end">
+            <button type="submit" className={primaryBtn}>Save search term</button>
+          </div>
+        </form>
       </Section>
     </MarketingShell>
   )

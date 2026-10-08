@@ -22,6 +22,8 @@ export interface CreateLeadInput {
   estimatedValueCents?: number | null
   customerId?: string | null
   notes?: string | null
+  /** Optional explicit creation time (used for backfill/tests so report windows are testable). */
+  createdAt?: Date
 }
 
 export async function createLead(input: CreateLeadInput, actor: string | null): Promise<Lead> {
@@ -37,6 +39,7 @@ export async function createLead(input: CreateLeadInput, actor: string | null): 
     customerId: input.customerId ?? null,
     notes: input.notes ?? null,
     status: 'new',
+    ...(input.createdAt ? { createdAt: input.createdAt } : {}),
   }).returning()
   await logEvent('lead_created', { entityType: 'lead', entityId: row.id, actor, meta: { source: row.source } })
   return row
@@ -47,10 +50,21 @@ export async function getLead(id: string): Promise<Lead | null> {
   return row ?? null
 }
 
-export async function listLeads(opts: { status?: LeadStatus; limit?: number } = {}): Promise<Lead[]> {
+export async function listLeads(opts: { status?: LeadStatus; limit?: number; offset?: number } = {}): Promise<Lead[]> {
   const db = getDb()
-  const q = db.select().from(marketingLeads).orderBy(desc(marketingLeads.createdAt)).limit(opts.limit ?? 200)
+  const q = db.select().from(marketingLeads)
+    .orderBy(desc(marketingLeads.createdAt))
+    .limit(opts.limit ?? 200)
+    .offset(opts.offset ?? 0)
   return opts.status ? q.where(eq(marketingLeads.status, opts.status)) : q
+}
+
+/** Total lead count (for pagination controls). */
+export async function countLeads(status?: LeadStatus): Promise<number> {
+  const db = getDb()
+  const q = db.select({ n: sql<number>`count(*)::int` }).from(marketingLeads)
+  const [row] = status ? await q.where(eq(marketingLeads.status, status)) : await q
+  return row?.n ?? 0
 }
 
 export async function updateLead(id: string, patch: {

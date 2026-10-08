@@ -2,7 +2,9 @@
  * Google Ads data layer. V1 holds metrics in marketing_ad_metrics (daily, per service category) and
  * search terms in marketing_search_terms. Rows arrive via manual import now, or a future read-only
  * Google Ads API sync later (providers/index.ts GoogleAdsProvider) — the storage + reporting don't
- * change when that turns on. Revenue here is ATTRIBUTED completed revenue (known), never a guess.
+ * change when that turns on. Revenue here is GOOGLE-ADS-REPORTED (what the platform reports / the
+ * owner enters) — NOT Pitt Stop collected cash and NOT canonical completed-job revenue (the report
+ * derives that separately from completed service_orders + QB invoices).
  */
 import { and, desc, eq, gte, lte, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'

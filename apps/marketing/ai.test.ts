@@ -61,7 +61,7 @@ describe('social post generator', () => {
     expect(res.post.copy.length).toBeGreaterThan(0)
 
     const broken: RawCompletion = async () => 'nope'
-    const res2 = await generateSocialPost({ pillar: 'proof', targetService: 'paint_correction', vehicle: '2019 Silverado' }, { complete: broken })
+    const res2 = await generateSocialPost({ pillar: 'proof', targetService: 'paint_correction', vehicle: '2019 Silverado', servicePerformed: 'Paint correction' }, { complete: broken })
     expect(res2.source).toBe('template')
     expect(res2.post.copy).toContain('Silverado')
   })

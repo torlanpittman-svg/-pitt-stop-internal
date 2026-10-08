@@ -1,38 +1,52 @@
 /**
- * Send-safety layer around sendCampaign. This is the ONLY path the UI/cron should use to send, because
- * it enforces the guardrails a bare sendCampaign does not:
- *   • Live vs dry-run: live SMS happens ONLY when marketing_sms_live is ON **and** Twilio is configured.
- *     Otherwise it forces dry-run — a campaign never silently goes live.
- *   • Quiet hours: live SMS is refused outside the configured local window (TCPA-friendly).
- *   • Caps: per-run processing is capped by min(campaign cap, global SMS cap).
- *   • Compliance: outbound SMS gets brand identification + STOP opt-out language.
+ * Send-safety layer around the campaign engine. This is the ONLY path the UI/cron use.
+ *
+ * V1 DECISION (owner, 2026-10-08): outbound SMS is DEFERRED (no Twilio/A2P activation), and live email
+ * is unconfigured (Pitt Stop's only real email is QuickBooks-native). So dispatch NEVER sends — and,
+ * crucially, it is also **non-destructive**: it produces a read-only PREVIEW (previewCampaign) that does
+ * not transition the campaign or touch recipient rows. A campaign can be drafted, approved, built and
+ * previewed as many times as needed; nothing leaves the building and nothing is marked sent/suppressed.
+ *
+ * There is NO send mechanism in V1 — `campaigns.ts` exposes only `previewCampaign` (read-only), so there
+ * is no live bypass beneath this layer to worry about. The Twilio provider, A2P compliance composer,
+ * quiet-hours and cap logic are left intact (imported where useful) for a future activation pass.
  */
 import { getMarketingConfig } from '@/apps/settings/db'
-import { getProviders, dryRunProviders } from './providers'
 import { a2pProfile, composeSmsBody } from './compliance'
-import { sendCampaign, type SendSummary } from './campaigns'
+import { previewCampaign, type PreviewSummary } from './campaigns'
 import { getCampaign } from './db'
+
+/** Hard kill-switch for ALL live marketing sends in V1. Not env/settings-driven on purpose. */
+export const SEND_DEFERRED = true
 
 export interface DispatchResult {
   ok: boolean
   live: boolean
-  reason?: 'sms_not_configured' | 'quiet_hours' | 'not_approved' | 'not_found' | 'launch_not_ready'
-  summary?: SendSummary
+  /** True whenever the live path is intentionally skipped (V1 always true). */
+  deferred?: boolean
+  reason?: 'not_approved' | 'not_found'
+  preview?: PreviewSummary
 }
 
-/** Current hour (0–23) in the shop's local timezone (Central). */
+/** Current hour (0–23) in the shop's local timezone (Central). Preserved for the future live path. */
 function localHour(now: Date, timeZone = 'America/Chicago'): number {
   const h = new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone }).format(now)
   const n = parseInt(h, 10)
   return n === 24 ? 0 : n
 }
 
+/** Quiet-hours predicate (TCPA-friendly). Preserved for the future live SMS path; unused while deferred. */
 export function withinQuietHours(now: Date, startHour: number, endHour: number, timeZone?: string): boolean {
   const h = localHour(now, timeZone)
   return h >= startHour && h < endHour
 }
 
-export async function dispatchCampaign(campaignId: string, opts: { actor?: string | null; now?: Date } = {}): Promise<DispatchResult> {
+/**
+ * Dispatch = a NON-DESTRUCTIVE dry-run preview in V1. No provider is ever contacted, no recipient is
+ * changed, and the campaign is not transitioned — even if Twilio/email credentials are present or
+ * `marketing_sms_live` is on. Returns what a send WOULD do so the manager can review it.
+ */
+export async function dispatchCampaign(campaignId: string): Promise<DispatchResult> {
   const campaign = await getCampaign(campaignId)
   if (!campaign) return { ok: false, live: false, reason: 'not_found' }
   if (campaign.status !== 'ready' && campaign.status !== 'scheduled' && campaign.status !== 'sending') {
@@ -40,38 +54,13 @@ export async function dispatchCampaign(campaignId: string, opts: { actor?: strin
   }
 
   const cfg = await getMarketingConfig()
-  const now = opts.now ?? new Date()
-  const real = getProviders()
-  const wantsSms = campaign.channel === 'sms' || campaign.channel === 'both'
-
-  // Live SMS requires the flag ON and Twilio actually configured. Never silently live.
-  const canLiveSms = cfg.smsLive && real.sms.live
-  if (wantsSms && cfg.smsLive && !real.sms.live) {
-    return { ok: false, live: false, reason: 'sms_not_configured' }
-  }
-  // Quiet-hours block applies only to a genuine live SMS send.
-  if (wantsSms && canLiveSms && !withinQuietHours(now, cfg.smsQuietStartHour, cfg.smsQuietEndHour)) {
-    return { ok: false, live: true, reason: 'quiet_hours' }
-  }
-
-  if (wantsSms && canLiveSms && (!cfg.enabled || !cfg.publicBaseUrl || !cfg.supportContact ||
-    !cfg.optInPublished || !cfg.privacyPublished || !cfg.termsPublished || !cfg.advancedOptOutConfigured ||
-    !cfg.a2pBrandApproved || !cfg.a2pCampaignApproved || !cfg.webhooksVerified ||
-    !process.env.TWILIO_MESSAGING_SERVICE_SID || !process.env.TWILIO_WEBHOOK_BASE_URL)) {
-    return { ok: false, live: false, reason: 'launch_not_ready' }
-  }
-
-  const live = canLiveSms
-  const providers = live ? real : dryRunProviders()
   const cap = Math.min(cfg.sendDailyCap, cfg.smsGlobalCap)
   const p = a2pProfile(cfg)
 
-  const summary = await sendCampaign(campaignId, {
-    actor: opts.actor ?? null,
-    providers,
+  const preview = await previewCampaign(campaignId, {
     cap,
+    // Compose with brand + STOP language so the PREVIEW shows exactly what a future live SMS would say.
     composeSms: (body) => composeSmsBody(body, p),
-    now: now.getTime(),
   })
-  return { ok: true, live, summary }
+  return { ok: true, live: false, deferred: SEND_DEFERRED, preview }
 }

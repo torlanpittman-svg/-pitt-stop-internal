@@ -1,19 +1,25 @@
-import { requireMarketingManager, MarketingShell, Section, StatTile, StatusChip, EmptyRow } from '@/app/marketing/_components'
+import { requireMarketingManager, MarketingShell, Section, StatTile, StatusChip, EmptyRow, Pager, FlashBanner } from '@/app/marketing/_components'
 import { money, count, shortDate } from '@/app/lib/format'
 import {
   updateCampaignCopyAction, generateCopyAction, buildRecipientsAction,
   approveCampaignAction, sendCampaignAction, cancelCampaignAction,
 } from '@/app/marketing/actions'
-import { getCampaign, listRecipients } from '@/apps/marketing/db'
+import { getCampaign, listRecipients, countRecipients } from '@/apps/marketing/db'
 import { campaignFunnel } from '@/apps/marketing/attribution'
 import { CHANNELS } from '@/apps/marketing/types'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-export default async function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
+const PAGE_SIZE = 50
+
+export default async function CampaignDetailPage({ params, searchParams }: {
+  params: Promise<{ id: string }>
+  searchParams: Promise<{ page?: string; err?: string; msg?: string }>
+}) {
   await requireMarketingManager('/marketing/campaigns')
   const { id } = await params
+  const { page: pageRaw, err, msg } = await searchParams
   const campaign = await getCampaign(id)
 
   if (!campaign) {
@@ -24,12 +30,12 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
     )
   }
 
+  const page = Math.max(1, parseInt(pageRaw ?? '1', 10) || 1)
   const funnel = await campaignFunnel(id)
-  const all = await listRecipients(id)
-  const recipients = all.slice(0, 100)
-  const pending = all.filter((r) => r.status === 'pending').length
-  const excluded = all.filter((r) => r.status === 'excluded').length
-  const sent = all.filter((r) => r.status === 'sent').length
+  const total = await countRecipients(id)
+  const recipients = await listRecipients(id, undefined, { limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE })
+  const excluded = funnel.excluded
+  const sent = funnel.sent
 
   const canApprove = campaign.status === 'draft'
   const canSend = campaign.status === 'ready' || campaign.status === 'scheduled'
@@ -41,11 +47,13 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
     <MarketingShell active="/marketing/campaigns" title={campaign.name}
       actions={<StatusChip status={campaign.status} />}>
 
-      {campaign.dryRun && (
-        <div className="mb-4 rounded-xl border border-amber-700/60 bg-amber-950/30 px-4 py-3 text-sm text-amber-300">
-          Dry-run mode — no messages are actually sent. Configure an SMS/email provider to go live.
-        </div>
-      )}
+      <FlashBanner err={err} msg={msg} />
+
+      <div className="mb-4 rounded-xl border border-amber-700/60 bg-amber-950/30 px-4 py-3 text-sm text-amber-300">
+        Preview-only (V1) — SMS is deferred and there is no live email channel, so &ldquo;Preview&rdquo; is a
+        <span className="font-semibold"> non-destructive</span> dry-run: it never texts/emails anyone and never changes a
+        recipient or the campaign status, regardless of settings.
+      </div>
 
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <StatTile label="Recipients" value={count(funnel.recipients)} />
@@ -53,7 +61,7 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
         <StatTile label="Responses" value={count(funnel.responses)} />
         <StatTile label="Appointments" value={count(funnel.appointments)} />
         <StatTile label="Completed jobs" value={count(funnel.completedJobs)} />
-        <StatTile label="Completed revenue" value={money(funnel.completedRevenueCents)} />
+        <StatTile label="Invoiced revenue" value={money(funnel.invoicedRevenueCents)} note="QB-anchored" />
       </div>
 
       <Section title="Campaign copy">
@@ -123,7 +131,7 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
           {canSend && (
             <form action={sendCampaignAction}>
               {idInput}
-              <button type="submit" className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500">Send (dry-run)</button>
+              <button type="submit" className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500">Preview (dry-run)</button>
             </form>
           )}
           {canCancel && (
@@ -135,32 +143,35 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
         </div>
       </Section>
 
-      <Section title="Recipients" right={<span className="text-xs text-gray-500">{count(pending)} pending · {count(excluded)} excluded · {count(sent)} sent</span>}>
-        {recipients.length === 0 ? <EmptyRow>No recipients built yet. Use “Build recipients” to populate from the segment.</EmptyRow> : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs uppercase text-gray-500">
-                  <th className="pb-2">Channel</th>
-                  <th className="pb-2">Address</th>
-                  <th className="pb-2">Status</th>
-                  <th className="pb-2">Exclusion reason</th>
-                  <th className="pb-2 text-right">Sent</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recipients.map((r) => (
-                  <tr key={r.id} className="border-t border-gray-800">
-                    <td className="py-2 text-gray-400">{r.channel}</td>
-                    <td className="py-2">{r.addressSnapshot || '—'}</td>
-                    <td className="py-2"><StatusChip status={r.status} /></td>
-                    <td className="py-2 text-gray-500">{r.exclusionReason || '—'}</td>
-                    <td className="py-2 text-right text-gray-500">{shortDate(r.sentAt ? r.sentAt.toISOString().slice(0, 10) : null)}</td>
+      <Section title="Recipients" right={<span className="text-xs text-gray-500">{count(total)} total · {count(excluded)} excluded · {count(sent)} sent</span>}>
+        {total === 0 ? <EmptyRow>No recipients built yet. Use “Build recipients” to populate from the segment.</EmptyRow> : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase text-gray-500">
+                    <th className="pb-2">Channel</th>
+                    <th className="pb-2">Address</th>
+                    <th className="pb-2">Status</th>
+                    <th className="pb-2">Exclusion reason</th>
+                    <th className="pb-2 text-right">Sent</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {recipients.map((r) => (
+                    <tr key={r.id} className="border-t border-gray-800">
+                      <td className="py-2 text-gray-400">{r.channel}</td>
+                      <td className="py-2">{r.addressSnapshot || '—'}</td>
+                      <td className="py-2"><StatusChip status={r.status} /></td>
+                      <td className="py-2 text-gray-500">{r.exclusionReason || '—'}</td>
+                      <td className="py-2 text-right text-gray-500">{shortDate(r.sentAt ? r.sentAt.toISOString().slice(0, 10) : null)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <Pager basePath={`/marketing/campaigns/${campaign.id}`} page={page} pageSize={PAGE_SIZE} total={total} />
+          </>
         )}
       </Section>
     </MarketingShell>

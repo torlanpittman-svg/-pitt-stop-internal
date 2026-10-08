@@ -148,12 +148,20 @@ export async function insertRecipients(campaignId: string, seeds: RecipientSeed[
   return rows.length
 }
 
-export async function listRecipients(campaignId: string, status?: Recipient['status']): Promise<Recipient[]> {
+export async function listRecipients(campaignId: string, status?: Recipient['status'], page?: { limit: number; offset: number }): Promise<Recipient[]> {
   const db = getDb()
   const where = status
     ? and(eq(marketingCampaignRecipients.campaignId, campaignId), eq(marketingCampaignRecipients.status, status))
     : eq(marketingCampaignRecipients.campaignId, campaignId)
-  return db.select().from(marketingCampaignRecipients).where(where).orderBy(marketingCampaignRecipients.createdAt)
+  const q = db.select().from(marketingCampaignRecipients).where(where).orderBy(marketingCampaignRecipients.createdAt)
+  return page ? q.limit(page.limit).offset(page.offset) : q
+}
+
+/** Count recipients for a campaign (for pagination controls). */
+export async function countRecipients(campaignId: string): Promise<number> {
+  const [row] = await getDb().select({ n: sql<number>`count(*)::int` })
+    .from(marketingCampaignRecipients).where(eq(marketingCampaignRecipients.campaignId, campaignId))
+  return row?.n ?? 0
 }
 
 export async function markRecipient(id: string, patch: Partial<Pick<Recipient, 'status' | 'exclusionReason' | 'renderedBody' | 'sentAt' | 'respondedAt' | 'bookedOrderId' | 'completedRevenueCents' | 'providerMessageId' | 'deliveryStatus' | 'errorCode'>>): Promise<void> {
