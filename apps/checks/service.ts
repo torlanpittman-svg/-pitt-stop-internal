@@ -31,12 +31,12 @@ import {
   setPrintStatus, logCheckEvent, toView, getCheckView,
 } from './db'
 import {
-  enqueuePrintJob, getJob, transitionJob, noteUncertainJob, activeJobForCheck, expireStaleJobs, isUncertain,
+  enqueuePrintJob, claimSpecimenSlot, releaseSpecimenSlot, latestSpecimenJob, SPECIMEN_COOLDOWN_MINUTES, getJob, transitionJob, noteUncertainJob, activeJobForCheck, expireStaleJobs, isUncertain,
   CLAIM_UNCERTAIN_AFTER_SECONDS, type PrintJobRow,
 } from './print-queue'
-import { buildCheckPayload, buildFields, testValues, PAGE_WIDTH_IN, PAGE_HEIGHT_IN, type CheckPrintPayload } from './render'
-import { assembleCheckTemplate, resolveDeferredMicr } from './template-server'
-import { micrReadiness } from './micr'
+import { buildCheckPayload, buildFields, testValues, specimenValues, PAGE_WIDTH_IN, PAGE_HEIGHT_IN, type CheckPrintPayload } from './render'
+import { assembleCheckTemplate, resolveDeferredMicr, resolveSpecimenMicr } from './template-server'
+import { micrReadiness, specimenReadiness } from './micr'
 import { renderCheckPdf } from './pdf'
 import { businessDate } from './dates'
 import type { BankKey } from './types'
@@ -311,6 +311,36 @@ export async function enqueueTestPrint(actor: Actor): Promise<{ jobId: string }>
   return { jobId: job!.id }
 }
 
+/**
+ * Enqueue a NON-NEGOTIABLE BANK SPECIMEN: the real routing/account MICR line (check number 000000) on a
+ * page that says VOID across its face and over the signature line, with the MICR clear band left free —
+ * something the bank can run through its reader. Creates NO check record and NO QuickBooks transaction,
+ * and takes NO check number. Works with micr_enabled OFF (that switch gates negotiable checks only), but
+ * needs valid bank numbers + the font. The bank numbers are not stored: the line is built at claim time.
+ * EXACTLY ONE per request burst: an atomic slot (claimSpecimenSlot) lets one caller through per cooldown
+ * window; any retry, double-click or second device inside it gets the first job back, never a second page.
+ */
+export async function enqueueBankSpecimen(actor: Actor): Promise<{ jobId: string; alreadyQueued: boolean }> {
+  const cfg = await getCheckConfig()
+  if (cfg.templateMode !== 'blank_full') throw new CheckValidationError('A bank specimen only applies to blank check stock.', 'specimen_not_applicable')
+  if (!specimenReadiness().ready) throw new CheckValidationError('The bank numbers or the MICR font are not ready, so a specimen cannot be printed. Nothing was sent.', 'micr_not_ready')
+  if (!(await claimSpecimenSlot(actor.name))) {
+    const recent = await latestSpecimenJob()
+    if (recent && Date.now() - new Date(recent.createdAt).getTime() < SPECIMEN_COOLDOWN_MINUTES * 60_000) return { jobId: recent.id, alreadyQueued: true }
+    throw new CheckValidationError(`A specimen was requested less than ${SPECIMEN_COOLDOWN_MINUTES} minutes ago. Nothing new was sent.`, 'specimen_cooldown')
+  }
+  try {
+    const template = assembleCheckTemplate(cfg, cfg.layout, { test: false, specimen: true })
+    const payload: CheckPrintPayload = { pageWidthIn: PAGE_WIDTH_IN, pageHeightIn: PAGE_HEIGHT_IN, fields: buildFields(specimenValues(), cfg.layout), template }
+    const job = await enqueuePrintJob({ checkId: null, kind: 'specimen', payload, createdBy: actor.name })
+    logger.info('checks', 'specimen.queued', { jobId: job!.id, by: actor.name })
+    return { jobId: job!.id, alreadyQueued: false }
+  } catch (e) {
+    await releaseSpecimenSlot().catch(() => {})
+    throw e
+  }
+}
+
 /** Expire stale queued jobs and reflect each onto its check (so it can be re-sent deliberately). */
 export async function reconcileExpiredJobs(): Promise<number> {
   const expired = await expireStaleJobs()
@@ -351,6 +381,14 @@ export async function renderClaimedJob(job: PrintJobRow): Promise<{ pdf: Buffer 
         payload.template = resolved
       }
       // A real check never carries a watermark; a test page never reaches this branch.
+      return { pdf: renderCheckPdf(payload) }
+    }
+    if (job.kind === 'specimen' || payload.template?.micr?.deferSpecimen) {
+      // BANK SPECIMEN: the real line is built HERE and only here. It prints only as a marked VOID page.
+      const resolved = resolveSpecimenMicr(payload.template ?? null)
+      if (resolved?.micr?.mode !== 'e13b' || !resolved.micr.cells?.length) return refuse('bank numbers or MICR font not ready — specimen not printed')
+      if (!resolved.texts.some((t) => /\bVOID\b/.test(t.value))) return refuse('specimen is missing its VOID markings — not printed')
+      payload.template = resolved
       return { pdf: renderCheckPdf(payload) }
     }
     return { pdf: renderCheckPdf(payload, payload.watermark ? { watermark: payload.watermark } : {}) }

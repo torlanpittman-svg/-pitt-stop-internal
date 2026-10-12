@@ -58,7 +58,7 @@ const isUniqueViolation = (e: unknown) => String((e as { code?: string })?.code 
  */
 export async function enqueuePrintJob(params: {
   checkId: string | null
-  kind?: 'check' | 'reprint'
+  kind?: 'check' | 'reprint' | 'specimen'
   payload: CheckPrintPayload
   printerTarget?: string | null
   createdBy?: string | null
@@ -82,6 +82,38 @@ export async function enqueuePrintJob(params: {
     if (isUniqueViolation(e)) return null // lost the race to a concurrent enqueue
     throw e
   }
+}
+
+/** Minutes during which a repeated specimen request returns the first one instead of printing another. */
+export const SPECIMEN_COOLDOWN_MINUTES = 10
+const SPECIMEN_SLOT_KEY = 'check_specimen_slot'
+
+/** The most recent bank specimen job, if any. */
+export async function latestSpecimenJob(): Promise<PrintJobRow | null> {
+  const [row] = await getDb().select().from(printJobs).where(eq(printJobs.kind, 'specimen')).orderBy(desc(printJobs.createdAt)).limit(1)
+  return row ?? null
+}
+
+/**
+ * Atomically take the single "specimen slot". Exactly ONE caller wins per cooldown window, however many
+ * requests arrive at once (double-click, retry, two devices): the upsert's conflict clause is evaluated
+ * by Postgres against the latest committed row, so it cannot be raced the way a read-then-insert can.
+ * The slot is one row in app_settings (existing table — no migration); it also records who last asked.
+ */
+export async function claimSpecimenSlot(actor: string | null): Promise<boolean> {
+  const res = await getDb().execute(sql`
+    INSERT INTO app_settings (key, value, type, category, label, updated_by)
+    VALUES (${SPECIMEN_SLOT_KEY}, to_jsonb(now()::text), 'string', 'checks', 'Last bank specimen request', ${actor})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()
+     WHERE app_settings.updated_at < now() - (${SPECIMEN_COOLDOWN_MINUTES} * interval '1 minute')
+    RETURNING key
+  `)
+  return rowsOf<Record<string, unknown>>(res).length > 0
+}
+
+/** Give the slot back when nothing was queued after all (so a failed attempt does not block a retry). */
+export async function releaseSpecimenSlot(): Promise<void> {
+  await getDb().execute(sql`UPDATE app_settings SET updated_at = now() - interval '1 day' WHERE key = ${SPECIMEN_SLOT_KEY}`)
 }
 
 /** The active (queued/claimed/submitted/stuck) job for a check, if any. */

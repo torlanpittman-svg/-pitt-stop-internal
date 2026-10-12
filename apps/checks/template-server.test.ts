@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { assembleCheckTemplate, resolveDeferredMicr } from './template-server'
-import { buildLayout } from './layout'
+import { assembleCheckTemplate, resolveDeferredMicr, resolveSpecimenMicr } from './template-server'
+import { buildLayout, slotOriginY, MICR_CLEAR_BAND_IN } from './layout'
+import { buildFields, specimenValues } from './render'
 import type { CheckConfig } from './config'
 
 const ROUTING = '021000021' // real, valid ABA checksum
@@ -70,5 +71,45 @@ describe('MICR secret-safety: deferred until claim/print time', () => {
     expect(digits).toBe('000000000')
     expect(JSON.stringify(tpl)).not.toContain(ROUTING)
     expect(JSON.stringify(tpl)).not.toContain(ACCOUNT)
+  })
+})
+
+describe('bank specimen template', () => {
+  it('stores no bank numbers, is marked VOID, and resolves to the real line even with the MICR switch off', () => {
+    process.env.MICR_ROUTING = ROUTING; process.env.MICR_ACCOUNT = ACCOUNT
+    const c = cfg(false)
+    const tpl = assembleCheckTemplate(c, c.layout, { test: false, specimen: true })!
+    expect(JSON.stringify(tpl)).not.toContain(ROUTING); expect(JSON.stringify(tpl)).not.toContain(ACCOUNT)
+    expect(tpl.micr).toMatchObject({ mode: 'placeholder', deferSpecimen: true })
+    expect(tpl.texts.filter((t) => /\bVOID\b/.test(t.value)).length).toBe(2)
+    expect(resolveDeferredMicr(tpl, c)).toBe(tpl)                       // never treated as a real check
+    const resolved = resolveSpecimenMicr(tpl)!
+    expect(resolved.micr).toMatchObject({ mode: 'e13b', deferSpecimen: null })
+    expect(resolved.micr!.cells!.filter((x) => x.pos >= 46 && x.ch !== 'C').map((x) => x.ch).join('')).toBe('000000')
+  })
+
+  it('stays unresolved (so the caller refuses) when the bank numbers are not valid', () => {
+    process.env.MICR_ROUTING = ROUTING; process.env.MICR_ACCOUNT = ACCOUNT
+    const c = cfg(true)
+    const tpl = assembleCheckTemplate(c, c.layout, { test: false, specimen: true })!
+    delete process.env.MICR_ACCOUNT
+    expect(resolveSpecimenMicr(tpl)).toBe(tpl)
+  })
+
+  it('puts nothing but the MICR line in the bottom 5/8" clear band', () => {
+    const c = cfg(false)
+    const tpl = assembleCheckTemplate(c, c.layout, { test: false, specimen: true })!
+    const bandTop = slotOriginY(c.layout.position) + c.layout.offsetY + c.layout.sectionHeightIn - MICR_CLEAR_BAND_IN
+    for (const t of tpl.texts) expect(t.yIn + t.sizePt / 72, t.value).toBeLessThanOrEqual(bandTop)
+    for (const l of tpl.lines) expect(Math.max(l.y1In, l.y2In)).toBeLessThanOrEqual(bandTop)
+    for (const b of tpl.boxes) expect(b.yIn + b.hIn).toBeLessThanOrEqual(bandTop)
+    for (const f of buildFields(specimenValues(), c.layout)) expect(f.yIn + f.sizePt / 72, f.key).toBeLessThanOrEqual(bandTop)
+    expect(tpl.micr!.yIn).toBeGreaterThan(bandTop)                      // the MICR baseline itself is inside the band
+  })
+
+  it('a normal VOID test page and a real check are unaffected', () => {
+    const c = cfg(false)
+    expect(assembleCheckTemplate(c, c.layout, { test: true })!.texts.some((t) => /SPECIMEN/.test(t.value))).toBe(false)
+    expect(assembleCheckTemplate(c, c.layout, { test: false, checkNumber: 10356 })!.micr).toMatchObject({ deferCheckNumber: 10356, deferSpecimen: null })
   })
 })

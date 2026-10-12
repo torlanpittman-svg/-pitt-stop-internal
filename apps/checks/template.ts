@@ -36,13 +36,18 @@ export interface MicrRender {
    * at print time (resolveDeferredMicr). null ⇒ nothing to defer (test/void or unconfigured).
    */
   deferCheckNumber?: string | number | null
+  /**
+   * BANK SPECIMEN marker: like deferCheckNumber, the real routing/account line is built only at claim
+   * time (resolveSpecimenMicr) and never stored. true ⇒ this page is a VOID specimen for the bank's reader.
+   */
+  deferSpecimen?: boolean | null
 }
 
 // The MICR element carries its own fixed-position geometry: `yIn` is the character BASELINE (not the text
 // top), `xIn` is the RIGHT EDGE of position 14 (our first printed position), and `pitchIn` is the width of
 // one position (8 per inch). The renderer places each character in its own position — never by running
 // text metrics.
-export interface CheckTemplate { texts: TplText[]; lines: TplLine[]; boxes: TplBox[]; micr?: (TplText & { mode: 'e13b' | 'placeholder'; cells?: MicrCell[] | null; deferCheckNumber?: string | number | null; pitchIn: number }) | null }
+export interface CheckTemplate { texts: TplText[]; lines: TplLine[]; boxes: TplBox[]; micr?: (TplText & { mode: 'e13b' | 'placeholder'; cells?: MicrCell[] | null; deferCheckNumber?: string | number | null; deferSpecimen?: boolean | null; pitchIn: number }) | null }
 
 /** Build the static face elements for a blank top/middle/bottom check under a layout. */
 export function buildCheckTemplate(display: CheckFaceDisplay, layout: CheckLayout, micr?: MicrRender | null): CheckTemplate {
@@ -91,7 +96,7 @@ export function buildCheckTemplate(display: CheckFaceDisplay, layout: CheckLayou
     const p = micrPlacement(S, PAGE_WIDTH_IN, layout.micr)
     micrEl = {
       value: micr.text, xIn: p.rightAnchorXIn + ox, yIn: p.baselineYIn + oy, sizePt: p.sizePt,
-      align: 'right', mode: micr.mode, cells: micr.cells ?? null, deferCheckNumber: micr.deferCheckNumber ?? null, pitchIn: p.pitchIn,
+      align: 'right', mode: micr.mode, cells: micr.cells ?? null, deferCheckNumber: micr.deferCheckNumber ?? null, deferSpecimen: micr.deferSpecimen ?? null, pitchIn: p.pitchIn,
     }
   }
   return { texts, lines, boxes, micr: micrEl }

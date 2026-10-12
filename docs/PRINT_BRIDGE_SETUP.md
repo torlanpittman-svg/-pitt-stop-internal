@@ -125,6 +125,14 @@ Then: `launchctl load ~/Library/LaunchAgents/com.pittstop.printbridge.plist`. Ke
   when the bridge starts.
 - **Security:** the bridge only ever receives rendered check PDFs. No QuickBooks tokens pass through it.
   The bearer token is the only key.
-- **Updating the bridge:** replace `print-bridge.mjs` on the laptop with the repo version and restart the
-  scheduled task. An older bridge keeps working against the new server (its "success" is treated as
-  "sent — awaiting confirmation"), but has no heartbeat, spooler watch, or PDF cleanup.
+- **Updating the bridge (Windows):** build the one-file updater with
+  `node scripts/build-bridge-update.mjs PittStop-Bridge-Update-R2.cmd`, get it onto the laptop, and
+  double-click it. The shop laptop does not run `node` directly from the task: the task runs
+  `wscript start-bridge.vbs`, which starts a hidden `cmd /c start-bridge.bat` loop that relaunches
+  `node print-bridge.mjs` 5 seconds after it exits. The updater therefore stops that loop and the bridge
+  together, replaces only `print-bridge.mjs` (keeping a backup), removes leftover temporary check PDFs,
+  starts exactly one bridge through the existing task, checks the bridge's log for the new version and
+  "connected", and rolls back if that fails. By hand: end the hidden `cmd.exe` running
+  `start-bridge.bat` *first*, then `node.exe`, replace the file, and run the task once.
+  An older bridge keeps working against the new server (its "success" is treated as "sent — awaiting
+  confirmation"), but reports no version or start time and has no spooler watch or PDF cleanup.

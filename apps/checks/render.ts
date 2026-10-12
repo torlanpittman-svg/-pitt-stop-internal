@@ -35,6 +35,11 @@ export function testValues(): Record<string, string> {
   return { date: usDate(new Date().toISOString()), payee: 'TEST — DO NOT CASH', amountBox: formatAmount(123456), amountWords: amountToWords(123456), memo: 'Alignment test', checkNumber: 'TEST' }
 }
 
+/** Values for a BANK SPECIMEN: every field says VOID; the number is 000000, never a real check. */
+export function specimenValues(): Record<string, string> {
+  return { date: usDate(new Date().toISOString()), payee: 'VOID - BANK TEST SPECIMEN', amountBox: 'VOID', amountWords: 'VOID - NOT NEGOTIABLE - MICR READER TEST ONLY', memo: 'MICR reader test', checkNumber: '000000' }
+}
+
 /** Positioned fields for a value map under a layout. */
 export function buildFields(values: Record<string, string>, layout: CheckLayout): RenderedField[] {
   return layout.fields.map((key: CheckFieldKey) => {

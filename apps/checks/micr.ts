@@ -17,6 +17,10 @@
  *     pos 45      ⑈   pos 46…  check-number digits, then ⑈   (Auxiliary On-Us = the printed check number)
  *   The Amount field (positions 1–12) is encoded by the BANK, never by us. Where the account sits inside
  *   the On-Us field is bank-specific — confirm against the bank's MICR spec / an existing check.
+ *
+ * BANK SPECIMEN: buildSpecimenMicrCells() produces the same real routing/account line with the check
+ * number 000000, for a VOID page the bank can run through its reader. It needs the bank numbers and the
+ * font but deliberately NOT micr_enabled — that switch stays the gate for negotiable checks only.
  */
 import { MICR_FONT, micrFontAvailable } from './micr-font'
 
@@ -30,6 +34,15 @@ export const E13B = {
 
 /** ANSI positions (from the right edge) that anchor each field. */
 export const MICR_POS = { onUsSymbol: 14, onUsMax: 31, transitRight: 33, transitLeft: 43, auxOnUsRight: 45, max: 63 } as const
+
+/**
+ * American Momentum writes the check number in the Auxiliary On-Us field as SIX digits, zero-padded
+ * (owner-verified against a real check, 2026-10-12: e.g. check 10355 reads 010355). A real line pads to
+ * this width; a longer number prints in full. The number printed on the check face is NOT padded.
+ */
+export const MICR_CHECK_NUMBER_MIN_DIGITS = 6
+/** The check number on a bank specimen — never a real check. */
+export const SPECIMEN_CHECK_NUMBER = '0'.repeat(MICR_CHECK_NUMBER_MIN_DIGITS)
 
 const digits = (s: string | undefined | null) => (s ?? '').replace(/\D/g, '')
 
@@ -92,11 +105,14 @@ export interface MicrCell { pos: number; ch: string }
  * Lay a business-check MICR line onto the fixed position grid. Pure — takes the numbers as arguments so it
  * can be exercised with test data. Throws if a field cannot fit its standard positions (never squeezes).
  */
-export function layoutMicrCells(input: { routing: string; account: string; checkNumber: string | number }): MicrCell[] {
-  const routing = digits(input.routing), account = digits(input.account), num = digits(String(input.checkNumber))
+export function layoutMicrCells(input: { routing: string; account: string; checkNumber: string | number; checkNumberMinDigits?: number }): MicrCell[] {
+  const routing = digits(input.routing), account = digits(input.account), rawNum = digits(String(input.checkNumber))
   if (routing.length !== 9) throw new Error('MICR routing must be 9 digits.')
   if (!account || account.length > MICR_POS.onUsMax - MICR_POS.onUsSymbol) throw new Error('MICR account does not fit the On-Us field.')
-  if (!num || MICR_POS.auxOnUsRight + num.length + 1 > MICR_POS.max) throw new Error('MICR check number does not fit the Auxiliary On-Us field.')
+  if (!rawNum) throw new Error('MICR check number does not fit the Auxiliary On-Us field.')
+  // Zero-pad on the LEFT only: the last digit stays at position 46, so nothing to its right ever moves.
+  const num = rawNum.padStart(input.checkNumberMinDigits ?? 0, '0')
+  if (MICR_POS.auxOnUsRight + num.length + 1 > MICR_POS.max) throw new Error('MICR check number does not fit the Auxiliary On-Us field.')
   const cells: MicrCell[] = []
   const rightToLeft = (s: string, firstPos: number) => { for (let i = 0; i < s.length; i++) cells.push({ pos: firstPos + i, ch: s[s.length - 1 - i] }) }
   cells.push({ pos: MICR_POS.onUsSymbol, ch: E13B.onUs.glyph })
@@ -119,7 +135,25 @@ export function buildMicrCells(checkNumber: number | string): MicrCell[] {
   if (!s) throw new Error('MICR secrets not configured (MICR_ROUTING/MICR_ACCOUNT).')
   if (!isValidRouting(s.routing)) throw new Error('MICR_ROUTING is not a valid 9-digit ABA routing number.')
   if (!isValidAccount(s.account)) throw new Error('MICR_ACCOUNT is not a valid account number.')
-  return layoutMicrCells({ routing: s.routing, account: s.account, checkNumber })
+  return layoutMicrCells({ routing: s.routing, account: s.account, checkNumber, checkNumberMinDigits: MICR_CHECK_NUMBER_MIN_DIGITS })
+}
+
+/** What a bank specimen needs: valid bank numbers + the font. NOT the micr_enabled switch. Masks only. */
+export function specimenReadiness(): { secretsPresent: boolean; routingValid: boolean; accountValid: boolean; fontInstalled: boolean; ready: boolean } {
+  const s = readSecrets()
+  const routingValid = !!s && isValidRouting(s.routing)
+  const accountValid = !!s && isValidAccount(s.account)
+  const fontInstalled = micrFontAvailable()
+  return { secretsPresent: !!s, routingValid, accountValid, fontInstalled, ready: routingValid && accountValid && fontInstalled }
+}
+
+/**
+ * The REAL routing/account line for a NON-NEGOTIABLE bank specimen, with check number 000000. Identical in
+ * every position to the line a real check would carry, so the bank's reader tests the real thing. THROWS
+ * unless the bank numbers are present + valid (fail closed).
+ */
+export function buildSpecimenMicrCells(): MicrCell[] {
+  return buildMicrCells(SPECIMEN_CHECK_NUMBER)
 }
 
 /**

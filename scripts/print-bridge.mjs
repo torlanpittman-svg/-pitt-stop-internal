@@ -15,6 +15,8 @@
  *     failed instead of printing by surprise later.
  *   - The check PDF exists on disk only while printing and is deleted afterwards (and on startup).
  *   - Queued jobs expire server-side, so an outage never causes a late, unattended print.
+ *   - It logs once when the server accepts its token ("connected"), and again after any outage, so the
+ *     log shows whether it is really talking to Pitt Stop OS (the Windows updater reads this line).
  *   - No business logic, no arbitrary commands — it prints bytes and reports status.
  *
  * Config (env OR a print-bridge.config.json next to this script; env wins):
@@ -35,7 +37,7 @@ import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const BRIDGE_VERSION = '2.0.0'
+const BRIDGE_VERSION = '2.0.1'
 const STARTED_AT = new Date().toISOString()
 const TMP_PREFIX = 'pittstop-check-'
 
@@ -163,11 +165,14 @@ async function report(jobId, outcome, error) {
   return false
 }
 
+let connected = false // logged once per (re)connection, never per poll
+
 async function processOne() {
   const claim = await api('/api/print-bridge/claim', { bridgeId: C.bridgeId, version: BRIDGE_VERSION, platform: process.platform, printer: C.printer, startedAt: STARTED_AT })
   if (claim.status === 401) throw new Error('unauthorized — check PRINT_BRIDGE_TOKEN')
   if (claim.status === 503) { return false } // bridge not configured on server yet
   if (claim.status !== 200) throw new Error(`claim failed: HTTP ${claim.status}`)
+  if (!connected) { connected = true; log(`connected — server accepted this bridge's token (v${BRIDGE_VERSION})`) }
   const job = claim.json.job
   if (!job) return false // queue empty (or the server refused the job)
 
@@ -207,6 +212,7 @@ async function main() {
       if (!didWork) await sleep(C.pollMs)
       else await sleep(400) // drain the queue quickly when busy
     } catch (e) {
+      connected = false
       log(`loop error (will retry): ${e.message}`)
       await sleep(Math.max(C.pollMs, 5000))
     }

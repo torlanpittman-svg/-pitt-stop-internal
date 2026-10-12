@@ -32,7 +32,7 @@ import { getDb } from '@/platform/db'
 import { DEFAULT_LAYOUT } from './layout'
 import {
   createAndRecordCheck, retryQbWrite, queueCheckPrint, recordPrintResult, applyBridgeResult, resolvePrintJob,
-  enqueueTestPrint, renderClaimedJob, reconcileExpiredJobs, assertCheckRealm, qbRequestId, CheckValidationError,
+  enqueueTestPrint, enqueueBankSpecimen, renderClaimedJob, reconcileExpiredJobs, assertCheckRealm, qbRequestId, CheckValidationError,
 } from './service'
 import { claimNextJob, getJob, enqueuePrintJob, recordBridgeHeartbeat, getBridgeStatus, jobsForCheck, PRINT_JOB_TTL_MINUTES } from './print-queue'
 import { getCheckRow, acquireQbWriteLock, checkEventHistory } from './db'
@@ -50,6 +50,8 @@ const qbRow = (over: Record<string, unknown> = {}) => ({ purchaseId: 'P1', docNu
 beforeAll(async () => {
   await pg.exec(migration('0032_checks.sql'))
   await pg.exec(migration('0050_check_print_safety.sql'))
+  // app_settings exactly as migration 0016 creates it (the bank-specimen slot lives there)
+  await pg.exec(/CREATE TABLE IF NOT EXISTS app_settings \([\s\S]*?\n\);/.exec(migration('0016_fees_and_settings.sql'))![0])
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
 })
 afterAll(async () => {
@@ -57,7 +59,7 @@ afterAll(async () => {
   await pg.close()
 })
 beforeEach(async () => {
-  await pg.exec('TRUNCATE print_jobs, check_events, checks, check_sequence, print_bridges CASCADE')
+  await pg.exec('TRUNCATE print_jobs, check_events, checks, check_sequence, print_bridges, app_settings CASCADE')
   await initCheckSequence('operating', 20000, 'test')
   await initCheckSequence('auto_sales', 500, 'test')
   process.env.MICR_ROUTING = ROUTING; process.env.MICR_ACCOUNT = ACCOUNT; delete process.env.CHECKS_ALLOW_SANDBOX_QB
@@ -428,7 +430,7 @@ describe('claim-time render — a real check never prints without its MICR line'
     const pdf = (out as { pdf: Buffer }).pdf.toString('latin1')
     expect(pdf).toContain('/BaseFont /GnuMICR')
     expect(pdf).not.toContain('NOT NEGOTIABLE')                                     // no VOID watermark on a real check
-    expect((pdf.match(/BT \/F3 12 Tf/g) ?? []).length).toBe(1 + ACCOUNT.length + 11 + 2 + 5)
+    expect((pdf.match(/BT \/F3 12 Tf/g) ?? []).length).toBe(1 + ACCOUNT.length + 11 + 2 + 6) // check number = six digits
   })
 
   it.each([
@@ -461,6 +463,111 @@ describe('claim-time render — a real check never prints without its MICR line'
     await applyBridgeResult(jobId, 'submitted', null)
     expect((await getJob(jobId))!.status).toBe('submitted')
     expect(h.createCheckInQB).not.toHaveBeenCalled()
+    expect(await peekNextNumber('operating')).toBe(20000)
+  })
+})
+
+describe('bank specimen — the real MICR line on a VOID page, and nothing else', () => {
+  const offForChecks = () => { h.cfg.micrEnabled = false; h.cfg.liveEnabled = false }
+
+  it('prints the real line with check number 000000 while MICR and live recording are OFF', async () => {
+    offForChecks()
+    const { jobId, alreadyQueued } = await enqueueBankSpecimen(actor)
+    expect(alreadyQueued).toBe(false)
+    const stored = await pg.query<{ payload: unknown; kind: string; check_id: string | null; created_by: string }>(`SELECT payload, kind, check_id, created_by FROM print_jobs WHERE id = $1`, [jobId])
+    expect(stored.rows[0]).toMatchObject({ kind: 'specimen', check_id: null, created_by: 'Torlan' })
+    expect(JSON.stringify(stored.rows[0].payload)).not.toContain(ROUTING)             // bank numbers never stored
+    expect(JSON.stringify(stored.rows[0].payload)).not.toContain(ACCOUNT)
+    const job = (await claimNextJob('LAPTOP'))!
+    const out = await renderClaimedJob(job)
+    expect('pdf' in out).toBe(true)
+    const pdf = (out as { pdf: Buffer }).pdf.toString('latin1')
+    expect(pdf).toContain('/BaseFont /GnuMICR')
+    expect((pdf.match(/BT \/F3 12 Tf/g) ?? []).length).toBe(1 + ACCOUNT.length + 11 + 2 + 6)
+    expect(pdf).toContain('(VOID - BANK TEST SPECIMEN - NOT NEGOTIABLE)')
+    expect(pdf).toContain('(VOID)')
+    expect((await pg.query(`SELECT 1 FROM print_jobs WHERE payload::text LIKE $1`, ['%' + ACCOUNT + '%'])).rows.length).toBe(0) // still not stored after render
+  })
+
+  it('creates no check, writes nothing to QuickBooks, and leaves the check number untouched', async () => {
+    offForChecks()
+    await initCheckSequence('operating', 10356, 'test', true)
+    const { jobId } = await enqueueBankSpecimen(actor)
+    await renderClaimedJob((await claimNextJob('LAPTOP'))!)
+    await applyBridgeResult(jobId, 'submitted', null)
+    expect((await getJob(jobId))!.status).toBe('submitted')
+    expect(await peekNextNumber('operating')).toBe(10356)
+    expect((await pg.query(`SELECT 1 FROM checks`)).rows.length).toBe(0)
+    expect((await pg.query(`SELECT 1 FROM check_events`)).rows.length).toBe(0)
+    expect(h.createCheckInQB).not.toHaveBeenCalled()
+    expect(h.resolveVendor).not.toHaveBeenCalled()
+  })
+
+  it('a second request while one is waiting returns the same job instead of printing two', async () => {
+    offForChecks()
+    const a = await enqueueBankSpecimen(actor)
+    const b = await enqueueBankSpecimen(actor)
+    expect(b).toEqual({ jobId: a.jobId, alreadyQueued: true })
+    expect((await pg.query(`SELECT 1 FROM print_jobs`)).rows.length).toBe(1)
+  })
+
+  it('eight requests at the same instant queue exactly one specimen', async () => {
+    offForChecks()
+    const results = await Promise.allSettled(Array.from({ length: 8 }, () => enqueueBankSpecimen(actor)))
+    expect((await pg.query(`SELECT 1 FROM print_jobs WHERE kind = 'specimen'`)).rows.length).toBe(1)
+    const ok = results.filter((r) => r.status === 'fulfilled').map((r) => (r as PromiseFulfilledResult<{ jobId: string; alreadyQueued: boolean }>).value)
+    expect(ok.filter((r) => !r.alreadyQueued).length).toBe(1)
+    expect(new Set(ok.map((r) => r.jobId)).size).toBe(1)
+    for (const r of results) if (r.status === 'rejected') expect(r.reason).toMatchObject({ code: 'specimen_cooldown' })
+  })
+
+  it('a retry AFTER it printed still does not print another (same job back) until the cooldown has passed', async () => {
+    offForChecks()
+    const a = await enqueueBankSpecimen(actor)
+    await renderClaimedJob((await claimNextJob('LAPTOP'))!)
+    await applyBridgeResult(a.jobId, 'submitted', null)
+    expect(await enqueueBankSpecimen(actor)).toEqual({ jobId: a.jobId, alreadyQueued: true })
+    expect((await pg.query(`SELECT 1 FROM print_jobs`)).rows.length).toBe(1)
+    await pg.query(`UPDATE app_settings SET updated_at = now() - interval '11 minutes' WHERE key = 'check_specimen_slot'`)
+    const later = await enqueueBankSpecimen(actor)                                    // a deliberate new one, later
+    expect(later.alreadyQueued).toBe(false); expect(later.jobId).not.toBe(a.jobId)
+  })
+
+  it('a request that fails before queuing does not use up the slot', async () => {
+    offForChecks()
+    const real = h.cfg.layout
+    h.cfg.layout = null                                                               // makes template assembly throw
+    await expect(enqueueBankSpecimen(actor)).rejects.toBeDefined()
+    h.cfg.layout = real
+    expect((await enqueueBankSpecimen(actor)).alreadyQueued).toBe(false)
+  })
+
+  it.each([
+    ['the bank numbers are missing', () => { delete process.env.MICR_ACCOUNT }],
+    ['the routing number is malformed', () => { process.env.MICR_ROUTING = '021000022' }],
+  ])('is refused up front when %s', async (_l, breakIt) => {
+    offForChecks(); breakIt()
+    await expect(enqueueBankSpecimen(actor)).rejects.toMatchObject({ code: 'micr_not_ready' })
+    expect((await pg.query(`SELECT 1 FROM print_jobs`)).rows.length).toBe(0)
+  })
+
+  it('is refused at the last moment — nothing prints — if the bank numbers vanish after it was queued', async () => {
+    offForChecks()
+    const { jobId } = await enqueueBankSpecimen(actor)
+    delete process.env.MICR_ROUTING
+    const out = await renderClaimedJob((await claimNextJob('LAPTOP'))!)
+    expect(out).toHaveProperty('refused')
+    expect((await getJob(jobId))!.status).toBe('failed')
+  })
+
+  it('does not apply to pre-printed stock', async () => {
+    h.cfg.templateMode = 'preprinted'
+    await expect(enqueueBankSpecimen(actor)).rejects.toMatchObject({ code: 'specimen_not_applicable' })
+  })
+
+  it('turning the specimen on does not let a real check through: with MICR off a real check is still refused', async () => {
+    offForChecks()
+    await expect(createAndRecordCheck(input(), actor)).rejects.toBeInstanceOf(CheckValidationError)
     expect(await peekNextNumber('operating')).toBe(20000)
   })
 })

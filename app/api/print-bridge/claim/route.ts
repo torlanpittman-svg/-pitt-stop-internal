@@ -45,8 +45,9 @@ export async function POST(req: Request) {
     logger.warn('checks:bridge', 'job_refused', { jobId: job.id, reason: rendered.refused })
     return NextResponse.json({ job: null, refused: { id: job.id, reason: rendered.refused } })
   }
+  // The PDF of a real check or a bank specimen carries bank numbers: never cacheable anywhere.
   return NextResponse.json({
     job: { id: job.id, kind: job.kind, printerTarget: job.printerTarget },
     pdfBase64: rendered.pdf.toString('base64'),
-  })
+  }, { headers: { 'Cache-Control': 'no-store' } })
 }

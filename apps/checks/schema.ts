@@ -105,7 +105,7 @@ export const printJobs = pgTable(
   {
     id:          uuid('id').primaryKey().defaultRandom(),
     checkId:     uuid('check_id').references(() => checks.id, { onDelete: 'cascade' }),
-    kind:        varchar('kind', { length: 16 }).notNull().default('check'),   // check | reprint
+    kind:        varchar('kind', { length: 16 }).notNull().default('check'),   // check | reprint | specimen
     status:      varchar('status', { length: 16 }).notNull().default('queued'),// queued | claimed | submitted | stuck | printed | failed | expired | canceled (see print-queue.ts)
     printerTarget: varchar('printer_target', { length: 120 }),                 // logical/CUPS name (bridge may override)
     payload:     jsonb('payload').notNull(),                                   // { pageWidthIn, pageHeightIn, fields:[…] }
