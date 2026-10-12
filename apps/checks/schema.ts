@@ -51,11 +51,11 @@ export const checks = pgTable(
     qboDocNumber:    varchar('qbo_doc_number', { length: 32 }),               // echo of the check number QBO stored
     qboSyncToken:    varchar('qbo_sync_token', { length: 32 }),
     realmId:         varchar('realm_id', { length: 32 }),                     // provenance (which QB company)
-    qbStatus:        varchar('qb_status', { length: 16 }).notNull().default('pending'), // pending | recorded | failed | voided
+    qbStatus:        varchar('qb_status', { length: 16 }).notNull().default('pending'), // pending | writing | recorded | failed | voided
     qbError:         text('qb_error'),
 
     // Print state (independent of QB) -----------------------------------------
-    printStatus:     varchar('print_status', { length: 16 }).notNull().default('not_printed'), // not_printed | printed | print_failed
+    printStatus:     varchar('print_status', { length: 16 }).notNull().default('not_printed'), // not_printed | submitted | printed | print_failed
     printedAt:       timestamp('printed_at', { withTimezone: true }),
     reprintCount:    integer('reprint_count').notNull().default(0),
 
@@ -106,7 +106,7 @@ export const printJobs = pgTable(
     id:          uuid('id').primaryKey().defaultRandom(),
     checkId:     uuid('check_id').references(() => checks.id, { onDelete: 'cascade' }),
     kind:        varchar('kind', { length: 16 }).notNull().default('check'),   // check | reprint
-    status:      varchar('status', { length: 16 }).notNull().default('queued'),// queued | claimed | printed | failed | canceled
+    status:      varchar('status', { length: 16 }).notNull().default('queued'),// queued | claimed | submitted | stuck | printed | failed | expired | canceled (see print-queue.ts)
     printerTarget: varchar('printer_target', { length: 120 }),                 // logical/CUPS name (bridge may override)
     payload:     jsonb('payload').notNull(),                                   // { pageWidthIn, pageHeightIn, fields:[…] }
     attempts:    integer('attempts').notNull().default(0),
@@ -119,8 +119,22 @@ export const printJobs = pgTable(
     createdAt:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt:   timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
+  // + partial unique index print_jobs_one_active_per_check (check_id) WHERE status IN
+  //   ('queued','claimed','submitted','stuck') — migration 0050; one active job per check, enforced by Postgres.
   (t) => [index('print_jobs_status_idx').on(t.status), index('print_jobs_check_idx').on(t.checkId)],
 )
+
+// Heartbeat of each print bridge (one row per bridge id), written when it polls the queue. Lets the app
+// show whether the shop printer link is online and when the bridge last (re)started. Operational
+// telemetry only — DDL in drizzle/migrations/manual/0050_check_print_safety.sql.
+export const printBridges = pgTable('print_bridges', {
+  bridgeId:   varchar('bridge_id', { length: 100 }).primaryKey(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  startedAt:  timestamp('started_at', { withTimezone: true }),               // when this bridge process started
+  version:    varchar('version', { length: 32 }),
+  platform:   varchar('platform', { length: 32 }),
+  printer:    varchar('printer', { length: 120 }),
+})
 
 // One row per bank's physical check sequence. `nextNumber` is the number of the NEXT blank check in
 // the tray. Reserved atomically (UPDATE … RETURNING) so concurrent managers never get the same number.

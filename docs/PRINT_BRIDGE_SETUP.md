@@ -107,12 +107,24 @@ Then: `launchctl load ~/Library/LaunchAgents/com.pittstop.printbridge.plist`. Ke
 
 ## 4. Operating notes
 
-- **Outage-safe:** if internet or the printer is down, jobs stay `queued` and print when the bridge is
-  back. The agent loops forever and never crashes on transient errors.
-- **No duplicates:** each job is claimed atomically (skip-locked) so only one bridge prints it. If a
-  print *fails*, the phone shows "failed — resend"; resending enqueues a fresh job (same check #, same
-  QuickBooks transaction — never a new expense).
-- **Reprint:** the Reprint button re-queues the exact same check; it never creates a new QuickBooks
-  transaction or a new check number.
-- **Security:** the bridge only ever receives rendered check PDFs. No bank credentials, QuickBooks
-  tokens, or account numbers pass through it. The bearer token is the only key.
+- **Bridge status:** every poll is a heartbeat. The check screens show "Shop printer link: online /
+  OFFLINE — last seen …". The heartbeat also records when the bridge process started, so a reboot is
+  visible (new start time, back online without anyone touching it).
+- **Outage-safe, without late prints:** if internet or the printer is down, a job waits `queued` for up
+  to 10 minutes, then **expires** — it never prints by surprise hours later. Send it again when ready.
+- **No duplicates:** each job is claimed atomically by one bridge, and a check can have only one open
+  print job at a time. While a job is open the app offers no way to send the check again.
+- **"Sent" is not "printed":** the bridge reports only that the printer accepted the job (on Windows it
+  waits for the job to leave the print spooler; a job the printer never takes is cancelled and reported
+  failed). A manager then confirms in the app that the paper came out. If it did not, the check stays held
+  until the original is cleared (Windows print queue emptied + printer power-cycled) — only then can it be
+  sent again, so a job waiting in an offline printer can never become a second check.
+- **Reprint:** offered only after a confirmed print, and requires ticking that the original was destroyed
+  or never left the shop. Same check number, same QuickBooks transaction — never a new expense.
+- **No check PDFs left on disk:** each PDF is deleted right after printing, and any leftovers are removed
+  when the bridge starts.
+- **Security:** the bridge only ever receives rendered check PDFs. No QuickBooks tokens pass through it.
+  The bearer token is the only key.
+- **Updating the bridge:** replace `print-bridge.mjs` on the laptop with the repo version and restart the
+  scheduled task. An older bridge keeps working against the new server (its "success" is treated as
+  "sent — awaiting confirmation"), but has no heartbeat, spooler watch, or PDF cleanup.

@@ -6,7 +6,7 @@ import { DEFAULT_LAYOUT } from './layout'
 function cfg(overrides: Partial<CheckConfig> = {}): CheckConfig {
   return {
     enabled: true,
-    liveEnabled: false,
+    liveEnabled: false, qboRealmId: '',
     banks: {
       operating: { key: 'operating', qboAccountId: '31', label: 'Operating *2649' },
       auto_sales: { key: 'auto_sales', qboAccountId: '', label: 'Auto Sales *5600' },

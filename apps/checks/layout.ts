@@ -26,23 +26,33 @@ export const CHECK_HEIGHT_IN = 11 / 3
 // the check is fit within this height.
 export const CHECK_SECTION_HEIGHT_IN = 3.5
 
-// ── MICR geometry — STANDARDS-BASED (ANSI X9.100-160 / X9.13). ────────────────────────────────────────
+// ── MICR geometry — STANDARDS-BASED (ANSI X9.100-160). ─────────────────────────────────────────────────
+// MICR characters occupy fixed POSITIONS counted from the RIGHT edge of the check: position 1's right
+// edge is 5/16" (±1/16") from the right edge, and each position is 1/8" wide (8 per inch). Characters are
+// right-aligned in their position. Field layout for a business check:
+//     1–12  Amount (left blank — the bank encodes it)      13  blank
+//    14–31  On-Us (account, closed by the On-Us symbol at 14)   32  blank
+//    33–43  Transit (⑆ + 9-digit routing + ⑆)              44  blank (EPC)
+//    45+    Auxiliary On-Us (⑈ check number ⑈)
 // These are the authoritative defaults; every value is overridable via the `micr_layout` setting so the
 // exact landing is finalized by physical VOID test against the actual stock WITHOUT a code change and
 // WITHOUT touching any non-MICR field.
 export const MICR_PITCH_IN = 0.125                 // fixed 8 characters/inch
-export const MICR_SIZE_PT = 10                     // E-13B meets ABA/ISO at 10pt @ 8 CPI
+export const MICR_SIZE_PT = 12                     // GnuMICR E-13B design size (see micr-font.ts) — do not change
 export const MICR_CLEAR_BAND_IN = 0.625            // bottom 5/8" clear band (must be free of any border)
+export const MICR_BAND_BOTTOM_IN = 0.1875          // MICR print band spans 3/16" …
+export const MICR_BAND_TOP_IN = 0.4375             // … to 7/16" above the bottom (aligning) edge
 export const MICR_BASELINE_FROM_BOTTOM_IN = 0.1875 // 3/16" — character baseline above the bottom (aligning) edge
-export const MICR_RIGHT_MARGIN_IN = 0.25           // inset of MICR position 1 from the right paper edge
-export const MICR_AMOUNT_FIELD_IN = 1.5            // positions 1-12 (Amount) left blank — the bank prints it
+export const MICR_RIGHT_MARGIN_IN = 0.3125         // right edge of position 1, from the right paper edge (5/16")
+export const MICR_AMOUNT_FIELD_IN = 1.625          // positions 1–13 (12-position Amount field + 1 blank) kept clear
+export const MICR_FIRST_PRINTED_POSITION = 14      // closing On-Us symbol — the rightmost character we print
 
 export interface MicrGeom {
   baselineFromBottomIn: number  // character baseline distance above the bottom (aligning) edge
-  rightMarginIn: number         // inset of MICR position 1 from the right paper edge
-  amountFieldIn: number         // blank Amount field width reserved at the far right (positions 1-12)
+  rightMarginIn: number         // right edge of MICR position 1, measured from the right paper edge
+  amountFieldIn: number         // width kept clear to the right of our first printed position (positions 1–13)
   pitchIn: number               // fixed character pitch (8 CPI = 0.125")
-  sizePt: number                // E-13B point size (10pt)
+  sizePt: number                // E-13B point size (12pt for GnuMICR)
 }
 export const DEFAULT_MICR_GEOM: MicrGeom = {
   baselineFromBottomIn: MICR_BASELINE_FROM_BOTTOM_IN, rightMarginIn: MICR_RIGHT_MARGIN_IN,
@@ -63,12 +73,11 @@ export function micrGeom(override?: Partial<MicrGeom> | null): MicrGeom {
 export interface MicrPlacement { baselineYIn: number; rightAnchorXIn: number; pitchIn: number; sizePt: number }
 /**
  * Standards-based MICR band placement (inches from the check's top-left):
- *   - baselineYIn  = the CHARACTER BASELINE, `baselineFromBottomIn` above the bottom (aligning) edge, which
- *                    for the top check is the first perforation at `sectionHeightIn`.
- *   - rightAnchorXIn = x of the RIGHTMOST printed MICR character. ANSI positions are counted from the RIGHT
- *                    edge, and the Amount field (positions 1-12) is left blank for the bank, so the right
- *                    anchor is inset from the right paper edge by the right margin + the Amount field.
- * Fixed pitch (8 CPI) — the renderer advances every character by exactly `pitchIn`.
+ *   - baselineYIn    = the CHARACTER BASELINE, `baselineFromBottomIn` above the bottom (aligning) edge, which
+ *                      for the top check is the first perforation at `sectionHeightIn`.
+ *   - rightAnchorXIn = x of the RIGHT EDGE of the first position we print (position 14, the closing On-Us
+ *                      symbol): the right paper edge, less the position-1 inset, less positions 1–13.
+ * Every other position is a whole number of `pitchIn` steps to the left of that anchor.
  */
 export function micrPlacement(sectionHeightIn: number, pageWidthIn: number, g: MicrGeom = DEFAULT_MICR_GEOM): MicrPlacement {
   return {
@@ -76,6 +85,11 @@ export function micrPlacement(sectionHeightIn: number, pageWidthIn: number, g: M
     rightAnchorXIn: pageWidthIn - g.rightMarginIn - g.amountFieldIn,
     pitchIn: g.pitchIn, sizePt: g.sizePt,
   }
+}
+
+/** x (inches from the left) of the RIGHT EDGE of MICR position `pos`, given the position-14 anchor. */
+export function micrPositionRightX(pos: number, anchorXIn: number, pitchIn: number): number {
+  return anchorXIn - (pos - MICR_FIRST_PRINTED_POSITION) * pitchIn
 }
 
 export type CheckPosition = 'top' | 'middle' | 'bottom'

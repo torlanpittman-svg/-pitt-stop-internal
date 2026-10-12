@@ -8,8 +8,13 @@
  * Safety:
  *   - Authenticates with PRINT_BRIDGE_TOKEN (Bearer). Pulls ONLY Pitt Stop print jobs.
  *   - The server hands out each job to exactly one bridge (atomic, skip-locked) → no duplicate prints.
- *   - Survives internet/printer outages: it just keeps looping; queued jobs wait server-side and print
- *     when the bridge/printer is back. A print failure is reported so the manager can safely resend.
+ *   - Every poll is also the bridge's HEARTBEAT (id, version, start time) so the app can show it online.
+ *   - It reports what it actually knows: 'submitted' (the printer driver accepted the job — NOT proof of
+ *     paper; a manager confirms that in the app), 'failed' (nothing will print), or 'uncertain'.
+ *     On Windows it watches the print spooler: a job the printer never takes is cancelled and reported
+ *     failed instead of printing by surprise later.
+ *   - The check PDF exists on disk only while printing and is deleted afterwards (and on startup).
+ *   - Queued jobs expire server-side, so an outage never causes a late, unattended print.
  *   - No business logic, no arbitrary commands — it prints bytes and reports status.
  *
  * Config (env OR a print-bridge.config.json next to this script; env wins):
@@ -19,16 +24,20 @@
  *   BRIDGE_ID           identifier for logs        (default: hostname)
  *   POLL_SECONDS        idle poll interval         (default: 5)
  *   SUMATRA_PATH        Windows only: path to SumatraPDF.exe for silent PDF printing
+ *   SPOOL_WAIT_SECONDS  Windows only: how long to wait for the printer to take a job (default: 75)
  *
  * Usage:  node scripts/print-bridge.mjs
  */
-import { readFileSync, writeFileSync, mkdtempSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, existsSync, rmSync, readdirSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
+const BRIDGE_VERSION = '2.0.0'
+const STARTED_AT = new Date().toISOString()
+const TMP_PREFIX = 'pittstop-check-'
 
 function loadConfig() {
   const cfg = {}
@@ -44,6 +53,7 @@ function loadConfig() {
     bridgeId: get('BRIDGE_ID', hostname()),
     pollMs: Math.max(2, parseInt(get('POLL_SECONDS', '5'), 10) || 5) * 1000,
     sumatra: get('SUMATRA_PATH', 'C:\\Program Files\\SumatraPDF\\SumatraPDF.exe'),
+    spoolWaitSeconds: get('SPOOL_WAIT_SECONDS', '75'),
   }
 }
 
@@ -52,9 +62,9 @@ const isWin = process.platform === 'win32'
 
 function log(...a) { console.log(new Date().toISOString(), ...a) }
 
-function execP(cmd, args) {
+function execP(cmd, args, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { windowsHide: true }, (err, stdout, stderr) => {
+    execFile(cmd, args, { windowsHide: true, timeout: timeoutMs }, (err, stdout, stderr) => {
       if (err) return reject(new Error(`${err.message} ${stderr || ''}`.trim()))
       resolve(stdout)
     })
@@ -79,6 +89,7 @@ async function api(path, body) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${C.token}` },
     body: JSON.stringify(body || {}),
+    signal: AbortSignal.timeout(30000),
   })
   const text = await res.text()
   let json = {}
@@ -86,26 +97,98 @@ async function api(path, body) {
   return { status: res.status, json }
 }
 
+/** Remove a temp dir holding a check PDF. Never throws. */
+function removeDir(dir) { try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ } }
+
+/** Startup sweep: delete any check PDFs a previous run left behind (crash / power loss). */
+function sweepTemp() {
+  try {
+    for (const name of readdirSync(tmpdir())) if (name.startsWith(TMP_PREFIX)) removeDir(join(tmpdir(), name))
+  } catch { /* best effort */ }
+}
+
+const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`
+/** How many spooler jobs on our printer belong to this document (Windows). Throws if it cannot tell. */
+async function spoolCount(docTag) {
+  const out = await execP('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `@(Get-PrintJob -PrinterName ${psQuote(C.printer)} -ErrorAction Stop | Where-Object { $_.DocumentName -like ${psQuote('*' + docTag + '*')} }).Count`], 20000)
+  const n = parseInt(String(out).trim(), 10)
+  if (!Number.isFinite(n)) throw new Error('unreadable spooler answer')
+  return n
+}
+async function spoolCancel(docTag) {
+  await execP('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `Get-PrintJob -PrinterName ${psQuote(C.printer)} -ErrorAction Stop | Where-Object { $_.DocumentName -like ${psQuote('*' + docTag + '*')} } | Remove-PrintJob -ErrorAction Stop`], 20000)
+}
+
+/**
+ * After the driver accepted the job, watch the Windows spooler until the printer has taken it.
+ *   left the spooler             → 'submitted'
+ *   still stuck after the wait   → cancel it; if the cancel is confirmed → 'failed' (it will NOT print
+ *                                  later), otherwise → 'uncertain' (a person must look)
+ *   spooler cannot be queried    → 'submitted' with a note (a manager confirms paper either way)
+ */
+async function watchSpooler(docTag) {
+  if (!isWin) return { outcome: 'submitted' }
+  const waitMs = Math.max(15, parseInt(C.spoolWaitSeconds, 10) || 75) * 1000
+  const deadline = Date.now() + waitMs
+  try {
+    for (;;) {
+      if ((await spoolCount(docTag)) === 0) return { outcome: 'submitted' }
+      if (Date.now() >= deadline) break
+      await sleep(3000)
+    }
+  } catch (e) {
+    return { outcome: 'submitted', note: `spooler not readable (${e.message})` }
+  }
+  try {
+    await spoolCancel(docTag)
+    await sleep(2000)
+    if ((await spoolCount(docTag)) === 0) return { outcome: 'failed', error: 'The printer did not take the job (offline, out of paper, or jammed?). It was cancelled and will not print later.' }
+  } catch { /* fall through to uncertain */ }
+  return { outcome: 'uncertain', error: 'The job is stuck in the Windows print queue and could not be cancelled. Check the printer before sending again.' }
+}
+
+/** Report a job outcome; retried, because a lost report leaves the job open for a manager to settle. */
+async function report(jobId, outcome, error) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const r = await api('/api/print-bridge/result', { jobId, outcome, success: outcome === 'submitted', error: error || undefined, bridgeId: C.bridgeId })
+      if (r.status === 200) return true
+      log(`report ${jobId} → HTTP ${r.status} (attempt ${attempt})`)
+    } catch (e) { log(`report ${jobId} failed (attempt ${attempt}): ${e.message}`) }
+    await sleep(attempt * 3000)
+  }
+  log(`could NOT report job ${jobId} (${outcome}) — a manager will need to settle it in the app`)
+  return false
+}
+
 async function processOne() {
-  const claim = await api('/api/print-bridge/claim', { bridgeId: C.bridgeId })
+  const claim = await api('/api/print-bridge/claim', { bridgeId: C.bridgeId, version: BRIDGE_VERSION, platform: process.platform, printer: C.printer, startedAt: STARTED_AT })
   if (claim.status === 401) throw new Error('unauthorized — check PRINT_BRIDGE_TOKEN')
   if (claim.status === 503) { return false } // bridge not configured on server yet
   if (claim.status !== 200) throw new Error(`claim failed: HTTP ${claim.status}`)
   const job = claim.json.job
-  if (!job) return false // queue empty
+  if (!job) return false // queue empty (or the server refused the job)
 
   log(`claimed job ${job.id} (${job.kind})`)
-  const dir = mkdtempSync(join(tmpdir(), 'pittstop-check-'))
-  const pdfPath = join(dir, `${job.id}.pdf`)
-  writeFileSync(pdfPath, Buffer.from(claim.json.pdfBase64, 'base64'))
-
+  let dir = null
   try {
+    if (!claim.json.pdfBase64) throw new Error('claim carried no PDF')
+    dir = mkdtempSync(join(tmpdir(), TMP_PREFIX))
+    const pdfPath = join(dir, `${job.id}.pdf`)
+    writeFileSync(pdfPath, Buffer.from(claim.json.pdfBase64, 'base64'))
     await printPdf(pdfPath)
-    await api('/api/print-bridge/result', { jobId: job.id, success: true, bridgeId: C.bridgeId })
-    log(`printed job ${job.id} ✓`)
+    const spool = await watchSpooler(job.id)
+    log(`job ${job.id}: ${spool.outcome}${spool.error ? ' — ' + spool.error : ''}${spool.note ? ' (' + spool.note + ')' : ''}`)
+    await report(job.id, spool.outcome, spool.error || spool.note)
   } catch (e) {
-    log(`print FAILED job ${job.id}: ${e.message}`)
-    await api('/api/print-bridge/result', { jobId: job.id, success: false, error: e.message, bridgeId: C.bridgeId })
+    // The print command itself failed or timed out. A timeout does not prove nothing printed.
+    const timedOut = /timed? ?out|ETIMEDOUT|killed/i.test(String(e.message))
+    log(`print ${timedOut ? 'UNCERTAIN' : 'FAILED'} job ${job.id}: ${e.message}`)
+    await report(job.id, timedOut ? 'uncertain' : 'failed', e.message)
+  } finally {
+    if (dir) removeDir(dir) // never leave a check PDF on disk
   }
   return true
 }
@@ -115,7 +198,8 @@ async function main() {
     console.error('Missing PITTSTOP_BASE_URL or PRINT_BRIDGE_TOKEN. Set env vars or scripts/print-bridge.config.json.')
     process.exit(1)
   }
-  log(`Pitt Stop print bridge starting — ${C.bridgeId} → ${C.printer} (${isWin ? 'windows' : process.platform}) → ${C.baseUrl}`)
+  sweepTemp()
+  log(`Pitt Stop print bridge v${BRIDGE_VERSION} starting — ${C.bridgeId} → ${C.printer} (${isWin ? 'windows' : process.platform}) → ${C.baseUrl}`)
   // Forever loop; never crashes on transient errors (outage-safe).
   for (;;) {
     try {

@@ -62,6 +62,9 @@ export const SETTINGS: Record<string, SettingDef> = {
   // Ships DARK. checks_enabled must be turned on AND the bank/expense accounts configured (owner picks
   // the real QBO accounts via the setup screen — never guessed) before any real check can be recorded.
   checks_enabled:             { key: 'checks_enabled',             type: 'bool',   def: false,        env: 'CHECKS_ENABLED' },
+  // OWNER go-live switch for REAL checks (QuickBooks Purchase + check-number consumption). Default OFF;
+  // can only be turned on through the setup route's readiness interlock (MICR ready + production realm).
+  checks_live_enabled:        { key: 'checks_live_enabled',        type: 'bool',   def: false,        env: 'CHECKS_LIVE_ENABLED' },
   // QBO Bank Account.Id money is drawn from, per bank. Empty until the owner confirms via setup.
   // (Operating is American Momentum *2649; lead: QBO Account.Id 31 — CONFIRM, do not assume.)
   check_operating_bank_qbo_id:  { key: 'check_operating_bank_qbo_id',  type: 'string', def: '', env: 'CHECK_OPERATING_BANK_QBO_ID' },
@@ -69,6 +72,9 @@ export const SETTINGS: Record<string, SettingDef> = {
   check_autosales_bank_qbo_id:  { key: 'check_autosales_bank_qbo_id',  type: 'string', def: '', env: 'CHECK_AUTOSALES_BANK_QBO_ID' },
   check_autosales_bank_label:   { key: 'check_autosales_bank_label',   type: 'string', def: 'Auto Sales *5600', env: 'CHECK_AUTOSALES_BANK_LABEL' },
   // business-category -> QBO expense Account.Id map, e.g. {"shop_general":"7","equipment":"12"}. JSON string.
+  // The QuickBooks company (realm) real checks may be written to. Pinned automatically when the owner
+  // turns on live recording; every check write is refused if the active connection is a different company.
+  check_qbo_realm_id:           { key: 'check_qbo_realm_id',           type: 'string', def: '', env: 'CHECK_QBO_REALM_ID' },
   check_category_accounts:      { key: 'check_category_accounts',      type: 'json',   def: '{}', env: 'CHECK_CATEGORY_ACCOUNTS' },
   // Saved print calibration (position + global offset + optional per-field overrides). JSON string.
   check_layout:                 { key: 'check_layout',                 type: 'json',   def: '{}', env: 'CHECK_LAYOUT' },

@@ -178,7 +178,7 @@ export default function ChecksAdmin() {
             <Chk ok={micr.secretsPresent} label={`Routing/account set in secure server env ${micr.secretsPresent ? `(${micr.routingMask} / ${micr.accountMask})` : '(MICR_ROUTING / MICR_ACCOUNT on Vercel)'}`} />
             <Chk ok={micr.routingValid} label="Routing passes ABA checksum" />
             <Chk ok={micr.accountValid} label="Account number valid" />
-            <Chk ok={micr.fontInstalled} label="E-13B MICR font installed (MICR_FONT_PATH)" />
+            <Chk ok={micr.fontInstalled} label="E-13B MICR font available (bundled GnuMICR, checksum-verified)" />
             <Chk ok={micr.enabledFlagOn} label="MICR enabled toggle on" />
             <li className={`mt-1 font-medium ${micr.ready ? 'text-emerald-700' : 'text-amber-700'}`}>{micr.ready ? 'MICR READY — negotiable checks can print.' : 'MICR NOT READY — checks print NON-NEGOTIABLE until all above are met + MICR toner loaded.'}</li>
           </ul>

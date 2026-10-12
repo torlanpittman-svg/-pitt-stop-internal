@@ -12,6 +12,8 @@ import { updateSetting } from '@/apps/settings/db'
 import { peekNextNumber } from '@/apps/checks/numbering'
 import { CHECK_CATEGORIES } from '@/apps/checks/types'
 import { micrReadiness } from '@/apps/checks/micr'
+import { micrBlocksRealChecks } from '@/apps/checks/service'
+import { getValidAccessToken } from '@/apps/quickbooks/connection'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -24,6 +26,7 @@ export async function GET(req: Request) {
     config: {
       enabled: cfg.enabled,
       liveEnabled: cfg.liveEnabled,
+      realmPinned: !!cfg.qboRealmId,
       banks: cfg.banks,
       categoryAccounts: cfg.categoryAccounts,
       layout: cfg.layout,
@@ -71,7 +74,9 @@ export async function POST(req: Request) {
 
   const ops: Promise<void>[] = []
   if (typeof body.enabled === 'boolean') ops.push(updateSetting('checks_enabled', body.enabled, who))
-  if (typeof body.liveEnabled === 'boolean') ops.push(updateSetting('checks_live_enabled', body.liveEnabled, who))
+  // Turning live recording OFF is always allowed, immediately. Turning it ON goes through the interlock
+  // below, AFTER the other settings in this request are saved.
+  if (body.liveEnabled === false) ops.push(updateSetting('checks_live_enabled', false, who))
   if (typeof body.operatingBankQboId === 'string') ops.push(updateSetting('check_operating_bank_qbo_id', body.operatingBankQboId.trim(), who))
   if (typeof body.operatingBankLabel === 'string') ops.push(updateSetting('check_operating_bank_label', body.operatingBankLabel.trim(), who))
   if (typeof body.autoSalesBankQboId === 'string') ops.push(updateSetting('check_autosales_bank_qbo_id', body.autoSalesBankQboId.trim(), who))
@@ -92,6 +97,28 @@ export async function POST(req: Request) {
   if (typeof body.micrEnabled === 'boolean') ops.push(updateSetting('micr_enabled', body.micrEnabled, who))
 
   await Promise.all(ops)
+
+  // GO-LIVE INTERLOCK: real checks can only be switched on when everything a negotiable check needs is
+  // in place, and the QuickBooks company is the production one. That company is then PINNED so a later
+  // reconnect to a different company (or to sandbox) cannot receive real checks.
+  if (body.liveEnabled === true) {
+    const pre = await getCheckConfig()
+    const blockers: string[] = []
+    const r = checkConfigReadiness(pre)
+    if (!r.ready) blockers.push('Check-writing is not enabled or the operating bank account is not set.')
+    if (r.missingCategoryAccounts.length) blockers.push(`Categories without an account: ${r.missingCategoryAccounts.join(', ')}.`)
+    if (micrBlocksRealChecks(pre)) blockers.push('The MICR line is not ready (bank routing/account in the server environment, the MICR font, and the MICR switch are all required).')
+    let realmId = ''
+    try {
+      const token = await getValidAccessToken()
+      if (token.environment !== 'production') blockers.push('QuickBooks is connected to a non-production company.')
+      else realmId = token.realmId
+    } catch { blockers.push('QuickBooks is not connected.') }
+    if (blockers.length) return NextResponse.json({ error: 'not_ready', message: 'Live check recording was NOT turned on.', blockers }, { status: 409 })
+    await updateSetting('check_qbo_realm_id', realmId, who)
+    await updateSetting('checks_live_enabled', true, who)
+  }
+
   const cfg = await getCheckConfig()
   return NextResponse.json({
     ok: true,

@@ -1,7 +1,8 @@
 /**
  * POST /api/checks/[id]/queue-print — enqueue a recorded check onto the cloud print queue for the
- * always-on shop print bridge (production path; the phone never talks to the printer). `reprint:true`
- * enqueues another job for the SAME check — never creates/alters a QuickBooks transaction. Manager-only.
+ * always-on shop print bridge (production path; the phone never talks to the printer). Refused (409)
+ * while the check already has an open print job, and once it is printed unless `reprint:true` is sent
+ * deliberately. Never creates/alters a QuickBooks transaction. Manager-only.
  *
  * Body: { reprint?: boolean }
  */
@@ -22,7 +23,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const { jobId } = await queueCheckPrint(id, { key: actor.key, name: actor.name }, { reprint: !!body.reprint })
     return NextResponse.json({ ok: true, jobId })
   } catch (e) {
-    if (e instanceof CheckValidationError) return NextResponse.json({ error: e.code, message: e.message }, { status: 400 })
+    if (e instanceof CheckValidationError) return NextResponse.json({ error: e.code, message: e.message }, { status: e.code === 'print_in_progress' || e.code === 'already_printed' ? 409 : 400 })
     return NextResponse.json({ error: 'server_error', message: String((e as Error)?.message ?? e) }, { status: 500 })
   }
 }

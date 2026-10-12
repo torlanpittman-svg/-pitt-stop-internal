@@ -4,7 +4,7 @@
  * recorded, print, print_failed, reprinted, void-requested — is always reconstructable.
  */
 import { getDb } from '@/platform/db'
-import { and, desc, eq } from 'drizzle-orm'
+import { desc, eq, sql } from 'drizzle-orm'
 import { checks, checkEvents } from './schema'
 import { getCheckConfig } from './config'
 import type { CheckView, QbStatus, PrintStatus, BankKey, CheckCategoryKey } from './types'
@@ -74,18 +74,34 @@ export async function markRecorded(id: string, qbo: { txnId: string; docNumber: 
   }).where(eq(checks.id, id))
 }
 
+/**
+ * Take the exclusive right to perform the QuickBooks write for a check. Single-statement compare-and-set:
+ * exactly one caller wins while the check is pending/failed; everyone else gets false and must NOT call
+ * QuickBooks. A lock abandoned by a crashed request (still 'writing' after QB_LOCK_STALE_SECONDS) can be
+ * re-taken — the retry then looks the check up in QuickBooks before creating anything.
+ */
+export const QB_LOCK_STALE_SECONDS = 180
+export async function acquireQbWriteLock(id: string): Promise<boolean> {
+  const res = await getDb().execute(sql`
+    UPDATE checks SET qb_status = 'writing', updated_at = now()
+     WHERE id = ${id}::uuid AND qbo_txn_id IS NULL
+       AND (qb_status IN ('pending', 'failed')
+            OR (qb_status = 'writing' AND updated_at < now() - interval '${sql.raw(String(QB_LOCK_STALE_SECONDS))} seconds'))
+    RETURNING id
+  `)
+  const rows = (res as { rows?: unknown[] }).rows ?? (res as unknown as unknown[])
+  return Array.isArray(rows) && rows.length > 0
+}
+
 export async function markQbFailed(id: string, error: string): Promise<void> {
   await getDb().update(checks).set({ qbStatus: 'failed', qbError: error.slice(0, 4000), updatedAt: new Date() }).where(eq(checks.id, id))
 }
 
 export async function setPrintStatus(id: string, status: PrintStatus, opts: { bumpReprint?: boolean } = {}): Promise<CheckRow | null> {
-  const patch: Partial<CheckRow> = { printStatus: status, updatedAt: new Date() }
+  const patch: Record<string, unknown> = { printStatus: status, updatedAt: new Date() }
   if (status === 'printed') patch.printedAt = new Date()
+  if (opts.bumpReprint) patch.reprintCount = sql`${checks.reprintCount} + 1`
   const [row] = await getDb().update(checks).set(patch).where(eq(checks.id, id)).returning()
-  if (opts.bumpReprint && row) {
-    const [bumped] = await getDb().update(checks).set({ reprintCount: (row.reprintCount ?? 0) + 1, updatedAt: new Date() }).where(eq(checks.id, id)).returning()
-    return bumped ?? row
-  }
   return row ?? null
 }
 

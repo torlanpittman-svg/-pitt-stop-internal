@@ -26,10 +26,18 @@ export interface WrittenCheck {
   docNumber: string | null
   syncToken: string
   totalCents: number
+  bankAccountId: string | null   // AccountRef — the bank account the Purchase draws from
+  vendorId: string | null        // EntityRef — the payee
+  txnDate: string | null         // YYYY-MM-DD
 }
 
-function summarize(p: { Id: string; DocNumber?: string; SyncToken: string; TotalAmt?: number }): WrittenCheck {
-  return { purchaseId: p.Id, docNumber: p.DocNumber ?? null, syncToken: p.SyncToken, totalCents: Math.round((p.TotalAmt ?? 0) * 100) }
+interface QbPurchase { Id: string; DocNumber?: string; SyncToken: string; TotalAmt?: number; TxnDate?: string; PaymentType?: string; AccountRef?: { value?: string }; EntityRef?: { value?: string } }
+
+function summarize(p: QbPurchase): WrittenCheck {
+  return {
+    purchaseId: p.Id, docNumber: p.DocNumber ?? null, syncToken: p.SyncToken, totalCents: Math.round((p.TotalAmt ?? 0) * 100),
+    bankAccountId: p.AccountRef?.value ?? null, vendorId: p.EntityRef?.value ?? null, txnDate: p.TxnDate ?? null,
+  }
 }
 
 export interface CreateCheckParams {
@@ -41,6 +49,9 @@ export interface CreateCheckParams {
   txnDate: string          // YYYY-MM-DD
   memo?: string | null
   lineDescription?: string | null
+  /** Stable per-check id sent as QuickBooks `requestid`, so a replayed create returns the ORIGINAL
+   *  response instead of creating a second Purchase. */
+  requestId?: string | null
 }
 
 /**
@@ -71,18 +82,39 @@ export async function createCheckInQB(p: CreateCheckParams): Promise<WrittenChec
   }
   if (p.memo && p.memo.trim()) body.PrivateNote = p.memo.trim()
 
-  const res = await qbApiRequest<{ Purchase: Parameters<typeof summarize>[0] }>({ method: 'POST', path: '/purchase', body })
+  const res = await qbApiRequest<{ Purchase: QbPurchase }>({ method: 'POST', path: '/purchase', body, ...(p.requestId ? { query: { requestid: p.requestId } } : {}) })
   logger.info(APP, 'check.created', { id: res.Purchase.Id, docNumber: res.Purchase.DocNumber })
   return summarize(res.Purchase)
 }
 
-/** Adoption / crash-safety: find a Purchase/Check already recorded with this exact DocNumber. */
-export async function findCheckByDocNumber(docNumber: string): Promise<WrittenCheck | null> {
-  const res = await queryQBO<{ Purchase?: Array<Parameters<typeof summarize>[0] & { PaymentType?: string }> }>(
+/** Every Purchase/Check QuickBooks already holds with this exact DocNumber (any bank account). */
+export async function findChecksByDocNumber(docNumber: string): Promise<WrittenCheck[]> {
+  const res = await queryQBO<{ Purchase?: QbPurchase[] }>(
     `SELECT * FROM Purchase WHERE DocNumber = '${qboEscape(docNumber)}'`,
   )
-  const hit = (res.Purchase ?? []).find((p) => p.PaymentType === 'Check')
-  return hit ? summarize(hit) : null
+  return (res.Purchase ?? []).filter((p) => p.PaymentType === 'Check').map(summarize)
+}
+
+export interface ExpectedCheck { bankAccountId: string; vendorId: string; amountCents: number; txnDate: string }
+export type RecoveryDecision =
+  | { action: 'create' }                       // nothing on this bank account uses the number
+  | { action: 'adopt'; check: WrittenCheck }   // exactly one Purchase is unmistakably OUR earlier attempt
+  | { action: 'conflict'; reason: string }     // the number is taken by something else — never guess
+
+/**
+ * Crash-recovery decision (pure). A prior attempt may have reached QuickBooks without us recording it, so
+ * before creating we look for the check number. We adopt ONLY a Purchase that matches this check on bank
+ * account + payee + amount + date. A check with the same number on the SAME bank account that differs in
+ * any of those is somebody else's transaction: fail closed rather than attach to it or duplicate the
+ * number. The same number on a DIFFERENT bank account is unrelated (separate check stock).
+ */
+export function decideRecovery(found: WrittenCheck[], expected: ExpectedCheck): RecoveryDecision {
+  const sameBank = found.filter((f) => f.bankAccountId === expected.bankAccountId)
+  if (sameBank.length === 0) return { action: 'create' }
+  const exact = sameBank.filter((f) => f.vendorId === expected.vendorId && f.totalCents === expected.amountCents && f.txnDate === expected.txnDate)
+  if (exact.length === 1 && sameBank.length === 1) return { action: 'adopt', check: exact[0] }
+  if (exact.length > 1) return { action: 'conflict', reason: `QuickBooks already has ${exact.length} identical checks with this number on this bank account` }
+  return { action: 'conflict', reason: 'QuickBooks already has a different check with this number on this bank account' }
 }
 
 export interface QbAccount { id: string; name: string; type: string; subType: string | null; acctNumMask: string | null; active: boolean }

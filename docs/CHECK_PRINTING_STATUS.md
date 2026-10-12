@@ -73,14 +73,65 @@ MICR coordinates are changed ONLY through the manager/admin-gated endpoint
 - **never** enables MICR, creates a check or QuickBooks transaction, or consumes / advances a check number.
   Negotiable printing stays fail‑closed.
 
+## Print-path safety model (2026-10-12)
+
+"Sent to the printer" is never treated as "printed".
+
+| Job status | What it proves |
+|---|---|
+| `queued` | Waiting for the bridge. Expires after 10 minutes — never prints late/unattended. |
+| `claimed` | Handed to the bridge, no report yet. After 3 minutes it is an *uncertain* outcome a manager settles. |
+| `submitted` | The printer driver accepted it (on Windows: it left the spooler). **Not proof of paper.** |
+| `stuck` | A manager said no check came out, but the original may still be in Windows or the printer. Still blocks a resend until it is confirmed **cleared** (queue emptied + printer power-cycled) or it printed after all. |
+| `printed` | A manager confirmed in the app that the paper check came out. |
+| `failed` / `expired` / `canceled` | Nothing (more) will print for this job. |
+
+- One open job per check (`queued`/`claimed`/`submitted`/`stuck`) — enforced in code **and** by the partial unique
+  index `print_jobs_one_active_per_check` (migration `0050`). A double tap cannot print two checks.
+- After a confirmed print, another copy needs an explicit **Reprint** (original destroyed / never left).
+- A real check is re-validated when the bridge claims it: still recorded in QuickBooks, and its MICR line
+  resolves to real E-13B. Otherwise the job is failed and **nothing prints** (no placeholder "checks").
+- On blank stock a browser printout can never be recorded as the printed check.
+- The bridge deletes each check PDF after printing (and sweeps leftovers at startup), and sends a
+  heartbeat on every poll (`print_bridges`), shown as "Shop printer link: online/offline".
+
+## QuickBooks write safety (2026-10-12)
+
+- Go-live interlock: `checks_live_enabled` can only be turned on via `/api/admin/checks/setup` when the
+  config is complete, the MICR line is ready, and QuickBooks is the **production** company — which is then
+  pinned (`check_qbo_realm_id`). Every write is refused on any other company/environment.
+- One writer at a time per check (`qb_status = 'writing'` lock, stale after 3 minutes) + a stable
+  QuickBooks `requestid`, so concurrent or repeated retries cannot create two Purchases.
+- Crash recovery adopts an existing Purchase only on an exact match (bank account + payee + amount + date);
+  any other check with that number on the same bank account stops the write.
+- Check dates use US Central time.
+
+## MICR line — font and geometry (2026-10-12)
+
+- **Font: GnuMICR 0.30 (GPL v2)**, the unmodified Type 1 font, kept with its license and source in
+  `apps/checks/fonts/gnumicr/` and embedded in the PDF at print time. Printed at exactly **12 pt** (its
+  design size): 0.125" pitch, 0.117" character height, 0.013" stroke module, right-aligned characters.
+  Symbols: `A` transit, `B` amount, `C` on-us, `D` dash. **Not bank-tested** — see the gate below.
+- **Horizontal: fixed ANSI positions from the right edge** (position 1's right edge 5/16" from the right
+  edge, 8 positions/inch): 1–12 Amount (blank), 13 blank, 14 On-Us symbol + account from 15, 32 blank,
+  33–43 transit, 44 blank, 45+ auxiliary On-Us (check number). Fields never move with account length.
+- **Vertical: unchanged** — baseline 3/16" above the perforation (the value approved 2026-09-16). Note the
+  characters (0.117" tall) then sit on the *bottom* line of the 3/16"–7/16" MICR band with no downward
+  tolerance; confirm with a MICR gauge and, if needed, raise via `micr_layout.baselineFromBottomIn`.
+- VOID test pages now print an all-zero E-13B test line (no bank data) so position and toner can be
+  checked on paper. `npx tsx scripts/check-void-preview.ts <dir>` builds the same page locally, plus a
+  version with a position gauge overlay.
+
 ## Real negotiable printing — still FAIL-CLOSED
 
 Independent of the above, the negotiable-check gate still has outstanding items:
 - ✅ MICR **vertical** positioning — LOCKED (physically verified on replacement stock, 2026-09-16).
-- ⬜ MICR **horizontal** positioning — verify full left/right clearance with the final licensed E‑13B string.
-- ⬜ MICR magnetic toner installed in the Brother (TN‑series MICR toner for the HL‑L2420DW).
-- ⬜ Licensed E-13B font installed + embedded (`MICR_FONT_PATH` file path or `MICR_FONT_B64`).
+- ⬜ MICR **horizontal** positioning — implemented to the standard grid and verified in the PDF; verify on
+  paper with the E‑13B VOID test line (full left/right edges visible, ideally under a MICR gauge).
+- ✅ MICR magnetic toner installed in the Brother (owner, 2026-10-12). Magnetic signal strength unverified.
+- ✅ E-13B font bundled + embedded (GnuMICR, see above). ⬜ Not yet validated by a bank / MICR reader.
 - ⬜ Secure routing/account in server-only env (`MICR_ROUTING` / `MICR_ACCOUNT`).
 - ⬜ MICR field/order/spec verified against American Momentum (or an authoritative AMB sample).
 - ⬜ `micr_enabled` turned on.
-- ⬜ `checks_live_enabled` turned on + explicit owner authorization of the first controlled live check.
+- ⬜ `checks_live_enabled` turned on (interlocked — see above) + explicit owner authorization of the first
+  controlled live check.

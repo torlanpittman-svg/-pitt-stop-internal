@@ -27,8 +27,9 @@ export function categoryEntity(key: string): 'operating' | 'auto_sales' {
 }
 
 export type BankKey = 'operating' | 'auto_sales'
-export type QbStatus = 'pending' | 'recorded' | 'failed' | 'voided'
-export type PrintStatus = 'not_printed' | 'printed' | 'print_failed'
+export type QbStatus = 'pending' | 'writing' | 'recorded' | 'failed' | 'voided'
+// 'submitted' = handed to the printer, awaiting a manager's confirmation that paper actually came out.
+export type PrintStatus = 'not_printed' | 'submitted' | 'printed' | 'print_failed'
 
 /** Everything the confirmation screen + print layout need for one check. */
 export interface CheckView {

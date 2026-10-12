@@ -9,7 +9,8 @@
  * cashable check.
  */
 import { buildCheckTemplate, type CheckTemplate, type MicrRender } from './template'
-import { micrReadiness, buildMicrLine } from './micr'
+import { micrReadiness, buildMicrCells, testMicrCells } from './micr'
+import { micrFontAvailable } from './micr-font'
 import type { CheckConfig } from './config'
 import type { CheckLayout } from './layout'
 
@@ -21,7 +22,11 @@ export function assembleCheckTemplate(cfg: CheckConfig, layout: CheckLayout, opt
 
   let micr: MicrRender | null = null
   if (opts.test) {
-    micr = { text: 'NON-NEGOTIABLE TEST — MICR LINE PRINTS HERE', mode: 'placeholder' }
+    // VOID/calibration page: when the E-13B font is available, print a NON-NEGOTIABLE test line (all-zero
+    // routing, digit ramp — no bank data) so MICR position + toner can be physically verified.
+    micr = micrFontAvailable()
+      ? { text: 'NON-NEGOTIABLE TEST', mode: 'e13b', cells: testMicrCells() }
+      : { text: 'NON-NEGOTIABLE TEST — MICR LINE PRINTS HERE', mode: 'placeholder' }
   } else if (opts.checkNumber != null) {
     // REAL check: do NOT build the routing/account line here — it would be persisted in the DB print-job
     // payload. Store a non-negotiable placeholder + the (non-secret) check number; resolveDeferredMicr()
@@ -37,15 +42,16 @@ export function assembleCheckTemplate(cfg: CheckConfig, layout: CheckLayout, opt
  * CLAIM-TIME resolution of a deferred MICR line (server-only; reads MICR_ROUTING/MICR_ACCOUNT env). If the
  * job carries a deferred check number AND negotiable printing is fully ready (micr_enabled + valid secure
  * routing/account + installed E-13B font), returns a NEW template whose MICR band is the real E-13B line.
- * Otherwise returns the template UNCHANGED — the stored non-negotiable placeholder prints (fail closed).
+ * Otherwise returns the template UNCHANGED (still deferred) — callers must then REFUSE to print a real
+ * check (see renderClaimedJob in service.ts); the placeholder is never a substitute for a MICR line.
  * The routing/account therefore exist only transiently in the render request, never in the DB.
  */
 export function resolveDeferredMicr(template: CheckTemplate | null, cfg: CheckConfig): CheckTemplate | null {
   const micr = template?.micr
   if (!template || !micr || micr.deferCheckNumber == null) return template
   if (!micrReadiness(cfg.micrEnabled).ready) return template
-  const encoded = buildMicrLine(micr.deferCheckNumber).encoded
-  return { ...template, micr: { ...micr, value: encoded, mode: 'e13b', deferCheckNumber: null } }
+  const cells = buildMicrCells(micr.deferCheckNumber)
+  return { ...template, micr: { ...micr, value: '', cells, mode: 'e13b', deferCheckNumber: null } }
 }
 
 /** True when a real, negotiable MICR line can currently be printed. */

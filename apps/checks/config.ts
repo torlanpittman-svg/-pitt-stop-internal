@@ -18,7 +18,7 @@ import { buildLayout, type CheckLayout, type MicrGeom } from './layout'
 
 const KEYS = [
   'checks_enabled',
-  'checks_live_enabled',
+  'checks_live_enabled', 'check_qbo_realm_id',
   'check_operating_bank_qbo_id', 'check_operating_bank_label',
   'check_autosales_bank_qbo_id', 'check_autosales_bank_label',
   'check_category_accounts', 'check_layout',
@@ -46,6 +46,7 @@ export interface CheckConfig {
   liveEnabled: boolean      // OWNER authorization to record REAL checks (QB Purchase + consume a number).
                             // Default OFF: the workflow is fully walkable/testable, but the final
                             // "Record & Print" action is disabled until the owner flips this on (going live).
+  qboRealmId: string        // QuickBooks company pinned at go-live; real checks are refused on any other realm
   banks: Record<BankKey, BankConfig>
   categoryAccounts: Record<string, string>   // categoryKey -> QBO expense Account.Id
   layout: CheckLayout
@@ -62,6 +63,7 @@ export async function getCheckConfig(): Promise<CheckConfig> {
   return {
     enabled: g('checks_enabled') === true || g('checks_enabled') === 'true',
     liveEnabled: g('checks_live_enabled') === true || g('checks_live_enabled') === 'true',
+    qboRealmId: String(g('check_qbo_realm_id') ?? '').trim(),
     banks: {
       operating:  { key: 'operating',  qboAccountId: String(g('check_operating_bank_qbo_id') ?? '').trim(),  label: String(g('check_operating_bank_label') ?? 'Operating') },
       auto_sales: { key: 'auto_sales', qboAccountId: String(g('check_autosales_bank_qbo_id') ?? '').trim(), label: String(g('check_autosales_bank_label') ?? 'Auto Sales') },

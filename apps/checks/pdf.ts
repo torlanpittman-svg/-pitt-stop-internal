@@ -6,20 +6,18 @@
  *
  * Coordinates: inches → points (×72). PDF origin is bottom-left, so y_pdf = pageHeight − yIn − baseline.
  *
- * MICR (bottom magnetic line) is special — it is rendered to the MICR STANDARD, not with proportional
- * text metrics:
+ * MICR (bottom magnetic line) is special — it is rendered to the MICR STANDARD, not as running text:
  *   - VERTICAL: `micr.yIn` is the character BASELINE (3/16" above the bottom edge by default).
- *   - HORIZONTAL: `micr.xIn` is the RIGHTMOST character (right-anchored, per ANSI positions-from-right),
- *     and every character advances by exactly `micr.pitchIn` (8 CPI) — positioned individually, never by
- *     the font's own widths.
- *   - FONT: a real (mode 'e13b') line is drawn with the licensed E-13B TrueType font EMBEDDED here
- *     server-side (loaded from MICR_FONT_PATH or MICR_FONT_B64 — never committed to git). If that font is
- *     unavailable, we FAIL CLOSED: no routing/account is ever printed in a normal font; a clearly
- *     non-negotiable placeholder is drawn instead.
+ *   - HORIZONTAL: `micr.xIn` is the RIGHT EDGE of position 14; each character is placed so its own right
+ *     edge meets the right edge of its position (E-13B characters are right-aligned), 8 positions/inch.
+ *   - FONT: a real (mode 'e13b') line is drawn with the bundled E-13B Type 1 font (micr-font.ts) EMBEDDED
+ *     here. If that font is unavailable we FAIL CLOSED: no routing/account is ever printed in a normal
+ *     font; a clearly non-negotiable placeholder is drawn instead.
  */
-import { readFileSync } from 'node:fs'
 import type { CheckPrintPayload, RenderedField } from './render'
 import type { CheckTemplate } from './template'
+import { loadMicrFont, MICR_FONT, MICR_FONT_CHARS, type MicrFontData } from './micr-font'
+import { micrPositionRightX, MICR_FIRST_PRINTED_POSITION, MICR_CLEAR_BAND_IN, MICR_BAND_BOTTOM_IN, MICR_BAND_TOP_IN } from './layout'
 
 const PT = 72
 const AVG_CHAR_EM = 0.5 // rough Times-Roman average advance width per em; fine for short check fields
@@ -61,51 +59,66 @@ function boxOp(xIn: number, yIn: number, wIn: number, hIn: number, pageHeightIn:
   return `${widthPt} w ${(xIn * PT).toFixed(2)} ${yPt.toFixed(2)} ${(wIn * PT).toFixed(2)} ${(hIn * PT).toFixed(2)} re S`
 }
 
-/**
- * Load the licensed E-13B MICR TrueType font for embedding (server-only). Supports a file path
- * (MICR_FONT_PATH) or a base64-encoded TTF in env (MICR_FONT_B64), so the licensed font need not be
- * committed to git. Returns null if unavailable/unreadable → the caller fails closed to a placeholder.
- */
-export function loadMicrFont(): Buffer | null {
-  try {
-    const b64 = process.env.MICR_FONT_B64
-    if (b64 && b64.trim()) return Buffer.from(b64.trim(), 'base64')
-    const p = process.env.MICR_FONT_PATH
-    if (p && p.trim()) return readFileSync(p.trim())
-  } catch { /* fall through */ }
-  return null
-}
-
 type MicrEl = NonNullable<CheckTemplate['micr']>
 
 /**
- * Content-stream ops for the MICR line, rendered to standard: fixed pitch (8 CPI), right-anchored, baseline
- * at `micr.yIn`. Returns whether the embedded E-13B font (/F3) is actually used so the writer can include
- * the font objects. Fail-closed: a real (e13b) line with no font never prints the routing/account.
+ * Content-stream ops for the MICR line. Returns the font to embed (as /F3) when a real E-13B line is
+ * drawn. Fail-closed: an 'e13b' line with no usable font, no cells, or any character the font cannot
+ * render is replaced by a non-negotiable notice in a normal font — bank digits never print un-encoded.
  */
-function micrOps(micr: MicrEl, pageHeightIn: number): { ops: string[]; embedFont: boolean } {
-  const wantReal = micr.mode === 'e13b'
-  const font = wantReal ? loadMicrFont() : null
-  const embedFont = wantReal && !!font
-  const value = wantReal && !embedFont ? 'NON-NEGOTIABLE - MICR FONT NOT INSTALLED' : micr.value
-  const fontRef = embedFont ? '/F3' : '/F1'
+function micrOps(micr: MicrEl, pageHeightIn: number): { ops: string[]; font: MicrFontData | null } {
   const pitch = micr.pitchIn && micr.pitchIn > 0 ? micr.pitchIn : 0.125
-  const chars = toLatin1(value).split('')
-  const rightX = micr.xIn
-  const baseY = micr.yIn
-  const yPt = ((pageHeightIn - baseY) * PT).toFixed(2) // baseline directly (no -sizePt for MICR)
+  const yPt = ((pageHeightIn - micr.yIn) * PT).toFixed(2) // baseline directly (no -sizePt for MICR)
   const ops: string[] = []
-  for (let i = 0; i < chars.length; i++) {
-    const ch = chars[i]
-    if (ch === ' ') continue // blank MICR position — still consumes one fixed-pitch cell
-    const xPt = ((rightX - (chars.length - 1 - i) * pitch) * PT).toFixed(2)
-    ops.push(`BT ${fontRef} ${micr.sizePt} Tf ${xPt} ${yPt} Td (${escapePdfText(ch)}) Tj ET`)
+
+  if (micr.mode === 'e13b') {
+    const font = loadMicrFont()
+    const cells = micr.cells ?? []
+    const drawable = !!font && cells.length > 0 && cells.every((c) => c.ch.length === 1 && MICR_FONT_CHARS.includes(c.ch) && Number.isInteger(c.pos) && c.pos >= MICR_FIRST_PRINTED_POSITION)
+    if (drawable) {
+      // Each glyph's right edge is at `glyphRight` font units from its origin.
+      const glyphRightIn = (MICR_FONT.glyphRight / MICR_FONT.unitsPerEm) * micr.sizePt / PT
+      for (const c of cells) {
+        const xPt = ((micrPositionRightX(c.pos, micr.xIn, pitch) - glyphRightIn) * PT).toFixed(3)
+        ops.push(`BT /F3 ${micr.sizePt} Tf ${xPt} ${yPt} Td (${c.ch}) Tj ET`)
+      }
+      return { ops, font }
+    }
   }
-  return { ops, embedFont }
+
+  // Placeholder (or failed-closed) text: plain font, ending at the position-14 anchor.
+  const value = micr.mode === 'e13b' ? 'NON-NEGOTIABLE - MICR FONT NOT AVAILABLE' : micr.value
+  const chars = toLatin1(value).split('')
+  for (let i = 0; i < chars.length; i++) {
+    if (chars[i] === ' ') continue
+    const xPt = ((micr.xIn - (chars.length - i) * pitch) * PT).toFixed(2)
+    ops.push(`BT /F1 ${Math.min(micr.sizePt, 10)} Tf ${xPt} ${yPt} Td (${escapePdfText(chars[i])}) Tj ET`)
+  }
+  return { ops, font: null }
+}
+
+/**
+ * CALIBRATION overlay (VOID/test pages only): hairlines for the 5/8" clear band, the 3/16"–7/16" MICR
+ * print band, and a tick at the right edge of every MICR position (long ticks at the field boundaries),
+ * so a printed sheet can be checked against the standard grid with a ruler — or by eye against a gauge.
+ */
+function micrGaugeOps(micr: MicrEl, bottomYIn: number, pageWidthIn: number, pageHeightIn: number): string[] {
+  const ops: string[] = ['q 0.2 0.5 0.9 RG']
+  const pitch = micr.pitchIn && micr.pitchIn > 0 ? micr.pitchIn : 0.125
+  for (const up of [MICR_CLEAR_BAND_IN, MICR_BAND_TOP_IN, MICR_BAND_BOTTOM_IN]) ops.push(lineOp(0.15, bottomYIn - up, pageWidthIn - 0.15, bottomYIn - up, pageHeightIn, 0.2))
+  const bandTop = bottomYIn - MICR_BAND_TOP_IN
+  const fieldEdges = new Set([1, 13, 14, 32, 33, 44, 45])
+  for (let pos = 1; pos <= 65; pos++) {
+    const x = micrPositionRightX(pos, micr.xIn, pitch)
+    if (x < 0.1) break
+    ops.push(lineOp(x, bandTop - (fieldEdges.has(pos) ? 0.14 : 0.04), x, bandTop, pageHeightIn, 0.2))
+  }
+  ops.push('Q')
+  return ops
 }
 
 /** Build a one-page PDF (as a Buffer) from a check print payload. */
-export function renderCheckPdf(payload: CheckPrintPayload, opts: { watermark?: string } = {}): Buffer {
+export function renderCheckPdf(payload: CheckPrintPayload, opts: { watermark?: string; micrGauge?: { bottomYIn: number } } = {}): Buffer {
   const wPt = payload.pageWidthIn * PT
   const hPt = payload.pageHeightIn * PT
   const H = payload.pageHeightIn
@@ -125,18 +138,20 @@ export function renderCheckPdf(payload: CheckPrintPayload, opts: { watermark?: s
   }
   for (const f of payload.fields) if (f.value) ops.push(fieldToTextOp(f, H))
 
-  let embedFont = false
-  if (tpl?.micr && tpl.micr.value) {
+  let micrFont: MicrFontData | null = null
+  if (tpl?.micr && (tpl.micr.value || tpl.micr.cells?.length)) {
     const m = micrOps(tpl.micr, H)
     ops.push(...m.ops)
-    embedFont = m.embedFont
+    micrFont = m.font
+    if (opts.micrGauge) ops.push(...micrGaugeOps(tpl.micr, opts.micrGauge.bottomYIn, payload.pageWidthIn, H))
   }
+  const embedFont = !!micrFont
 
   const content = ops.join('\n')
   const contentBytes = Buffer.from(content, 'latin1')
 
-  // Object table — F3 (embedded E-13B TTF) + its descriptor + FontFile2 are appended only when a real
-  // MICR line is actually drawn with the licensed font.
+  // Object table — F3 (embedded E-13B Type 1 font) + its descriptor + FontFile are appended only when a
+  // real MICR line is actually drawn with it.
   const objects: string[] = []
   objects[1] = '<< /Type /Catalog /Pages 2 0 R >>'
   objects[2] = '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'
@@ -145,13 +160,15 @@ export function renderCheckPdf(payload: CheckPrintPayload, opts: { watermark?: s
   objects[4] = `<< /Length ${contentBytes.length} >>\nstream\n${content}\nendstream`
   objects[5] = '<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>'
   objects[6] = '<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold >>'
-  if (embedFont) {
-    const ttf = loadMicrFont()!
-    const first = 32, last = 126
-    const widths = new Array(last - first + 1).fill(600).join(' ') // nominal — MICR is positioned per-char
-    objects[7] = `<< /Type /Font /Subtype /TrueType /BaseFont /MICRE13B /FirstChar ${first} /LastChar ${last} /Widths [${widths}] /FontDescriptor 8 0 R /Encoding /WinAnsiEncoding >>`
-    objects[8] = `<< /Type /FontDescriptor /FontName /MICRE13B /Flags 4 /FontBBox [0 -200 1000 800] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 9 0 R >>`
-    objects[9] = `<< /Length ${ttf.length} /Length1 ${ttf.length} >>\nstream\n${ttf.toString('latin1')}\nendstream`
+  if (micrFont) {
+    const F = MICR_FONT
+    const widths = new Array(F.lastChar - F.firstChar + 1).fill(F.advance).join(' ')
+    // Symbolic font (Flags: FixedPitch + Symbolic) with NO /Encoding entry → the font's own built-in
+    // encoding is used, so codes '0'-'9' / 'A'-'D' select exactly the glyphs the font defines there.
+    objects[7] = `<< /Type /Font /Subtype /Type1 /BaseFont /${F.name} /FirstChar ${F.firstChar} /LastChar ${F.lastChar} /Widths [${widths}] /FontDescriptor 8 0 R >>`
+    objects[8] = `<< /Type /FontDescriptor /FontName /${F.name} /Flags 5 /FontBBox [${F.bbox.join(' ')}] /ItalicAngle 0 /Ascent ${F.height} /Descent 0 /CapHeight ${F.height} /StemV ${F.stemV} /FontFile 9 0 R >>`
+    const program = Buffer.concat([micrFont.clear, micrFont.encrypted, micrFont.trailer])
+    objects[9] = `<< /Length ${program.length} /Length1 ${micrFont.clear.length} /Length2 ${micrFont.encrypted.length} /Length3 ${micrFont.trailer.length} >>\nstream\n${program.toString('latin1')}\nendstream`
   }
   const N = embedFont ? 9 : 6
 

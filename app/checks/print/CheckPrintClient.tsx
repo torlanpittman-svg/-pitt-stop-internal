@@ -109,8 +109,9 @@ export default function CheckPrintClient(props: Props) {
           <div key={`tt${i}`} style={{ position: 'absolute', left: `${t.xIn}in`, top: `${t.yIn}in`, width: '3in', textAlign: t.align, fontSize: `${t.sizePt}pt`, fontWeight: t.bold ? 700 : 400, fontFamily: 'Georgia, "Times New Roman", serif', whiteSpace: 'nowrap' }}>{t.value}</div>
         ))}
         {props.template?.micr && (
-          <div style={{ position: 'absolute', left: `${props.template.micr.xIn}in`, top: `${props.template.micr.yIn}in`, fontSize: `${props.template.micr.sizePt}pt`, letterSpacing: '2px', fontFamily: props.template.micr.mode === 'e13b' ? 'MICRE13B, monospace' : 'monospace', color: props.template.micr.mode === 'e13b' ? '#000' : '#b00', whiteSpace: 'nowrap' }}>
-            {props.template.micr.value}
+          <div style={{ position: 'absolute', left: 0, width: `${props.template.micr.xIn}in`, textAlign: 'right', top: `${props.template.micr.yIn - 0.12}in`, fontSize: '8pt', letterSpacing: '2px', fontFamily: 'monospace', color: '#b00', whiteSpace: 'nowrap' }}>
+            {/* Browser preview only: the real E-13B line is embedded by the shop-printer PDF, never here. */}
+            {props.template.micr.mode === 'e13b' ? 'MICR LINE (E-13B) PRINTS HERE ON THE SHOP PRINTER' : props.template.micr.value}
           </div>
         )}
 

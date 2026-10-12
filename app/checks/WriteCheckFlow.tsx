@@ -8,6 +8,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { CheckView } from '@/apps/checks/types'
+import CheckPrintPanel from './CheckPrintPanel'
 
 type Bank = { key: 'operating' | 'auto_sales'; qboAccountId: string; label: string }
 type Cat = { key: string; label: string; entity: 'operating' | 'auto_sales'; hint: string; linksJob: boolean; linksVehicle: boolean }
@@ -168,9 +169,7 @@ export default function WriteCheckFlow(props: Props) {
               <p className="text-sm">Check #{c.checkNumber} to {c.payeeName} for {fmt(c.amountCents)} from {c.bankLabel}.</p>
             </div>
             <p className="text-sm text-neutral-600">Send it to the always-on shop printer. Make sure the check stock is loaded in the Brother.</p>
-            <button disabled={busy} onClick={() => sendToShopPrinter(c.id, false)} className="w-full rounded-xl bg-neutral-900 py-4 text-lg font-semibold text-white disabled:opacity-50">{busy ? 'Sending…' : `Send Check #${c.checkNumber} to Shop Printer`}</button>
-            {jobStatus && <p className="text-center text-sm text-neutral-600">Printer: {jobStatus}</p>}
-            <a href={`/checks/print?id=${c.id}`} className="block w-full rounded-xl border border-neutral-300 py-3 text-center text-sm font-medium text-neutral-600">Print on this device instead (dev/calibration)</a>
+            <CheckPrintPanel checkId={c.id} checkNumber={c.checkNumber} printStatus={c.printStatus} />
             <button onClick={resetAll} className="w-full rounded-xl border border-neutral-300 py-3 font-medium">Write another</button>
           </div>
         ) : (
@@ -332,7 +331,7 @@ export default function WriteCheckFlow(props: Props) {
                   </a>
                   <div className="flex items-center gap-2">
                     <span className="tabular-nums">{fmt(c.amountCents)}</span>
-                    {c.qbStatus === 'recorded' && <button onClick={() => sendToShopPrinter(c.id, true)} className="rounded border border-neutral-300 px-2 py-1 text-xs">Reprint</button>}
+                    {c.qbStatus === 'recorded' && <a href={`/checks/${c.id}`} className="rounded border border-neutral-300 px-2 py-1 text-xs">{c.printStatus === 'printed' ? 'View' : 'Print'}</a>}
                   </div>
                 </div>
               ))}
@@ -360,37 +359,12 @@ export default function WriteCheckFlow(props: Props) {
       try {
         const res = await fetch(`/api/checks/jobs/${jobId}`)
         const data = await res.json()
-        if (data.status === 'printed') { setJobStatus('test page printed ✓'); return }
+        if (data.status === 'submitted' || data.status === 'printed') { setJobStatus('test page sent to the printer ✓ — check the tray'); return }
+        if (data.status === 'expired' || data.status === 'canceled') { setJobStatus('test page expired — the shop printer link did not pick it up.'); return }
         if (data.status === 'failed') { setJobStatus(`test print failed: ${data.error || 'unknown'}`); return }
         setJobStatus(data.status === 'claimed' ? 'printing test page…' : 'test page queued…')
         pollTestJob(jobId, tries + 1)
       } catch { pollTestJob(jobId, tries + 1) }
-    }, 2000)
-  }
-
-  async function sendToShopPrinter(checkId: string, reprint: boolean) {
-    setBusy(true); setError(null); setJobStatus('queuing…')
-    try {
-      const res = await fetch(`/api/checks/${checkId}/queue-print`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reprint }) })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.message || 'Could not queue the check.')
-      setJobStatus('queued — waiting for shop printer…')
-      pollJob(checkId, data.jobId)
-    } catch (e) { setError(String((e as Error).message)); setJobStatus(null) } finally { setBusy(false) }
-  }
-
-  function pollJob(checkId: string, jobId: string, tries = 0) {
-    if (tries > 40) { setJobStatus('still queued — check the shop printer/bridge.'); return }
-    setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/checks/${checkId}/jobs`)
-        const data = await res.json()
-        const job = (data.jobs || []).find((j: { id: string }) => j.id === jobId)
-        if (job?.status === 'printed') { setJobStatus('printed ✓'); return }
-        if (job?.status === 'failed') { setJobStatus(`print failed: ${job.error || 'unknown'} — you can resend.`); return }
-        setJobStatus(job?.status === 'claimed' ? 'printing…' : `queued (${data.queueDepth} ahead)…`)
-        pollJob(checkId, jobId, tries + 1)
-      } catch { pollJob(checkId, jobId, tries + 1) }
     }, 2000)
   }
 

@@ -2,6 +2,9 @@ import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: ['192.168.1.64'],
+  // The E-13B MICR font is read from disk at print time (apps/checks/micr-font.ts) and kept as separate
+  // files with its license — make sure those files ship with every server function that may need them.
+  outputFileTracingIncludes: { '/**': ['./apps/checks/fonts/gnumicr/*'] },
   async headers() {
     return [
       {

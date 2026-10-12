@@ -6,16 +6,16 @@ import type { CheckConfig } from './config'
 const ROUTING = '021000021' // real, valid ABA checksum
 const ACCOUNT = '1234567'
 
-const saved = { r: process.env.MICR_ROUTING, a: process.env.MICR_ACCOUNT, f: process.env.MICR_FONT_PATH }
+const saved = { r: process.env.MICR_ROUTING, a: process.env.MICR_ACCOUNT }
 afterEach(() => {
-  for (const [k, v] of [['MICR_ROUTING', saved.r], ['MICR_ACCOUNT', saved.a], ['MICR_FONT_PATH', saved.f]] as const) {
+  for (const [k, v] of [['MICR_ROUTING', saved.r], ['MICR_ACCOUNT', saved.a]] as const) {
     if (v === undefined) delete process.env[k]; else process.env[k] = v
   }
 })
 
 function cfg(micrEnabled: boolean): CheckConfig {
   return {
-    enabled: true, liveEnabled: false, templateMode: 'blank_full', micrEnabled,
+    enabled: true, liveEnabled: false, qboRealmId: '', templateMode: 'blank_full', micrEnabled,
     banks: { operating: { key: 'operating', qboAccountId: '31', label: 'Op' }, auto_sales: { key: 'auto_sales', qboAccountId: '48', label: 'AS' } },
     categoryAccounts: {}, layout: buildLayout(null),
     display: { companyName: 'Pitt Stop', companyAddr: null, bankName: 'AMB', bankAddr: null },
@@ -24,7 +24,7 @@ function cfg(micrEnabled: boolean): CheckConfig {
 
 describe('MICR secret-safety: deferred until claim/print time', () => {
   it('a REAL check enqueue NEVER embeds routing/account — only a non-negotiable placeholder + check number', () => {
-    process.env.MICR_ROUTING = ROUTING; process.env.MICR_ACCOUNT = ACCOUNT; process.env.MICR_FONT_PATH = '/x/e13b.ttf'
+    process.env.MICR_ROUTING = ROUTING; process.env.MICR_ACCOUNT = ACCOUNT
     const c = cfg(true) // even fully "ready", enqueue must not bake the line in
     const tpl = assembleCheckTemplate(c, c.layout, { test: false, checkNumber: 20000 })!
     expect(tpl.micr!.mode).toBe('placeholder')
@@ -35,7 +35,7 @@ describe('MICR secret-safety: deferred until claim/print time', () => {
   })
 
   it('claim-time resolve is a no-op (fail closed) when MICR is not ready', () => {
-    delete process.env.MICR_ROUTING; delete process.env.MICR_ACCOUNT; delete process.env.MICR_FONT_PATH
+    delete process.env.MICR_ROUTING; delete process.env.MICR_ACCOUNT
     const c = cfg(false)
     const tpl = assembleCheckTemplate(c, c.layout, { test: false, checkNumber: 20000 })!
     const out = resolveDeferredMicr(tpl, c)!
@@ -45,7 +45,7 @@ describe('MICR secret-safety: deferred until claim/print time', () => {
   })
 
   it('claim-time resolve builds the real E-13B line ONLY when fully ready', () => {
-    process.env.MICR_ROUTING = ROUTING; process.env.MICR_ACCOUNT = ACCOUNT; process.env.MICR_FONT_PATH = '/x/e13b.ttf'
+    process.env.MICR_ROUTING = ROUTING; process.env.MICR_ACCOUNT = ACCOUNT
     const c = cfg(true)
     const tpl = assembleCheckTemplate(c, c.layout, { test: false, checkNumber: 20000 })!
     const out = resolveDeferredMicr(tpl, c)!
@@ -53,14 +53,22 @@ describe('MICR secret-safety: deferred until claim/print time', () => {
     expect(out.micr!.deferCheckNumber).toBeNull()
     // encoded line carries the check number and routing/account (glyph-encoded); it exists only here, in
     // the render request — never persisted to the DB payload.
-    expect(out.micr!.value).toContain('20000')
-    expect(out.micr!.value).toContain(ROUTING)
+    const at = (pos: number) => out.micr!.cells!.find((x) => x.pos === pos)?.ch
+    expect([50, 49, 48, 47, 46].map(at).join('')).toBe('20000')                        // auxiliary On-Us = check number
+    expect([42, 41, 40, 39, 38, 37, 36, 35, 34].map(at).join('')).toBe(ROUTING)        // transit field
+    expect(JSON.stringify(tpl)).not.toContain(ROUTING)                                 // the STORED template never has it
   })
 
   it('a VOID/test page never defers and never touches secrets', () => {
     const c = cfg(true)
+    process.env.MICR_ROUTING = ROUTING; process.env.MICR_ACCOUNT = ACCOUNT
     const tpl = assembleCheckTemplate(c, c.layout, { test: true })!
-    expect(tpl.micr!.mode).toBe('placeholder')
     expect(tpl.micr!.deferCheckNumber ?? null).toBeNull()
+    // it prints the all-zero E-13B TEST line (for position/toner checks) — never the real numbers
+    expect(tpl.micr!.mode).toBe('e13b')
+    const digits = tpl.micr!.cells!.filter((x) => x.pos >= 34 && x.pos <= 42).map((x) => x.ch).join('')
+    expect(digits).toBe('000000000')
+    expect(JSON.stringify(tpl)).not.toContain(ROUTING)
+    expect(JSON.stringify(tpl)).not.toContain(ACCOUNT)
   })
 })
