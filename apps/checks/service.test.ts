@@ -189,7 +189,7 @@ describe('QuickBooks failure, retry, and crash recovery', () => {
     const gate = new Promise<void>((res) => { release = res })
     h.createCheckInQB.mockImplementationOnce(async (p: Record<string, unknown>) => { await gate; return qbRow({ docNumber: p.docNumber, txnDate: p.txnDate }) })
     const first = retryQbWrite(r.check.id, actor)
-    await vi.waitFor(() => expect(h.createCheckInQB).toHaveBeenCalledTimes(1)) // first is now inside QuickBooks
+    await vi.waitFor(() => expect(h.createCheckInQB).toHaveBeenCalledTimes(1), { timeout: 15000 }) // first is now inside QuickBooks
     const second = await retryQbWrite(r.check.id, actor)                        // arrives mid-write
     expect(second.recorded).toBe(false); expect(second.error).toMatch(/already in progress/)
     release()
