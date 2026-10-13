@@ -1,6 +1,6 @@
 # Check Printing — Status and Handoff
 
-Last updated: **2026-10-12**.
+Last updated: **2026-10-13**.
 
 Stock: **Blue Summit BSS-92588-301** — genuinely blank, 3-part perforated, check in the TOP position,
 3.5" check section (first perforation 3.5" from the top), no preprinted MICR. This is the stock actually
@@ -10,12 +10,69 @@ stock" had superseded it; that was wrong and has been removed.
 Path: Pitt Stop OS (phone) → cloud print queue → Windows shop-laptop bridge (`LAPTOP-RF8IO1H2`,
 `C:\pittstop`, SumatraPDF `noscale`) → Brother HL-L2420DW.
 
-## Where things stand
+## Manager password-prompt fix — deployment approved 2026-10-13
 
-- **Production is on commit `55a8234`** (`origin/main`); migration `0050_check_print_safety.sql` is applied.
-  It was **redeployed on 2026-10-12** (owner-authorized; Vercel redeploy of the existing production
-  deployment, same commit, no code change — deployment `dpl_GMXjLwKtLH7GER975beVyYmJEG2a`) so the bank
-  numbers take effect.
+Owner hit native Basic-Auth prompt while recording as Torlan. Root cause: proxy operational classifier
+matched /api/checks/ descendants but missed exact /api/checks, so GET/POST root fell to admin gate.
+Release worktree contains one-line exact-match fix in proxy.ts, plus proxy.test.ts and
+app/api/checks/route.test.ts (real signed fake sessions/proxy/handler; financial service mocked).
+Red reproduction: 8 failed / 17 passed; after fix full suite 134 files / 1,378 tests passed,
+production webpack build passed. Ordinary employee denied; admin setup/specimen stay admin-only.
+No check route/service/printing code changed. Read-only production check after owner attempt: zero
+checks, next 10356; live/MICR remain enabled. No real test transaction or print sent.
+Owner explicitly approved deploying this fix, without any check creation or printing.
+Pre-deployment production base: 5d0f6b0. Verify the resulting Vercel deployment before claiming live.
+
+## Owner-approved enablement — 2026-10-13, 12:18 PM Central
+
+Owner explicitly authorized enabling real checks and MICR, with no check recording or printing.
+POST /api/admin/checks/setup with only micrEnabled=true and liveEnabled=true returned 200/ok.
+Independent GET verified liveEnabled=true, micrEnabled=true, micr.ready=true, config ready, and
+realmPinned=true (production QBO). Bridge online v2.0.1, exact Brother printer. Operating sequence
+still 10356, recent checks zero. No check/print endpoint was called; no check or print was initiated.
+The owner will enter payee/amount/purpose and confirm on their phone. Refresh /checks first.
+Then Record & Print Check records to QBO; separate Send Check to Shop Printer sends the physical job.
+Auto Sales sequence remains uninitialized. Older OFF/unpinned notes below are historical and superseded.
+Owner declined bank-reader visit as a prerequisite; acceptance remains unverified, not claimed proven.
+
+## Latest release — 2026-10-13
+
+Owner-approved screen-only deployment: **`5d0f6b07cfe338ff77c24e2a7117c4ecde5811f5`**, fast-forward from
+`f88c079`. Vercel **`dpl_14tLcSByixAJNDbtPrjPD6cTwRpP`** is READY and aliases include
+`pitt-stop-internal.vercel.app`. Authenticated read-only GET `/checks` returned 200 with the updated
+review button, dark background, history navigation and wrapping long text.
+
+- Dark mobile-first form/review; long payees wrap; recent cards separate identity from actions;
+  accessible navigation and on-screen print toolbar. Printable check geometry/CSS is unchanged.
+- Preserved production `CheckPrintPanel` and its paper confirmation/stuck-job/reprint safeguards.
+  Recent checks use View / Print to the detail page, not direct reprint. Eight check handlers,
+  two print handlers and printable markup were compared byte-for-byte with the production base.
+- Verification: full suite **132 files / 1,353 tests passed**, explicit typecheck, production webpack
+  build, diff whitespace check, isolated mocked browser checks at phone/desktop widths, review and
+  recorded/error states. No production POST was used for verification.
+- **No check created, print queued, QuickBooks write, migration, bank/config/flag change.**
+- Release worktree: `/Users/torlanpittman/.codex/worktrees/check-screen-release/pitt-stop-internal`,
+  branch `codex/check-screen-release`. Main checkout has unrelated work and older check logic:
+  never copy its check files wholesale over production; transplant scoped changes from origin/main.
+- This handoff and local instruction/memory edits are saved locally for the next scoped release;
+  they were not part of the two-file UI commit. The status document is included with the subsequent
+owner-approved manager-login fix; local instruction and memory files remain local.
+
+**Evidence freshness:** runtime flags, sequence, counts and QBO readiness below are historical
+2026-10-12 observations, not reverified by this UI deployment. Read them live before enabling or
+issuing anything. Owner subsequently confirmed **exactly one specimen printed**. The supplied Windows
+TempCheck screenshot reports **CLEAN: 0 leftover folders, 0 files, 4 temp folders checked, 0 unreadable,
+bridge v2.0.1**. Bank-reader acceptance remains unverified. Do not repeat a specimen or cleanup step
+merely because an older handoff says it is pending.
+
+## Where things stood — 2026-10-12 historical verification
+
+- **Previous production release was `f88c079`** (`origin/main`, deployed 2026-10-12, owner-approved; Vercel
+  deployment `dpl_28vzy6xyRuYs3N3PxWvmv1FtSkLK`, READY). It adds the six-digit MICR check number, the
+  admin-only bank specimen print, and records bridge v2.0.1 + the Windows updater. The production build
+  (`next build --webpack`) passed on that exact commit, with a clean tree, before the fast-forward push
+  from `55a8234`. Migration `0050_check_print_safety.sql` is applied; this release has no migration.
+  (Earlier the same day `55a8234` was redeployed unchanged so the bank numbers took effect.)
 - **Bank numbers are live in the server environment and validate.** `/api/admin/checks/setup` reports
   `secretsPresent`, `routingValid` (9 digits, ABA checksum passes), `accountValid`, `fontInstalled` — all
   true — with masks routing `••••5995`, account `••••2649`. The account mask matches the operating
@@ -58,9 +115,8 @@ Path: Pitt Stop OS (phone) → cloud print queue → Windows shop-laptop bridge 
    done. ~~Reboot test~~ — done. ~~Redeploy + masked verification~~ — done (all 2026-10-12).
 2. ~~Starting check number~~ — done: 10356 (2026-10-12).
 3. **Validate the real MICR line and bank acceptance** — see "MICR / bank acceptance — where it stands".
-   The owner's on-paper comparison is done; next is approval to deploy the prepared changes, then one
-   specimen print, then the bank's reader.
-   Also before any real check: run `PittStop-Bridge-TempCheck.cmd` on the laptop (see "Windows bridge").
+   Specimen deployment, exactly one physical specimen and Windows TempCheck CLEAN are complete.
+   Reader acceptance has not been verified; do not claim visual approval proves it.
 4. Turn on `micr_enabled`, then go live through the `/api/admin/checks/setup` interlock (it refuses
    unless everything is ready, and pins the production QuickBooks company). Each needs owner approval.
 5. **First real check only on explicit owner authorization**, after the owner designates payee, amount,
@@ -79,9 +135,9 @@ Path: Pitt Stop OS (phone) → cloud print queue → Windows shop-laptop bridge 
 of the On-Us symbol after the account. The app prints `⑈check#⑈  ⑆routing⑆  account⑈`; the bank's reader
 test settles both.
 
-**Prepared locally, NOT deployed (worktree, uncommitted) — needs owner approval to deploy:**
+**Deployed in `f88c079` (2026-10-12). Exactly one specimen printed, owner-confirmed.**
 
-1. **Six-digit check number in the MICR line.** Deployed code would print 10356 as five digits. The
+1. **Six-digit check number in the MICR line.** Code before `f88c079` printed 10356 as five digits. The
    change zero-pads the Auxiliary On-Us check number to six (`MICR_CHECK_NUMBER_MIN_DIGITS` in
    `apps/checks/micr.ts`): 10356 → `010356`. Padding grows the field to the left only; the last digit
    stays at position 46 and nothing to its right moves. The number printed on the check face is not
@@ -120,15 +176,45 @@ test settles both.
 - On paper: the specimen itself. Treat the printed page like a voided check: hand it to the bank or shred
   it.
 
-Verified locally: `apps/checks` tests 141/141 (new: six-digit padding, leading zeros kept, specimen
-contents, nothing stored, nothing in the clear band, no check/QuickBooks/number side effects, refusals),
-full suite 1345/1345, `tsc` clean, and a rendered preview inspected by eye. None of this has run in
-production or been printed.
+Verified before deploy: full suite 1353/1353 (new tests: six-digit padding, leading zeros kept, specimen
+contents, nothing stored, nothing in the clear band, no check/QuickBooks/number side effects, refusals,
+eight simultaneous requests → one job, retry after printing → same job, admin-only route), `tsc` clean,
+production build clean, and a rendered preview (placeholder numbers) inspected by eye.
+
+Verified in production after deploy (2026-10-12, read-only plus refused requests — no specimen sent):
+
+- Vercel reports the production deployment READY on `f88c079`.
+- Specimen route: no credentials → 401; wrong admin password → 401; forged employee cookie → 401; admin
+  without the confirmation phrase → 400 and nothing queued; admin GET → readiness booleans only (all
+  true), `Cache-Control: no-store`. A real manager PIN session was not tried live; that refusal is
+  covered by the route test and by the proxy's admin gate.
+- `liveEnabled` false, `micrEnabled` false, realm not pinned; masks unchanged (`••••5995` / `••••2649`);
+  layout offsets 0/0, section 3.5", top position.
+- Operating sequence still 10356 (row unchanged since 21:42:09Z); 0 checks; 0 specimen jobs; no print
+  job created since the bridge VOID test; the specimen slot row does not exist yet.
+- Bridge `LAPTOP-RF8IO1H2` online, v2.0.1.
+
+**One bank specimen sent (owner-approved, 2026-10-12):** job `13ea8e38-83fa-41c7-9c6a-3e24752334ee`, kind
+`specimen`, requested by Admin at 22:07:00Z, one request, no retry. Claimed by `LAPTOP-RF8IO1H2` at
+22:07:02Z; `submitted` at 22:07:32Z (the job left the Windows print spooler — not proof of paper). The
+stored job holds only the placeholder (no MICR cells). Afterwards: 1 specimen job in total, 0 checks,
+sequence still 10356, MICR and live recording still off. **Owner confirmed exactly one page came out and supplied a CLEAN Windows TempCheck result.
+Bank-reader validation remains unverified.**
+
+**Owner follow-up (recorded 2026-10-13):** exactly one specimen printed; Windows TempCheck CLEAN
+(0 folders/files, 4 temp folders inspected, 0 unreadable, bridge v2.0.1). The bank request given
+to the owner: ask American Momentum treasury management / deposit operations for a MICR print-quality
+test of one VOID specimen on the operating account (••••2649), run on magnetic item-processing equipment
+(a teller image scanner alone reads optically and does not test the toner), confirming: no rejects;
+routing, full account number with leading zeros, and six-digit check number each read into the correct
+field; symbol placement and field order match their specification for this account; signal strength and
+position within tolerance (ANSI X9.100-160-1 / X9.100-20); how many specimens they require; whether new
+check stock must be registered (incl. Positive Pay); and a written result with name and date.
 
 **Still outstanding:**
 
-1. Owner approval → commit, deploy (fast-forward push from the worktree), verify.
-2. Owner approval → print **one** specimen on the Blue Summit stock with MICR toner.
+1. ~~Commit, deploy, verify~~ — done (`f88c079`).
+2. ~~One specimen and Windows TempCheck~~ — done, owner-confirmed; do not resend.
 3. **The bank's reader verdict on that specimen** (American Momentum branch / treasury services):
    character recognition, toner signal strength, field order, and position — including the two known
    geometric risks: characters sit on the bottom line of the 3/16"–7/16" band with no downward tolerance,
@@ -162,14 +248,13 @@ needs the owner's approval. It never touches the non-MICR fields.
 - **Blue Summit bottom border vs. the 5/8" MICR clear band** — untested.
 - **American Momentum's MICR layout:** account digits (with leading zeros) and the six-digit check number
   are owner-confirmed against a real check; field order and symbol placement are not.
-- **The real line has never printed.**
+- **Real bank information printed on one non-negotiable specimen**, owner-confirmed; no bank-reader result.
 - **QuickBooks `requestid` de-duplication** is covered by tests against a stub, not against QuickBooks.
 - Auto Sales (*5600) check sequence is uninitialised, so Auto Sales checks stay fail-closed.
 - **Append-only audit for check-sequence changes** — does not exist (the row keeps only the last who/when).
   Needs a small table + migration in a later approved deploy. The 20000 → 10356 change is recorded in this
   document only.
-- **Temporary-PDF cleanup on the Windows laptop** — the code is proven, the laptop's temp folders have not
-  been inspected (see "Windows bridge").
+- **Windows temporary-PDF cleanup inspection passed** (owner screenshot); see latest evidence above.
 
 ## Windows bridge — v2.0.1 installed and verified (2026-10-12)
 
@@ -201,12 +286,13 @@ together and start exactly one.
 - **Proven by really running bridge v2.0.1 (on macOS, 2026-10-12):** with jobs that print and jobs whose
   print command fails, the PDF exists only while printing and its folder is gone afterwards; folders left
   by an earlier run are swept at startup; unrelated temp folders are untouched.
-- **Not yet observed on the laptop.** `PittStop-Bridge-TempCheck.cmd` (owner's Mac Desktop; built with
+- **Observed on the laptop: CLEAN**, as shown in the owner screenshot. `PittStop-Bridge-TempCheck.cmd` (4,246 bytes, SHA-256
+  `8fc8ca445831f7d2…`; on the owner's Mac Desktop **and uploaded 2026-10-12 to the owner's Google Drive,
+  My Drive, "Owned by me", not shared** — file id `1yH5Nzl3kOr-L1iE1DTMORfqFidREM3JQ`; built with
   `node scripts/build-bridge-update.mjs --tempcheck <out.cmd>`) is a read-only inspection: it counts
   `pittstop-check-*` folders in every temp directory and prints one `RESULT:` line (`CLEAN` /
-  `LEFTOVERS FOUND` / `INCOMPLETE`). It deletes and changes nothing. Dry-run only so far. **Gate: a
-  `CLEAN` result on the laptop before any real check** — most telling right after a test print, without
-  restarting the bridge in between (a restart sweeps leftovers and would hide a per-print failure).
+  `LEFTOVERS FOUND` / `INCOMPLETE`). It deletes and changes nothing. The owner ran it on Windows and supplied the CLEAN result;
+  no repeat is needed solely because of this UI release.
 
 ### What went wrong with the first updater (`PittStop-Bridge-Update.cmd`, withdrawn)
 
@@ -304,18 +390,12 @@ Result lines: `UPDATED OK`, `ALREADY UP TO DATE`, `UPDATED - SERVER CONNECTION N
 
 ## Code location
 
-- Deployed code: `origin/main` @ `55a8234` (commits `e69aa3e`, `55a8234`).
-- Worktree: `/Users/torlanpittman/Projects/.ps-worktrees/checks-hardening`, branch
-  `checks/print-safety-hardening`. Make further check changes here.
-- **Uncommitted in the worktree (2026-10-12):** the MICR six-digit padding and bank specimen mode
-  (`apps/checks/{micr,template,template-server,render,print-queue,service,schema}.ts` + tests,
-  `app/api/admin/checks/specimen/route.ts`, `scripts/check-specimen-preview.ts`) — these DO need a deploy;
-  plus `scripts/print-bridge.mjs` v2.0.1, the updater
-  (`scripts/windows/bridge-update.ps1`, `scripts/build-bridge-update.mjs`, `scripts/windows/test/`), and
-  these doc updates. The bridge script is not served by Vercel, so v2.0.1 needs no deploy — but commit it
-  so the repo matches what the laptop runs.
-- The main checkout's local branches have diverged from production and do **not** contain this work.
-  Deploy by fast-forward push from a worktree off `origin/main`, never by pushing local `main`.
+- Deployed UI: `origin/main` at `5d0f6b0`, based on check safety/specimen release `f88c079`.
+- Current release worktree: `/Users/torlanpittman/.codex/worktrees/check-screen-release/pitt-stop-internal`,
+  branch `codex/check-screen-release`.
+- Earlier worktree `.ps-worktrees/checks-hardening` is historical; it is not the newest UI code.
+- Local main checkout is divergent. Start future scoped releases from freshly verified origin/main.
+- Handoff copies are maintained locally; this status document ships with the manager-login fix.
 
 ## Print-path safety model
 
@@ -389,11 +469,23 @@ MICR coordinates are changed ONLY through the manager/admin-gated endpoint
 - ✅ Bridge v2.0.1 installed, VOID-tested, reboot-tested (2026-10-12).
 - ✅ QuickBooks production connection, operating bank, and category accounts verified read-only.
 - ✅ Starting check number approved and set: 10356 (2026-10-12), unconsumed.
-- ⬜ Temp-PDF inspection on the laptop reports CLEAN.
+- ✅ Temp-PDF inspection on the laptop reports CLEAN (owner screenshot).
 - ✅ Account number (incl. leading zeros) and six-digit check-number format confirmed by the owner against a
   real AMB check (2026-10-12).
-- ⬜ Six-digit padding + bank specimen mode deployed (prepared locally, awaiting approval).
-- ⬜ Specimen printed and **accepted by the bank's reader**.
+- ✅ Six-digit padding + bank specimen mode deployed and verified (`f88c079`, 2026-10-12).
+- ✅ Exactly one non-negotiable specimen printed (owner-confirmed).
+- ⬜ Bank-reader acceptance remains unverified.
 - ⬜ `micr_enabled` on.
 - ⬜ `checks_live_enabled` on via the interlock.
 - ⬜ Explicit owner authorization of the first real check: payee, amount, check number.
+
+## Read-only readiness check — 2026-10-13, 12:15 PM Central
+
+Owner explicitly declined a bank-verification visit; do not require that visit as a prerequisite or
+claim bank-reader acceptance is proven. Live GET checks: bridge online v2.0.1 / Brother HL-L2420DW
+Printer; QuickBooks connected, active, production, no last error; operating account *2649 and all
+category mappings configured; bank secrets present and well-formed, font installed. Operating next
+number 10356, zero recent checks. MICR and live recording still OFF; realm not pinned. Remaining
+software action is owner-approved enablement through the existing setup interlock (pins QBO realm).
+No settings changed, no financial records or print jobs created. Current UI records after final
+Record & Print confirmation, then shows a separate Send Check to Shop Printer button.

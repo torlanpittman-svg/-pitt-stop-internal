@@ -26,7 +26,7 @@ function isEmployeeSurface(pathname: string): boolean {
   const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in', '/orders', '/production', '/estimator', '/checks', '/expenses', '/customers', '/marketing']
   if (pages.some((p) => pathname === p || pathname.startsWith(p + '/'))) return true
   const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/', '/api/checks/', '/api/search', '/api/expenses/', '/api/customers/', '/api/marketing/']
-  if (apis.some((p) => pathname.startsWith(p)) || pathname === '/api/dealer-checkin') return true
+  if (apis.some((p) => pathname.startsWith(p)) || pathname === '/api/dealer-checkin' || pathname === '/api/checks') return true
   if (pathname === '/api/estimator/vin' || pathname === '/api/workflow/vin') return true
   return false
 }
