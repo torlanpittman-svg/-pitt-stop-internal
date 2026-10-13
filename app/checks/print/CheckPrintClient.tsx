@@ -61,35 +61,35 @@ export default function CheckPrintClient(props: Props) {
   return (
     <>
       {/* Screen-only toolbar */}
-      <div className="no-print mx-auto max-w-md space-y-3 p-4">
-        <div className="flex items-center justify-between">
-          <button onClick={() => router.push('/checks')} className="text-sm text-neutral-500">← Back</button>
-          <span className="text-xs text-neutral-400">pos {props.calibration.position} · off {props.calibration.offsetX}″,{props.calibration.offsetY}″</span>
+      <div className="no-print mx-auto max-w-xl space-y-3 px-4 py-4 text-gray-200 sm:px-6">
+        <div className="flex flex-wrap items-center justify-between gap-x-3">
+          <button type="button" onClick={() => router.push('/checks')} className="flex min-h-11 items-center gap-1 text-sm text-gray-400 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"><span aria-hidden="true">←</span>Back</button>
+          <span className="text-xs text-gray-400">pos {props.calibration.position} · off {props.calibration.offsetX}″,{props.calibration.offsetY}″</span>
         </div>
 
         {props.isTest ? (
-          <div className="rounded-lg border border-dashed border-neutral-400 bg-neutral-50 p-3 text-sm text-neutral-600">
+          <div role="status" className="rounded-xl border border-sky-900/60 bg-sky-950/30 px-4 py-3 text-sm/relaxed text-sky-200">
             <b>Test print.</b> Load PLAIN paper. Print, then hold it behind a blank check to check alignment. Nothing is recorded. Adjust offsets in Admin → Checks if fields are off.
           </div>
         ) : !props.printable ? (
-          <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700">This check isn’t recorded in QuickBooks yet — it can’t be printed.</div>
+          <div role="alert" className="rounded-xl border border-red-900/60 bg-red-950/30 px-4 py-3 text-sm/relaxed text-red-200">This check isn’t recorded in QuickBooks yet — it can’t be printed.</div>
         ) : (
-          <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-800">Check #{props.checkNumber} is recorded. Load the check stock, then print.</div>
+          <div role="status" className="rounded-xl border border-emerald-900/60 bg-emerald-950/30 px-4 py-3 text-sm/relaxed text-emerald-200">Check #{props.checkNumber} is recorded. Load the check stock, then print.</div>
         )}
 
-        <button onClick={doPrint} disabled={!props.isTest && !props.printable} className="w-full rounded-xl bg-neutral-900 py-4 text-lg font-semibold text-white disabled:opacity-50">
+        <button type="button" onClick={doPrint} disabled={!props.isTest && !props.printable} className="flex min-h-14 w-full items-center justify-center rounded-xl bg-blue-600 px-5 py-3 text-center text-base font-semibold text-white transition-colors hover:bg-blue-500 active:bg-blue-700 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500">
           {props.isTest ? 'Print test page' : `Print check #${props.checkNumber}`}
         </button>
 
         {!props.isTest && printed && (
-          <div className="space-y-2 rounded-xl border border-neutral-300 p-3">
-            <p className="text-sm font-medium">Did it print correctly on the check?</p>
+          <div className="space-y-3 rounded-2xl border border-gray-800 bg-gray-900 p-4">
+            <p className="text-sm font-medium text-white">Did it print correctly on the check?</p>
             <div className="flex gap-2">
-              <button disabled={busy} onClick={() => recordOutcome(true)} className="flex-1 rounded-lg bg-emerald-600 py-3 font-semibold text-white disabled:opacity-50">Printed OK</button>
-              <button disabled={busy} onClick={() => recordOutcome(false)} className="flex-1 rounded-lg border border-red-300 py-3 font-semibold text-red-700 disabled:opacity-50">Print failed</button>
+              <button type="button" disabled={busy} onClick={() => recordOutcome(true)} className="min-h-12 flex-1 rounded-xl bg-emerald-600 px-3 py-2 font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500">Printed OK</button>
+              <button type="button" disabled={busy} onClick={() => recordOutcome(false)} className="min-h-12 flex-1 rounded-xl border border-red-900/60 bg-red-950/30 px-3 py-2 font-semibold text-red-300 transition-colors hover:border-red-800 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500">Print failed</button>
             </div>
-            <button disabled={busy} onClick={() => { recordOutcome(true, true) }} className="w-full rounded-lg border border-neutral-300 py-2 text-sm">Log as reprint (same check #)</button>
-            {note && <p className="text-center text-sm text-neutral-600">{note}</p>}
+            <button type="button" disabled={busy} onClick={() => { recordOutcome(true, true) }} className="flex min-h-11 w-full items-center justify-center rounded-xl border border-gray-700 px-4 py-2 text-center text-sm font-semibold text-gray-200 transition-colors hover:border-gray-600 hover:bg-gray-800/60 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500">Log as reprint (same check #)</button>
+            {note && <p role="status" className="text-center text-sm text-gray-300 [overflow-wrap:anywhere]">{note}</p>}
           </div>
         )}
       </div>
