@@ -10,6 +10,33 @@ stock" had superseded it; that was wrong and has been removed.
 Path: Pitt Stop OS (phone) → cloud print queue → Windows shop-laptop bridge (`LAPTOP-RF8IO1H2`,
 `C:\pittstop`, SumatraPDF `noscale`) → Brother HL-L2420DW.
 
+## Purchase payload fix — deployment approved 2026-10-13
+
+Owner attempted check10356 (Test/$1). QBO Purchase400/code2010 rejected unsupported property.
+Live read-only state: one failed check10356, not_printed, operating sequence10357. Number10356 is
+reserved for this durable intent; do not reset/release it or start over. No retry or print authorized.
+Root cause: nested EntityRef under AccountBasedExpenseLineDetail is unsupported in Intuit schema;
+top-level Purchase.EntityRef remains correct. Scoped local fix removes nested field only. New mocked
+payload tests failed2/passed14 before correction; full suite after fix 134files/1387tests passed,
+webpack production build passed. Failed-screen copy corrected to reserved number / same-check retry,
+without blanket assurance that ambiguous failures cannot have reached QBO. Requestid/recovery unchanged.
+No real QuickBooks write or print performed during diagnosis. Owner approved deployment only; no assistant retry or print. Production base7c0c93a.
+After verifying new deployment READY, owner opens Check history →10356 →Retry QuickBooks.
+This reuses the saved check and number. Printing remains a separate owner action.
+Schema: https://static.developer.intuit.com/sdkdocs/qbv3doc/ipp-v3-java-devkit-javadoc/com/intuit/ipp/data/AccountBasedExpenseLineDetail.html
+
+## Login fix live — 2026-10-13, 12:29 PM Central
+
+Production commit **7c0c93ace49e7798c3e853a79e55dfdb7acdf5fd**, Vercel
+**dpl_5zY5dDaViChMZdCf9zeLAQZxr2ge READY**, production alias confirmed through Vercel API.
+Read-only live GET /api/checks without credentials: JSON401, NO Basic challenge; admin setup
+still returns Basic challenge. Local signed-session tests prove Torlan reaches real handler with
+mocked financial service; employees denied. Full suite 1,378 tests, typecheck and build passed.
+Live/MICR ON, realm pinned, bridge online v2.0.1, QBO active production, zero checks, next10356.
+No check created or printed. Owner can cancel old dialog, refresh and enter/confirm on phone.
+Status handoff through deployment approval committed in 7c0c93a; this post-deploy verification
+is a local follow-up pending the next scoped release. Earlier deployment-pending notes are superseded.
+
 ## Manager password-prompt fix — deployment approved 2026-10-13
 
 Owner hit native Basic-Auth prompt while recording as Torlan. Root cause: proxy operational classifier

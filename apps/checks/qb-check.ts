@@ -75,7 +75,6 @@ export async function createCheckInQB(p: CreateCheckParams): Promise<WrittenChec
         Description: p.lineDescription?.trim() || p.memo?.trim() || undefined,
         AccountBasedExpenseLineDetail: {
           AccountRef: { value: p.expenseAccountId },
-          EntityRef: { value: p.vendorId, type: 'Vendor' },
         },
       },
     ],

@@ -223,8 +223,8 @@ export default function WriteCheckFlow(props: Props) {
         ) : (
           <div className="space-y-4">
             <div role="alert" className={ALERT_ERROR}>
-              <p className="font-semibold">QuickBooks did not record this check.</p>
-              <p className="mt-1">No check number has been used and nothing was printed. You can safely retry.</p>
+              <p className="font-semibold">QuickBooks recording needs attention.</p>
+              <p className="mt-1">Check #{c.checkNumber} is reserved for this check and nothing was printed. Once the issue below is addressed, Retry sends this same check with the same number — it does not start a new one.</p>
               {result.error && <p className={`mt-2 font-mono text-sm ${WRAP}`}>{result.error}</p>}
             </div>
             {error && error !== result.error && (
