@@ -7,15 +7,17 @@ import { intakeSummary, refreshIntake, sendIntakeEstimate } from '@/apps/estimat
 import { quickEntryJobs } from '@/apps/quick-entry/schema'
 import { getDb } from '@/platform/db'
 import { estimateEnabled } from '@/apps/workflow/estimate'
+import { renameOrderCustomer, CUSTOMER_NAME_MAX } from '@/apps/workflow/customer-name'
 
 export const maxDuration = 120
 const actionInput = z.discriminatedUnion('action', [
   z.object({ action: z.literal('send'), revision: z.string().length(64) }),
   z.object({ action: z.literal('convert'), revision: z.string().length(64) }),
   z.object({ action: z.literal('contact'), email: z.union([z.email().max(200), z.literal('')]), phone: z.string().max(40) }),
+  z.object({ action: z.literal('customer_name'), name: z.string().trim().min(1).max(CUSTOMER_NAME_MAX) }),
 ])
 const safeSummary = (s: Awaited<ReturnType<typeof intakeSummary>>) => ({
-  ok: true, draft: s.draft, revision: s.revision, status: s.order.status,
+  ok: true, draft: s.draft, revision: s.revision, status: s.order.status, customerName: s.order.customerName ?? '',
   email: s.contact?.customerEmail ?? '', phone: s.contact?.customerPhone ?? '',
   qbNumber: s.intake.qbEstimateNumber, sentAt: s.intake.sentAt,
 })
@@ -43,6 +45,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       }
       if (body.action === 'contact') {
         await getDb().update(quickEntryJobs).set({ customerEmail: body.email || null, customerPhone: body.phone || null }).where(eq(quickEntryJobs.serviceOrderId, id))
+      } else if (body.action === 'customer_name') {
+        // Spelling correction in place: same customer/estimate ids and links (see customer-name.ts).
+        await renameOrderCustomer(id, body.name, actor.name)
       } else {
         if (state.revision !== body.revision) throw new Error('The estimate changed. Refresh and review it before continuing.')
         if (body.action === 'send') await sendIntakeEstimate(id, actor.name, body.revision)

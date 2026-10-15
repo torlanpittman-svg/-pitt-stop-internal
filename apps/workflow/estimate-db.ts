@@ -4,7 +4,7 @@
  * cached on job_estimates after every mutation.
  */
 import { getDb } from '@/platform/db'
-import { eq, ne, and, asc, inArray } from 'drizzle-orm'
+import { eq, ne, and, asc, inArray, sql } from 'drizzle-orm'
 import { jobEstimates, jobServices, jobLineItems, serviceOrders, serviceOrderEvents } from './schema'
 import {
   computeTotals, rollUpDecision, defaultTaxForType, defaultTaxBps, approvedTitlesToSync, convertSyncsServices, lineAmountCents,
@@ -495,6 +495,48 @@ export async function addService(estimateId: string, title: string): Promise<Job
 }
 export async function updateService(id: string, patch: Partial<Pick<JobServiceRow, 'title' | 'technician' | 'notes' | 'approvalState' | 'sortOrder'>>): Promise<void> {
   await getDb().update(jobServices).set({ ...patch, updatedAt: new Date() }).where(eq(jobServices.id, id))
+}
+/**
+ * Correct a service's estimate LABEL in place (typo fix) — same job_services row, so its price
+ * line (qty, price, tax flags), approval, and sort order are untouched. The price line's name is
+ * kept in step only when it still mirrors the old title, and the Job's employee-facing services
+ * text is renamed too so promoteTextServices never re-adds the old spelling on reopen.
+ * The label is NOT the QuickBooks invoice text: the QB payload still uses the catalog's canonical
+ * qb_description whenever the (corrected) title matches a catalog service. One SQL statement → atomic.
+ */
+export async function renameService(orderId: string, serviceId: string, rawTitle: string, actor: string | null): Promise<void> {
+  const title = String(rawTitle ?? '').replace(/\s+/g, ' ').trim()
+  if (!title) throw new Error('Enter a service name.')
+  if (title.length > 200) throw new Error('Service name must be 200 characters or fewer.')
+  const db = getDb()
+  const est = await getEstimateRow(orderId)
+  const services = est ? await listUserServices(est.id) : []
+  const service = services.find((s) => s.id === serviceId)
+  if (!service) throw new Error('Service does not belong to this estimate.')
+  if (service.title === title) return
+  const norm = (s: string) => s.trim().toLowerCase()
+  if (services.some((s) => s.id !== serviceId && norm(s.title) === norm(title))) throw new Error('Another service on this estimate already has that name.')
+  await db.execute(sql`
+    WITH svc AS (
+      SELECT id, title FROM job_services WHERE id = ${serviceId}::uuid AND job_estimate_id = ${est!.id}::uuid AND source <> 'system'
+    ), upd_service AS (
+      UPDATE job_services SET title = ${title}, updated_at = now() WHERE id IN (SELECT id FROM svc) RETURNING id
+    ), upd_line AS (
+      UPDATE job_line_items l SET name = ${title} FROM svc
+      WHERE l.job_service_id = svc.id AND l.generated = false AND l.name = svc.title RETURNING l.id
+    ), upd_order AS (
+      UPDATE service_orders so SET updated_at = now(), services = (
+        SELECT jsonb_agg(CASE WHEN lower(trim(a.x)) = lower(trim(svc.title)) THEN to_jsonb(${title}::text) ELSE to_jsonb(a.x) END ORDER BY a.ord)
+        FROM jsonb_array_elements_text(so.services) WITH ORDINALITY AS a(x, ord))
+      FROM svc
+      WHERE so.id = ${orderId}::uuid AND jsonb_typeof(so.services) = 'array'
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(so.services) AS b(x) WHERE lower(trim(b.x)) = lower(trim(svc.title)))
+      RETURNING so.id
+    )
+    INSERT INTO service_order_events(service_order_id, event_type, employee_name, note)
+    SELECT ${orderId}::uuid, 'service_renamed', ${actor}, json_build_object('serviceId', svc.id, 'from', svc.title, 'to', ${title}::text)::text
+    FROM svc, upd_service
+  `)
 }
 export async function removeService(id: string): Promise<void> {
   await getDb().delete(jobServices).where(eq(jobServices.id, id))

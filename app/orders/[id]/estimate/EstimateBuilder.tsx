@@ -53,6 +53,30 @@ function PriceInput({ cents, onCommit, busy, big }: { cents: number | null; onCo
 
 // Foreground card style for Estimate service rows (shared SwipeRow provides the swipe).
 const ROW_CONTENT = 'flex items-center gap-3 bg-gray-900 border border-gray-800 px-4 py-3.5'
+const EDIT_BTN = 'shrink-0 text-blue-400 text-sm font-semibold px-2 py-1 -my-1 active:opacity-70 disabled:opacity-40'
+
+// ── Inline name editor (customer name, service name): explicit Save / Cancel ─────────
+// 16px text so iOS doesn't zoom; Enter saves, Escape cancels. Saving the unchanged value just closes.
+function NameEditor({ label, initial, busy, onSave, onCancel }: {
+  label: string; initial: string; busy: boolean; onSave: (value: string) => void; onCancel: () => void
+}) {
+  const [text, setText] = useState(initial)
+  const value = text.replace(/\s+/g, ' ').trim()
+  const save = () => { if (!value) return; if (value === initial) onCancel(); else onSave(value) }
+  return (
+    <form className="flex flex-wrap items-center gap-2 w-full" onSubmit={(e) => { e.preventDefault(); save() }}>
+      <input aria-label={label} value={text} autoFocus maxLength={200} disabled={busy}
+        onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
+        className="flex-1 min-w-[10rem] bg-gray-950 border border-gray-600 text-white rounded-lg px-3 py-2 text-base" />
+      <div className="flex gap-2">
+        <button type="submit" disabled={busy || !value}
+          className="rounded-lg bg-blue-600 text-white font-semibold text-sm px-4 py-2 active:opacity-80 disabled:opacity-40">Save</button>
+        <button type="button" onClick={onCancel} disabled={busy}
+          className="rounded-lg border border-gray-600 text-gray-200 text-sm px-4 py-2 active:opacity-80 disabled:opacity-40">Cancel</button>
+      </div>
+    </form>
+  )
+}
 
 export default function EstimateBuilder({ header, initialView }: { header: Header; initialView: View }) {
   const [view, setView] = useState<View>(initialView)
@@ -65,10 +89,16 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   // Explicit save-state so the manager can always tell whether an edit is saving, saved, or failed —
   // and can recover a failed save (Retry) rather than silently losing it.
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
-  const lastPayload = useRef<Record<string, unknown> | null>(null)
+  // The last attempted save, kept so a failed one can be retried (estimate edit payload or customer name).
+  const lastSave = useRef<{ payload: Record<string, unknown> } | { customerName: string } | null>(null)
+  const [customer, setCustomer] = useState(header.customer)
+  const [editingCustomer, setEditingCustomer] = useState(false)
+  // Bumped after a customer rename so EstimateActions reloads (the send/convert revision changed).
+  const [customerRev, setCustomerRev] = useState(0)
+  const [editingServiceId, setEditingServiceId] = useState<string | null>(null)
 
-  const post = useCallback(async (payload: Record<string, unknown>) => {
-    lastPayload.current = payload
+  const post = useCallback(async (payload: Record<string, unknown>): Promise<boolean> => {
+    lastSave.current = { payload }
     setBusy(true); setErr(null); setSaveState('saving')
     try {
       const res = await fetch(`/api/workflow/orders/${header.id}/estimate`, {
@@ -79,10 +109,11 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
         keepalive: true,
       })
       const d = await res.json()
-      if (!res.ok || !d.ok) { setErr(d.error ?? 'Action failed'); setSaveState('error'); return }
+      if (!res.ok || !d.ok) { setErr(d.error ?? 'Action failed'); setSaveState('error'); return false }
       if (d.view) setView(d.view)
       setSaveState('saved')
-    } catch { setErr('Network error'); setSaveState('error') } finally { setBusy(false) }
+      return true
+    } catch { setErr('Network error'); setSaveState('error'); return false } finally { setBusy(false) }
   }, [header.id])
 
   // A successful save shows "Saved" briefly, then returns to idle. An error stays until resolved.
@@ -92,7 +123,30 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
     return () => clearTimeout(t)
   }, [saveState])
 
-  const retryLastSave = useCallback(() => { if (lastPayload.current) void post(lastPayload.current) }, [post])
+  // Customer name correction (standalone estimates) — same records/ids, via the estimate's locked action route.
+  const saveCustomerName = useCallback(async (name: string): Promise<void> => {
+    lastSave.current = { customerName: name }
+    setBusy(true); setErr(null); setSaveState('saving')
+    try {
+      const res = await fetch(`/api/estimates/${header.id}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'customer_name', name }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok) { setErr(d.error ?? 'Could not save the name'); setSaveState('error'); return }
+      setCustomer(d.customerName || name); setEditingCustomer(false); setCustomerRev((n) => n + 1); setSaveState('saved')
+    } catch { setErr('Network error'); setSaveState('error') } finally { setBusy(false) }
+  }, [header.id])
+
+  const saveServiceName = useCallback(async (serviceId: string, title: string) => {
+    if (await post({ action: 'rename_service', serviceId, title })) setEditingServiceId(null)
+  }, [post])
+
+  const retryLastSave = useCallback(() => {
+    const last = lastSave.current
+    if (!last) return
+    if ('payload' in last) void post(last.payload)
+    else void saveCustomerName(last.customerName)
+  }, [post, saveCustomerName])
 
   const services = view.services
   const isFlat = view.flat
@@ -109,7 +163,19 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
       <div className="max-w-xl mx-auto px-4 py-5">
         <div className="mb-4">
           <h1 className="text-2xl font-bold">Estimate</h1>
-          <p className="text-gray-400 text-sm">{header.customer} · {header.vehicle}</p>
+          {editingCustomer ? (
+            <div className="mt-2">
+              <NameEditor label="Customer name" initial={customer} busy={busy}
+                onSave={saveCustomerName} onCancel={() => setEditingCustomer(false)} />
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-sm">
+              <p className="text-gray-400 min-w-0 break-words">{customer} · {header.vehicle}</p>
+              {header.standalone && (
+                <button onClick={() => setEditingCustomer(true)} disabled={busy} aria-label="Edit customer name" className={EDIT_BTN}>Edit</button>
+              )}
+            </div>
+          )}
           {header.notes && <p className="text-gray-500 text-sm mt-2 whitespace-pre-wrap">{header.notes}</p>}
         </div>
         {/* Save-state banner — always tells the manager whether the last edit is saving, saved, or
@@ -155,10 +221,18 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
 
         {/* Services */}
         <div className="space-y-2">
-          {services.map((s) => (
+          {services.map((s) => editingServiceId === s.id ? (
+            <div key={s.id} className={`${ROW_CONTENT} rounded-2xl`}>
+              <NameEditor label="Service name" initial={s.title} busy={busy}
+                onSave={(title) => saveServiceName(s.id, title)} onCancel={() => setEditingServiceId(null)} />
+            </div>
+          ) : (
             <SwipeRow key={s.id} busy={busy} contentClassName={ROW_CONTENT} onRemove={() => post({ action: 'remove_service', serviceId: s.id })}>
               <div className="flex-1 min-w-0">
-                <p className="font-semibold truncate">{s.title}</p>
+                <div className="flex items-center gap-1 min-w-0">
+                  <p className="font-semibold truncate">{s.title}</p>
+                  <button onClick={() => setEditingServiceId(s.id)} disabled={busy} aria-label={`Edit service name ${s.title}`} className={EDIT_BTN}>Edit</button>
+                </div>
                 {!isFlat && s.suggestedCents != null && s.priceCents !== s.suggestedCents && (
                   <button onClick={() => post({ action: 'set_service_price', serviceId: s.id, cents: s.suggestedCents })}
                     className="text-gray-500 text-xs active:opacity-70">Suggested ${dollars(s.suggestedCents)}</button>
@@ -257,7 +331,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
           )}
           <p className="text-gray-600 text-xs mt-3">Work price only. Shop supplies, card charge, and tax are included in the customer total separately.</p>
         </div>
-        {header.standalone && <EstimateActions key={JSON.stringify(view)} id={header.id} editorBusy={editingBusy} onBusyChange={setActionBusy} />}
+        {header.standalone && <EstimateActions key={`${customerRev}:${JSON.stringify(view)}`} id={header.id} editorBusy={editingBusy} onBusyChange={setActionBusy} />}
       </div>
     </main>
   )

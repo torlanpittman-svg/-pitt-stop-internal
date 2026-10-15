@@ -12,7 +12,7 @@ import {
   getOrCreateEstimate, getEstimateRow, getFullEstimate, recomputeEstimate,
   addService, updateService, removeService, addLine, updateLine, removeLine,
   setTaxRate, setStatus, setApproval, convertEstimate, type LineInput,
-  prepareEstimateView, getEstimateView, setServicePrice, setWorkTotal, itemizeEstimate, acceptItemizedTotal, flagQbSyncNeededIfInvoiced,
+  prepareEstimateView, getEstimateView, setServicePrice, setWorkTotal, itemizeEstimate, acceptItemizedTotal, flagQbSyncNeededIfInvoiced, renameService,
 } from '@/apps/workflow/estimate-db'
 import type { ApprovalState, EstimateStatus } from '@/apps/workflow/estimate'
 
@@ -85,6 +85,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         if (body.cents != null) await setServicePrice(eid, svc.id, Math.max(0, Math.round(Number(body.cents) || 0)), actor)
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
+      case 'rename_service': {
+        // Label correction only — price line, qty, and tax flags are untouched.
+        await renameService(id, String(body.serviceId), String(body.title ?? ''), actor)
+        await flagQbSyncNeededIfInvoiced(id, 'a service name changed')
+        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
+      }
       case 'update_service':  await updateService(String(body.serviceId), body.patch as Record<string, never>); break
       case 'remove_service':  await removeService(String(body.serviceId)); await recomputeEstimate(await estimateId()); break
       case 'add_line':        await addLine(String(body.serviceId), body.line as LineInput); await recomputeEstimate(await estimateId()); break
@@ -107,7 +113,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (order.status === 'estimate') {
       // Standalone quotes use the dedicated conversion and email routes. All edits share
       // the same lock as send/conversion so a customer cannot receive a half-edited quote.
-      const allowed = ['build', 'prepare', 'set_service_price', 'set_work_total', 'itemize', 'accept_total', 'add_service', 'remove_service']
+      const allowed = ['build', 'prepare', 'set_service_price', 'set_work_total', 'itemize', 'accept_total', 'add_service', 'rename_service', 'remove_service']
       if (!allowed.includes(action)) return NextResponse.json({ error: 'Use the estimate actions to send or move this estimate.' }, { status: 400 })
       return await withIntakeLock(id, async () => {
         if ((await getOrderWithContext(id))?.status !== 'estimate') throw new Error('This estimate has moved to the Work Board. Refresh before editing.')
