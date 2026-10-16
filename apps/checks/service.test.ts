@@ -6,7 +6,7 @@ import { drizzle } from 'drizzle-orm/pglite'
 
 /**
  * Exercises the check state machine against a REAL Postgres (PGlite, in-process) built from the actual
- * migrations (0032 + 0050) — so the SQL that guards money and paper (number reservation, the QuickBooks
+ * migrations (0032 + 0050 + 0055) — so the SQL that guards money and paper (number reservation, the QuickBooks
  * write lock, one-active-print-job, compare-and-set job transitions, queue expiry, heartbeat) is what runs.
  * Only the outside world is faked: QuickBooks (vendor / Purchase calls / connection) and config.
  * No network, no production database.
@@ -17,14 +17,14 @@ vi.mock('@/platform/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), er
 const h = vi.hoisted(() => ({
   cfg: {} as Record<string, unknown>,
   token: { realmId: 'REALM-PROD', accessToken: 'x', environment: 'production' as string },
-  resolveVendor: vi.fn(), createCheckInQB: vi.fn(), findChecksByDocNumber: vi.fn(),
+  resolvePayee: vi.fn(), createCheckInQB: vi.fn(), findChecksByDocNumber: vi.fn(),
 }))
 vi.mock('./config', () => ({
   getCheckConfig: vi.fn(async () => h.cfg),
   bankForCategory: (cfg: { banks: Record<string, unknown> }, cat: string) => cfg.banks[cat === 'auto_sales' ? 'auto_sales' : 'operating'],
   checkConfigReadiness: () => ({ ready: true, enabled: true, operatingBankConfigured: true, autoSalesBankConfigured: true, missingCategoryAccounts: [] }),
 }))
-vi.mock('./vendor', () => ({ resolveVendor: h.resolveVendor }))
+vi.mock('./payee', async (orig) => ({ ...(await orig<typeof import('./payee')>()), resolvePayee: h.resolvePayee }))
 vi.mock('./qb-check', async (orig) => ({ ...(await orig<typeof import('./qb-check')>()), createCheckInQB: h.createCheckInQB, findChecksByDocNumber: h.findChecksByDocNumber }))
 vi.mock('@/apps/quickbooks/connection', () => ({ getValidAccessToken: vi.fn(async () => h.token) }))
 
@@ -36,6 +36,7 @@ import {
 } from './service'
 import { claimNextJob, getJob, enqueuePrintJob, recordBridgeHeartbeat, getBridgeStatus, jobsForCheck, PRINT_JOB_TTL_MINUTES } from './print-queue'
 import { getCheckRow, acquireQbWriteLock, checkEventHistory } from './db'
+import { PayeeLookupError, PayeeExistsError, PayeeBlockedError, PayeeNotFoundError, AmbiguousPayeeError } from './payee'
 import { initCheckSequence, peekNextNumber } from './numbering'
 
 const pg = new PGlite()
@@ -50,6 +51,7 @@ const qbRow = (over: Record<string, unknown> = {}) => ({ purchaseId: 'P1', docNu
 beforeAll(async () => {
   await pg.exec(migration('0032_checks.sql'))
   await pg.exec(migration('0050_check_print_safety.sql'))
+  await pg.exec(migration('0055_check_payee_entity_type.sql'))
   // app_settings exactly as migration 0016 creates it (the bank-specimen slot lives there)
   await pg.exec(/CREATE TABLE IF NOT EXISTS app_settings \([\s\S]*?\n\);/.exec(migration('0016_fees_and_settings.sql'))![0])
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
@@ -70,9 +72,9 @@ beforeEach(async () => {
     categoryAccounts: { shop_general: '51', customer_job: '16', equipment: '112', owner_personal: '21', other: '20', auto_sales: '88' },
     layout: DEFAULT_LAYOUT, display: { companyName: 'Pitt Stop', companyAddr: null, companyPhone: null, bankName: 'AMB', bankAddr: null },
   }
-  h.resolveVendor.mockReset().mockResolvedValue({ id: 'V1', displayName: 'Thompson Derrig', active: true })
+  h.resolvePayee.mockReset().mockResolvedValue({ id: 'V1', type: 'Vendor', displayName: 'Thompson Derrig', active: true })
   h.findChecksByDocNumber.mockReset().mockResolvedValue([])
-  h.createCheckInQB.mockReset().mockImplementation(async (p: Record<string, unknown>) => qbRow({ docNumber: p.docNumber, totalCents: p.amountCents, bankAccountId: p.bankAccountId, vendorId: p.vendorId, txnDate: p.txnDate }))
+  h.createCheckInQB.mockReset().mockImplementation(async (p: Record<string, unknown>) => qbRow({ docNumber: p.docNumber, totalCents: p.amountCents, bankAccountId: p.bankAccountId, vendorId: p.vendorId, payeeType: p.payeeType, txnDate: p.txnDate }))
 })
 
 const expectCode = async (p: Promise<unknown>, code: string) => { await expect(p).rejects.toMatchObject({ code }); await expect(p).rejects.toBeInstanceOf(CheckValidationError) }
@@ -97,7 +99,7 @@ describe('record path', () => {
   it('rejects a non-positive amount before any side effect', async () => {
     await expectCode(createAndRecordCheck(input({ amountCents: 0 }), actor), 'amount_invalid')
     expect(await peekNextNumber('operating')).toBe(20000)
-    expect(h.resolveVendor).not.toHaveBeenCalled()
+    expect(h.resolvePayee).not.toHaveBeenCalled()
   })
 
   it('is idempotent: a replay with the same idempotencyKey never writes QuickBooks or takes a number twice', async () => {
@@ -117,10 +119,94 @@ describe('record path', () => {
   })
 })
 
+describe('payee resolution — Vendors, Employees and Customers; nothing is spent on a payee problem', () => {
+  const ANTHONY = { id: '400000021', type: 'Employee', displayName: 'Anthony Pittman', active: true }
+
+  it('pays an existing EMPLOYEE: persists the entity type and sends it to QuickBooks as the Employee', async () => {
+    h.resolvePayee.mockResolvedValue(ANTHONY)
+    const c = await recorded({ payeeName: 'anthony  pittman', amountCents: 100612, memo: 'Payroll' })
+    expect(h.resolvePayee).toHaveBeenCalledWith('anthony  pittman', { payeeId: null, payeeType: null, allowCreate: false })
+    expect(h.createCheckInQB.mock.calls[0][0]).toMatchObject({ vendorId: '400000021', payeeType: 'Employee', amountCents: 100612 })
+    const row = (await getCheckRow(c.id))!
+    expect(row).toMatchObject({ payeeName: 'Anthony Pittman', payeeQboVendorId: '400000021', payeeQboEntityType: 'Employee', checkNumber: 20000 })
+  })
+
+  it('passes an explicit pick (id + type) through to the resolver', async () => {
+    h.resolvePayee.mockResolvedValue(ANTHONY)
+    await recorded({ payeeName: 'Anthony Pittman', vendorId: '400000021', payeeType: 'Employee' })
+    expect(h.resolvePayee).toHaveBeenCalledWith('Anthony Pittman', { payeeId: '400000021', payeeType: 'Employee', allowCreate: false })
+  })
+
+  it('rejects an unknown payee type before any side effect', async () => {
+    await expectCode(createAndRecordCheck(input({ payeeType: 'OtherName' }), actor), 'payee_type_invalid')
+    expect(h.resolvePayee).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['the QuickBooks lookup failed', new PayeeLookupError(new Error('503'))],
+    ['6240: the name already exists (re-confirm the existing payee)', new PayeeExistsError(ANTHONY as never)],
+    ['the name belongs to an inactive record', new PayeeBlockedError('inactive', [])],
+    ['a brand-new payee was not confirmed', new PayeeNotFoundError('Brand New LLC')],
+    ['the name is ambiguous', new AmbiguousPayeeError([])],
+  ])('when %s: no check row, no QuickBooks write, and the check number is NOT used', async (_l, err) => {
+    h.resolvePayee.mockRejectedValue(err)
+    const i = input()
+    await expect(createAndRecordCheck(i, actor)).rejects.toBe(err)
+    expect(h.createCheckInQB).not.toHaveBeenCalled()
+    expect(await peekNextNumber('operating')).toBe(20000)
+    // The same confirmation (same idempotency key) then succeeds with the SAME next number — exactly one check.
+    h.resolvePayee.mockResolvedValue(ANTHONY)
+    const ok = await createAndRecordCheck(i, actor)
+    expect(ok.recorded).toBe(true); expect(ok.check.checkNumber).toBe(20000)
+    expect(h.createCheckInQB).toHaveBeenCalledTimes(1)
+    expect(await peekNextNumber('operating')).toBe(20001)
+  })
+
+  it('a retry after a QuickBooks failure re-sends the stored EMPLOYEE type with the same number (no payee lookup)', async () => {
+    h.resolvePayee.mockResolvedValue(ANTHONY)
+    h.createCheckInQB.mockRejectedValueOnce(new Error('QuickBooks API /purchase failed (500)'))
+    const first = await createAndRecordCheck(input(), actor)
+    expect(first.recorded).toBe(false)
+    h.resolvePayee.mockClear()
+    expect((await retryQbWrite(first.check.id, actor)).recorded).toBe(true)
+    expect(h.resolvePayee).not.toHaveBeenCalled()
+    expect(h.createCheckInQB.mock.calls[1][0]).toMatchObject({ vendorId: '400000021', payeeType: 'Employee', docNumber: '20000' })
+    expect(h.createCheckInQB.mock.calls[1][0].requestId).toBe(h.createCheckInQB.mock.calls[0][0].requestId)
+    expect(await peekNextNumber('operating')).toBe(20001)
+  })
+
+  it('a double-tapped Record & Print (same key, at the same time) writes ONE check', async () => {
+    h.resolvePayee.mockResolvedValue(ANTHONY)
+    const i = input()
+    const [a, b] = await Promise.all([createAndRecordCheck(i, actor), createAndRecordCheck(i, actor)])
+    expect(a.check.id).toBe(b.check.id)
+    expect(h.createCheckInQB).toHaveBeenCalledTimes(1)
+    expect(await peekNextNumber('operating')).toBe(20001)
+  })
+
+  it('crash recovery for an employee check adopts only a Purchase paid to that same Employee', async () => {
+    h.resolvePayee.mockResolvedValue(ANTHONY)
+    const lost = qbRow({ purchaseId: 'P-LOST', docNumber: '20000', vendorId: '400000021', payeeType: 'Employee', txnDate: '2026-10-16' })
+    h.findChecksByDocNumber.mockResolvedValue([lost])
+    const c = await createAndRecordCheck(input({ checkDate: '2026-10-16' }), actor)
+    expect(c.recorded).toBe(true)
+    expect((await getCheckRow(c.check.id))!.qboTxnId).toBe('P-LOST')
+    expect(h.createCheckInQB).not.toHaveBeenCalled()
+  })
+
+  it('…and REFUSES a Purchase with the same id on a different QuickBooks list (vendor 400000021 ≠ employee 400000021)', async () => {
+    h.resolvePayee.mockResolvedValue(ANTHONY)
+    h.findChecksByDocNumber.mockResolvedValue([qbRow({ docNumber: '20000', vendorId: '400000021', payeeType: 'Vendor', txnDate: '2026-10-16' })])
+    const c = await createAndRecordCheck(input({ checkDate: '2026-10-16' }), actor)
+    expect(c.recorded).toBe(false)
+    expect(h.createCheckInQB).not.toHaveBeenCalled()
+  })
+})
+
 describe('go-live gates — nothing real happens until everything is in place', () => {
   const nothingHappened = async () => {
     expect(h.createCheckInQB).not.toHaveBeenCalled()
-    expect(h.resolveVendor).not.toHaveBeenCalled()       // no vendor could have been created either
+    expect(h.resolvePayee).not.toHaveBeenCalled()       // no vendor could have been created either
     expect(await peekNextNumber('operating')).toBe(20000) // no number consumed
   }
   it('refuses when live recording is off', async () => {
@@ -237,6 +323,15 @@ describe('QuickBooks failure, retry, and crash recovery', () => {
 })
 
 describe('duplicate-print prevention', () => {
+  it('re-sending a failed print never creates or alters a QuickBooks transaction', async () => {
+    const c = await recorded()
+    const jobId = await sentAndClaimed(c.id)
+    await applyBridgeResult(jobId, 'failed', 'paper jam')
+    await sentAndClaimed(c.id)
+    expect(h.createCheckInQB).toHaveBeenCalledTimes(1)
+    expect(h.resolvePayee).toHaveBeenCalledTimes(1)
+    expect(await peekNextNumber('operating')).toBe(20001)
+  })
   it('a second send while one is open is refused — exactly one job exists', async () => {
     const c = await recorded()
     await queueCheckPrint(c.id, actor)
@@ -500,7 +595,7 @@ describe('bank specimen — the real MICR line on a VOID page, and nothing else'
     expect((await pg.query(`SELECT 1 FROM checks`)).rows.length).toBe(0)
     expect((await pg.query(`SELECT 1 FROM check_events`)).rows.length).toBe(0)
     expect(h.createCheckInQB).not.toHaveBeenCalled()
-    expect(h.resolveVendor).not.toHaveBeenCalled()
+    expect(h.resolvePayee).not.toHaveBeenCalled()
   })
 
   it('a second request while one is waiting returns the same job instead of printing two', async () => {

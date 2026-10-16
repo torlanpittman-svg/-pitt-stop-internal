@@ -31,7 +31,8 @@ export const checks = pgTable(
 
     // Payee -------------------------------------------------------------------
     payeeName:       varchar('payee_name', { length: 200 }).notNull(),
-    payeeQboVendorId:varchar('payee_qbo_vendor_id', { length: 32 }),          // resolved QBO Vendor.Id (null until recorded)
+    payeeQboVendorId:varchar('payee_qbo_vendor_id', { length: 32 }),          // resolved QBO payee id (Vendor/Employee/Customer)
+    payeeQboEntityType: varchar('payee_qbo_entity_type', { length: 16 }).notNull().default('Vendor'), // which QBO list the id is in (migration 0055)
 
     // Money + purpose ---------------------------------------------------------
     amountCents:     integer('amount_cents').notNull(),

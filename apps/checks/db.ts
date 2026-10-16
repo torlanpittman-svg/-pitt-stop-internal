@@ -9,6 +9,7 @@ import { checks, checkEvents } from './schema'
 import { getCheckConfig } from './config'
 import type { CheckView, QbStatus, PrintStatus, BankKey, CheckCategoryKey } from './types'
 import { categoryDef } from './types'
+import type { PayeeType } from './payee'
 
 type CheckRow = typeof checks.$inferSelect
 
@@ -22,6 +23,7 @@ export interface InsertCheckInput {
   bankQboAccountId: string
   payeeName: string
   payeeQboVendorId: string | null
+  payeeQboEntityType: PayeeType
   amountCents: number
   memo: string | null
   category: CheckCategoryKey
@@ -42,6 +44,7 @@ export async function insertCheck(input: InsertCheckInput): Promise<string> {
     bankQboAccountId: input.bankQboAccountId,
     payeeName: input.payeeName,
     payeeQboVendorId: input.payeeQboVendorId,
+    payeeQboEntityType: input.payeeQboEntityType,
     amountCents: input.amountCents,
     memo: input.memo,
     category: input.category,

@@ -9,11 +9,6 @@ vi.mock('@/apps/checks/service', () => {
   return { createAndRecordCheck: h.create, CheckValidationError }
 })
 vi.mock('@/apps/checks/db', () => ({ listRecentChecks: h.list }))
-vi.mock('@/apps/checks/vendor', () => {
-  class AmbiguousVendorError extends Error { matches: unknown[] = [] }
-  class VendorNotFoundError extends Error {}
-  return { AmbiguousVendorError, VendorNotFoundError }
-})
 vi.mock('@/apps/checks/numbering', () => {
   class SequenceNotInitializedError extends Error {}
   return { SequenceNotInitializedError }
@@ -22,11 +17,12 @@ vi.mock('@/apps/checks/numbering', () => {
 import { GET, POST } from './route'
 import { proxy } from '@/proxy'
 import { EMP_COOKIE, signEmployeeSession } from '@/apps/auth/employee-session'
+import { PayeeLookupError, PayeeExistsError, PayeeBlockedError, PayeeNotFoundError, AmbiguousPayeeError } from '@/apps/checks/payee'
 
 // Throwaway TEST values — NOT the production secret / password / PIN.
 const TORLAN = { key: 'torlan', name: 'Torlan', role: 'manager' as const }
 const EMPLOYEE = { key: 'emp', name: 'Shop Employee', role: 'employee' as const }
-const BODY = { payeeName: 'Test Vendor', vendorId: 'V1', allowCreateVendor: false, amountCents: 12345, memo: 'test memo', category: 'shop_general', linkedJobId: null, linkedVehicleId: null, idempotencyKey: 'idem-test-1' }
+const BODY = { payeeName: 'Test Vendor', vendorId: 'V1', payeeType: 'Vendor', allowCreateVendor: false, amountCents: 12345, memo: 'test memo', category: 'shop_general', linkedJobId: null, linkedVehicleId: null, idempotencyKey: 'idem-test-1' }
 
 beforeEach(() => {
   vi.stubEnv('IDENTITY_SECRET', 'test-secret')
@@ -55,7 +51,7 @@ describe('/api/checks — proxy + handler together', () => {
     expect(res.status).toBe(200)
     expect(h.create).toHaveBeenCalledTimes(1)
     expect(h.create).toHaveBeenCalledWith(
-      expect.objectContaining({ payeeName: 'Test Vendor', vendorId: 'V1', amountCents: 12345, memo: 'test memo', category: 'shop_general', idempotencyKey: 'idem-test-1' }),
+      expect.objectContaining({ payeeName: 'Test Vendor', vendorId: 'V1', payeeType: 'Vendor', amountCents: 12345, memo: 'test memo', category: 'shop_general', idempotencyKey: 'idem-test-1' }),
       { key: 'torlan', name: 'Torlan' },
     )
   })
@@ -86,5 +82,21 @@ describe('/api/checks — proxy + handler together', () => {
     const res = await POST(request('POST', await mint()))
     expect(res.status).toBe(403)
     expect(h.create).not.toHaveBeenCalled()
+  })
+})
+
+describe('/api/checks — payee problems come back as clear, distinct answers (never a generic 500)', () => {
+  const ANTHONY = { id: '400000021', type: 'Employee' as const, displayName: 'Anthony Pittman', active: true }
+  it.each([
+    ['lookup failed', new PayeeLookupError(new Error('503')), 502, { error: 'payee_lookup_failed' }],
+    ['name already exists (6240) → existing payee to confirm', new PayeeExistsError(ANTHONY), 409, { error: 'payee_exists', payee: ANTHONY }],
+    ['name blocked', new PayeeBlockedError('inactive employee', []), 409, { error: 'payee_blocked', message: 'inactive employee', conflicts: [] }],
+    ['new payee not confirmed', new PayeeNotFoundError('Brand New LLC'), 409, { error: 'payee_not_found' }],
+    ['ambiguous', new AmbiguousPayeeError([ANTHONY]), 409, { error: 'ambiguous_payee', matches: [ANTHONY] }],
+  ])('%s', async (_l, err, status, body) => {
+    h.create.mockRejectedValue(err)
+    const res = await POST(request('POST', await signEmployeeSession(TORLAN)))
+    expect(res.status).toBe(status)
+    expect(await res.json()).toMatchObject(body)
   })
 })

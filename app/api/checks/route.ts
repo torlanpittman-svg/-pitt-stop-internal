@@ -10,7 +10,7 @@ import { NextResponse } from 'next/server'
 import { managerFromRequest } from '@/apps/checks/authz'
 import { createAndRecordCheck, CheckValidationError, type WriteCheckInput } from '@/apps/checks/service'
 import { listRecentChecks } from '@/apps/checks/db'
-import { AmbiguousVendorError, VendorNotFoundError } from '@/apps/checks/vendor'
+import { AmbiguousPayeeError, PayeeNotFoundError, PayeeBlockedError, PayeeExistsError, PayeeLookupError } from '@/apps/checks/payee'
 import { SequenceNotInitializedError } from '@/apps/checks/numbering'
 
 export const runtime = 'nodejs'
@@ -32,6 +32,7 @@ export async function POST(req: Request) {
   const input: WriteCheckInput = {
     payeeName: String(body.payeeName ?? ''),
     vendorId: body.vendorId ?? null,
+    payeeType: body.payeeType ?? null,
     allowCreateVendor: !!body.allowCreateVendor,
     amountCents: Number(body.amountCents),
     memo: body.memo ?? null,
@@ -46,8 +47,12 @@ export async function POST(req: Request) {
     const result = await createAndRecordCheck(input, { key: actor.key, name: actor.name })
     return NextResponse.json({ ok: result.recorded, ...result })
   } catch (e) {
-    if (e instanceof AmbiguousVendorError) return NextResponse.json({ error: 'ambiguous_vendor', message: e.message, matches: e.matches }, { status: 409 })
-    if (e instanceof VendorNotFoundError) return NextResponse.json({ error: 'vendor_not_found', message: e.message }, { status: 409 })
+    // Payee outcomes — each happens BEFORE a check number is reserved or anything is written.
+    if (e instanceof AmbiguousPayeeError) return NextResponse.json({ error: 'ambiguous_payee', message: e.message, matches: e.matches }, { status: 409 })
+    if (e instanceof PayeeExistsError) return NextResponse.json({ error: 'payee_exists', message: e.message, payee: e.payee }, { status: 409 })
+    if (e instanceof PayeeBlockedError) return NextResponse.json({ error: 'payee_blocked', message: e.message, conflicts: e.conflicts }, { status: 409 })
+    if (e instanceof PayeeNotFoundError) return NextResponse.json({ error: 'payee_not_found', message: e.message }, { status: 409 })
+    if (e instanceof PayeeLookupError) return NextResponse.json({ error: 'payee_lookup_failed', message: e.message }, { status: 502 })
     if (e instanceof SequenceNotInitializedError) return NextResponse.json({ error: 'sequence_not_initialized', message: e.message }, { status: 409 })
     if (e instanceof CheckValidationError) return NextResponse.json({ error: e.code, message: e.message }, { status: 400 })
     return NextResponse.json({ error: 'server_error', message: String((e as Error)?.message ?? e) }, { status: 500 })

@@ -1,12 +1,12 @@
 /**
- * POST /api/checks/resolve-payee — READ-ONLY preview of how a typed payee resolves to a QuickBooks
- * vendor: existing (use), will-create, or ambiguous (pick one). No QuickBooks mutation. Powers the
- * confirmation step so a check never silently creates a duplicate vendor or picks the wrong one.
- * Manager-only.
+ * POST /api/checks/resolve-payee — READ-ONLY preview of how a typed payee resolves in QuickBooks across
+ * Vendors, Employees and Customers: existing payee (use), not in QuickBooks (create a vendor after
+ * confirmation), ambiguous (pick one), or blocked (the name is taken by a record a check can't use).
+ * A failed lookup is reported as a failure — never as "not found". No QuickBooks mutation. Manager-only.
  */
 import { NextResponse } from 'next/server'
 import { managerFromRequest } from '@/apps/checks/authz'
-import { previewVendor } from '@/apps/checks/vendor'
+import { previewPayee, PayeeLookupError } from '@/apps/checks/payee'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -19,8 +19,9 @@ export async function POST(req: Request) {
   const name = String(body.payeeName ?? '').trim()
   if (!name) return NextResponse.json({ error: 'payee_required' }, { status: 400 })
   try {
-    return NextResponse.json(await previewVendor(name))
+    return NextResponse.json(await previewPayee(name))
   } catch (e) {
-    return NextResponse.json({ error: 'qb_error', message: String((e as Error)?.message ?? e) }, { status: 502 })
+    const message = e instanceof PayeeLookupError ? e.message : 'Could not look up this payee in QuickBooks. Nothing was recorded — try again in a moment.'
+    return NextResponse.json({ error: 'payee_lookup_failed', message }, { status: 502 })
   }
 }

@@ -4,7 +4,7 @@
  * A hand-written business check paying an expense directly from a bank account is recorded in QBO as a
  * **Purchase** with `PaymentType: "Check"`:
  *   - AccountRef      → the BANK account the money leaves (credit)                 [operating *2649]
- *   - EntityRef       → the payee (Vendor)                                          [top-level payee]
+ *   - EntityRef       → the payee: a Vendor, Employee or Customer (id + type)       [top-level payee]
  *   - DocNumber       → the physical check number                                   [our reserved number]
  *   - Line[]          → AccountBasedExpenseLineDetail with AccountRef = expense account (debit)
  *   - PrivateNote     → the memo/purpose (also printed on the check)
@@ -17,6 +17,7 @@
  */
 import { qbApiRequest, queryQBO, qboEscape } from '@/apps/quickbooks/client'
 import { logger } from '@/platform/logger'
+import type { PayeeType } from './payee'
 
 const APP = 'checks:qb-check'
 const centsToDollars = (c: number) => Math.round(c) / 100
@@ -27,23 +28,25 @@ export interface WrittenCheck {
   syncToken: string
   totalCents: number
   bankAccountId: string | null   // AccountRef — the bank account the Purchase draws from
-  vendorId: string | null        // EntityRef — the payee
+  vendorId: string | null        // EntityRef.value — the payee id (Vendor, Employee or Customer)
+  payeeType: string | null       // EntityRef.type
   txnDate: string | null         // YYYY-MM-DD
 }
 
-interface QbPurchase { Id: string; DocNumber?: string; SyncToken: string; TotalAmt?: number; TxnDate?: string; PaymentType?: string; AccountRef?: { value?: string }; EntityRef?: { value?: string } }
+interface QbPurchase { Id: string; DocNumber?: string; SyncToken: string; TotalAmt?: number; TxnDate?: string; PaymentType?: string; AccountRef?: { value?: string }; EntityRef?: { value?: string; type?: string } }
 
 function summarize(p: QbPurchase): WrittenCheck {
   return {
     purchaseId: p.Id, docNumber: p.DocNumber ?? null, syncToken: p.SyncToken, totalCents: Math.round((p.TotalAmt ?? 0) * 100),
-    bankAccountId: p.AccountRef?.value ?? null, vendorId: p.EntityRef?.value ?? null, txnDate: p.TxnDate ?? null,
+    bankAccountId: p.AccountRef?.value ?? null, vendorId: p.EntityRef?.value ?? null, payeeType: p.EntityRef?.type ?? null, txnDate: p.TxnDate ?? null,
   }
 }
 
 export interface CreateCheckParams {
   bankAccountId: string
   expenseAccountId: string
-  vendorId: string
+  vendorId: string         // the payee's QuickBooks id
+  payeeType: PayeeType     // which QuickBooks list that id belongs to
   amountCents: number
   docNumber: string        // the reserved physical check number
   txnDate: string          // YYYY-MM-DD
@@ -65,7 +68,7 @@ export async function createCheckInQB(p: CreateCheckParams): Promise<WrittenChec
   const body: Record<string, unknown> = {
     PaymentType: 'Check',
     AccountRef: { value: p.bankAccountId },
-    EntityRef: { value: p.vendorId, type: 'Vendor' },
+    EntityRef: { value: p.vendorId, type: p.payeeType },
     DocNumber: p.docNumber,
     TxnDate: p.txnDate,
     Line: [
@@ -94,7 +97,7 @@ export async function findChecksByDocNumber(docNumber: string): Promise<WrittenC
   return (res.Purchase ?? []).filter((p) => p.PaymentType === 'Check').map(summarize)
 }
 
-export interface ExpectedCheck { bankAccountId: string; vendorId: string; amountCents: number; txnDate: string }
+export interface ExpectedCheck { bankAccountId: string; vendorId: string; payeeType: PayeeType; amountCents: number; txnDate: string }
 export type RecoveryDecision =
   | { action: 'create' }                       // nothing on this bank account uses the number
   | { action: 'adopt'; check: WrittenCheck }   // exactly one Purchase is unmistakably OUR earlier attempt
@@ -103,14 +106,15 @@ export type RecoveryDecision =
 /**
  * Crash-recovery decision (pure). A prior attempt may have reached QuickBooks without us recording it, so
  * before creating we look for the check number. We adopt ONLY a Purchase that matches this check on bank
- * account + payee + amount + date. A check with the same number on the SAME bank account that differs in
- * any of those is somebody else's transaction: fail closed rather than attach to it or duplicate the
- * number. The same number on a DIFFERENT bank account is unrelated (separate check stock).
+ * account + payee (id AND type — ids are only unique within one QuickBooks list) + amount + date. A
+ * check with the same number on the SAME bank account that differs in any of those is somebody else's
+ * transaction: fail closed rather than attach to it or duplicate the number. The same number on a
+ * DIFFERENT bank account is unrelated (separate check stock).
  */
 export function decideRecovery(found: WrittenCheck[], expected: ExpectedCheck): RecoveryDecision {
   const sameBank = found.filter((f) => f.bankAccountId === expected.bankAccountId)
   if (sameBank.length === 0) return { action: 'create' }
-  const exact = sameBank.filter((f) => f.vendorId === expected.vendorId && f.totalCents === expected.amountCents && f.txnDate === expected.txnDate)
+  const exact = sameBank.filter((f) => f.vendorId === expected.vendorId && (f.payeeType ?? 'Vendor') === expected.payeeType && f.totalCents === expected.amountCents && f.txnDate === expected.txnDate)
   if (exact.length === 1 && sameBank.length === 1) return { action: 'adopt', check: exact[0] }
   if (exact.length > 1) return { action: 'conflict', reason: `QuickBooks already has ${exact.length} identical checks with this number on this bank account` }
   return { action: 'conflict', reason: 'QuickBooks already has a different check with this number on this bank account' }

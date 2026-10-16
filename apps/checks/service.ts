@@ -23,7 +23,7 @@ import { createHash } from 'node:crypto'
 import { getValidAccessToken } from '@/apps/quickbooks/connection'
 import { getCheckConfig, bankForCategory, checkConfigReadiness, type CheckConfig } from './config'
 import { categoryDef, categoryEntity, type CheckCategoryKey, type CheckView } from './types'
-import { resolveVendor } from './vendor'
+import { resolvePayee, isPayeeType, type PayeeType } from './payee'
 import { reserveNextNumber, releaseIfLast } from './numbering'
 import { createCheckInQB, findChecksByDocNumber, decideRecovery } from './qb-check'
 import {
@@ -48,8 +48,9 @@ export interface Actor { key: string | null; name: string | null }
 
 export interface WriteCheckInput {
   payeeName: string
-  vendorId?: string | null        // explicit pick from the picker (skips search)
-  allowCreateVendor?: boolean      // manager confirmed "create new vendor"
+  vendorId?: string | null        // explicit payee pick from the review screen (QuickBooks id; verified)
+  payeeType?: PayeeType | null     // which QuickBooks list vendorId belongs to (Vendor/Employee/Customer)
+  allowCreateVendor?: boolean      // manager confirmed "create new vendor" (only when nothing has the name)
   amountCents: number
   memo?: string | null
   category: CheckCategoryKey
@@ -70,6 +71,7 @@ function validate(input: WriteCheckInput): void {
   if (!categoryDef(input.category)) throw new CheckValidationError('Unknown category.', 'category_invalid')
   if (!input.idempotencyKey?.trim()) throw new CheckValidationError('Missing idempotency key.', 'idempotency_required')
   if (input.checkDate && !/^\d{4}-\d{2}-\d{2}$/.test(input.checkDate.trim())) throw new CheckValidationError('Check date must be YYYY-MM-DD.', 'date_invalid')
+  if (input.payeeType != null && !isPayeeType(input.payeeType)) throw new CheckValidationError('Unknown payee type.', 'payee_type_invalid')
 }
 
 // ── Go-live gates ───────────────────────────────────────────────────────────────────────────────────
@@ -131,8 +133,9 @@ export async function createAndRecordCheck(input: WriteCheckInput, actor: Actor)
   // BEFORE any QuickBooks call (vendor lookup/creation included): right environment, right company.
   const realmId = await assertCheckRealm(cfg)
 
-  // Resolve payee BEFORE reserving a number so an ambiguity never burns a check number.
-  const vendor = await resolveVendor(input.payeeName, { vendorId: input.vendorId ?? null, allowCreate: !!input.allowCreateVendor })
+  // Resolve payee BEFORE reserving a number so an ambiguity, name conflict or lookup failure never burns
+  // a check number. Searches Vendors, Employees and Customers; creates a Vendor only when none has the name.
+  const payee = await resolvePayee(input.payeeName, { payeeId: input.vendorId ?? null, payeeType: input.payeeType ?? null, allowCreate: !!input.allowCreateVendor })
 
   const checkDate = input.checkDate?.trim() || businessDate()
   const checkNumber = await reserveNextNumber(bank.key as BankKey)
@@ -143,7 +146,7 @@ export async function createAndRecordCheck(input: WriteCheckInput, actor: Actor)
   try {
     checkId = await insertCheck({
       checkNumber, bankKey: bank.key as BankKey, bankQboAccountId: bank.qboAccountId,
-      payeeName: vendor.displayName || input.payeeName.trim(), payeeQboVendorId: vendor.id,
+      payeeName: payee.displayName || input.payeeName.trim(), payeeQboVendorId: payee.id, payeeQboEntityType: payee.type,
       amountCents: input.amountCents, memo: input.memo?.trim() || null,
       category: input.category, expenseQboAccountId: expenseAccountId, entity,
       linkedJobId: input.linkedJobId ?? null, linkedVehicleId: input.linkedVehicleId ?? null,
@@ -156,10 +159,10 @@ export async function createAndRecordCheck(input: WriteCheckInput, actor: Actor)
     if (replay) { const c = await getCheckConfig(); return { check: toView(replay, c.banks[replay.bankKey as BankKey]?.label ?? replay.bankKey), recorded: replay.qbStatus === 'recorded', error: replay.qbError ?? undefined } }
     throw e
   }
-  await logCheckEvent(checkId, 'created', actor.name, { checkNumber, amountCents: input.amountCents, payee: vendor.displayName, category: input.category, bank: bank.key })
+  await logCheckEvent(checkId, 'created', actor.name, { checkNumber, amountCents: input.amountCents, payee: payee.displayName, payeeType: payee.type, category: input.category, bank: bank.key })
 
   const recordResult = await attemptQbWrite(checkId, {
-    bankAccountId: bank.qboAccountId, expenseAccountId, vendorId: vendor.id,
+    bankAccountId: bank.qboAccountId, expenseAccountId, vendorId: payee.id, payeeType: payee.type,
     amountCents: input.amountCents, docNumber: String(checkNumber), txnDate: checkDate,
     memo: input.memo?.trim() || null, lineDescription: input.memo?.trim() || null, realmId,
   }, actor)
@@ -169,15 +172,17 @@ export async function createAndRecordCheck(input: WriteCheckInput, actor: Actor)
 }
 
 interface QbWriteArgs {
-  bankAccountId: string; expenseAccountId: string; vendorId: string
+  bankAccountId: string; expenseAccountId: string; vendorId: string; payeeType: PayeeType
   amountCents: number; docNumber: string; txnDate: string
   memo: string | null; lineDescription: string | null; realmId: string | null
 }
 
 /** Stable QuickBooks `requestid` for a check's create call: same check + same content ⇒ same id, so a
  *  replay (timeout, crash, double request) is answered with the original Purchase, not a second one. */
-export function qbRequestId(checkId: string, a: Pick<QbWriteArgs, 'bankAccountId' | 'expenseAccountId' | 'vendorId' | 'amountCents' | 'docNumber' | 'txnDate'>): string {
-  return createHash('sha256').update([checkId, a.bankAccountId, a.expenseAccountId, a.vendorId, a.amountCents, a.docNumber, a.txnDate].join('|')).digest('hex').slice(0, 40)
+export function qbRequestId(checkId: string, a: Pick<QbWriteArgs, 'bankAccountId' | 'expenseAccountId' | 'vendorId' | 'amountCents' | 'docNumber' | 'txnDate'> & { payeeType?: PayeeType }): string {
+  // Vendor checks keep their original id (unchanged for any check created before payee types existed).
+  const payee = a.payeeType && a.payeeType !== 'Vendor' ? `${a.payeeType}:${a.vendorId}` : a.vendorId
+  return createHash('sha256').update([checkId, a.bankAccountId, a.expenseAccountId, payee, a.amountCents, a.docNumber, a.txnDate].join('|')).digest('hex').slice(0, 40)
 }
 
 /**
@@ -196,14 +201,14 @@ async function attemptQbWrite(checkId: string, args: QbWriteArgs, actor: Actor):
   }
   try {
     const decision = decideRecovery(await findChecksByDocNumber(args.docNumber), {
-      bankAccountId: args.bankAccountId, vendorId: args.vendorId, amountCents: args.amountCents, txnDate: args.txnDate,
+      bankAccountId: args.bankAccountId, vendorId: args.vendorId, payeeType: args.payeeType, amountCents: args.amountCents, txnDate: args.txnDate,
     })
     if (decision.action === 'conflict') {
       throw new Error(`Check #${args.docNumber} was NOT recorded: ${decision.reason}. Resolve it in QuickBooks before retrying.`)
     }
     const adopted = decision.action === 'adopt' ? decision.check : null
     const written = adopted ?? await createCheckInQB({
-      bankAccountId: args.bankAccountId, expenseAccountId: args.expenseAccountId, vendorId: args.vendorId,
+      bankAccountId: args.bankAccountId, expenseAccountId: args.expenseAccountId, vendorId: args.vendorId, payeeType: args.payeeType,
       amountCents: args.amountCents, docNumber: args.docNumber, txnDate: args.txnDate,
       memo: args.memo, lineDescription: args.lineDescription, requestId: qbRequestId(checkId, args),
     })
@@ -232,6 +237,7 @@ export async function retryQbWrite(checkId: string, actor: Actor): Promise<{ rec
   const realmId = await assertCheckRealm(cfg)
   return attemptQbWrite(checkId, {
     bankAccountId: row.bankQboAccountId, expenseAccountId: row.expenseQboAccountId, vendorId: row.payeeQboVendorId,
+    payeeType: isPayeeType(row.payeeQboEntityType) ? row.payeeQboEntityType : 'Vendor',
     amountCents: row.amountCents, docNumber: String(row.checkNumber), txnDate: String(row.checkDate),
     memo: row.memo, lineDescription: row.memo, realmId,
   }, actor)

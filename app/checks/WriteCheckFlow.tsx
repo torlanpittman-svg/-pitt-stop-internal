@@ -16,8 +16,15 @@ type Bank = { key: 'operating' | 'auto_sales'; qboAccountId: string; label: stri
 type Cat = { key: string; label: string; entity: 'operating' | 'auto_sales'; hint: string; linksJob: boolean; linksVehicle: boolean }
 type LinkOption = { id: string; label: string; sub?: string | null }
 type Readiness = { ready: boolean; enabled: boolean; operatingBankConfigured: boolean; autoSalesBankConfigured: boolean; missingCategoryAccounts: string[] }
-type VendorMatch = { id: string; displayName: string }
-type Preview = { decision: 'use' | 'create' | 'ambiguous'; vendorId?: string; displayName?: string; matches: VendorMatch[]; suggestions: VendorMatch[] }
+type PayeeType = 'Vendor' | 'Employee' | 'Customer'
+type PayeeMatch = { id: string; type: PayeeType; displayName: string; active: boolean }
+// Mirrors apps/checks/payee.ts#PayeePreview.
+type Preview =
+  | { decision: 'use'; payee: PayeeMatch }
+  | { decision: 'ambiguous'; matches: PayeeMatch[] }
+  | { decision: 'blocked'; message: string; conflicts: PayeeMatch[] }
+  | { decision: 'create' }
+const PAYEE_TYPE_LABEL: Record<PayeeType, string> = { Vendor: 'vendor', Employee: 'employee', Customer: 'customer' }
 
 interface Props {
   actorName: string
@@ -77,7 +84,7 @@ export default function WriteCheckFlow(props: Props) {
   const [linkLoading, setLinkLoading] = useState(false)
 
   const [preview, setPreview] = useState<Preview | null>(null)
-  const [chosenVendorId, setChosenVendorId] = useState<string | null>(null)
+  const [chosenPayee, setChosenPayee] = useState<PayeeMatch | null>(null)
   const [confirmCreate, setConfirmCreate] = useState(false)
   const [idemKey, setIdemKey] = useState('')
   const [busy, setBusy] = useState(false)
@@ -145,9 +152,10 @@ export default function WriteCheckFlow(props: Props) {
     try {
       const res = await fetch('/api/checks/resolve-payee', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payeeName: payee.trim() }) })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.message || 'Could not look up the payee.')
+      // A failed lookup is NOT "no such payee" — stay on the form and say the lookup failed.
+      if (!res.ok) throw new Error(data.message || 'Could not reach QuickBooks to look up this payee. Nothing was recorded — try again in a moment.')
       setPreview(data)
-      setChosenVendorId(data.decision === 'use' ? data.vendorId : null)
+      setChosenPayee(data.decision === 'use' ? data.payee : null)
       setConfirmCreate(false)
       setIdemKey(crypto.randomUUID())
       setStep('review')
@@ -161,18 +169,18 @@ export default function WriteCheckFlow(props: Props) {
   async function record() {
     setError(null)
     if (!props.liveEnabled) return setError('Live check recording is disabled until MICR/hardware setup is complete. Use the VOID test to preview.')
-    // Payee must be resolvable: an exact existing vendor, an explicit pick, or a confirmed create.
-    const needsPick = preview?.decision === 'ambiguous' && !chosenVendorId
-    const needsCreateConfirm = preview?.decision === 'create' && !confirmCreate
-    if (needsPick) return setError('Pick which vendor this payee is.')
-    if (needsCreateConfirm) return setError('Confirm creating a new vendor for this payee.')
+    // Payee must be resolvable: an existing QuickBooks payee, an explicit pick, or a confirmed new vendor.
+    if (preview?.decision === 'blocked') return setError(preview.message)
+    if (preview?.decision === 'ambiguous' && !chosenPayee) return setError('Pick which QuickBooks record this payee is.')
+    if (preview?.decision === 'create' && !confirmCreate) return setError('Tick the box to confirm adding this payee to QuickBooks as a new vendor.')
     setBusy(true)
     try {
       const res = await fetch('/api/checks', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           payeeName: payee.trim(),
-          vendorId: chosenVendorId,
+          vendorId: chosenPayee?.id ?? null,
+          payeeType: chosenPayee?.type ?? null,
           allowCreateVendor: preview?.decision === 'create' ? confirmCreate : false,
           amountCents, memo: purpose.trim() || null, category,
           linkedJobId: linkKind === 'job' ? linkId : null,
@@ -181,7 +189,12 @@ export default function WriteCheckFlow(props: Props) {
         }),
       })
       const data = await res.json()
-      if (res.status === 409 && data.error === 'ambiguous_vendor') { setPreview({ decision: 'ambiguous', matches: data.matches ?? [], suggestions: [] }); setChosenVendorId(null); throw new Error('This payee matches more than one vendor — pick one.') }
+      // Payee outcomes found at record time. Nothing was recorded and no check number was used, so the
+      // review card is updated in place and the manager confirms again.
+      if (res.status === 409 && data.error === 'ambiguous_payee') { setPreview({ decision: 'ambiguous', matches: data.matches ?? [] }); setChosenPayee(null); throw new Error(data.message) }
+      if (res.status === 409 && data.error === 'payee_exists') { setPreview({ decision: 'use', payee: data.payee }); setChosenPayee(data.payee); setConfirmCreate(false); throw new Error(data.message) }
+      if (res.status === 409 && data.error === 'payee_blocked') { setPreview({ decision: 'blocked', message: data.message, conflicts: data.conflicts ?? [] }); setChosenPayee(null); throw new Error(data.message) }
+      if (res.status === 409 && data.error === 'payee_not_found') { setPreview({ decision: 'create' }); setChosenPayee(null); setConfirmCreate(false); throw new Error(data.message) }
       if (!res.ok && !data.check) throw new Error(data.message || 'Could not record the check.')
       setResult({ recorded: !!data.recorded, check: data.check, error: data.error })
       setStep('result')
@@ -260,24 +273,38 @@ export default function WriteCheckFlow(props: Props) {
 
           {/* Payee resolution */}
           <div className="mt-4 rounded-xl border border-gray-700 bg-gray-950/60 p-3 text-sm text-gray-200">
-            {preview?.decision === 'use' && <p className={WRAP}>Existing vendor: <b className="text-white">{preview.displayName}</b></p>}
+            {preview?.decision === 'use' && (
+              <p className={WRAP}>
+                Existing QuickBooks payee found: <b className="text-white">{preview.payee.displayName}</b>
+                <span className={`ml-2 ${STATUS_CHIP}`}>QuickBooks {PAYEE_TYPE_LABEL[preview.payee.type]}</span>
+              </p>
+            )}
             {preview?.decision === 'create' && (
-              <label className="flex min-h-11 cursor-pointer items-start gap-3 py-2">
-                <input type="checkbox" checked={confirmCreate} onChange={(e) => setConfirmCreate(e.target.checked)} className="mt-0.5 h-5 w-5 shrink-0 accent-blue-600" />
-                <span className={WRAP}>No vendor named “{payee.trim()}” exists. Create a new QuickBooks vendor.</span>
-              </label>
+              <div>
+                <p className={WRAP}>“{payee.trim()}” is not in QuickBooks yet (no vendor, employee or customer has this name). Create a new vendor?</p>
+                <label className="mt-1 flex min-h-11 cursor-pointer items-start gap-3 py-2">
+                  <input type="checkbox" checked={confirmCreate} onChange={(e) => setConfirmCreate(e.target.checked)} className="mt-0.5 h-5 w-5 shrink-0 accent-blue-600" />
+                  <span className={WRAP}>Yes — add “{payee.trim()}” to QuickBooks as a new vendor.</span>
+                </label>
+              </div>
             )}
             {preview?.decision === 'ambiguous' && (
               <div>
-                <p className="mb-2 text-amber-300">This payee matches more than one vendor. Pick the right one:</p>
+                <p className="mb-2 text-amber-300">This name matches more than one QuickBooks record. Pick the right one:</p>
                 <div className="space-y-1">
                   {preview.matches.map((m) => (
-                    <label key={m.id} className="flex min-h-11 cursor-pointer items-start gap-3 py-2">
-                      <input type="radio" name="vendor" checked={chosenVendorId === m.id} onChange={() => setChosenVendorId(m.id)} className="mt-0.5 h-5 w-5 shrink-0 accent-blue-600" />
-                      <span className={WRAP}>{m.displayName}</span>
+                    <label key={`${m.type}:${m.id}`} className="flex min-h-11 cursor-pointer items-start gap-3 py-2">
+                      <input type="radio" name="payee" checked={chosenPayee?.id === m.id && chosenPayee?.type === m.type} onChange={() => setChosenPayee(m)} className="mt-0.5 h-5 w-5 shrink-0 accent-blue-600" />
+                      <span className={WRAP}>{m.displayName} <span className={`ml-1 ${STATUS_CHIP}`}>{PAYEE_TYPE_LABEL[m.type]}</span></span>
                     </label>
                   ))}
                 </div>
+              </div>
+            )}
+            {preview?.decision === 'blocked' && (
+              <div role="alert" className="text-amber-200">
+                <p className="font-semibold">This check can’t be written to this name yet.</p>
+                <p className={`mt-1 ${WRAP}`}>{preview.message}</p>
               </div>
             )}
           </div>
@@ -285,7 +312,7 @@ export default function WriteCheckFlow(props: Props) {
 
         {error && <p role="alert" className={`mt-3 ${ALERT_ERROR} ${WRAP}`}>{error}</p>}
         {props.liveEnabled ? (
-          <button type="button" disabled={busy} onClick={record} className={`mt-4 ${ACTION_CONFIRM}`}>
+          <button type="button" disabled={busy || preview?.decision === 'blocked'} onClick={record} className={`mt-4 ${ACTION_CONFIRM}`}>
             {busy ? 'Recording…' : 'Record & Print Check'}
           </button>
         ) : (
@@ -315,7 +342,7 @@ export default function WriteCheckFlow(props: Props) {
         )}
         <div className="min-w-0">
           <label htmlFor="check-payee" className={LABEL}>Pay to</label>
-          <input id="check-payee" value={payee} onChange={(e) => setPayee(e.target.value)} placeholder="Vendor / payee name" className={`${CONTROL} min-h-11 py-2`} />
+          <input id="check-payee" value={payee} onChange={(e) => setPayee(e.target.value)} placeholder="Who are you paying?" className={`${CONTROL} min-h-11 py-2`} />
           {/* The input scrolls a long name sideways; this readout shows all of it while typing. */}
           {payee.trim() && (
             <p className={`mt-2 border-l-2 border-blue-500 pl-3 text-base font-semibold text-white ${WRAP}`}>
@@ -460,7 +487,7 @@ export default function WriteCheckFlow(props: Props) {
   function resetAll() {
     setPayee(''); setAmount(''); setPurpose(''); setCategory('shop_general')
     setLinkId(null); setLinkLabel(null); setLinkOptions([])
-    setPreview(null); setChosenVendorId(null); setConfirmCreate(false); setIdemKey(''); setResult(null); setError(null); setStep('form')
+    setPreview(null); setChosenPayee(null); setConfirmCreate(false); setIdemKey(''); setResult(null); setError(null); setStep('form')
   }
 }
 

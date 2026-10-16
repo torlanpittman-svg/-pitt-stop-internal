@@ -462,8 +462,25 @@ Result lines: `UPDATED OK`, `ALREADY UP TO DATE`, `UPDATED - SERVER CONNECTION N
   pinned (`check_qbo_realm_id`). Every write is refused on any other company/environment.
 - One writer at a time per check (`qb_status = 'writing'` lock, stale after 3 minutes) + a stable
   QuickBooks `requestid`, so concurrent or repeated retries cannot create two Purchases.
-- Crash recovery adopts an existing Purchase only on an exact match (bank account + payee + amount + date);
-  any other check with that number on the same bank account stops the write.
+- Crash recovery adopts an existing Purchase only on an exact match (bank account + payee id AND type +
+  amount + date); any other check with that number on the same bank account stops the write.
+
+## Payee resolution (`apps/checks/payee.ts`, 2026-10-16)
+
+- A check's QuickBooks payee (`Purchase.EntityRef`) may be a **Vendor, Employee, or Customer** — this
+  company already has checks paid to all three. QuickBooks display names are unique ACROSS those lists.
+- The payee is looked up in all three lists (exact name after trimming/space-collapsing/case-folding).
+  One match → used as-is with its type; several → the manager picks; none → a new Vendor is created
+  only after explicit confirmation. A failed lookup is reported as a failure, never as "not found".
+- The entity type is stored on the check (`checks.payee_qbo_entity_type`, migration 0055, default
+  `Vendor`) and sent on every write/retry. QuickBooks ids are only unique within one list.
+- A confirmed vendor create that still returns **6240 Duplicate Name** is never retried or renamed: the
+  name is re-queried and the existing payee is handed back for confirmation, or the conflict is explained.
+- Every payee outcome happens BEFORE a check number is reserved, so payee problems never use a number.
+- Inactive QuickBooks records are renamed "Name (deleted)" by QuickBooks, which frees the name; only
+  active records are searched.
+- Root cause that prompted this: payroll to Anthony Pittman (an Employee, not a Vendor) — the old
+  vendor-only lookup said "doesn't exist" and the vendor create failed with 6240.
 - Check dates use US Central time.
 - No automatic voiding exists, and CFO calculations do not consume checks. Both are deliberately out of
   scope for this phase.
