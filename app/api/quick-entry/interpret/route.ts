@@ -10,9 +10,13 @@
  * The deterministic core still owns the explicit work price (returned ONLY to a manager/admin), and
  * the old note classifier still turns an instruction ("call when done") into an internal note
  * instead of a service. AI unavailable → deterministic results only; the typed text is never lost.
+ *
+ * `{ text, line: true }` interprets ONE employee "＋ Other" line (the path employees actually use). It
+ * works whether or not the natural-language box (qe_nl_enabled) is on, and returns services only —
+ * never a price or a note. Signed-in employees only.
  */
 import { NextResponse } from 'next/server'
-import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
+import { authenticatedActorFromRequest, employeeAuthorizedFromRequest } from '@/apps/auth/employee-guard'
 import { nlEnabled } from '@/apps/settings/db'
 import { deterministicInterpret, priceFromToken, splitWorkEntries } from '@/apps/quick-entry/interpret'
 import { classifyUnmatched } from '@/apps/quick-entry/interpret-ai'
@@ -23,17 +27,19 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: Request) {
-  if (!(await nlEnabled())) return NextResponse.json({ ok: false, error: 'disabled' }, { status: 404 })
+  if (!(await employeeAuthorizedFromRequest(req))) return NextResponse.json({ ok: false, error: 'Sign in required' }, { status: 401 })
+  const body = await req.json().catch(() => ({})) as { text?: string; line?: boolean }
+  const lineMode = body.line === true
+  if (!lineMode && !(await nlEnabled())) return NextResponse.json({ ok: false, error: 'disabled' }, { status: 404 })
   const actor = await authenticatedActorFromRequest(req)
-  const priceAllowed = actor?.role === 'manager' || actor?.role === 'admin'
+  const priceAllowed = !lineMode && (actor?.role === 'manager' || actor?.role === 'admin')
 
-  const body = await req.json().catch(() => ({})) as { text?: string }
-  const text = (body.text ?? '').slice(0, 2000)
+  const text = (body.text ?? '').slice(0, lineMode ? 300 : 2000)
   if (!text.trim()) return NextResponse.json({ ok: true, entries: [], note: null, priceCents: null, priceAllowed, ai: 'skipped' })
 
-  // Price: the deterministic core only (a delimited price token, else a $-amount anywhere).
-  const { priceCents } = deterministicInterpret(text, [])
-  const pieces = splitWorkEntries(text, isOdorFamily).filter((p) => priceFromToken(p) == null)
+  // Price: the deterministic core only (a delimited price token, else a $-amount anywhere). Never in line mode.
+  const priceCents = lineMode ? null : deterministicInterpret(text, []).priceCents
+  const pieces = lineMode ? [text.trim()] : splitWorkEntries(text, isOdorFamily).filter((p) => priceFromToken(p) == null)
 
   const results = await Promise.all(pieces.map((p) => interpretServiceEntry(p)))
 
@@ -41,7 +47,7 @@ export async function POST(req: Request) {
   const unknown = results.map((r, i) => ({ r, i })).filter(({ r }) => r.interpretation.status === 'none' && r.interpretation.intent === 'unknown')
   const notes: string[] = []
   const asNote = new Set<number>()
-  if (unknown.length) {
+  if (unknown.length && !lineMode) {
     const titles = (await listCatalogChoices()).map((c) => c.name)
     const cls = await classifyUnmatched(unknown.map(({ r }) => r.interpretation.entry), titles)
     cls.forEach((c, k) => {

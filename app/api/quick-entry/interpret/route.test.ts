@@ -20,8 +20,9 @@ import * as schema from '@/drizzle/schema'
 
 const holder: { db: PgliteDatabase<typeof schema> | null } = { db: null }
 vi.mock('@/platform/db', () => ({ getDb: () => holder.db }))
+const flags = vi.hoisted(() => ({ nl: true }))
 vi.mock('@/apps/settings/db', () => ({
-  nlEnabled: async () => true, voiceEnabled: async () => false,
+  nlEnabled: async () => flags.nl, voiceEnabled: async () => false,
   getBusinessConfig: async () => ({ shopSuppliesEnabled: false, shopSuppliesBps: 0, shopSuppliesCapCents: 0, paymentEnabled: false, paymentBps: 0, paymentLabel: 'Card charge', paymentBasis: 'work_only', defaultTaxBps: 825 }),
   shopSuppliesLabel: async () => 'Shop supplies',
 }))
@@ -72,7 +73,7 @@ let CAT: Record<string, string> = {}
 beforeEach(async () => {
   for (const t of CLEAR_TABLES) await db.execute(`DELETE FROM ${t}`)
   CAT = await seedProductionCatalog(db)
-  state.role = 'manager'; state.aiReply = null; state.aiCalls = 0
+  state.role = 'manager'; state.aiReply = null; state.aiCalls = 0; flags.nl = true
 })
 type Entry = { entry: string; corrected: string; status: string; intent: string; area: string | null; part: { description: string } | null; ai: string; candidates: Array<{ catalogId: string; name: string }> }
 const entries = async (text: string) => (await (await post(text)).json()) as { ok: boolean; entries: Entry[]; note: string | null; priceCents: number | null; ai: string }
@@ -155,5 +156,28 @@ describe('POST /api/quick-entry/interpret — real AI path (model reply mocked, 
     const d2 = await entries('get the gunk off')
     expect(d2.ai).toBe('unavailable')
     expect(d2.entries[0].entry).toBe('get the gunk off')
+  })
+})
+
+describe('POST /api/quick-entry/interpret — employee "＋ Other" line mode', () => {
+  const line = async (text: string) => {
+    const r = await POST(new Request('http://x/api/quick-entry/interpret', { method: 'POST', body: JSON.stringify({ text, line: true }) }))
+    return { status: r.status, d: await r.json() as { ok: boolean; entries: Entry[]; priceCents: number | null; note: string | null } }
+  }
+  it('works for an employee even when the natural-language box is switched off, and never returns a price or a note', async () => {
+    flags.nl = false; state.role = 'employee'
+    expect((await post('shamp pass seat')).status).toBe(404)          // the NL box itself stays off
+    const { status, d } = await line('shamp pass seat, 650')
+    expect(status).toBe(200)
+    expect(d.entries).toHaveLength(1)                                  // one Other line = one entry (not split)
+    expect(d.entries[0]).toMatchObject({ entry: 'shamp pass seat, 650', intent: 'service', area: 'passenger seat' })
+    expect(d.priceCents).toBeNull()
+    expect(d.note).toBeNull()
+    const part = await line('dr side mirror assy')
+    expect(part.d.entries[0]).toMatchObject({ intent: 'part', part: { description: 'Driver-side mirror assembly' } })
+  })
+  it('signed-out callers are refused', async () => {
+    state.role = null
+    expect((await line('wash')).status).toBe(401)
   })
 })

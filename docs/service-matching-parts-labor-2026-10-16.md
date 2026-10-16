@@ -75,7 +75,11 @@ no longer offered for new picks or label stamping (`resolveCatalogIds` now match
 The "Ozone Treatment" shortcut points at the new row with the same label, group and order. 0053 skips all
 of this if a manager already confirmed the legacy row's role.
 
-**Employee Quick Entry** now uses the shared interpreter (`interpretServiceEntry`).
+**Employee Quick Entry** now uses the shared interpreter (`interpretServiceEntry`). Production has
+the natural-language box (`qe_nl_enabled`) **off** (since 2026-08-12, left as is). The path employees
+actually use is "＋ Other": when they finish typing a line (Enter or leaving the field), it is sent as
+`{ text, line: true }`. That works regardless of the flag, needs a signed-in employee, and returns
+services only, never a price or a note.
 `POST /api/quick-entry/interpret` returns `entries[]`: raw entry, corrected text, status, intent,
 area, part, and real catalog candidates. Price parsing and the note classifier are unchanged, and only
 managers/admins get the price. The screen (`linesFromEntries` & helpers in `apps/quick-entry/job-lines.ts`)

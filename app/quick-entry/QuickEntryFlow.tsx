@@ -320,6 +320,30 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
       setNlText('')
     } catch { setNlMsg('Network error — your text is still here. Try again.') } finally { setNlBusy(false) }
   }, [nlText, lines])
+  // "＋ Other" (the path employees use): when they finish typing a line, the SAME shared interpretation
+  // runs on it — a clear match becomes that service (typed words + area kept), anything unclear gets a
+  // short question on the line. The employee's price stays on the line. Offline/failed → kept as typed.
+  const [otherMsg, setOtherMsg] = useState<Record<string, string>>({})
+  const interpretOther = useCallback(async (key: string) => {
+    const l = lines.find((x) => x.key === key)
+    const text = l?.name.trim() ?? ''
+    if (!l || l.kind !== 'custom' || text.length < 3 || l.pending || l.partSupply || l.tires || (l.entryText && l.entryText === text)) return
+    try {
+      const r = await fetch('/api/quick-entry/interpret', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, line: true }) })
+      const d = await r.json().catch(() => null)
+      if (!r.ok || !d?.ok) throw new Error()
+      const [entry] = (d.entries ?? []) as InterpEntry[]
+      setLines((xs) => xs.map((x) => {
+        if (x.key !== key || x.name.trim() !== text) return x          // edited again meanwhile → leave it
+        const [next] = entry ? linesFromEntries([entry], [], () => key) : []
+        return next ? { ...next, priceCents: x.priceCents } : { ...x, entryText: text }
+      }))
+      setOtherMsg((m) => ({ ...m, [key]: d.ai === 'unavailable' || d.ai === 'failed' ? 'Smart suggestions are offline — kept as typed.' : '' }))
+    } catch {
+      setLines((xs) => xs.map((x) => (x.key === key && x.name.trim() === text ? { ...x, entryText: text } : x)))
+      setOtherMsg((m) => ({ ...m, [key]: 'Couldn’t check that right now — kept as typed.' }))
+    }
+  }, [lines])
   const updateLine = (key: string, f: (l: JobLine) => JobLine | null) =>
     setLines((xs) => xs.map((l) => (l.key === key ? f(l) ?? l : l)))
   const [tireQty, setTireQty] = useState<Record<string, string>>({})
@@ -628,7 +652,8 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
                         <div className="flex-1 min-w-0">
                           {l.kind === 'custom' ? (
                             // Free-text custom service → smart historical search (supports keyboard mic)
-                            <input value={l.name} onChange={(e) => { setLineName(l.key, e.target.value); searchOther(l.key, e.target.value) }} placeholder="What are we doing?" autoFocus={!l.entryText}
+                            <input value={l.name} onChange={(e) => { setLineName(l.key, e.target.value); searchOther(l.key, e.target.value) }} onBlur={() => { void interpretOther(l.key) }}
+                              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur() } }} enterKeyHint="done" placeholder="What are we doing?" autoFocus={!l.entryText}
                               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-base" />
                           ) : (
                             <p className="text-white text-sm truncate">{l.name}</p>
@@ -654,6 +679,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
                         <button type="button" onClick={() => updateLine(l.key, (x) => (x.partSupply || x.tires ? { ...keepAsTyped(x), pending: { intent: x.tires ? 'tires' : 'part', question: null, candidates: [], part: { description: x.name } } } : reopenChoice(x)))}
                           className="text-blue-400 text-xs font-semibold min-h-10 px-1 inline-flex items-center">Not right? Change</button>
                       ) : null}
+                      {otherMsg[l.key] && !l.pending && <p className="mt-1 text-amber-300/80 text-[11px]" role="status">{otherMsg[l.key]}</p>}
                       {l.pending && (
                         <div className="mt-1.5 rounded-xl border border-amber-800/60 bg-amber-950/20 px-2.5 py-2" role="group" aria-label={`Clarify ${l.name}`}>
                           {l.entryText && <p className="text-gray-400 text-[11px] break-words">You typed “{l.entryText}”</p>}
