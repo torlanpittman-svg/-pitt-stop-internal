@@ -154,7 +154,10 @@ export function catalogVocabulary(items: InterpretCatalogItem[]): string[] {
 }
 
 // ── Domain signals ────────────────────────────────────────────────────────────────────────────
-const ODOR_WORDS = new Set(['odor', 'smell', 'stink', 'stinky', 'stinks', 'deodorize', 'musty', 'mildew', 'smelly'])
+/** Odor wording, including odor SOURCES ("smoke", "cigarette", "vomit"): any of these means "which of the
+ *  three odor services?" — never a separate smoke/odor-removal service (those are retired). */
+const ODOR_WORDS = new Set(['odor', 'smell', 'stink', 'stinky', 'stinks', 'deodorize', 'musty', 'mildew', 'smelly',
+  'smoke', 'smoky', 'smoker', 'cigarette', 'cigar', 'vape', 'vomit', 'urine'])
 const SERVICE_VERBS = new Set(['paint', 'painted', 'painting', 'refinish', 'repaint', 'respray', 'spray', 'sand', 'fix', 'wipe', 'shine',
   // condition words describe work ON the component (restore it), not a replacement part
   'foggy', 'cloudy', 'hazy', 'yellow', 'yellowed', 'oxidized', 'faded', 'dull', 'dirty', 'stained', 'clean', 'cleaning', 'shampoo', 'polish', 'wax', 'repair', 'restore', 'restoration',
@@ -220,7 +223,7 @@ export const SLUG_HINTS: Record<string, string[]> = {
   clay_bar: ['clay'],
   air_duct_cleaning: ['duct', 'vent', 'vents'],
   ozone_treatment: ['ozone'],
-  odor_treatment: ['odor', 'smell', 'smoke'],
+  odor_treatment: ['odor', 'smell'],
 }
 
 const GENERIC_ITEM_WORDS = new Set(['detail', 'treatment', 'cleaning', 'clean', 'service', 'replacement', 'labor', 'year', '1', '3', 'step'])
@@ -321,7 +324,8 @@ export function interpretEntry(entry: string, items: InterpretCatalogItem[]): In
   // Alternate names — never for generic odor wording (an old alias such as "Odor Treatment" → the
   // retired combined ozone record must not decide what odor work means).
   const genericOdor = isGenericOdorKey(raw) || isGenericOdorKey(corrected)
-  for (const key of genericOdor ? [] : keys) {
+  // Ceramic coating is decided by its own rule below (duration), never by the shared "Ceramic Coating" alias.
+  for (const key of genericOdor || stems.includes('ceramic') ? [] : keys) {
     const aliased = [...new Set(items.filter((i) => i.aliases.some((a) => normalizeServiceKey(a) === key)).map((i) => i.id))]
     if (aliased.length === 1) return done({ status: 'resolved', intent: 'service', candidates: [{ catalogId: aliased[0], via: 'alias' }], source: 'alias', area: null })
     if (aliased.length > 1) return done({ status: 'choose', intent: 'service', candidates: aliased.map((id) => ({ catalogId: id, via: 'alias' as const })), source: 'alias', question: 'This name is used for more than one service. Which one?' })
@@ -343,6 +347,17 @@ export function interpretEntry(entry: string, items: InterpretCatalogItem[]): In
     if (hasOzone && !hasDuct && !hasOdor && ozone) return done({ status: 'resolved', intent: 'odor', candidates: c(ozone, 'rule'), source: 'rule', area: null })
     const candidates = [odorT, ozone, duct].flatMap((i) => c(i, 'rule'))
     if (candidates.length) return done({ status: 'choose', intent: 'odor', candidates, source: 'rule', area: null, question: 'Which odor service is this?' })
+  }
+
+  // 2b) Ceramic coating — two options that differ only by protection length. A stated duration picks one
+  //     ("3 yr ceramic", "1-Year Ceramic Coating"); otherwise ask. Never guessed, never row order.
+  const c1 = items.find((i) => i.slug === 'ceramic_coating_1yr'), c3 = items.find((i) => i.slug === 'ceramic_coating_3yr')
+  if (stems.includes('ceramic') && (c1 || c3)) {
+    const one = tokens.some((t) => t === '1' || t === 'one' || t === '1yr' || t === '12'), three = tokens.some((t) => t === '3' || t === 'three' || t === '3yr' || t === '36')
+    if (one && !three && c1) return done({ status: 'resolved', intent: 'service', candidates: [{ catalogId: c1.id, via: 'rule' }], source: 'rule', area: null })
+    if (three && !one && c3) return done({ status: 'resolved', intent: 'service', candidates: [{ catalogId: c3.id, via: 'rule' }], source: 'rule', area: null })
+    const both = [c1, c3].filter((i): i is InterpretCatalogItem => !!i).map((i) => ({ catalogId: i.id, via: 'rule' as const }))
+    return done({ status: 'choose', intent: 'service', candidates: both, source: 'rule', area: null, question: 'Which ceramic coating — 1-Year or 3-Year protection?' })
   }
 
   // 3) Tires — clarify supply vs. install and quantity (handled by the tire flow).

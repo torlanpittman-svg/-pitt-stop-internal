@@ -28,7 +28,7 @@ import * as schema from '@/drizzle/schema'
 const holder: { db: PgliteDatabase<typeof schema> | null } = { db: null }
 vi.mock('@/platform/db', () => ({ getDb: () => holder.db }))
 
-import { seedProductionCatalog, runMigration0053, runMigration0056, LIVE_QB_ITEMS, CLEAR_TABLES } from './catalog-fixture.test-support'
+import { seedProductionCatalog, runMigration0053, runMigration0056, runMigration0057, LIVE_QB_ITEMS, CLEAR_TABLES } from './catalog-fixture.test-support'
 import { interpretServiceEntry } from './service-match-db'
 import { listShortcuts } from './shortcuts'
 import { loadEligibleCatalog } from './service-match-db'
@@ -134,7 +134,7 @@ describe('odor definitions survive the mapping', () => {
 describe('0053 — ozone-only service; the legacy combined row keeps its history', () => {
   it('adds "Ozone Treatment" (ozone only, existing QB item #24, price entered per job) and retires the combined row from NEW picks only', async () => {
     const oz = await rowBySlug('ozone_treatment')
-    expect(oz).toMatchObject({ name: 'Ozone Treatment', qbItemRef: '24', qbItemStatus: 'existing', qbSyncEnabled: true, qbDescription: 'Ozone treatment.',
+    expect(oz).toMatchObject({ name: 'Ozone Treatment', qbItemRef: '24', qbItemStatus: 'existing', qbSyncEnabled: true, qbDescription: 'Professional ozone treatment of the vehicle’s interior to help neutralize persistent odors and refresh the cabin.',   // 0057 wording
       defaultPriceCents: null, serviceRole: 'odor_ozone', active: true })
     expect(oz.roleConfirmedAt).not.toBeNull()
     const legacy = await rowBySlug('odor_ozone')
@@ -143,7 +143,7 @@ describe('0053 — ozone-only service; the legacy combined row keeps its history
     expect((await db.select().from(serviceAliases).where(eq(serviceAliases.catalogId, legacy.id))).map((a) => a.alias).sort()).toEqual(['Odor Treatment', 'Ozone', 'Ozone Treatment'])
     const { choices } = await loadEligibleCatalog()
     expect(choices.has(legacy.id)).toBe(false)
-    expect(choices.get(oz.id)).toMatchObject({ qbMapped: true, description: 'Ozone treatment.' })
+    expect(choices.get(oz.id)).toMatchObject({ qbMapped: true, description: 'Professional ozone treatment of the vehicle’s interior to help neutralize persistent odors and refresh the cabin.' })
   })
 
   it('the "Ozone Treatment" shortcut now points at the ozone-only service — same label, group and order', async () => {
@@ -220,7 +220,8 @@ describe('0053 never overrides a manager decision or historical lines', () => {
 })
 
 describe('0056 — three separate odor services; the package is retired, never repurposed', () => {
-  const ODOR_DESC = 'Steam cleaning the entire interior and using smoke odor removal products to get rid of the smells.'
+  // 0056 set the owner's first wording; 0057 replaced it with the approved final wording.
+  const ODOR_DESC = 'Comprehensive steam cleaning of the vehicle’s interior, combined with professional odor-neutralizing products to address unwanted odors throughout the cabin.'
   const snapRow = async (slug: string) => { const r = await rowBySlug(slug); return r && { ...r, updatedAt: null, notes: null } }
 
   it('adds Odor Treatment on the existing QuickBooks "Odor Treatment" item (#68, not Ozone #24), owner wording, no default price', async () => {
@@ -244,7 +245,7 @@ describe('0056 — three separate odor services; the package is retired, never r
     const before = { oz: await snapRow('ozone_treatment'), duct: await snapRow('air_duct_cleaning'), legacy: await snapRow('odor_ozone') }
     await runMigration0056(db)
     expect({ oz: await snapRow('ozone_treatment'), duct: await snapRow('air_duct_cleaning'), legacy: await snapRow('odor_ozone') }).toEqual(before)
-    expect((await rowBySlug('ozone_treatment')).qbDescription).toBe('Ozone treatment.')
+    expect((await rowBySlug('ozone_treatment')).qbDescription).toBe('Ozone treatment.')   // still the 0053 text at this point (0057 not run)
   })
 
   it('retires Complete Odor Treatment from new picks without changing what the record means', async () => {
@@ -299,5 +300,41 @@ describe('0056 — three separate odor services; the package is retired, never r
     expect(after.catalogId).toBe(CAT.complete_odor_treatment)
     expect((await db.select().from(jobLineItems).where(eq(jobLineItems.jobServiceId, line.id)))[0].priceCents).toBe(35000)
     expect((await getEstimateView(o.id)).services[0]).toMatchObject({ catalogName: 'Complete Odor Treatment', description: 'Complete odor treatment, including air duct cleaning and ozone treatment.', matchState: 'choose' })
+  })
+})
+
+describe('0057 — owner-approved Odor and Ozone invoice descriptions', () => {
+  const ODOR = 'Comprehensive steam cleaning of the vehicle’s interior, combined with professional odor-neutralizing products to address unwanted odors throughout the cabin.'
+  const OZONE = 'Professional ozone treatment of the vehicle’s interior to help neutralize persistent odors and refresh the cabin.'
+
+  it('stores the exact wording in the authoritative catalog; Air Duct Cleaning keeps its approved text', async () => {
+    expect((await rowBySlug('odor_treatment')).qbDescription).toBe(ODOR)
+    expect((await rowBySlug('ozone_treatment')).qbDescription).toBe(OZONE)
+    expect(await choiceBySlug('odor_treatment')).toMatchObject({ description: ODOR })
+    expect(await choiceBySlug('ozone_treatment')).toMatchObject({ description: OZONE })
+    for (const t of [ODOR, OZONE]) expect(t).not.toMatch(/saniti|disinfect|health|germ|bacteria|guarantee|eliminat|smoke/i)
+  })
+
+  it('future lines use the new wording on the invoice; renaming keeps it', async () => {
+    const [v] = await db.insert(vehicles).values({ make: 'Ford' }).returning()
+    const [o] = await db.insert(serviceOrders).values({ orderNumber: 'D57', vehicleId: v.id, source: 'quick_entry', serviceType: 'retail', status: 'arrived' }).returning()
+    const est = await getOrCreateEstimate(o.id, 'M')
+    await addService(est.id, 'Odor Treatment', { catalogId: CAT.odor_treatment, actor: 'M' })
+    await addService(est.id, 'Ozone Treatment', { catalogId: CAT.ozone_treatment, actor: 'M' })
+    const view = await getEstimateView(o.id)
+    expect(view.services.map((x) => x.description)).toEqual([ODOR, OZONE])
+  })
+
+  it('is idempotent and audited exactly once per service (before → after), never overwriting a manager edit', async () => {
+    const ev = (await db.select().from(serviceCatalogEvents)).filter((e) => e.actor === 'migration 0057')
+    expect(ev.map((e) => JSON.parse(e.note!).name).sort()).toEqual(['Odor Treatment', 'Ozone Treatment'])
+    expect(ev.every((e) => e.eventType === 'catalog_updated')).toBe(true)
+    expect(JSON.parse(ev.find((e) => e.catalogId === CAT.ozone_treatment)!.note!)).toMatchObject({ before: { qbDescription: 'Ozone treatment.' }, after: { qbDescription: OZONE } })
+    await runMigration0057(db)
+    expect((await db.select().from(serviceCatalogEvents)).filter((e) => e.actor === 'migration 0057')).toHaveLength(2)
+    // A manager's own later wording is left alone on re-run.
+    await db.update(serviceCatalog).set({ qbDescription: 'Manager text.' }).where(eq(serviceCatalog.id, CAT.odor_treatment))
+    await runMigration0057(db)
+    expect((await rowBySlug('odor_treatment')).qbDescription).toBe('Manager text.')
   })
 })

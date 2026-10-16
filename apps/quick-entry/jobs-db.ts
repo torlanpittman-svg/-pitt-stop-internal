@@ -3,7 +3,7 @@
  * No QuickBooks or AutoLeap. A captured job creates a workflow service_order so it
  * appears on /work-board, plus a quick_entry_jobs record (customer + lines).
  */
-import { normalizeServiceKey } from './catalog-identity'
+import { normalizeServiceKey, ambiguousServiceKeys } from './catalog-identity'
 import { getDb } from '@/platform/db'
 import { sql } from 'drizzle-orm'
 import { quickEntryJobs } from './schema'
@@ -15,6 +15,7 @@ import { getOrCreateEstimate, promoteTextServices, recomputeEstimate, setExplici
 import { addEstimatePart, addTireWork, installationCatalog } from '@/apps/parts/estimate-parts'
 import { cleanDetail } from '@/apps/quickbooks/retail-format'
 import { searchServiceHistory, type HistoryEntry, type ServiceMatch } from './service-history'
+import { isOdorFamily } from './service-interpret'
 
 // ── Retail service-history knowledge base (grounded in real completed work) ──
 // Cached in-process (tiny dataset); a short TTL keeps it fresh as new Jobs complete. RETAIL ONLY —
@@ -44,10 +45,22 @@ async function loadRetailServiceHistory(): Promise<HistoryEntry[]> {
       AND lower(coalesce(so.service_type,'')) NOT LIKE 'dealer%'
   `)
   const rows: HistoryEntry[] = []
-  for (const r of priced.rows as { name: string; price_cents: number }[]) rows.push({ name: r.name, priceCents: r.price_cents })
-  for (const r of named.rows as { name: string }[]) if (r.name) rows.push({ name: r.name, priceCents: null })
+  // Never suggest retired or ambiguous work from history: odor-family names ("Remove Smoke Odor", "Odor /
+  // Ozone Treatment", "Complete Odor Treatment", old ozone/duct lines and their old prices) and names that
+  // match more than one service ("Ceramic coating"). Those go through the catalog services, which ask.
+  const ambiguous = await ambiguousServiceKeys()
+  const allowed = (name: string) => isSuggestableHistoryName(name, ambiguous)
+  for (const r of priced.rows as { name: string; price_cents: number }[]) if (allowed(r.name)) rows.push({ name: r.name, priceCents: r.price_cents })
+  for (const r of named.rows as { name: string }[]) if (r.name && allowed(r.name)) rows.push({ name: r.name, priceCents: null })
   historyCache = { at: Date.now(), rows }
   return rows
+}
+
+/** May a historical service name be offered as a Quick Entry "Other" suggestion? Not odor-family work
+ *  (retired odor/smoke services, old ozone/duct lines and their old prices) and not a name that matches
+ *  more than one service (e.g. "Ceramic coating") — those go through the catalog services, which ask. */
+export function isSuggestableHistoryName(name: string, ambiguousKeys: ReadonlySet<string>): boolean {
+  return !isOdorFamily(name) && !ambiguousKeys.has(normalizeServiceKey(name))
 }
 
 /** Search the retail service history for families similar to the employee's typed "Other" name. */

@@ -35,9 +35,12 @@ export interface Readiness { ready: boolean; issues: ReadinessIssue[]; summary: 
 /** Why a line must have its service chosen before invoicing (null = it doesn't). */
 export type ChoiceReason = 'odor' | 'package' | 'name'
 export function serviceChoiceReason(s: ReadinessService): ChoiceReason | null {
-  if (s.kind === 'part' || s.matchMethod === 'custom') return null
+  if (s.kind === 'part') return null
   if (s.catalogId) return s.role === 'odor_complete' ? 'package' : null
+  // Odor wording always needs one of the three real services — even on a "custom" one-off line, so an
+  // obsolete service ("Remove Smoke Odor") can't come back as a custom line.
   if (odorWordingNeedsChoice(s.title)) return 'odor'
+  if (s.matchMethod === 'custom') return null
   if (s.ambiguousName) return 'name'
   return null
 }

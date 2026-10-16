@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
 import { drizzle, type PgliteDatabase } from 'drizzle-orm/pglite'
 import { pushSchema } from 'drizzle-kit/api'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import * as schema from '@/drizzle/schema'
 
 const holder: { db: PgliteDatabase<typeof schema> | null } = { db: null }
@@ -114,7 +114,7 @@ describe('shortcut lifecycle — identity preserved, nothing historical rewritte
     const c = (await db.select().from(serviceCatalog).where(eq(serviceCatalog.id, CAT.clay_bar)))[0]
     expect(c).toMatchObject({ qbDescription: 'Decontaminate paint with a clay bar.', defaultPriceCents: 22500, qbItemRef: '67' })
     await expect(updateCatalogService(CAT.interior_detail, { priceMode: 'fixed', defaultPriceCents: 1 }, 'Owner')).rejects.toThrow(/size\/condition/)
-    const ev = (await db.select().from(serviceCatalogEvents).where(eq(serviceCatalogEvents.eventType, 'catalog_updated')))[0]
+    const ev = (await db.select().from(serviceCatalogEvents).where(and(eq(serviceCatalogEvents.eventType, 'catalog_updated'), eq(serviceCatalogEvents.catalogId, CAT.clay_bar))))[0]
     expect(JSON.parse(ev.note!)).toMatchObject({ before: { defaultPriceCents: 20000 }, after: { defaultPriceCents: 22500, description: 'Decontaminate paint with a clay bar.' } })
   })
 

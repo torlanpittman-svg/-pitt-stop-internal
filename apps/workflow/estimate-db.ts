@@ -19,9 +19,19 @@ import { jobParts } from '@/apps/parts/schema'
 import { eligibleCatalogChoice, catalogDescriptionSnapshot, canonicalDescription } from '@/apps/quick-entry/service-match-db'
 import { composeLineDescription, partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
 import { loadEstimateReview } from './estimate-review'
+import { odorServicesMentioned } from '@/apps/quick-entry/service-interpret'
 import { serviceChoiceReason, servicePartLike, type ChoiceReason, type ReadinessIssue } from './estimate-readiness'
 import type { LaborStatus } from '@/apps/parts/labor-review'
 
+
+/** Odor work is always one of the three catalog services (Ozone Treatment, Air Duct Cleaning, Odor
+ *  Treatment) — never a custom one-off, so retired services ("Remove Smoke Odor", "Complete Odor
+ *  Treatment") can't be recreated as custom lines. */
+function assertNotCustomOdor(title: string): void {
+  if (odorServicesMentioned(title).length > 0) {
+    throw new Error('Odor work is added as Ozone Treatment, Air Duct Cleaning, or Odor Treatment — choose the service performed (add each one as its own line).')
+  }
+}
 export type EstimateRow = typeof jobEstimates.$inferSelect
 export type JobServiceRow = typeof jobServices.$inferSelect
 export type JobLineRow = typeof jobLineItems.$inferSelect
@@ -660,6 +670,7 @@ export async function addService(estimateId: string, title: string, opts: AddSer
     catalogId = choice.catalogId
     matchMethod = opts.matchMethod ?? 'manual'
   } else if (opts.custom) {
+    assertNotCustomOdor(clean)
     matchMethod = 'custom'
   } else {
     catalogId = await resolveCatalogId(clean)   // stable catalog identity for the QB payload
@@ -703,6 +714,7 @@ export async function selectServiceMatch(orderId: string, serviceId: string, inp
   }
   const method: MatchMethod = catalogId ? (input.matchMethod ?? 'manual') : 'custom'
   const title = input.title != null ? String(input.title).replace(/\s+/g, ' ').trim().slice(0, 200) : service.title
+  if (!catalogId) assertNotCustomOdor(title)
   if (!title) throw new Error('Enter a service name.')
   const norm = (x: string) => x.trim().toLowerCase()
   if (title !== service.title && services.some((s) => s.id !== serviceId && norm(s.title) === norm(title))) throw new Error('Another service on this estimate already has that name.')

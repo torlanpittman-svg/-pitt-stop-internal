@@ -181,7 +181,8 @@ export default function ServicePicker({ orderId, mode, service, busy, isFlat, ve
       {!picked && (result || lookErr || mode === 'rematch') && panel !== 'part' && panel !== 'tires' && (
         <div className="flex flex-wrap gap-2">
           <button type="button" onClick={() => setPanel(panel === 'browse' ? 'none' : 'browse')} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200`}>{panel === 'browse' ? 'Hide list' : 'Browse all services'}</button>
-          {entry.trim() && <button type="button" onClick={() => setPanel('custom')} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200`}>Custom service…</button>}
+          {/* Odor work is always one of the three services — never a custom one-off (retired services can't come back). */}
+          {entry.trim() && it?.intent !== 'odor' && <button type="button" onClick={() => setPanel('custom')} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200`}>Custom service…</button>}
           {mode === 'add' && <button type="button" onClick={() => setPanel('part')} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200`}>Add a part…</button>}
         </div>
       )}
