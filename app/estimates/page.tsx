@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 import { managerActor } from '@/apps/checks/authz'
 import { estimateEnabled } from '@/apps/workflow/estimate'
-import { listIntakes } from '@/apps/estimates/db'
+import { listIntakes, intakeStatus } from '@/apps/estimates/db'
 import NavHeader from '@/app/components/NavHeader'
 import EstimatesClient from './EstimatesClient'
 
@@ -14,7 +14,7 @@ export default async function EstimatesPage() {
     <EstimatesClient rows={rows.map(({ order, vehicle, estimate, intake }) => ({
       id: order.id, customer: order.customerName || 'Customer',
       vehicle: [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' '),
-      total: estimate.totalCents, status: order.status === 'estimate' ? (intake.sentAt ? 'Sent' : 'Draft') : estimate.convertedAt ? 'On Work Board' : 'Archived',
+      total: estimate.totalCents, status: intakeStatus(order, intake, estimate),
       date: order.createdAt.toISOString(), qbNumber: intake.qbEstimateNumber,
     }))} />
   </main>

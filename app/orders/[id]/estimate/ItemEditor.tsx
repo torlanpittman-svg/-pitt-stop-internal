@@ -100,6 +100,11 @@ export function ServiceEditor({ service: s, orderId, vehicleLabel, isFlat, busy,
   const [saving, setSaving] = useState(false)
   const [formErr, setFormErr] = useState<string | null>(null)
   const [rematch, setRematch] = useState(!!startRematch)
+  // Closing the service search returns focus to the button that opens it (keyboard users keep their place).
+  const matchButton = useRef<HTMLButtonElement>(null)
+  const refocusMatch = useRef(false)
+  useEffect(() => { if (!rematch && refocusMatch.current) { refocusMatch.current = false; matchButton.current?.focus() } }, [rematch])
+  const closeMatch = () => { refocusMatch.current = true; setRematch(false) }
   const plan = planServiceSave(s, d, isFlat)
   const dirty = isDirty(plan)
   useEffect(() => { onDirtyChange(dirty) }, [dirty, onDirtyChange])
@@ -152,9 +157,10 @@ export function ServiceEditor({ service: s, orderId, vehicleLabel, isFlat, busy,
             <MatchSummary s={s} />
             {s.partLike && s.matchState === 'unmatched' && <PartLikeReview service={s} busy={busy} post={post} />}
             {rematch ? (
-              <ServicePicker orderId={orderId} mode="rematch" service={s} busy={busy} isFlat={isFlat} vehicleLabel={vehicleLabel} onSave={post} onClose={() => setRematch(false)} />
+              <ServicePicker orderId={orderId} mode="rematch" service={s} busy={busy} isFlat={isFlat} vehicleLabel={vehicleLabel} onSave={post} onClose={closeMatch}
+                closeLabel={needsMatch ? 'Decide later' : 'Keep current match'} />
             ) : (
-              <button type="button" onClick={() => setRematch(true)} disabled={busy}
+              <button ref={matchButton} type="button" onClick={() => setRematch(true)} disabled={busy}
                 className={`${needsMatch ? `${BTN} w-full bg-amber-600 text-white` : 'min-h-11 px-1 text-blue-400 text-sm font-semibold'}`}>
                 {s.matchState === 'choose' ? 'Choose which odor treatment' : needsMatch ? 'Choose the catalog service' : 'Change service match'}
               </button>
@@ -162,9 +168,17 @@ export function ServiceEditor({ service: s, orderId, vehicleLabel, isFlat, busy,
           </More>
       </div>
       {formErr && <p role="alert" className="mt-3 text-amber-300 text-sm">{formErr}</p>}
-      <Actions form={`${ids}-form`} busy={busy} saving={saving} dirty={dirty} onCancel={() => onClose('cancelled')} saveLabel="Save changes" />
-      {/* A confirmed removal closes the editor (EstimateBuilder closes it once the line is gone). */}
-      <RemoveConfirm name={s.title} what="item" busy={busy} onRemove={() => { void post({ action: 'remove_service', serviceId: s.id }) }} />
+      {/* While the service search is open it has the only way out ("Keep current match" / "Decide later"),
+          so it can't be confused with Cancel for the whole item. Typed changes stay; Save returns once it closes. */}
+      {rematch ? (
+        dirty && <p className="mt-4 text-gray-400 text-xs">Your other changes are kept. Close the service search to save them.</p>
+      ) : (
+        <>
+          <Actions form={`${ids}-form`} busy={busy} saving={saving} dirty={dirty} onCancel={() => onClose('cancelled')} saveLabel="Save changes" />
+          {/* A confirmed removal closes the editor (EstimateBuilder closes it once the line is gone). */}
+          <RemoveConfirm name={s.title} what="item" busy={busy} onRemove={() => { void post({ action: 'remove_service', serviceId: s.id }) }} />
+        </>
+      )}
     </div>
   )
 }
@@ -186,8 +200,8 @@ function MatchSummary({ s }: { s: ServiceView }) {
 }
 
 // ── Part ─────────────────────────────────────────────────────────────────────────────────────────
-export function PartEditor({ part: p, services, busy, post, onDirtyChange, onClose }: {
-  part: PartView; services: ServiceView[]; busy: boolean; post: Post
+export function PartEditor({ part: p, parts, services, busy, post, onDirtyChange, onClose }: {
+  part: PartView; parts: PartView[]; services: ServiceView[]; busy: boolean; post: Post
   onDirtyChange: (dirty: boolean) => void; onClose: (outcome: 'saved' | 'cancelled' | 'removed') => void
 }) {
   const [d, setD] = useState(() => partDraftFrom(p))
@@ -256,7 +270,45 @@ export function PartEditor({ part: p, services, busy, post, onDirtyChange, onClo
         {p.laborStatus === 'needs_review' && <p className="text-amber-200/70 text-xs mt-2">Sending or invoicing waits until installation is confirmed. Each choice saves right away.</p>}
       </section>
 
-      <RemoveConfirm name={p.description} what="part" busy={busy} onRemove={() => { void post({ action: 'remove_part', partId: p.id }) }} />
+      <PartRemoveConfirm part={p} parts={parts} services={services} busy={busy} post={post} />
+    </div>
+  )
+}
+
+/**
+ * Removing a part that has linked installation labor (job_parts.labor_service_id) always shows that
+ * labor and asks what happens to it — it is never silently deleted or silently left as a charge. Labor
+ * that another part also relies on can only be kept. The server re-checks both rules.
+ */
+export function PartRemoveConfirm({ part: p, parts, services, busy, post }: { part: PartView; parts: PartView[]; services: ServiceView[]; busy: boolean; post: Post }) {
+  const [asking, setAsking] = useState(false)
+  const labor = p.laborServiceId ? services.find((s) => s.id === p.laborServiceId) : undefined
+  const sharedWith = labor ? parts.filter((o) => o.id !== p.id && o.laborServiceId === labor.id) : []
+  const remove = (withLabor: boolean) => { void post({ action: 'remove_part', partId: p.id, labor: withLabor && labor ? { action: 'remove', serviceId: labor.id } : { action: 'keep' } }) }
+  if (!asking) {
+    return <button type="button" onClick={() => setAsking(true)} disabled={busy} className="mt-4 min-h-11 px-1 text-red-400 text-sm font-semibold active:opacity-70 disabled:opacity-40">Remove part</button>
+  }
+  const laborLabel = labor && <span className="font-semibold">“{labor.title}{labor.detail ? ` — ${labor.detail}` : ''}”{labor.priceCents != null ? ` · $${dollars(labor.priceCents)}` : ' · not priced'}</span>
+  return (
+    <div role="group" aria-label={`Confirm removing ${p.description}`} className="mt-4 rounded-xl border border-red-900/70 bg-red-950/30 px-4 py-3 space-y-3">
+      <p className="text-red-100 text-sm">Remove “{p.description}” from this estimate? This saves right away.</p>
+      {labor && sharedWith.length === 0 && (
+        <p className="text-gray-200 text-sm">It has linked installation labor: {laborLabel}. Remove that labor too, or keep it on the estimate?</p>
+      )}
+      {labor && sharedWith.length > 0 && (
+        <p className="text-gray-200 text-sm">Its installation labor {laborLabel} also covers {sharedWith.map((o) => `“${o.description}”`).join(', ')}, so the labor stays on the estimate.</p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {labor && sharedWith.length === 0 ? (
+          <>
+            <button type="button" onClick={() => remove(true)} disabled={busy} className={`${BTN} bg-red-600 text-white`}>Remove part and labor</button>
+            <button type="button" onClick={() => remove(false)} disabled={busy} className={`${BTN} border border-red-800 text-red-100`}>Remove part, keep labor</button>
+          </>
+        ) : (
+          <button type="button" onClick={() => remove(false)} disabled={busy} className={`${BTN} bg-red-600 text-white`}>{labor ? 'Remove part, keep labor' : 'Remove'}</button>
+        )}
+        <button type="button" onClick={() => setAsking(false)} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200`}>Keep part</button>
+      </div>
     </div>
   )
 }

@@ -170,6 +170,35 @@ export async function removeEstimatePart(orderId: string, partId: string, actor:
   await event(orderId, 'part_removed', actor, { partId, description: p.description, supply: p.supply })
 }
 
+/**
+ * Remove a part and say what happens to its linked installation labor (job_parts.labor_service_id —
+ * the persisted link, never a name guess). 'keep' (default) leaves the labor line on the estimate;
+ * 'remove' also removes that labor line, but only when it is this part's linked labor and no other
+ * live part relies on it. Retry-safe: the labor line is removed first (which re-opens the part's
+ * labor review in the same audited statement), then the part; a retry after a partial failure skips
+ * whatever already happened, and an already-removed part is a no-op instead of an error.
+ */
+export async function removeEstimatePartWithLabor(
+  orderId: string, partId: string, labor: { action: 'keep' } | { action: 'remove'; serviceId: string } | undefined, actor: string | null,
+): Promise<void> {
+  const db = getDb()
+  const [p] = await db.select().from(jobParts).where(and(eq(jobParts.id, partId), eq(jobParts.serviceOrderId, orderId))).limit(1)
+  if (!p) throw new Error('That part is no longer on this estimate. Refresh to see the current list.')
+  if (labor?.action === 'remove') {
+    const est = await getEstimateRow(orderId)
+    const [svc] = est ? await db.select({ id: jobServices.id }).from(jobServices)
+      .where(and(eq(jobServices.id, labor.serviceId), eq(jobServices.jobEstimateId, est.id))).limit(1) : []
+    if (svc) {   // still on the estimate → validate, then remove it (absent = a retry already did)
+      if (p.laborServiceId !== labor.serviceId) throw new Error('That labor line isn’t linked to this part any more. Refresh to see the current list.')
+      const sharing = await db.select({ description: jobParts.description }).from(jobParts)
+        .where(and(eq(jobParts.serviceOrderId, orderId), eq(jobParts.laborServiceId, labor.serviceId), ne(jobParts.id, partId), ne(jobParts.status, 'cancelled')))
+      if (sharing.length) throw new Error(`That labor also covers ${sharing.map((x) => `“${x.description}”`).join(', ')}, so it stays. Remove the part and keep the labor.`)
+      await removeEstimateService(orderId, labor.serviceId, actor)
+    }
+  }
+  if (p.status !== 'cancelled') await removeEstimatePart(orderId, partId, actor)
+}
+
 /** Live work services on the estimate that can cover installation (never a part's own row). */
 async function coverableServiceIds(orderId: string): Promise<Set<string>> {
   const est = await getEstimateRow(orderId)

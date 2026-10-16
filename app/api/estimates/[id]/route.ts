@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { eq } from 'drizzle-orm'
 import { managerFromRequest } from '@/apps/checks/authz'
-import { withIntakeLock, moveIntakeToBoard } from '@/apps/estimates/db'
+import { withIntakeLock, moveIntakeToBoard, cancelIntakeEstimate } from '@/apps/estimates/db'
 import { intakeSummary, refreshIntake, sendIntakeEstimate } from '@/apps/estimates/quickbooks'
 import { quickEntryJobs } from '@/apps/quick-entry/schema'
 import { getDb } from '@/platform/db'
@@ -15,6 +15,7 @@ const actionInput = z.discriminatedUnion('action', [
   z.object({ action: z.literal('convert'), revision: z.string().length(64) }),
   z.object({ action: z.literal('contact'), email: z.union([z.email().max(200), z.literal('')]), phone: z.string().max(40) }),
   z.object({ action: z.literal('customer_name'), name: z.string().trim().min(1).max(CUSTOMER_NAME_MAX) }),
+  z.object({ action: z.literal('cancel') }),
 ])
 const safeSummary = (s: Awaited<ReturnType<typeof intakeSummary>>) => ({
   ok: true, draft: s.draft, revision: s.revision, status: s.order.status, customerName: s.order.customerName ?? '',
@@ -37,8 +38,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!parsed.success) return NextResponse.json({ error: 'Invalid estimate action.' }, { status: 400 })
   try {
     return await withIntakeLock(id, async () => {
-      const state = await intakeSummary(id)
       const body = parsed.data
+      if (body.action === 'cancel') {
+        // Direct soft cancel (never via the Work Board). No QuickBooks call, no send. Idempotent.
+        const r = await cancelIntakeEstimate(id, actor.name)
+        return NextResponse.json({ ok: true, cancelled: true, alreadyCancelled: r.alreadyCancelled, status: 'cancelled' })
+      }
+      const state = await intakeSummary(id)
+      if (state.order.status === 'cancelled') throw new Error('This estimate was cancelled. It is kept for history and can’t be changed.')
       if (state.order.status !== 'estimate') {
         if (body.action === 'convert' && state.full?.estimate.convertedAt) return NextResponse.json({ ok: true, converted: true })
         throw new Error('This estimate has already moved onto the Work Board.')

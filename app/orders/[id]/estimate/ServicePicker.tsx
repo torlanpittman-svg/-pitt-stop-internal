@@ -43,9 +43,11 @@ async function api(orderId: string, body: Record<string, unknown>) {
   return d
 }
 
-export default function ServicePicker({ orderId, mode, service, busy, isFlat, vehicleLabel, onSave, onClose, onAdded }: {
+export default function ServicePicker({ orderId, mode, service, busy, isFlat, vehicleLabel, onSave, onClose, onAdded, closeLabel = 'Cancel' }: {
   orderId: string; mode: 'add' | 'rematch'; service?: ServiceView; busy: boolean; isFlat: boolean; vehicleLabel: string
   onSave: (edit: EstimateEdit) => Promise<boolean>; onClose?: () => void
+  /** Label for the button that closes the picker without changing anything (default "Cancel"). */
+  closeLabel?: string
   /** Add mode: called once the server confirmed the new service, part, or tire work. */
   onAdded?: () => void
 }) {
@@ -204,7 +206,7 @@ export default function ServicePicker({ orderId, mode, service, busy, isFlat, ve
         </div>
       )}
 
-      {onClose && <button type="button" onClick={onClose} disabled={busy} className="text-gray-400 text-sm min-h-11 px-1">Cancel</button>}
+      {onClose && <button type="button" onClick={onClose} disabled={busy} className="min-h-11 rounded-xl border border-gray-600 px-4 text-sm font-semibold text-gray-200 active:opacity-80 disabled:opacity-40">{closeLabel}</button>}
     </section>
   )
 }

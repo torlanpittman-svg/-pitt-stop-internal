@@ -145,3 +145,41 @@ export async function moveIntakeToBoard(id: string, actor: string) {
     if (!order || order.status === 'estimate') throw new Error('Add services and a price before moving this estimate to the Work Board.')
   }
 }
+
+/**
+ * Cancel a standalone estimate directly — it never touches the Work Board. A soft cancel, exactly
+ * like removing a Job: status 'cancelled' + cancelled_at, with an append-only audit event in the
+ * same statement (only the winning request writes either). The customer, vehicle, lines, contact
+ * and any QuickBooks estimate link are left exactly as they are: nothing is voided, sent, or
+ * deleted, and completed_at is never touched. Idempotent: an already-cancelled estimate is a no-op.
+ * Caller holds the intake lock.
+ */
+export async function cancelIntakeEstimate(id: string, actor: string): Promise<{ alreadyCancelled: boolean }> {
+  const result = await getDb().execute(sql`
+    WITH cancelled AS (
+      UPDATE service_orders SET status = 'cancelled', cancelled_at = now(), updated_at = now()
+      WHERE id = ${id}::uuid AND status = 'estimate'
+      RETURNING id
+    )
+    INSERT INTO service_order_events(service_order_id, event_type, employee_name, old_status, new_status, note)
+    SELECT id, 'estimate_cancelled', ${actor}, 'estimate', 'cancelled', 'Estimate cancelled (not moved to the Work Board)' FROM cancelled
+    RETURNING service_order_id
+  `)
+  if (result.rows.length) return { alreadyCancelled: false }
+  const [order] = await getDb().select({ status: serviceOrders.status }).from(serviceOrders).where(eq(serviceOrders.id, id))
+  if (order?.status === 'cancelled') return { alreadyCancelled: true }
+  if (!order) throw new Error('Estimate not found.')
+  throw new Error('This estimate has already moved onto the Work Board. Remove it from the Work Board instead.')
+}
+
+/**
+ * Estimates-list status. Cancelled wins over everything (an estimate cancelled after moving to the
+ * Work Board is Cancelled, not "On Work Board"); then Draft/Sent while still an estimate; then
+ * On Work Board once converted; otherwise Archived.
+ */
+export type IntakeStatus = 'Draft' | 'Sent' | 'On Work Board' | 'Cancelled' | 'Archived'
+export function intakeStatus(order: { status: string; cancelledAt?: Date | string | null }, intake: { sentAt: Date | string | null }, estimate: { convertedAt: Date | string | null }): IntakeStatus {
+  if (order.status === 'cancelled' || order.cancelledAt != null) return 'Cancelled'
+  if (order.status === 'estimate') return intake.sentAt ? 'Sent' : 'Draft'
+  return estimate.convertedAt ? 'On Work Board' : 'Archived'
+}

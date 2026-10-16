@@ -45,7 +45,12 @@ export function describeEdit(edit: EstimateEdit, view: EstimateViewData): { savi
     case 'keep_overlap': return { saving: 'Saving…', saved: `Keeping ${name} · Saved`, failed: `Couldn’t save that choice for ${name}.` }
     case 'add_part': case 'add_tires': return { saving: 'Adding part…', saved: 'Part added · Saved', failed: 'Couldn’t add the part — nothing was saved.' }
     case 'update_part': return { saving: 'Saving part…', saved: 'Part saved', failed: 'Couldn’t save the part — the previous details are still saved.' }
-    case 'remove_part': return { saving: 'Removing part…', saved: 'Part removed · Saved', failed: 'Couldn’t remove the part — it’s still on the estimate.' }
+    case 'remove_part': {
+      const withLabor = (edit.labor as { action?: string } | undefined)?.action === 'remove'
+      return withLabor
+        ? { saving: 'Removing part and its labor…', saved: 'Part and its installation labor removed · Saved', failed: 'Couldn’t finish removing the part and its labor — Retry finishes what’s left.' }
+        : { saving: 'Removing part…', saved: 'Part removed · Saved', failed: 'Couldn’t remove the part — it’s still on the estimate.' }
+    }
     case 'part_labor': return { saving: 'Saving labor review…', saved: 'Labor review saved', failed: 'Couldn’t save the labor review.' }
     case 'convert_to_part': return { saving: 'Converting to a part…', saved: `${name} is now a part · Saved`, failed: `Couldn’t convert ${name} — it’s still a service line, unchanged.` }
     case 'clarify_part': return { saving: 'Adding the part…', saved: 'Part added and linked · Saved', failed: `Couldn’t add the part for ${name} — nothing was changed.` }
@@ -80,8 +85,12 @@ function confirmsEdit(edit: EstimateEdit, view: EstimateViewData): string | null
       const want = clean((edit.part as { description?: unknown } | undefined)?.description).toLowerCase()
       return svc && (view.parts ?? []).some((p) => p.laborServiceId === edit.serviceId && clean(p.description).toLowerCase() === want) ? null : 'The server did not confirm the part.'
     }
-    case 'remove_part':
-      return (view.parts ?? []).some((p) => p.id === edit.partId) ? 'The server still lists this part.' : null
+    case 'remove_part': {
+      if ((view.parts ?? []).some((p) => p.id === edit.partId)) return 'The server still lists this part.'
+      const lab = edit.labor as { action?: string; serviceId?: string } | undefined
+      if (lab?.action === 'remove' && view.services.some((s) => s.id === lab.serviceId)) return 'The server still lists the installation labor.'
+      return null
+    }
     case 'update_part': {
       const p = (view.parts ?? []).find((x) => x.id === edit.partId)
       const want = (edit.patch ?? {}) as { description?: unknown; sellPriceCents?: unknown }

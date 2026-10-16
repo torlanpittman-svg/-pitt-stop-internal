@@ -29,7 +29,7 @@ export default function NavHeader({ back, title, right }: {
       <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center gap-3">
         {right}
         <GlobalSearch />
-        <Link href="/" aria-label="Home" className="flex items-center gap-1.5 text-gray-300 hover:text-white font-medium">
+        <Link href="/" aria-label="Home" className="flex min-h-11 min-w-11 items-center justify-center gap-1.5 text-gray-300 hover:text-white font-medium">
           <HomeIcon /><span>Home</span>
         </Link>
       </div>

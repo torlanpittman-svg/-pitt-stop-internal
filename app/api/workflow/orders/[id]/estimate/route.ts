@@ -17,7 +17,7 @@ import {
 } from '@/apps/workflow/estimate-db'
 import { interpretServiceEntry, listCatalogChoices } from '@/apps/quick-entry/service-match-db'
 import { listShortcuts, approveAlias } from '@/apps/quick-entry/shortcuts'
-import { addEstimatePart, updateEstimatePart, removeEstimatePart, decidePartLabor, addTireWork, convertServiceToPart, clarifyServiceWithPart, type LaborAction } from '@/apps/parts/estimate-parts'
+import { addEstimatePart, updateEstimatePart, removeEstimatePartWithLabor, decidePartLabor, addTireWork, convertServiceToPart, clarifyServiceWithPart, type LaborAction } from '@/apps/parts/estimate-parts'
 import { assertEstimateReady } from '@/apps/workflow/estimate-review'
 import type { ApprovalState, EstimateStatus } from '@/apps/workflow/estimate'
 
@@ -149,7 +149,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
       case 'remove_part': {
-        await removeEstimatePart(id, String(body.partId), actor)
+        // labor: { action: 'keep' } | { action: 'remove', serviceId } — what happens to the part's linked installation labor.
+        const lab = body.labor as { action?: unknown; serviceId?: unknown } | undefined
+        await removeEstimatePartWithLabor(id, String(body.partId),
+          lab?.action === 'remove' && typeof lab.serviceId === 'string' ? { action: 'remove', serviceId: lab.serviceId } : { action: 'keep' }, actor)
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
       case 'part_labor': {
@@ -212,6 +215,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (!order) return NextResponse.json({ error: 'Estimate not found.' }, { status: 404 })
     // Read-only lookups never take the edit lock (an AI call must not block a save/send).
     if (action === 'interpret' || action === 'catalog_list') return await perform()
+    // A cancelled estimate/Job is kept for history only — no edits (reads above are still allowed).
+    if (order.status === 'cancelled') return NextResponse.json({ ok: false, error: 'This estimate was cancelled. It is kept for history and can’t be changed.' }, { status: 409 })
     if (order.status === 'estimate') {
       // Standalone quotes use the dedicated conversion and email routes. All edits share
       // the same lock as send/conversion so a customer cannot receive a half-edited quote.

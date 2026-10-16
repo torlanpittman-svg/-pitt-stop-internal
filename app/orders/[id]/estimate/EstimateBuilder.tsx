@@ -21,8 +21,14 @@ import { PartEditor, ServiceEditor } from './ItemEditor'
  */
 type View = EstimateViewData
 interface VehicleDetails { vin: string | null; color: string | null; licensePlate: string | null; bodyClass: string | null }
-interface Header { vehicleDetails: VehicleDetails; id: string; customer: string; vehicle: string; requested: string[]; standalone?: boolean; notes?: string | null }
-type Pane = { kind: 'list' } | { kind: 'add' } | { kind: 'review' } | { kind: 'customer' }
+interface Header {
+  vehicleDetails: VehicleDetails; id: string; customer: string; vehicle: string; requested: string[]; standalone?: boolean; notes?: string | null
+  /** Cancelled estimate/Job: shown read-only, kept for history. */
+  cancelled?: boolean
+  /** Created as a quote and never moved to the Work Board (Back goes to Estimates even once cancelled). */
+  quoteOnly?: boolean
+}
+type Pane = { kind: 'list' } | { kind: 'add' } | { kind: 'review' } | { kind: 'customer' } | { kind: 'cancel' }
   | { kind: 'service'; id: string; rematch?: boolean } | { kind: 'part'; id: string }
 const LIST: Pane = { kind: 'list' }
 
@@ -84,8 +90,19 @@ function Chevron() {
 
 /** One tappable line: name, a short sub-line, the price (or what's missing), and a chevron. */
 function Row({ id, label, title, badge, sub, price, attention, onOpen }: {
-  id: string; label: string; title: string; badge?: ReactNode; sub: ReactNode; price: ReactNode; attention?: string | null; onOpen: () => void
+  id: string; label: string; title: string; badge?: ReactNode; sub: ReactNode; price: ReactNode; attention?: string | null; onOpen?: () => void
 }) {
+  if (!onOpen) {   // read-only (cancelled estimate)
+    return (
+      <li className="flex min-h-16 items-center gap-3 px-4 py-3">
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2 min-w-0">{badge}<span className="font-semibold text-white break-words min-w-0">{title}</span></span>
+          <span className="mt-0.5 block text-xs text-gray-400 break-words">{sub}</span>
+        </span>
+        <span className="shrink-0 text-right tabular-nums">{price}</span>
+      </li>
+    )
+  }
   return (
     <li>
       <button type="button" data-row={id} onClick={onOpen} aria-label={label}
@@ -130,7 +147,11 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   const postRef = useRef<(payload: EstimateEdit, retry?: () => void) => Promise<boolean>>(async () => false)
   const saveCustomerNameRef = useRef<(name: string) => Promise<boolean>>(async () => false)
   const closePaneRef = useRef<() => void>(() => {})
+  const cancelEstimateRef = useRef<() => Promise<void>>(async () => {})
   const [customer, setCustomer] = useState(header.customer)
+  // Cancelled = read-only history. Set from the page, or once the server confirms "Cancel estimate".
+  const [cancelled, setCancelled] = useState(!!header.cancelled)
+  const standalone = !!header.standalone && !cancelled
   // Bumped after a customer rename so EstimateActions reloads (the send/convert revision changed).
   const [customerRev, setCustomerRev] = useState(0)
   const [pane, setPane] = useState<Pane>(LIST)
@@ -257,10 +278,24 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
       return true
     } catch { setErr('No connection — check the internet and try again.'); setSaveMsg('Couldn’t save the customer name — the old name is still saved.'); setSaveState('error'); return false } finally { setBusy(false) }
   }, [header.id])
+  // Cancel a standalone estimate directly (soft cancel; never via the Work Board; nothing is sent and any
+  // QuickBooks estimate is left as it is). Committed action: a failure stays visible with Retry.
+  const cancelEstimate = useCallback(async (): Promise<void> => {
+    retryIsDraft.current = false
+    retryRef.current = () => { void cancelEstimateRef.current() }
+    setBusy(true); setErr(null); setSaveState('saving'); setSaveMsg('Cancelling estimate…')
+    try {
+      const res = await fetch(`/api/estimates/${header.id}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'cancel' }) })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok || d.cancelled !== true) { setErr(d.error ?? `The server returned an error (${res.status}).`); setSaveMsg('Couldn’t cancel the estimate — it’s still open.'); setSaveState('error'); return }
+      setCancelled(true); setSaveMsg('Estimate cancelled'); setSaveState('saved'); setSavedOnce(true)
+      if (paneRef.current.kind === 'cancel') closePaneRef.current()
+    } catch { setErr('No connection — check the internet and try again.'); setSaveMsg('Couldn’t cancel the estimate — it’s still open.'); setSaveState('error') } finally { setBusy(false) }
+  }, [header.id])
   // Keep the latest values/handlers for event-driven code (popstate, Retry, save confirmations).
   useLayoutEffect(() => {
     viewRef.current = view; paneRef.current = pane; dirtyRef.current = editorDirty
-    postRef.current = post; saveCustomerNameRef.current = saveCustomerName; closePaneRef.current = closePane
+    postRef.current = post; saveCustomerNameRef.current = saveCustomerName; closePaneRef.current = closePane; cancelEstimateRef.current = cancelEstimate
   })
   const retryLastSave = useCallback(() => { retryRef.current?.() }, [])
 
@@ -296,7 +331,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   )
 
   // ── Panes ──────────────────────────────────────────────────────────────────────────────────────
-  const paneTitle = pane.kind === 'add' ? 'Add item' : pane.kind === 'review' ? 'Needs review' : pane.kind === 'customer' ? 'Customer name'
+  const paneTitle = pane.kind === 'add' ? 'Add item' : pane.kind === 'review' ? 'Needs review' : pane.kind === 'customer' ? 'Customer name' : pane.kind === 'cancel' ? 'Cancel estimate'
     : pane.kind === 'part' ? 'Edit part' : 'Edit item'
   const paneSvc = pane.kind === 'service' ? services.find((s) => s.id === pane.id) : undefined
   const panePart = pane.kind === 'part' ? parts.find((p) => p.id === pane.id) : undefined
@@ -329,7 +364,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
           startRematch={pane.rematch} onDirtyChange={setEditorDirty} onClose={onEditorClose} />
       )}
       {pane.kind === 'part' && panePart && (
-        <PartEditor key={panePart.id} part={panePart} services={services} busy={busy} post={post} onDirtyChange={setEditorDirty} onClose={onEditorClose} />
+        <PartEditor key={panePart.id} part={panePart} parts={parts} services={services} busy={busy} post={post} onDirtyChange={setEditorDirty} onClose={onEditorClose} />
       )}
       {pane.kind === 'review' && (
         issues.length === 0
@@ -338,6 +373,16 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
               <p className="mb-3 text-gray-400 text-sm">Drafts keep saving. Sending or invoicing waits until these are resolved. Each choice saves right away.</p>
               <ReviewNotices issues={issues} services={services} parts={parts} busy={busy} post={post} onChooseOdor={(id) => setPane({ kind: 'service', id, rematch: true })} />
             </>
+      )}
+      {pane.kind === 'cancel' && (
+        <div role="group" aria-label="Confirm cancelling this estimate" className="rounded-xl border border-red-900/70 bg-red-950/30 px-4 py-3 space-y-3">
+          <p className="text-red-100 text-sm">Cancel this estimate? It moves to <span className="font-semibold">Cancelled</span> in Estimates history and stays there read-only. It does not go on the Work Board.</p>
+          <p className="text-gray-300 text-sm">Nothing is sent to the customer, and a QuickBooks estimate that was already created is left exactly as it is. This can’t be undone in the app.</p>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => { void cancelEstimate() }} disabled={busy} className={`${BTN} bg-red-600 text-white`}>{saveState === 'saving' ? 'Cancelling…' : 'Cancel estimate'}</button>
+            <button type="button" onClick={() => onEditorClose('cancelled')} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200`}>Keep estimate</button>
+          </div>
+        </div>
       )}
       {pane.kind === 'customer' && (
         <>
@@ -351,10 +396,10 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   // ── List ───────────────────────────────────────────────────────────────────────────────────────
   const partPrice = (p: PartView) => p.supply === 'customer' ? <span className="text-gray-400 text-sm">No charge</span>
     : p.lineCents != null ? <span className="font-semibold text-white">${dollars(p.lineCents)}</span>
-    : <span className="text-amber-300 text-sm font-semibold">Add price</span>
+    : cancelled ? <span className="text-gray-400 text-sm">Not priced</span> : <span className="text-amber-300 text-sm font-semibold">Add price</span>
   const servicePrice = (s: ServiceView) => isFlat ? <span className="text-gray-400 text-xs">In flat total</span>
     : s.priceCents != null ? <span className="font-semibold text-white">${dollars(s.priceCents)}</span>
-    : <span className="text-amber-300 text-sm font-semibold">Add price</span>
+    : cancelled ? <span className="text-gray-400 text-sm">Not priced</span> : <span className="text-amber-300 text-sm font-semibold">Add price</span>
   const issueTarget = (code: string, ids: string[]): (() => void) => {
     if (code === 'odor_choice' && ids.length === 1) return () => openPane({ kind: 'service', id: ids[0], rematch: true }, `svc:${ids[0]}`)
     const needing = parts.filter((p) => p.laborStatus === 'needs_review')
@@ -369,22 +414,23 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
         <div className="flex items-center gap-1">
           {saveBadge}
           <div className="relative" data-estimate-menu>
-            <button type="button" onClick={() => setMenuOpen((o) => !o)} aria-haspopup="menu" aria-expanded={menuOpen} aria-label="More estimate options"
+            <button type="button" data-row="menu" onClick={() => setMenuOpen((o) => !o)} aria-haspopup="menu" aria-expanded={menuOpen} aria-label="More estimate options"
               className="grid h-11 w-11 place-items-center rounded-lg text-gray-300 hover:bg-gray-900 active:bg-gray-800 text-xl leading-none">⋯</button>
             {menuOpen && (
               <div role="menu" aria-label="Estimate options" onKeyDown={(e) => { if (e.key === 'Escape') setMenuOpen(false) }}
                 className="absolute right-0 top-12 z-30 w-64 rounded-xl border border-gray-800 bg-gray-900 p-1.5 shadow-xl shadow-black/40">
-                {header.standalone && <MenuItem onClick={() => openPane({ kind: 'customer' }, 'customer')}>Edit customer name</MenuItem>}
+                {standalone && <MenuItem onClick={() => openPane({ kind: 'customer' }, 'customer')}>Edit customer name</MenuItem>}
                 <MenuItem onClick={() => { setVehicleOpen(true); setMenuOpen(false) }}>Vehicle details &amp; photos</MenuItem>
-                {issues.length > 0 && <MenuItem onClick={() => openPane({ kind: 'review' }, 'review')}>Review items ({issues.length})</MenuItem>}
+                {!cancelled && issues.length > 0 && <MenuItem onClick={() => openPane({ kind: 'review' }, 'review')}>Review items ({issues.length})</MenuItem>}
                 <a role="menuitem" href="/quick-entry/services" className="flex min-h-11 items-center rounded-lg px-3 text-sm text-gray-200 hover:bg-gray-800">Manage prefilled services</a>
+                {standalone && <MenuItem danger onClick={() => openPane({ kind: 'cancel' }, 'menu')}>Cancel estimate…</MenuItem>}
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {header.standalone ? (
+      {standalone ? (
         <button type="button" data-row="customer" onClick={() => openPane({ kind: 'customer' }, 'customer')} aria-label={`Edit customer name ${customer}`}
           className="-ml-1 mt-1 inline-flex min-h-11 max-w-full items-center gap-2 rounded-lg px-1 text-left text-lg font-semibold text-white hover:bg-gray-900">
           <span className="break-words min-w-0">{customer}</span>
@@ -412,29 +458,35 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
       {header.notes && <p className="-mt-3 mb-5 text-gray-400 text-sm whitespace-pre-wrap">{header.notes}</p>}
 
       {errorCard}
+      {cancelled && (
+        <div role="note" className="mb-4 rounded-xl border border-gray-700 bg-gray-900 px-4 py-3">
+          <p className="text-sm font-semibold text-gray-100">Cancelled</p>
+          <p className="text-xs text-gray-400 mt-0.5">Kept for history. Nothing on this estimate can be changed, sent, or moved to the Work Board.</p>
+        </div>
+      )}
 
       <div className="mb-2 flex items-baseline justify-between gap-3">
         <h2 className="font-semibold text-gray-200">Work &amp; parts</h2>
-        {(services.length + parts.length) > 0 && <span className="text-xs text-gray-400">Tap a line to edit</span>}
+        {!cancelled && (services.length + parts.length) > 0 && <span className="text-xs text-gray-400">Tap a line to edit</span>}
       </div>
       <ul aria-label="Services and parts" className="overflow-hidden rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800">
         {services.map((s) => (
           <Row key={s.id} id={`svc:${s.id}`} label={`Edit ${s.title}`} title={s.title}
             sub={[s.detail, s.matchState === 'custom' ? 'Custom service' : s.catalogName && s.catalogName !== s.title ? s.catalogName : null].filter(Boolean).join(' · ') || 'Service'}
-            attention={serviceAttention(s)} price={servicePrice(s)} onOpen={() => openPane({ kind: 'service', id: s.id }, `svc:${s.id}`)} />
+            attention={cancelled ? null : serviceAttention(s)} price={servicePrice(s)} onOpen={cancelled ? undefined : () => openPane({ kind: 'service', id: s.id }, `svc:${s.id}`)} />
         ))}
         {parts.map((p) => (
           <Row key={p.id} id={`part:${p.id}`} label={`Edit part ${p.description}`} title={p.description}
             badge={<span className="shrink-0 rounded-md bg-sky-900/50 px-1.5 py-0.5 text-[11px] font-semibold text-sky-200">Part</span>}
             sub={[p.supply === 'customer' ? 'Customer-supplied' : 'Special order', `Qty ${p.quantity}`, p.supply === 'shop' && p.sellPriceCents != null && p.quantity !== 1 ? `$${dollars(p.sellPriceCents)} each` : null].filter(Boolean).join(' · ')}
             attention={p.laborStatus === 'needs_review' ? 'Installation labor not reviewed' : null} price={partPrice(p)}
-            onOpen={() => openPane({ kind: 'part', id: p.id }, `part:${p.id}`)} />
+            onOpen={cancelled ? undefined : () => openPane({ kind: 'part', id: p.id }, `part:${p.id}`)} />
         ))}
         {services.length + parts.length === 0 && <li className="px-4 py-6 text-center text-sm text-gray-400">No items yet. Add the first service or part.</li>}
       </ul>
 
       {/* Required reviews — only when relevant. Drafts still save; send / invoice wait for these. */}
-      {issues.length > 0 && (
+      {!cancelled && issues.length > 0 && (
         <div role="region" aria-label="Needs review before sending" className="mt-3 space-y-2">
           {issues.map((i) => (
             <div key={i.code} className="flex items-center gap-3 rounded-xl border border-amber-800/70 bg-amber-950/30 px-4 py-2.5">
@@ -447,14 +499,16 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
         </div>
       )}
 
-      <button type="button" data-row="add" onClick={() => openPane({ kind: 'add' }, 'add')} disabled={busy}
-        className="mt-4 flex w-full min-h-12 items-center justify-center gap-2 rounded-xl bg-blue-600 text-base font-semibold text-white active:opacity-80 disabled:opacity-50">
-        <span aria-hidden className="text-xl leading-none">+</span>Add item
-      </button>
+      {!cancelled && (
+        <button type="button" data-row="add" onClick={() => openPane({ kind: 'add' }, 'add')} disabled={busy}
+          className="mt-4 flex w-full min-h-12 items-center justify-center gap-2 rounded-xl bg-blue-600 text-base font-semibold text-white active:opacity-80 disabled:opacity-50">
+          <span aria-hidden className="text-xl leading-none">+</span>Add item
+        </button>
+      )}
 
       {/* Incomplete pricing: a flat amount was agreed, but not every line is priced yet. The agreed
           amount stays a clearly-labeled REFERENCE; the partial sum is never presented as the total. */}
-      {view.incomplete && view.referenceCents != null && (
+      {!cancelled && view.incomplete && view.referenceCents != null && (
         <div className="mt-4 rounded-2xl border border-amber-800/70 bg-amber-950/30 px-4 py-3">
           <div className="flex items-center justify-between gap-3 text-sm">
             <p className="text-amber-300 font-semibold">Pricing incomplete</p>
@@ -466,7 +520,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
 
       {/* Every line priced, but the itemized total differs from the agreed amount: show the
           difference and require an explicit choice — itemizing never silently replaces it. */}
-      {!view.incomplete && view.referenceCents != null && (
+      {!cancelled && !view.incomplete && view.referenceCents != null && (
         <div className="mt-4 rounded-2xl border border-amber-800/70 bg-amber-950/30 px-4 py-3">
           <p className="text-amber-300 text-sm font-semibold">Itemized total differs from the agreed amount</p>
           <dl className="mt-1 space-y-0.5 text-sm">
@@ -488,13 +542,13 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
               {isFlat ? 'Flat price' : view.incomplete ? 'Partial — some lines still need a price' : 'Sum of line prices'} · before shop supplies, card charge, and tax
             </p>
           </div>
-          {totalEditable ? (
+          {totalEditable && !cancelled ? (
             <PriceInput cents={view.workTotalCents} busy={busy} onCommit={(c) => post({ action: 'set_work_total', cents: c })} />
           ) : (
             <span className={`text-2xl font-bold tabular-nums ${view.incomplete ? 'text-amber-300' : 'text-white'}`}>${dollars(view.workTotalCents)}</span>
           )}
         </div>
-        {isFlat && services.length > 0 && (
+        {!cancelled && isFlat && services.length > 0 && (
           <button onClick={() => post({ action: 'itemize' })} disabled={busy}
             className="mt-2 min-h-11 px-1 -ml-1 text-blue-400 text-sm font-semibold active:opacity-70 disabled:opacity-40">Set individual prices →</button>
         )}
@@ -504,11 +558,11 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
 
   return (
     <main className="min-h-screen bg-gray-950 text-white">
-      <NavHeader back={header.standalone ? { href: '/estimates', label: 'Estimates' } : { href: `/orders/${header.id}`, label: 'Job' }} />
+      <NavHeader back={header.standalone || header.quoteOnly ? { href: '/estimates', label: 'Estimates' } : { href: `/orders/${header.id}`, label: 'Job' }} />
       <div className="max-w-xl mx-auto px-4 py-5">
         {pane.kind === 'list' ? list : paneBody}
         {/* Kept mounted (hidden in panes) so its loaded totals and confirmations survive opening an editor. */}
-        {header.standalone && (
+        {standalone && (
           <div hidden={pane.kind !== 'list'}>
             <EstimateActions key={`${customerRev}:${JSON.stringify(view)}`} id={header.id} editorBusy={editingBusy} onBusyChange={setActionBusy} />
           </div>
@@ -518,6 +572,6 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   )
 }
 
-function MenuItem({ onClick, children }: { onClick: () => void; children: ReactNode }) {
-  return <button type="button" role="menuitem" onClick={onClick} className="flex w-full min-h-11 items-center rounded-lg px-3 text-left text-sm text-gray-200 hover:bg-gray-800">{children}</button>
+function MenuItem({ onClick, children, danger }: { onClick: () => void; children: ReactNode; danger?: boolean }) {
+  return <button type="button" role="menuitem" onClick={onClick} className={`flex w-full min-h-11 items-center rounded-lg px-3 text-left text-sm hover:bg-gray-800 ${danger ? 'text-red-300' : 'text-gray-200'}`}>{children}</button>
 }

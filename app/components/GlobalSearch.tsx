@@ -59,7 +59,7 @@ export default function GlobalSearch({ label = false }: { label?: boolean }) {
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Search"
-        className="flex min-h-11 shrink-0 items-center gap-2 text-gray-300 hover:text-white font-medium"
+        className="flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 text-gray-300 hover:text-white font-medium"
       >
         <SearchIcon />
         {label && <span>Search</span>}

@@ -3,7 +3,7 @@
  * No writes here; seeding lives in scripts/seed-quick-entry.ts. Price changes
  * (once the UI exists) will be audited separately.
  */
-import { and, asc, eq, isNull } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { serviceCatalog, servicePriceTiers, serviceAliases, technicianInstructions } from './schema'
 
@@ -30,47 +30,35 @@ export async function listQuickEntry(kind: 'package' | 'addon'): Promise<Catalog
 }
 
 /**
- * Suggested starting prices for a set of service titles, keyed by the lowercased title.
- * A suggestion is the catalog item's default price (or its lowest price tier) matched by
- * name OR approved alias (case-insensitive). Titles with no catalog match are omitted —
- * they simply have no suggestion. STARTING VALUES ONLY: callers never overwrite a saved
- * manager price with these.
+ * Suggested price per catalog row, keyed by the line's STABLE catalog identity (never its editable
+ * name): the row's default price, else its lowest size/condition tier. A row with neither — e.g.
+ * Ozone Treatment, priced each time — gets no suggestion, so another service's price (such as a
+ * retired package reachable through an old alias) is never offered in its place. Archived rows get
+ * none. Lines without a catalog identity get none either: a suggestion is never guessed from a label.
  */
-export async function suggestedPricesForTitles(titles: string[]): Promise<Record<string, number>> {
-  const wanted = new Set(titles.map((t) => t.trim().toLowerCase()).filter(Boolean))
-  if (wanted.size === 0) return {}
+export async function suggestedPricesForCatalogIds(catalogIds: ReadonlyArray<string | null | undefined>): Promise<Record<string, number>> {
+  const ids = [...new Set(catalogIds.filter((x): x is string => !!x))]
+  if (ids.length === 0) return {}
   const db = getDb()
-  const [items, tiers, aliases] = await Promise.all([
-    db.select().from(serviceCatalog).where(isNull(serviceCatalog.archivedAt)),
-    db.select().from(servicePriceTiers),
-    db.select().from(serviceAliases),
+  const [items, tiers] = await Promise.all([
+    db.select({ id: serviceCatalog.id, defaultPriceCents: serviceCatalog.defaultPriceCents }).from(serviceCatalog)
+      .where(and(inArray(serviceCatalog.id, ids), isNull(serviceCatalog.archivedAt))),
+    db.select({ catalogId: servicePriceTiers.catalogId, startPriceCents: servicePriceTiers.startPriceCents }).from(servicePriceTiers)
+      .where(inArray(servicePriceTiers.catalogId, ids)),
   ])
-  // Lowest starting price per catalog item (default price, else min tier).
-  const minTier: Record<string, number> = {}
-  for (const t of tiers) {
-    const cur = minTier[t.catalogId]
-    if (cur === undefined || t.startPriceCents < cur) minTier[t.catalogId] = t.startPriceCents
-  }
-  const priceFor = (item: CatalogRow): number | null =>
-    item.defaultPriceCents != null ? item.defaultPriceCents : (minTier[item.id] ?? null)
+  return suggestedPriceIndex(items, tiers)
+}
 
-  // Build title/alias → price lookup.
-  const byName: Record<string, number> = {}
-  for (const item of items) {
-    const p = priceFor(item)
-    if (p == null) continue
-    byName[item.name.trim().toLowerCase()] ??= p
-  }
-  for (const a of aliases) {
-    const item = items.find((i) => i.id === a.catalogId)
-    if (!item) continue
-    const p = priceFor(item)
-    if (p == null) continue
-    byName[a.alias.trim().toLowerCase()] ??= p
-  }
-
+/** Pure: default price, else the lowest tier start price, per catalog id (no entry when neither). */
+export function suggestedPriceIndex(
+  items: ReadonlyArray<{ id: string; defaultPriceCents: number | null }>,
+  tiers: ReadonlyArray<{ catalogId: string; startPriceCents: number }>,
+): Record<string, number> {
   const out: Record<string, number> = {}
-  for (const key of wanted) if (byName[key] != null) out[key] = byName[key]
+  for (const t of tiers) if (out[t.catalogId] === undefined || t.startPriceCents < out[t.catalogId]) out[t.catalogId] = t.startPriceCents
+  for (const it of items) if (it.defaultPriceCents != null) out[it.id] = it.defaultPriceCents
+  const live = new Set(items.map((it) => it.id))
+  for (const k of Object.keys(out)) if (!live.has(k)) delete out[k]
   return out
 }
 

@@ -6,7 +6,7 @@ import { redirect, notFound } from 'next/navigation'
 import { authenticatedActor } from '@/apps/auth/employee-guard'
 import { estimateEnabled } from '@/apps/workflow/estimate'
 import { getOrderWithContext } from '@/apps/workflow/db'
-import { prepareEstimateView } from '@/apps/workflow/estimate-db'
+import { prepareEstimateView, getEstimateView } from '@/apps/workflow/estimate-db'
 import { withIntakeLock } from '@/apps/estimates/db'
 import EstimateBuilder from './EstimateBuilder'
 
@@ -23,7 +23,9 @@ export default async function EstimatePage({ params }: { params: Promise<{ id: s
   // Idempotent: ensure the estimate exists, mirror the Job's services, and seed suggested
   // prices for a truly fresh Job — so the manager sees a useful draft without an extra tap.
   // Never itemizes a flat (Quick Entry Work Price) Job just by opening the page.
-  const view = order.status === 'estimate'
+  // A cancelled estimate is shown read-only, exactly as stored (no preparation writes).
+  const view = order.status === 'cancelled' ? await getEstimateView(id)
+    : order.status === 'estimate'
     ? await withIntakeLock(id, () => prepareEstimateView(id, actor.name))
     : await prepareEstimateView(id, actor.name)
 
@@ -39,6 +41,10 @@ export default async function EstimatePage({ params }: { params: Promise<{ id: s
     },
     requested: order.services ?? [],
     standalone: order.status === 'estimate',
+    // Standalone = still a quote; a cancelled one stays read-only (see EstimateBuilder).
+    cancelled: order.status === 'cancelled',
+    // A quote cancelled before it ever reached the Work Board still belongs to Estimates (back link).
+    quoteOnly: order.source === 'estimate' && order.arrivedAt == null,
     notes: order.notes,
   }
   return <EstimateBuilder header={header} initialView={view} />

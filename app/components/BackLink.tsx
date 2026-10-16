@@ -8,7 +8,7 @@ import Link from 'next/link'
  */
 export default function BackLink({ href, label, className = '' }: { href: string; label: string; className?: string }) {
   return (
-    <Link href={href} className={`text-gray-400 hover:text-white flex items-center gap-1 ${className}`}>
+    <Link href={href} className={`text-gray-400 hover:text-white inline-flex min-h-11 min-w-11 items-center gap-1 ${className}`}>
       <span aria-hidden="true">←</span>{label}
     </Link>
   )

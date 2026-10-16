@@ -12,7 +12,7 @@ import {
 } from './estimate'
 import { computeFees, eligibleBasisCents, reconcilePlan, explicitPretaxTotals, effectiveFeeConfig, isDealerOrder, FEE_TAX_CATEGORY, type FeeCode } from './fees'
 import { getBusinessConfig } from '@/apps/settings/db'
-import { suggestedPricesForTitles } from '@/apps/quick-entry/db'
+import { suggestedPricesForCatalogIds } from '@/apps/quick-entry/db'
 import { resolveCatalogId, resolveCatalogIds, normalizeServiceKey } from '@/apps/quick-entry/catalog-identity'
 import { serviceCatalog } from '@/apps/quick-entry/schema'
 import { jobParts } from '@/apps/parts/schema'
@@ -313,9 +313,10 @@ export async function seedSuggestedPrices(estimateId: string): Promise<void> {
   const services = await listUserServices(estimateId)
   if (services.length === 0) return
   for (const s of services) if (await getServicePriceLine(s.id)) return   // already engaged → stop
-  const sugg = await suggestedPricesForTitles(services.map((s) => s.title))
+  // By each line's catalog identity — never its editable name (see suggestedPricesForCatalogIds).
+  const sugg = await suggestedPricesForCatalogIds(services.map((s) => s.catalogId))
   for (const s of services) {
-    const p = sugg[s.title.trim().toLowerCase()]
+    const p = s.catalogId ? sugg[s.catalogId] : undefined
     if (p != null) await addLine(s.id, { name: s.title, priceCents: p, ...DETAIL_LINE })
   }
 }
@@ -449,7 +450,7 @@ export async function getEstimateView(orderId: string): Promise<EstimateView> {
   const db = getDb()
   const catIds = [...new Set(userServices.map((s) => s.catalogId).filter((x): x is string => !!x))]
   const [sugg, cats, review] = await Promise.all([
-    suggestedPricesForTitles(services.map((s) => s.title)),
+    suggestedPricesForCatalogIds(services.map((s) => s.catalogId)),
     catIds.length ? db.select().from(serviceCatalog).where(inArray(serviceCatalog.id, catIds)) : Promise.resolve([] as (typeof serviceCatalog.$inferSelect)[]),
     loadEstimateReview(orderId),
   ])
@@ -464,7 +465,7 @@ export async function getEstimateView(orderId: string): Promise<EstimateView> {
     return {
       id: s.id, title: s.title,
       priceCents: line ? lineAmountCents(line.priceCents, line.qty) : null,
-      suggestedCents: sugg[s.title.trim().toLowerCase()] ?? null,
+      suggestedCents: (s.catalogId ? sugg[s.catalogId] : undefined) ?? null,
       catalogId: s.catalogId, catalogName: c?.name ?? null,
       description: composeLineDescription(base, s.detail), detail: s.detail, matchMethod: s.matchMethod, matchState,
       qbMapped: c ? (c.archivedAt == null && c.qbSyncEnabled && c.qbItemStatus === 'existing' && !!c.qbItemRef) : false,
