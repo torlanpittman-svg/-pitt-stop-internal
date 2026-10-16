@@ -45,7 +45,7 @@ export default function EstimateActions({ id, editorBusy, onBusyChange }: { id: 
         <div className="flex justify-between"><span>Tax</span><span>{money(summary.draft.tax.cents)}</span></div>
         <div className="flex justify-between border-t border-gray-700 pt-3 text-white text-xl font-bold"><span>Estimate total</span><span>{money(summary.draft.totalCents)}</span></div>
       </div>
-      <p className="text-gray-400 text-sm">Send to: {summary.email || 'No email added'} <button disabled={busy || editorBusy} onClick={() => setContactOpen(!contactOpen)} className="text-blue-400 ml-2">Edit contact</button></p>
+      <p className="text-gray-400 text-sm">Send to: {summary.email || 'No email added'} <button disabled={busy || editorBusy} onClick={() => setContactOpen(!contactOpen)} className="text-blue-400 ml-1 min-h-11 px-1 inline-flex items-center">Edit contact</button></p>
       {contactOpen && <form className="space-y-3" onSubmit={e => { e.preventDefault(); void action('contact') }}>
         <label className="block text-sm">Email<input type="email" value={email} onChange={e => setEmail(e.target.value)} className="block w-full rounded-lg bg-gray-900 border border-gray-700 p-3" /></label>
         <label className="block text-sm">Phone<input type="tel" value={phone} onChange={e => setPhone(e.target.value)} className="block w-full rounded-lg bg-gray-900 border border-gray-700 p-3" /></label>

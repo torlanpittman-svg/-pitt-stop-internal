@@ -1,102 +1,63 @@
 'use client'
 
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
 import NavHeader from '@/app/components/NavHeader'
 import EstimateActions from '@/app/estimates/EstimateActions'
-import SwipeRow from '@/app/components/SwipeRow'
 import OrderPhotos from '@/app/components/OrderPhotos'
-import { saveEstimateEdit, describeEdit, type EstimateEdit, type EstimateViewData, type ServiceView } from './save-feedback'
+import { saveEstimateEdit, describeEdit, type EstimateEdit, type EstimateViewData, type PartView, type ServiceView } from './save-feedback'
 import ServicePicker from './ServicePicker'
-import { PartsList, ReviewNotices } from './PartsReview'
+import { ReviewNotices } from './PartsReview'
+import { PartEditor, ServiceEditor } from './ItemEditor'
 
 /**
- * Simplified mobile Estimate — "what are we doing, and what are we charging?".
- * One visible service + one editable price, plus one authoritative Work Total.
- * No cost / labor-guide / tax / approval clutter (that infrastructure still exists
- * for the future richer desktop view). Fees are handled separately by the billing
- * engine and never appear here.
+ * Estimate — "Simple list". One list of services and parts (tap a row to edit it), one Add item
+ * button, review warnings only when something needs a decision, and the Work Total. Less frequent
+ * actions live in the ⋯ menu. Shared by standalone estimates and job-linked estimates.
+ *
+ * Saving: editors use explicit Save/Cancel; committed actions (remove, labor decisions, match
+ * choices) save immediately. "Saved" appears only after the server confirms (save-feedback.ts); a
+ * failure stays visible with Retry, and leaving with unsaved or failed changes asks first.
+ * Fees are handled by the billing engine and never appear in the Work Total.
  */
 type View = EstimateViewData
 interface VehicleDetails { vin: string | null; color: string | null; licensePlate: string | null; bodyClass: string | null }
 interface Header { vehicleDetails: VehicleDetails; id: string; customer: string; vehicle: string; requested: string[]; standalone?: boolean; notes?: string | null }
+type Pane = { kind: 'list' } | { kind: 'add' } | { kind: 'review' } | { kind: 'customer' }
+  | { kind: 'service'; id: string; rematch?: boolean } | { kind: 'part'; id: string }
+const LIST: Pane = { kind: 'list' }
 
 const dollars = (c: number) => (c / 100).toFixed(2)
 const parseDollars = (s: string): number => Math.max(0, Math.round((parseFloat(s.replace(/[^0-9.]/g, '')) || 0) * 100))
+const BTN = 'rounded-xl font-semibold text-sm px-4 py-3 min-h-11 active:opacity-80 disabled:opacity-40'
 
-// ── Inline price field: commits on blur / Enter, never per-keystroke ──────────────
-function PriceInput({ cents, onCommit, busy, big }: { cents: number | null; onCommit: (c: number) => void; busy: boolean; big?: boolean }) {
+// ── Work Total field (flat / unpriced estimates): commits on blur / Enter, never per-keystroke ──
+function PriceInput({ cents, onCommit, busy }: { cents: number | null; onCommit: (c: number) => void; busy: boolean }) {
   const [text, setText] = useState(cents != null ? dollars(cents) : '')
   const [editing, setEditing] = useState(false)
   // Keep in sync when the server value changes and we're not actively editing.
   if (!editing && cents != null && text !== dollars(cents)) setText(dollars(cents))
   const commit = () => {
     setEditing(false)
-    // An empty field is "untouched" — never coerce it to $0. This keeps an unpriced service
-    // distinct from an explicitly-entered $0 (a free service): typing "0" commits $0; focusing
-    // and leaving a blank field commits nothing.
+    // An empty field is "untouched" — never coerce it to $0.
     if (text.trim() === '') return
     const c = parseDollars(text)
     if (c !== (cents ?? -1)) onCommit(c)
   }
   return (
-    <div className="flex items-center">
-      <span className={`text-gray-500 ${big ? 'text-lg' : ''}`}>$</span>
+    <div className="flex items-center rounded-lg border border-gray-700 bg-gray-950 px-2 focus-within:border-blue-500">
+      <span className="text-gray-400 text-lg">$</span>
       <input
-        value={text} inputMode="decimal" placeholder="0.00" disabled={busy}
+        aria-label="Work Total" value={text} inputMode="decimal" placeholder="0.00" disabled={busy}
         onFocus={(e) => { setEditing(true); e.currentTarget.select() }}
         onChange={(e) => setText(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
-        className={`bg-transparent text-right text-white tabular-nums outline-none focus:border-b focus:border-gray-500 ${big ? 'text-2xl font-bold w-32' : 'text-base w-20'}`}
+        className="bg-transparent text-right text-white tabular-nums outline-none text-2xl font-bold w-32 py-1.5"
       />
     </div>
   )
 }
 
-// Foreground card style for Estimate service rows (shared SwipeRow provides the swipe).
-const ROW_CONTENT = 'flex items-center gap-3 bg-gray-900 border border-gray-800 px-4 py-3.5'
-const EDIT_BTN = 'shrink-0 text-blue-400 text-sm font-semibold px-2 py-1 -my-1 active:opacity-70 disabled:opacity-40'
-
-// ── Inline detail editor (area / component) — may be cleared ─────────────────────────
-function DetailEditor({ initial, busy, onSave, onCancel }: { initial: string; busy: boolean; onSave: (v: string) => void; onCancel: () => void }) {
-  const [text, setText] = useState(initial)
-  return (
-    <form className="flex flex-wrap items-center gap-2 w-full mt-2" onSubmit={(e) => { e.preventDefault(); if (text.trim() === initial.trim()) onCancel(); else onSave(text) }}>
-      <input aria-label="Area or component" value={text} autoFocus maxLength={120} disabled={busy} placeholder="e.g. passenger seat"
-        onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
-        className="flex-1 min-w-[10rem] bg-gray-950 border border-gray-600 text-white rounded-lg px-3 py-2 text-base" />
-      <div className="flex gap-2">
-        <button type="submit" disabled={busy} className="rounded-lg bg-blue-600 text-white font-semibold text-sm px-4 py-2 active:opacity-80 disabled:opacity-40">Save</button>
-        <button type="button" onClick={onCancel} disabled={busy} className="rounded-lg border border-gray-600 text-gray-200 text-sm px-4 py-2 active:opacity-80 disabled:opacity-40">Cancel</button>
-      </div>
-    </form>
-  )
-}
-
-/** What the service is matched to + exactly what the invoice line says. */
-function MatchLine({ s, busy, onChange }: { s: ServiceView; busy: boolean; onChange: () => void }) {
-  if (s.matchState === 'choose') {
-    return <button type="button" onClick={onChange} disabled={busy} className="mt-1 rounded-lg bg-amber-600/25 border border-amber-700/60 px-2.5 py-1 text-amber-200 text-xs font-semibold">Which odor treatment? Choose…</button>
-  }
-  if (s.matchState === 'unmatched' && s.partLike) {
-    return <p className="mt-1 text-amber-300/90 text-xs font-semibold">{s.partLike === 'part' ? 'Looks like a part' : 'Part or labor?'} — review below</p>
-  }
-  if (s.matchState === 'unmatched') {
-    return <button type="button" onClick={onChange} disabled={busy} className="mt-0.5 min-h-10 inline-flex items-center text-amber-300/90 text-xs font-semibold">Not matched to a catalog service — choose…</button>
-  }
-  return (
-    <div className="mt-0.5 min-w-0">
-      <p className="text-gray-500 text-xs line-clamp-2 break-words">
-        {s.matchState === 'custom' ? 'Custom · ' : s.catalogName && s.catalogName !== s.title ? `${s.catalogName} · ` : ''}{s.description}
-      </p>
-      {s.matchState === 'matched' && s.qbMapped === false && <p className="text-gray-600 text-[11px]">QuickBooks item pending review — bills as Labor</p>}
-      {s.overlapAcknowledged && <p className="text-gray-600 text-[11px]">Kept alongside Complete Odor Treatment on purpose</p>}
-    </div>
-  )
-}
-
-// ── Inline name editor (customer name, service name): explicit Save / Cancel ─────────
-// 16px text so iOS doesn't zoom; Enter saves, Escape cancels. Saving the unchanged value just closes.
 function NameEditor({ label, initial, busy, onSave, onCancel }: {
   label: string; initial: string; busy: boolean; onSave: (value: string) => void; onCancel: () => void
 }) {
@@ -104,22 +65,53 @@ function NameEditor({ label, initial, busy, onSave, onCancel }: {
   const value = text.replace(/\s+/g, ' ').trim()
   const save = () => { if (!value) return; if (value === initial) onCancel(); else onSave(value) }
   return (
-    <form className="flex flex-wrap items-center gap-2 w-full" onSubmit={(e) => { e.preventDefault(); save() }}>
-      <input aria-label={label} value={text} autoFocus maxLength={200} disabled={busy}
-        onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
-        className="flex-1 min-w-[10rem] bg-gray-950 border border-gray-600 text-white rounded-lg px-3 py-2 text-base" />
+    <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); save() }}>
+      <label className="block"><span className="text-gray-400 text-sm">{label}</span>
+        <input value={text} autoFocus maxLength={200} disabled={busy} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
+          className="mt-1.5 w-full bg-gray-950 border border-gray-700 text-white rounded-xl px-3 py-2.5 text-lg font-semibold focus:border-blue-500 focus:outline-none" />
+      </label>
       <div className="flex gap-2">
-        <button type="submit" disabled={busy || !value}
-          className="rounded-lg bg-blue-600 text-white font-semibold text-sm px-4 py-2 active:opacity-80 disabled:opacity-40">Save</button>
-        <button type="button" onClick={onCancel} disabled={busy}
-          className="rounded-lg border border-gray-600 text-gray-200 text-sm px-4 py-2 active:opacity-80 disabled:opacity-40">Cancel</button>
+        <button type="button" onClick={onCancel} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200`}>Cancel</button>
+        <button type="submit" disabled={busy || !value} className={`${BTN} flex-1 bg-blue-600 text-white`}>{busy ? 'Saving…' : 'Save changes'}</button>
       </div>
     </form>
   )
 }
 
+function Chevron() {
+  return <svg aria-hidden width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-gray-400"><path d="m9 18 6-6-6-6" /></svg>
+}
+
+/** One tappable line: name, a short sub-line, the price (or what's missing), and a chevron. */
+function Row({ id, label, title, badge, sub, price, attention, onOpen }: {
+  id: string; label: string; title: string; badge?: ReactNode; sub: ReactNode; price: ReactNode; attention?: string | null; onOpen: () => void
+}) {
+  return (
+    <li>
+      <button type="button" data-row={id} onClick={onOpen} aria-label={label}
+        className="flex w-full min-h-16 items-center gap-3 px-4 py-3 text-left hover:bg-gray-800/60 active:bg-gray-800 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-500">
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2 min-w-0">{badge}<span className="font-semibold text-white break-words min-w-0">{title}</span></span>
+          <span className="mt-0.5 block text-xs text-gray-400 break-words">{sub}</span>
+          {attention && <span className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-amber-300"><span aria-hidden>●</span>{attention}</span>}
+        </span>
+        <span className="shrink-0 text-right tabular-nums">{price}</span>
+        <Chevron />
+      </button>
+    </li>
+  )
+}
+
+function serviceAttention(s: ServiceView): string | null {
+  if (s.matchState === 'choose') return 'Choose odor treatment'
+  if (s.matchState === 'unmatched' && s.partLike) return s.partLike === 'part' ? 'Looks like a part' : 'Part or labor?'
+  if (s.matchState === 'unmatched') return 'Not matched to a catalog service'
+  return null
+}
+
 export default function EstimateBuilder({ header, initialView }: { header: Header; initialView: View }) {
   const [view, setView] = useState<View>(initialView)
+  const viewRef = useRef(view)
   const [editingBusy, setBusy] = useState(false)
   const [actionBusy, setActionBusy] = useState(false)
   const busy = editingBusy || actionBusy
@@ -129,262 +121,403 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   // What the status line says ("Removing “Wax”…", "“Wax” removed · Saved", "Couldn’t remove …").
   const [saveMsg, setSaveMsg] = useState('')
-  // True once any edit in this visit was confirmed by the server — idle then reads "All changes saved".
+  // True once any edit in this visit was confirmed by the server — the header then keeps "Saved".
   const [savedOnce, setSavedOnce] = useState(false)
-  // The last attempted save, kept so a failed one can be retried (estimate edit payload or customer name).
-  const lastSave = useRef<{ payload: EstimateEdit } | { customerName: string } | null>(null)
+  // What Retry re-runs: the last request again, or the editor's own Save (which resumes a multi-step save).
+  const retryRef = useRef<(() => void) | null>(null)
+  // True when that retry belongs to an editor draft (so Cancel may discard it); committed actions never are.
+  const retryIsDraft = useRef(false)
+  const postRef = useRef<(payload: EstimateEdit, retry?: () => void) => Promise<boolean>>(async () => false)
+  const saveCustomerNameRef = useRef<(name: string) => Promise<boolean>>(async () => false)
+  const closePaneRef = useRef<() => void>(() => {})
   const [customer, setCustomer] = useState(header.customer)
-  const [editingCustomer, setEditingCustomer] = useState(false)
   // Bumped after a customer rename so EstimateActions reloads (the send/convert revision changed).
   const [customerRev, setCustomerRev] = useState(0)
-  const [editingServiceId, setEditingServiceId] = useState<string | null>(null)
-  const [rematchId, setRematchId] = useState<string | null>(null)
-  const [detailId, setDetailId] = useState<string | null>(null)
+  const [pane, setPane] = useState<Pane>(LIST)
+  const paneRef = useRef(pane)
+  const [editorDirty, setEditorDirty] = useState(false)
+  const dirtyRef = useRef(false)
+  const [discardAsk, setDiscardAsk] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [vehicleOpen, setVehicleOpen] = useState(false)
+  const opener = useRef<string | null>(null)
+  const paneHeading = useRef<HTMLHeadingElement>(null)
 
-  // Every estimate edit saves immediately. "Saved" is shown ONLY after the server confirms the
+  // Every estimate edit is sent at once. "Saved" is shown ONLY after the server confirms the
   // change (see save-feedback.ts); a failure says what wasn't stored and offers Retry.
-  const post = useCallback(async (payload: EstimateEdit): Promise<boolean> => {
-    lastSave.current = { payload }
-    const labels = describeEdit(payload, view)
+  const post = useCallback(async (payload: EstimateEdit, retry?: () => void): Promise<boolean> => {
+    retryRef.current = retry ?? (() => { void postRef.current(payload) })
+    retryIsDraft.current = !!retry
+    const labels = describeEdit(payload, viewRef.current)
     setBusy(true); setErr(null); setSaveState('saving'); setSaveMsg(labels.saving)
     try {
       const out = await saveEstimateEdit(header.id, payload)
       if (!out.ok) { setErr(out.error); setSaveMsg(labels.failed); setSaveState('error'); return false }
       setView(out.view); setSaveMsg(labels.saved); setSaveState('saved'); setSavedOnce(true)
+      // An item that's now gone (removed, converted to a part) closes its editor.
+      const open = paneRef.current
+      if ((open.kind === 'service' && !out.view.services.some((x) => x.id === open.id)) || (open.kind === 'part' && !(out.view.parts ?? []).some((x) => x.id === open.id))) closePaneRef.current()
       return true
     } finally { setBusy(false) }
-  }, [header.id, view])
+  }, [header.id])
 
-  // Leaving while a save is in flight or after one failed would lose the change silently — warn.
-  useEffect(() => {
-    if (saveState !== 'saving' && saveState !== 'error') return
-    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
-    window.addEventListener('beforeunload', warn)
-    return () => window.removeEventListener('beforeunload', warn)
-  }, [saveState])
-
-  // A successful save shows "Saved" briefly, then returns to idle. An error stays until resolved.
+  // A successful save shows its message briefly, then the header settles on "Saved". An error stays.
   useEffect(() => {
     if (saveState !== 'saved') return
     const t = setTimeout(() => setSaveState((s) => (s === 'saved' ? 'idle' : s)), 2500)
     return () => clearTimeout(t)
   }, [saveState])
 
+  // Leaving while a save is in flight, after one failed, or with unsaved editor changes would lose
+  // work silently — warn on reload/close and on in-app links (Back, Home, search results).
+  const guardLeave = saveState === 'saving' || saveState === 'error' || editorDirty
+  useEffect(() => {
+    if (!guardLeave) return
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
+    const onClick = (e: MouseEvent) => {
+      const a = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null
+      if (!a || a.target === '_blank' || e.defaultPrevented) return
+      const msg = saveState === 'saving' ? 'A change is still saving. Leave anyway?'
+        : saveState === 'error' ? 'A change did not save. Leave without saving it?'
+        : 'You have unsaved changes. Leave without saving them?'
+      if (!window.confirm(msg)) { e.preventDefault(); e.stopPropagation() }
+    }
+    window.addEventListener('beforeunload', warn)
+    document.addEventListener('click', onClick, true)
+    return () => { window.removeEventListener('beforeunload', warn); document.removeEventListener('click', onClick, true) }
+  }, [guardLeave, saveState])
+
+  // Panes (Add, an item editor, Review, Customer) take over the screen. Each one adds a history
+  // entry so the phone's Back button returns to the list instead of leaving the estimate; Back with
+  // unsaved editor changes asks first.
+  const openPane = useCallback((p: Pane, from?: string) => {
+    opener.current = from ?? null
+    setMenuOpen(false); setDiscardAsk(false); setEditorDirty(false)
+    if (paneRef.current.kind === 'list') window.history.pushState({ ...window.history.state, estimatePane: true }, '')
+    setPane(p)
+  }, [])
+  const closePane = useCallback(() => {
+    dirtyRef.current = false; setEditorDirty(false); setDiscardAsk(false)
+    if (window.history.state?.estimatePane) window.history.back()
+    else setPane(LIST)
+  }, [])
+  useEffect(() => {
+    const onPop = () => {
+      if (paneRef.current.kind === 'list') return
+      if (dirtyRef.current) {
+        window.history.pushState({ ...window.history.state, estimatePane: true }, '')
+        setDiscardAsk(true)
+        return
+      }
+      setPane(LIST)
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+  // Focus: the pane heading on open; the row (or Add button) that opened it on return.
+  useEffect(() => {
+    if (pane.kind !== 'list') { paneHeading.current?.focus(); return }
+    const id = opener.current
+    if (!id) return
+    opener.current = null
+    const el = document.querySelector<HTMLElement>(`[data-row="${CSS.escape(id)}"]`)
+    el?.focus()
+  }, [pane])
+  // The ⋯ menu closes on an outside tap.
+  useEffect(() => {
+    if (!menuOpen) return
+    const close = (e: PointerEvent) => { if (!(e.target as Element | null)?.closest?.('[data-estimate-menu]')) setMenuOpen(false) }
+    document.addEventListener('pointerdown', close)
+    return () => document.removeEventListener('pointerdown', close)
+  }, [menuOpen])
+
+  const onEditorClose = useCallback((outcome: 'saved' | 'cancelled' | 'removed') => {
+    // Cancelling discards the draft — including one whose save failed — so clear that failure. A failed
+    // committed action (remove, labor decision, match) is not a draft: it stays visible with Retry.
+    if (outcome === 'cancelled' && retryIsDraft.current) {
+      retryRef.current = null; retryIsDraft.current = false
+      setSaveState((s) => (s === 'error' ? 'idle' : s))
+    }
+    closePane()
+  }, [closePane])
+
   // Customer name correction (standalone estimates) — same records/ids, via the estimate's locked action route.
-  const saveCustomerName = useCallback(async (name: string): Promise<void> => {
-    lastSave.current = { customerName: name }
+  const saveCustomerName = useCallback(async (name: string): Promise<boolean> => {
+    retryIsDraft.current = true
+    retryRef.current = () => { void saveCustomerNameRef.current(name).then((ok) => { if (ok && paneRef.current.kind === 'customer') closePaneRef.current() }) }
     setBusy(true); setErr(null); setSaveState('saving'); setSaveMsg('Saving customer name…')
     try {
       const res = await fetch(`/api/estimates/${header.id}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'customer_name', name }),
       })
       const d = await res.json().catch(() => ({}))
-      if (!res.ok) { setErr(d.error ?? `The server returned an error (${res.status}).`); setSaveMsg('Couldn’t save the customer name — the old name is still saved.'); setSaveState('error'); return }
-      setCustomer(d.customerName || name); setEditingCustomer(false); setCustomerRev((n) => n + 1)
+      if (!res.ok) { setErr(d.error ?? `The server returned an error (${res.status}).`); setSaveMsg('Couldn’t save the customer name — the old name is still saved.'); setSaveState('error'); return false }
+      setCustomer(d.customerName || name); setCustomerRev((n) => n + 1)
       setSaveMsg('Customer name saved'); setSaveState('saved'); setSavedOnce(true)
-    } catch { setErr('No connection — check the internet and try again.'); setSaveMsg('Couldn’t save the customer name — the old name is still saved.'); setSaveState('error') } finally { setBusy(false) }
+      return true
+    } catch { setErr('No connection — check the internet and try again.'); setSaveMsg('Couldn’t save the customer name — the old name is still saved.'); setSaveState('error'); return false } finally { setBusy(false) }
   }, [header.id])
-
-  const saveServiceName = useCallback(async (serviceId: string, title: string) => {
-    if (await post({ action: 'rename_service', serviceId, title })) setEditingServiceId(null)
-  }, [post])
-
-  const retryLastSave = useCallback(() => {
-    const last = lastSave.current
-    if (!last) return
-    if ('payload' in last) void post(last.payload)
-    else void saveCustomerName(last.customerName)
-  }, [post, saveCustomerName])
+  // Keep the latest values/handlers for event-driven code (popstate, Retry, save confirmations).
+  useLayoutEffect(() => {
+    viewRef.current = view; paneRef.current = pane; dirtyRef.current = editorDirty
+    postRef.current = post; saveCustomerNameRef.current = saveCustomerName; closePaneRef.current = closePane
+  })
+  const retryLastSave = useCallback(() => { retryRef.current?.() }, [])
 
   const services = view.services
+  const parts = view.parts ?? []
+  const issues = view.review?.issues ?? []
   const isFlat = view.flat
   const hasPricedService = services.some((s) => (s.priceCents ?? 0) > 0)
-  // The itemized Work Total is DERIVED (the sum of the service prices) — show it read-only once
-  // any service is priced, so editing it can never silently redistribute money across services.
-  // A flat Job, or a fresh itemized Job with no prices yet, can still take a quick single Work
-  // Total (which is stored as a flat price).
+  // The itemized Work Total is DERIVED (the sum of the line prices) — read-only once any service is
+  // priced, so editing it can never silently redistribute money. A flat Job, or a fresh itemized Job
+  // with no prices yet, can still take a quick single Work Total (stored as a flat price).
   const totalEditable = isFlat || !hasPricedService
+  const editorPane = pane.kind === 'service' || pane.kind === 'part' || pane.kind === 'customer'
+
+  // ── Header pieces ──────────────────────────────────────────────────────────────────────────────
+  const saveBadge = (
+    <span role="status" aria-live="polite" className="min-h-5 text-xs">
+      {saveState === 'saving' ? <span className="inline-flex items-center gap-1.5 text-gray-300"><span aria-hidden className="h-1.5 w-1.5 rounded-full bg-gray-300 animate-pulse" />Saving…</span>
+        : saveState === 'error' ? <span className="inline-flex items-center gap-1 font-semibold text-red-300"><span aria-hidden>!</span>Not saved</span>
+        : saveState === 'saved' ? <span className="inline-flex max-w-[13rem] items-center gap-1 text-green-400 truncate"><span aria-hidden>✓</span>{saveMsg || 'Saved'}</span>
+        : savedOnce ? <span className="inline-flex items-center gap-1 text-green-400/80"><span aria-hidden>✓</span>Saved</span> : null}
+    </span>
+  )
+  const errorCard = saveState === 'error' && (
+    <div role="alert" className="sticky top-16 z-20 mb-4 rounded-xl border border-red-800/70 bg-red-950/90 px-4 py-3 text-sm text-red-200 flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <p className="font-semibold">{saveMsg || 'Couldn’t save your change.'}</p>
+        {err && <p className="text-red-300/80 text-xs mt-0.5 break-words">{err}</p>}
+        {editorPane && <p className="text-red-300/70 text-xs mt-1">What you typed is still here.</p>}
+      </div>
+      <button onClick={retryLastSave} disabled={busy} className="shrink-0 min-h-11 rounded-lg bg-red-600 text-white font-semibold px-4 active:opacity-80 disabled:opacity-50">Retry</button>
+    </div>
+  )
+
+  // ── Panes ──────────────────────────────────────────────────────────────────────────────────────
+  const paneTitle = pane.kind === 'add' ? 'Add item' : pane.kind === 'review' ? 'Needs review' : pane.kind === 'customer' ? 'Customer name'
+    : pane.kind === 'part' ? 'Edit part' : 'Edit item'
+  const paneSvc = pane.kind === 'service' ? services.find((s) => s.id === pane.id) : undefined
+  const panePart = pane.kind === 'part' ? parts.find((p) => p.id === pane.id) : undefined
+  const paneBody = pane.kind === 'list' ? null : (
+    <section aria-labelledby="estimate-pane-title">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <button type="button" onClick={() => { if (editorDirty) setDiscardAsk(true); else onEditorClose('cancelled') }} disabled={editingBusy && editorPane}
+          className="-ml-1 inline-flex min-h-11 items-center gap-1 px-1 text-sm font-semibold text-blue-400 active:opacity-70 disabled:opacity-40">
+          <span aria-hidden>←</span>Estimate
+        </button>
+        {saveBadge}
+      </div>
+      <h2 id="estimate-pane-title" ref={paneHeading} tabIndex={-1} className="mb-1 text-xl font-bold outline-none">{paneTitle}</h2>
+      <p className="mb-5 text-sm text-gray-400 break-words">{customer} · {header.vehicle}</p>
+      {discardAsk && (
+        <div role="alertdialog" aria-label="Unsaved changes" className="mb-4 rounded-xl border border-amber-800/70 bg-amber-950/40 px-4 py-3">
+          <p className="text-amber-100 text-sm font-semibold">You have unsaved changes.</p>
+          <div className="mt-3 flex gap-2">
+            <button type="button" onClick={() => setDiscardAsk(false)} className={`${BTN} flex-1 bg-blue-600 text-white`}>Keep editing</button>
+            <button type="button" onClick={() => onEditorClose('cancelled')} className={`${BTN} border border-gray-600 text-gray-200`}>Discard</button>
+          </div>
+        </div>
+      )}
+      {errorCard}
+      {pane.kind === 'add' && (
+        <ServicePicker orderId={header.id} mode="add" busy={busy} isFlat={isFlat} vehicleLabel={header.vehicle} onSave={post} onAdded={closePane} />
+      )}
+      {pane.kind === 'service' && paneSvc && (
+        <ServiceEditor key={paneSvc.id} service={paneSvc} orderId={header.id} vehicleLabel={header.vehicle} isFlat={isFlat} busy={busy} post={post}
+          startRematch={pane.rematch} onDirtyChange={setEditorDirty} onClose={onEditorClose} />
+      )}
+      {pane.kind === 'part' && panePart && (
+        <PartEditor key={panePart.id} part={panePart} services={services} busy={busy} post={post} onDirtyChange={setEditorDirty} onClose={onEditorClose} />
+      )}
+      {pane.kind === 'review' && (
+        issues.length === 0
+          ? <p className="text-green-400 text-sm">Nothing needs review. <button type="button" onClick={closePane} className="ml-1 min-h-11 font-semibold text-blue-400">Back to estimate</button></p>
+          : <>
+              <p className="mb-3 text-gray-400 text-sm">Drafts keep saving. Sending or invoicing waits until these are resolved. Each choice saves right away.</p>
+              <ReviewNotices issues={issues} services={services} parts={parts} busy={busy} post={post} onChooseOdor={(id) => setPane({ kind: 'service', id, rematch: true })} />
+            </>
+      )}
+      {pane.kind === 'customer' && (
+        <>
+          <NameEditor label="Customer name" initial={customer} busy={busy}
+            onSave={(name) => { void saveCustomerName(name).then((ok) => { if (ok) closePane() }) }} onCancel={() => onEditorClose('cancelled')} />
+        </>
+      )}
+    </section>
+  )
+
+  // ── List ───────────────────────────────────────────────────────────────────────────────────────
+  const partPrice = (p: PartView) => p.supply === 'customer' ? <span className="text-gray-400 text-sm">No charge</span>
+    : p.lineCents != null ? <span className="font-semibold text-white">${dollars(p.lineCents)}</span>
+    : <span className="text-amber-300 text-sm font-semibold">Add price</span>
+  const servicePrice = (s: ServiceView) => isFlat ? <span className="text-gray-400 text-xs">In flat total</span>
+    : s.priceCents != null ? <span className="font-semibold text-white">${dollars(s.priceCents)}</span>
+    : <span className="text-amber-300 text-sm font-semibold">Add price</span>
+  const issueTarget = (code: string, ids: string[]): (() => void) => {
+    if (code === 'odor_choice' && ids.length === 1) return () => openPane({ kind: 'service', id: ids[0], rematch: true }, `svc:${ids[0]}`)
+    const needing = parts.filter((p) => p.laborStatus === 'needs_review')
+    if (code === 'part_labor' && needing.length === 1) return () => openPane({ kind: 'part', id: needing[0].id }, `part:${needing[0].id}`)
+    return () => openPane({ kind: 'review' }, 'review')
+  }
+
+  const list = (
+    <>
+      <div className="flex items-start justify-between gap-3">
+        <h1 className="text-2xl font-bold">Estimate</h1>
+        <div className="flex items-center gap-1">
+          {saveBadge}
+          <div className="relative" data-estimate-menu>
+            <button type="button" onClick={() => setMenuOpen((o) => !o)} aria-haspopup="menu" aria-expanded={menuOpen} aria-label="More estimate options"
+              className="grid h-11 w-11 place-items-center rounded-lg text-gray-300 hover:bg-gray-900 active:bg-gray-800 text-xl leading-none">⋯</button>
+            {menuOpen && (
+              <div role="menu" aria-label="Estimate options" onKeyDown={(e) => { if (e.key === 'Escape') setMenuOpen(false) }}
+                className="absolute right-0 top-12 z-30 w-64 rounded-xl border border-gray-800 bg-gray-900 p-1.5 shadow-xl shadow-black/40">
+                {header.standalone && <MenuItem onClick={() => openPane({ kind: 'customer' }, 'customer')}>Edit customer name</MenuItem>}
+                <MenuItem onClick={() => { setVehicleOpen(true); setMenuOpen(false) }}>Vehicle details &amp; photos</MenuItem>
+                {issues.length > 0 && <MenuItem onClick={() => openPane({ kind: 'review' }, 'review')}>Review items ({issues.length})</MenuItem>}
+                <a role="menuitem" href="/quick-entry/services" className="flex min-h-11 items-center rounded-lg px-3 text-sm text-gray-200 hover:bg-gray-800">Manage prefilled services</a>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {header.standalone ? (
+        <button type="button" data-row="customer" onClick={() => openPane({ kind: 'customer' }, 'customer')} aria-label={`Edit customer name ${customer}`}
+          className="-ml-1 mt-1 inline-flex min-h-11 max-w-full items-center gap-2 rounded-lg px-1 text-left text-lg font-semibold text-white hover:bg-gray-900">
+          <span className="break-words min-w-0">{customer}</span>
+          <svg aria-hidden width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-blue-400"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+        </button>
+      ) : <p className="mt-1 text-lg font-semibold text-white break-words">{customer}</p>}
+
+      <details open={vehicleOpen} onToggle={(e) => setVehicleOpen(e.currentTarget.open)} className="group mt-1 mb-5">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 [&::-webkit-details-marker]:hidden">
+          <span className="break-words min-w-0">{header.vehicle}</span><span className="text-gray-500">·</span><span className="text-blue-400 shrink-0">Vehicle details</span>
+          <span aria-hidden className="text-gray-400 transition-transform group-open:rotate-90">›</span>
+        </summary>
+        <div className="mt-2 rounded-2xl border border-gray-800 bg-gray-900 p-4">
+          <dl className="space-y-3 text-sm">
+            <div><dt className="text-gray-400">VIN</dt><dd className="font-mono text-base text-white select-all break-all">{header.vehicleDetails.vin || 'Not recorded'}</dd></div>
+            <div className="grid grid-cols-2 gap-4">
+              <div><dt className="text-gray-400">Color</dt><dd className="text-gray-200 break-words">{header.vehicleDetails.color || 'Not recorded'}</dd></div>
+              <div><dt className="text-gray-400">License plate</dt><dd className="text-gray-200 select-all break-words">{header.vehicleDetails.licensePlate || 'Not recorded'}</dd></div>
+            </div>
+            {header.vehicleDetails.bodyClass && <div><dt className="text-gray-400">Body style</dt><dd className="text-gray-200">{header.vehicleDetails.bodyClass}</dd></div>}
+          </dl>
+          <div className="mt-4"><OrderPhotos orderId={header.id} /></div>
+        </div>
+      </details>
+      {header.notes && <p className="-mt-3 mb-5 text-gray-400 text-sm whitespace-pre-wrap">{header.notes}</p>}
+
+      {errorCard}
+
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <h2 className="font-semibold text-gray-200">Work &amp; parts</h2>
+        {(services.length + parts.length) > 0 && <span className="text-xs text-gray-400">Tap a line to edit</span>}
+      </div>
+      <ul aria-label="Services and parts" className="overflow-hidden rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800">
+        {services.map((s) => (
+          <Row key={s.id} id={`svc:${s.id}`} label={`Edit ${s.title}`} title={s.title}
+            sub={[s.detail, s.matchState === 'custom' ? 'Custom service' : s.catalogName && s.catalogName !== s.title ? s.catalogName : null].filter(Boolean).join(' · ') || 'Service'}
+            attention={serviceAttention(s)} price={servicePrice(s)} onOpen={() => openPane({ kind: 'service', id: s.id }, `svc:${s.id}`)} />
+        ))}
+        {parts.map((p) => (
+          <Row key={p.id} id={`part:${p.id}`} label={`Edit part ${p.description}`} title={p.description}
+            badge={<span className="shrink-0 rounded-md bg-sky-900/50 px-1.5 py-0.5 text-[11px] font-semibold text-sky-200">Part</span>}
+            sub={[p.supply === 'customer' ? 'Customer-supplied' : 'Special order', `Qty ${p.quantity}`, p.supply === 'shop' && p.sellPriceCents != null && p.quantity !== 1 ? `$${dollars(p.sellPriceCents)} each` : null].filter(Boolean).join(' · ')}
+            attention={p.laborStatus === 'needs_review' ? 'Installation labor not reviewed' : null} price={partPrice(p)}
+            onOpen={() => openPane({ kind: 'part', id: p.id }, `part:${p.id}`)} />
+        ))}
+        {services.length + parts.length === 0 && <li className="px-4 py-6 text-center text-sm text-gray-400">No items yet. Add the first service or part.</li>}
+      </ul>
+
+      {/* Required reviews — only when relevant. Drafts still save; send / invoice wait for these. */}
+      {issues.length > 0 && (
+        <div role="region" aria-label="Needs review before sending" className="mt-3 space-y-2">
+          {issues.map((i) => (
+            <div key={i.code} className="flex items-center gap-3 rounded-xl border border-amber-800/70 bg-amber-950/30 px-4 py-2.5">
+              <span aria-hidden className="text-amber-300">⚠</span>
+              <p className="min-w-0 flex-1 text-sm text-amber-100">{i.message}</p>
+              <button type="button" data-row={i.code === 'odor_choice' ? undefined : 'review'} onClick={issueTarget(i.code, i.ids)}
+                className="shrink-0 min-h-11 rounded-lg px-3 text-sm font-semibold text-amber-200 hover:bg-amber-900/40">Review</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <button type="button" data-row="add" onClick={() => openPane({ kind: 'add' }, 'add')} disabled={busy}
+        className="mt-4 flex w-full min-h-12 items-center justify-center gap-2 rounded-xl bg-blue-600 text-base font-semibold text-white active:opacity-80 disabled:opacity-50">
+        <span aria-hidden className="text-xl leading-none">+</span>Add item
+      </button>
+
+      {/* Incomplete pricing: a flat amount was agreed, but not every line is priced yet. The agreed
+          amount stays a clearly-labeled REFERENCE; the partial sum is never presented as the total. */}
+      {view.incomplete && view.referenceCents != null && (
+        <div className="mt-4 rounded-2xl border border-amber-800/70 bg-amber-950/30 px-4 py-3">
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <p className="text-amber-300 font-semibold">Pricing incomplete</p>
+            <span className="text-amber-100 tabular-nums">Agreed ${dollars(view.referenceCents)}</span>
+          </div>
+          <p className="text-amber-200/70 text-xs mt-1">Price every line so the breakdown adds up. Until then the total below is partial, not the agreed amount — the invoice can’t be created yet.</p>
+        </div>
+      )}
+
+      {/* Every line priced, but the itemized total differs from the agreed amount: show the
+          difference and require an explicit choice — itemizing never silently replaces it. */}
+      {!view.incomplete && view.referenceCents != null && (
+        <div className="mt-4 rounded-2xl border border-amber-800/70 bg-amber-950/30 px-4 py-3">
+          <p className="text-amber-300 text-sm font-semibold">Itemized total differs from the agreed amount</p>
+          <dl className="mt-1 space-y-0.5 text-sm">
+            <div className="flex justify-between"><dt className="text-amber-200/80">Agreed amount</dt><dd className="text-amber-100 tabular-nums">${dollars(view.referenceCents)}</dd></div>
+            <div className="flex justify-between"><dt className="text-amber-200/80">Itemized total</dt><dd className="text-amber-100 font-bold tabular-nums">${dollars(view.workTotalCents)}</dd></div>
+            <div className="flex justify-between"><dt className="text-amber-200/80">Difference</dt><dd className="text-amber-100 tabular-nums">{view.workTotalCents >= view.referenceCents ? '+' : '−'}${dollars(Math.abs(view.workTotalCents - view.referenceCents))}</dd></div>
+          </dl>
+          <button onClick={() => post({ action: 'accept_total' })} disabled={busy} className={`${BTN} mt-3 w-full bg-amber-600 text-white`}>Use itemized total ${dollars(view.workTotalCents)}</button>
+          <p className="text-amber-200/60 text-xs mt-2">Or edit a line price so the breakdown matches the agreed amount. The invoice can’t be created until this is resolved.</p>
+        </div>
+      )}
+
+      {/* Work Total */}
+      <div className="mt-4 rounded-2xl border border-gray-800 bg-gray-900 px-4 py-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-white font-bold text-lg">{view.incomplete ? 'Itemized so far' : 'Work total'}</p>
+            <p className="text-gray-400 text-xs">
+              {isFlat ? 'Flat price' : view.incomplete ? 'Partial — some lines still need a price' : 'Sum of line prices'} · before shop supplies, card charge, and tax
+            </p>
+          </div>
+          {totalEditable ? (
+            <PriceInput cents={view.workTotalCents} busy={busy} onCommit={(c) => post({ action: 'set_work_total', cents: c })} />
+          ) : (
+            <span className={`text-2xl font-bold tabular-nums ${view.incomplete ? 'text-amber-300' : 'text-white'}`}>${dollars(view.workTotalCents)}</span>
+          )}
+        </div>
+        {isFlat && services.length > 0 && (
+          <button onClick={() => post({ action: 'itemize' })} disabled={busy}
+            className="mt-2 min-h-11 px-1 -ml-1 text-blue-400 text-sm font-semibold active:opacity-70 disabled:opacity-40">Set individual prices →</button>
+        )}
+      </div>
+    </>
+  )
 
   return (
     <main className="min-h-screen bg-gray-950 text-white">
       <NavHeader back={header.standalone ? { href: '/estimates', label: 'Estimates' } : { href: `/orders/${header.id}`, label: 'Job' }} />
       <div className="max-w-xl mx-auto px-4 py-5">
-        <div className="mb-4">
-          <h1 className="text-2xl font-bold">Estimate</h1>
-          {editingCustomer ? (
-            <div className="mt-2">
-              <NameEditor label="Customer name" initial={customer} busy={busy}
-                onSave={saveCustomerName} onCancel={() => setEditingCustomer(false)} />
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-sm">
-              <p className="text-gray-400 min-w-0 break-words">{customer} · {header.vehicle}</p>
-              {header.standalone && (
-                <button onClick={() => setEditingCustomer(true)} disabled={busy} aria-label="Edit customer name" className={EDIT_BTN}>Edit</button>
-              )}
-            </div>
-          )}
-          {header.notes && <p className="text-gray-500 text-sm mt-2 whitespace-pre-wrap">{header.notes}</p>}
-        </div>
-        {/* Save status — edits save automatically. Saving/Saved are a quiet line (Saved appears only
-            after the server confirms); a failure is a prominent red card that says what wasn't stored,
-            why, and offers Retry. Sticky so it stays visible after scrolling on mobile. */}
-        <div role="status" aria-live="polite" className="sticky top-2 z-20 mb-3 min-h-[1.75rem]">
-          {saveState === 'error' ? (
-            <div className="rounded-xl border border-red-800/70 bg-red-950/60 px-4 py-2.5 text-sm text-red-200 flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="font-semibold">{saveMsg || 'Couldn’t save your change.'}</p>
-                {err && <p className="text-red-300/80 text-xs mt-0.5 break-words">{err}</p>}
-              </div>
-              <button onClick={retryLastSave} disabled={busy}
-                className="shrink-0 rounded-lg bg-red-600 text-white font-semibold px-3 py-1.5 active:opacity-80 disabled:opacity-50">
-                Retry
-              </button>
-            </div>
-          ) : (saveState !== 'idle' || savedOnce) && (
-            <p className={`inline-flex items-center gap-1.5 rounded-full bg-gray-950/90 px-2.5 py-1 text-xs ${saveState === 'saved' ? 'text-green-400' : 'text-gray-400'}`}>
-              {saveState === 'saving' && <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-gray-400 animate-pulse" />}
-              {saveState === 'saved' && <span aria-hidden>✓</span>}
-              {saveState === 'saving' ? saveMsg || 'Saving…' : saveState === 'saved' ? saveMsg || 'Saved' : 'All changes saved'}
-            </p>
-          )}
-        </div>
-
-        <section aria-label="Vehicle information" className="mb-5 rounded-2xl border border-gray-800 bg-gray-900 p-4">
-          <h2 className="font-semibold text-white mb-3">Vehicle information</h2>
-          <dl className="space-y-3 text-sm">
-            <div><dt className="text-gray-500">Vehicle</dt><dd className="text-gray-200">{header.vehicle}</dd></div>
-            <div><dt className="text-gray-500">VIN</dt><dd className="font-mono text-base text-white select-all break-all">{header.vehicleDetails.vin || 'Not recorded'}</dd></div>
-            <div className="grid grid-cols-2 gap-4">
-              <div><dt className="text-gray-500">Color</dt><dd className="text-gray-200 break-words">{header.vehicleDetails.color || 'Not recorded'}</dd></div>
-              <div><dt className="text-gray-500">License plate</dt><dd className="text-gray-200 select-all break-words">{header.vehicleDetails.licensePlate || 'Not recorded'}</dd></div>
-            </div>
-            {header.vehicleDetails.bodyClass && <div><dt className="text-gray-500">Body style</dt><dd className="text-gray-200">{header.vehicleDetails.bodyClass}</dd></div>}
-          </dl>
-          <div className="mt-4"><OrderPhotos orderId={header.id} /></div>
-        </section>
-
-        {/* Services */}
-        <div className="space-y-2">
-          {services.map((s) => rematchId === s.id ? (
-            <ServicePicker key={s.id} orderId={header.id} mode="rematch" service={s} busy={busy} isFlat={isFlat} vehicleLabel={header.vehicle} canManage
-              onSave={post} onClose={() => setRematchId(null)} />
-          ) : editingServiceId === s.id ? (
-            <div key={s.id} className={`${ROW_CONTENT} rounded-2xl`}>
-              <NameEditor label="Service name" initial={s.title} busy={busy}
-                onSave={(title) => saveServiceName(s.id, title)} onCancel={() => setEditingServiceId(null)} />
-            </div>
-          ) : (
-            <SwipeRow key={s.id} busy={busy} contentClassName={ROW_CONTENT} onRemove={() => post({ action: 'remove_service', serviceId: s.id })}>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1 min-w-0">
-                  <p className="font-semibold truncate">{s.title}</p>
-                  <button onClick={() => setEditingServiceId(s.id)} disabled={busy} aria-label={`Edit service name ${s.title}`} className={EDIT_BTN}>Edit</button>
-                </div>
-                <MatchLine s={s} busy={busy} onChange={() => setRematchId(s.id)} />
-                {detailId === s.id ? (
-                  <DetailEditor initial={s.detail ?? ''} busy={busy} onCancel={() => setDetailId(null)}
-                    onSave={(detail) => { void post({ action: 'set_detail', serviceId: s.id, detail }).then((ok) => { if (ok) setDetailId(null) }) }} />
-                ) : (
-                  <div className="flex gap-3 text-xs mt-0.5">
-                    <button onClick={() => setDetailId(s.id)} disabled={busy} className="text-blue-400/90 font-semibold min-h-10 px-1 inline-flex items-center" aria-label={`Area or component for ${s.title}`}>{s.detail ? `Area: ${s.detail}` : '+ Area'}</button>
-                    {s.matchState !== 'choose' && s.matchState !== 'unmatched' && <button onClick={() => setRematchId(s.id)} disabled={busy} className="text-blue-400/90 font-semibold min-h-10 px-1 inline-flex items-center" aria-label={`Change service for ${s.title}`}>Change</button>}
-                  </div>
-                )}
-                {!isFlat && s.suggestedCents != null && s.priceCents !== s.suggestedCents && (
-                  <button onClick={() => post({ action: 'set_service_price', serviceId: s.id, cents: s.suggestedCents })}
-                    className="text-gray-500 text-xs active:opacity-70">Suggested ${dollars(s.suggestedCents)}</button>
-                )}
-              </div>
-              {!isFlat && (
-                <PriceInput cents={s.priceCents} busy={busy}
-                  onCommit={(c) => post({ action: 'set_service_price', serviceId: s.id, cents: c })} />
-              )}
-            </SwipeRow>
-          ))}
-          {services.length === 0 && <p className="text-gray-600 text-sm py-4 text-center">No services yet.</p>}
-        </div>
-
-        {/* Parts (special order) with installation-labor review */}
-        <div className="mt-3"><PartsList parts={view.parts ?? []} services={services} busy={busy} post={post} /></div>
-
-        {/* Add service / part — shortcuts, rushed wording interpreted, full catalog, custom */}
-        <div className="mt-3">
-          <ServicePicker orderId={header.id} mode="add" busy={busy} isFlat={isFlat} vehicleLabel={header.vehicle} canManage onSave={post} />
-        </div>
-
-        {/* Needs review before sending / invoicing (drafts still save) */}
-        {view.review && view.review.issues.length > 0 && (
-          <div className="mt-4"><ReviewNotices issues={view.review.issues} services={services} busy={busy} post={post} onChooseOdor={(id) => setRematchId(id)} /></div>
-        )}
-
-        {/* Incomplete-pricing banner: a flat amount was agreed, but not every service is priced yet.
-            We keep the agreed amount as a clearly-labeled REFERENCE and never present the partial
-            running sum as the customer total. */}
-        {view.incomplete && view.referenceCents != null && (
-          <div className="mt-4 rounded-2xl border border-amber-800/70 bg-amber-950/30 px-4 py-3">
-            <p className="text-amber-300 text-sm font-semibold">Pricing incomplete</p>
-            <div className="mt-1 flex items-center justify-between text-sm">
-              <span className="text-amber-200/80">Agreed amount (reference)</span>
-              <span className="text-amber-100 font-bold tabular-nums">${dollars(view.referenceCents)}</span>
-            </div>
-            <p className="text-amber-200/60 text-xs mt-2">Enter a price for every service so the breakdown adds up. Until then the amounts below are a partial total, not the agreed amount — the invoice can’t be created yet.</p>
+        {pane.kind === 'list' ? list : paneBody}
+        {/* Kept mounted (hidden in panes) so its loaded totals and confirmations survive opening an editor. */}
+        {header.standalone && (
+          <div hidden={pane.kind !== 'list'}>
+            <EstimateActions key={`${customerRev}:${JSON.stringify(view)}`} id={header.id} editorBusy={editingBusy} onBusyChange={setActionBusy} />
           </div>
         )}
-
-        {/* Reconcile banner: every service is now priced, but the itemized total differs from the
-            agreed amount. Show the difference explicitly and require the manager to accept the new
-            total — completing itemization never silently replaces the agreed amount. */}
-        {!view.incomplete && view.referenceCents != null && (
-          <div className="mt-4 rounded-2xl border border-amber-800/70 bg-amber-950/30 px-4 py-3">
-            <p className="text-amber-300 text-sm font-semibold">Itemized total differs from the agreed amount</p>
-            <div className="mt-1 flex items-center justify-between text-sm">
-              <span className="text-amber-200/80">Agreed amount</span>
-              <span className="text-amber-100 tabular-nums">${dollars(view.referenceCents)}</span>
-            </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-amber-200/80">Itemized total</span>
-              <span className="text-amber-100 font-bold tabular-nums">${dollars(view.workTotalCents)}</span>
-            </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-amber-200/80">Difference</span>
-              <span className="text-amber-100 tabular-nums">{view.workTotalCents >= view.referenceCents ? '+' : '−'}${dollars(Math.abs(view.workTotalCents - view.referenceCents))}</span>
-            </div>
-            <button onClick={() => post({ action: 'accept_total' })} disabled={busy}
-              className="mt-3 w-full bg-amber-600 text-white font-semibold text-sm py-2.5 rounded-xl active:opacity-80 disabled:opacity-40">
-              Use itemized total ${dollars(view.workTotalCents)}
-            </button>
-            <p className="text-amber-200/60 text-xs mt-2">Or edit a service price above so the breakdown matches the agreed amount. The invoice can’t be created until this is resolved.</p>
-          </div>
-        )}
-
-        {/* Work Total */}
-        <div className="mt-4 rounded-2xl bg-gray-900 border border-gray-800 px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-white font-bold text-lg">{view.incomplete ? 'Itemized so far' : 'Work Total'}</p>
-              {isFlat && <p className="text-gray-500 text-xs">Flat price · edit a service price to itemize</p>}
-              {view.incomplete && <p className="text-amber-400/80 text-xs">Partial — some services still need a price</p>}
-              {!isFlat && !view.incomplete && hasPricedService && <p className="text-gray-500 text-xs">Sum of service prices · edit a service to change it</p>}
-            </div>
-            {totalEditable ? (
-              <PriceInput cents={view.workTotalCents} busy={busy} big
-                onCommit={(c) => post({ action: 'set_work_total', cents: c })} />
-            ) : (
-              <div className="flex items-center">
-                <span className="text-gray-500 text-lg">$</span>
-                <span className={`text-2xl font-bold tabular-nums w-32 text-right pr-px ${view.incomplete ? 'text-amber-300' : 'text-white'}`}>{dollars(view.workTotalCents)}</span>
-              </div>
-            )}
-          </div>
-          {isFlat && services.length > 0 && (
-            <button onClick={() => post({ action: 'itemize' })} disabled={busy}
-              className="mt-3 text-blue-400 text-sm font-semibold active:opacity-70 disabled:opacity-40">Set individual prices →</button>
-          )}
-          <p className="text-gray-600 text-xs mt-3">Work price only. Shop supplies, card charge, and tax are included in the customer total separately.</p>
-        </div>
-        {header.standalone && <EstimateActions key={`${customerRev}:${JSON.stringify(view)}`} id={header.id} editorBusy={editingBusy} onBusyChange={setActionBusy} />}
       </div>
     </main>
   )
+}
+
+function MenuItem({ onClick, children }: { onClick: () => void; children: ReactNode }) {
+  return <button type="button" role="menuitem" onClick={onClick} className="flex w-full min-h-11 items-center rounded-lg px-3 text-left text-sm text-gray-200 hover:bg-gray-800">{children}</button>
 }

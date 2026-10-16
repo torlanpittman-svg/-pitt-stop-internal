@@ -33,8 +33,8 @@ const preview = (base: string, detail: string) => { const d = detail.trim().repl
 const methodFor = (via: string | undefined): string => via === 'exact' ? 'exact' : via === 'alias' ? 'alias' : via === 'rule' ? 'rule' : via === 'shortcut' ? 'shortcut' : via === 'browse' ? 'manual' : 'suggestion'
 
 const INPUT = 'w-full bg-gray-950 border border-gray-700 text-white rounded-xl px-3 py-2.5 text-base placeholder:text-gray-600'
-const BTN = 'rounded-xl font-semibold text-sm px-4 py-2.5 active:opacity-80 disabled:opacity-40'
-const CHIP = 'shrink-0 rounded-full border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 active:bg-gray-800 disabled:opacity-40'
+const BTN = 'rounded-xl font-semibold text-sm px-4 py-2.5 min-h-11 active:opacity-80 disabled:opacity-40'
+const CHIP = 'shrink-0 min-h-11 rounded-full border border-gray-700 bg-gray-900 px-3.5 py-2 text-sm text-gray-100 active:bg-gray-800 disabled:opacity-40'
 
 async function api(orderId: string, body: Record<string, unknown>) {
   const res = await fetch(`/api/workflow/orders/${orderId}/estimate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -43,9 +43,11 @@ async function api(orderId: string, body: Record<string, unknown>) {
   return d
 }
 
-export default function ServicePicker({ orderId, mode, service, busy, isFlat, vehicleLabel, canManage, onSave, onClose }: {
-  orderId: string; mode: 'add' | 'rematch'; service?: ServiceView; busy: boolean; isFlat: boolean; vehicleLabel: string; canManage: boolean
+export default function ServicePicker({ orderId, mode, service, busy, isFlat, vehicleLabel, onSave, onClose, onAdded }: {
+  orderId: string; mode: 'add' | 'rematch'; service?: ServiceView; busy: boolean; isFlat: boolean; vehicleLabel: string
   onSave: (edit: EstimateEdit) => Promise<boolean>; onClose?: () => void
+  /** Add mode: called once the server confirmed the new service, part, or tire work. */
+  onAdded?: () => void
 }) {
   const [entry, setEntry] = useState(mode === 'rematch' ? (service?.entryText || service?.title || '') : '')
   const [result, setResult] = useState<InterpretResponse | null>(null)
@@ -97,25 +99,25 @@ export default function ServicePicker({ orderId, mode, service, busy, isFlat, ve
       if (p.cents != null && !isFlat) edit.cents = p.cents
       ok = await onSave(edit)
     }
-    if (ok) { setEntry(''); reset(); onClose?.() }
+    if (ok) { setEntry(''); reset(); if (mode === 'add') onAdded?.(); onClose?.() }
   }
 
   const choices = result?.choices ?? []
   const showAiNote = result && result.ai !== 'used' && result.ai !== 'skipped' && it?.status !== 'resolved'
 
   return (
-    <section aria-label={mode === 'add' ? 'Add a service' : 'Change service'} className="rounded-2xl border border-gray-800 bg-gray-900/60 p-3 space-y-3">
-      {mode === 'add' && shortcuts.length > 0 && !picked && panel === 'none' && !result && (
-        <ShortcutChips shortcuts={shortcuts} byId={byId} busy={busy} onPick={(s) => { const c = byId.get(s.catalogId); if (c) { setResult(null); setPicked({ choice: c, via: 'shortcut', label: s.label }) } }} />
-      )}
-
+    <section aria-label={mode === 'add' ? 'Add a service' : 'Change service'} className={mode === 'add' ? 'space-y-3' : 'rounded-2xl border border-gray-800 bg-gray-900/60 p-3 space-y-3'}>
       <form onSubmit={(e) => { e.preventDefault(); void interpret() }} className="flex gap-2">
-        <label className="sr-only" htmlFor={`entry-${mode}-${service?.id ?? 'new'}`}>What are we doing?</label>
+        <label className="sr-only" htmlFor={`entry-${mode}-${service?.id ?? 'new'}`}>{mode === 'add' ? 'What are we doing?' : 'Describe the work'}</label>
         <input id={`entry-${mode}-${service?.id ?? 'new'}`} value={entry} onChange={(e) => { setEntry(e.target.value); if (result) reset() }} maxLength={300}
           placeholder={mode === 'add' ? 'What are we doing? e.g. “shamp pass seat”' : 'Describe the work'} autoComplete="off" autoCapitalize="none"
           className={`${INPUT} flex-1 min-w-0`} disabled={busy} />
         <button type="submit" disabled={busy || looking || !entry.trim()} className={`${BTN} bg-blue-600 text-white shrink-0`}>{looking ? '…' : 'Find'}</button>
       </form>
+
+      {mode === 'add' && shortcuts.length > 0 && !picked && panel === 'none' && !result && (
+        <ShortcutChips shortcuts={shortcuts} byId={byId} busy={busy} onPick={(s) => { const c = byId.get(s.catalogId); if (c) { setResult(null); setPicked({ choice: c, via: 'shortcut', label: s.label }) } }} />
+      )}
 
       {lookErr && <p className="text-amber-300 text-xs">Couldn’t interpret that right now ({lookErr}). Your wording is kept — pick the service below.</p>}
       {showAiNote && <p className="text-gray-400 text-xs">AI suggestions are unavailable right now — showing direct matches. Your wording is kept; pick below or browse all services.</p>}
@@ -163,10 +165,10 @@ export default function ServicePicker({ orderId, mode, service, busy, isFlat, ve
 
       {panel === 'part' && mode === 'add' && (
         <PartForm initialDescription={it?.part?.description ?? entry} vehicleLabel={vehicleLabel} busy={busy} entry={entry}
-          onCancel={() => setPanel('none')} onSave={async (part) => { if (await onSave({ action: 'add_part', part })) { setEntry(''); reset() } }} />
+          onCancel={() => setPanel('none')} onSave={async (part) => { if (await onSave({ action: 'add_part', part })) { setEntry(''); reset(); onAdded?.() } }} />
       )}
       {panel === 'tires' && mode === 'add' && (
-        <TireForm busy={busy} entry={entry} onCancel={() => setPanel('none')} onSave={async (tires) => { if (await onSave({ action: 'add_tires', tires })) { setEntry(''); reset() } }} />
+        <TireForm busy={busy} entry={entry} onCancel={() => setPanel('none')} onSave={async (tires) => { if (await onSave({ action: 'add_tires', tires })) { setEntry(''); reset(); onAdded?.() } }} />
       )}
 
       {/* Nothing matched → explicit choices */}
@@ -183,10 +185,9 @@ export default function ServicePicker({ orderId, mode, service, busy, isFlat, ve
       )}
       {mode === 'add' && !result && !picked && panel === 'none' && (
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-          <button type="button" onClick={() => setPanel('browse')} className="text-blue-400 font-semibold min-h-10 px-1 inline-flex items-center">Browse all services</button>
-          <button type="button" onClick={() => setPanel('part')} className="text-blue-400 font-semibold min-h-10 px-1 inline-flex items-center">Add a part</button>
-          <button type="button" onClick={() => setPanel('tires')} className="text-blue-400 font-semibold min-h-10 px-1 inline-flex items-center">Tires</button>
-          {canManage && <a href="/quick-entry/services" className="text-gray-400 min-h-10 inline-flex items-center ml-auto">Manage services</a>}
+          <button type="button" onClick={() => setPanel('browse')} className="text-blue-400 font-semibold min-h-11 px-1 inline-flex items-center">Browse all services</button>
+          <button type="button" onClick={() => setPanel('part')} className="text-blue-400 font-semibold min-h-11 px-1 inline-flex items-center">Add a part</button>
+          <button type="button" onClick={() => setPanel('tires')} className="text-blue-400 font-semibold min-h-11 px-1 inline-flex items-center">Tires</button>
         </div>
       )}
 
@@ -203,7 +204,7 @@ export default function ServicePicker({ orderId, mode, service, busy, isFlat, ve
         </div>
       )}
 
-      {onClose && <button type="button" onClick={onClose} disabled={busy} className="text-gray-400 text-sm py-1">Cancel</button>}
+      {onClose && <button type="button" onClick={onClose} disabled={busy} className="text-gray-400 text-sm min-h-11 px-1">Cancel</button>}
     </section>
   )
 }

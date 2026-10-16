@@ -82,6 +82,14 @@ function confirmsEdit(edit: EstimateEdit, view: EstimateViewData): string | null
     }
     case 'remove_part':
       return (view.parts ?? []).some((p) => p.id === edit.partId) ? 'The server still lists this part.' : null
+    case 'update_part': {
+      const p = (view.parts ?? []).find((x) => x.id === edit.partId)
+      const want = (edit.patch ?? {}) as { description?: unknown; sellPriceCents?: unknown }
+      if (!p) return 'The server did not confirm the part.'
+      if (want.description !== undefined && clean(p.description) !== clean(want.description)) return 'The server did not confirm the part name.'
+      if (want.sellPriceCents !== undefined && p.supply === 'shop' && p.sellPriceCents !== want.sellPriceCents) return 'The server did not confirm the part price.'
+      return null
+    }
     case 'part_labor': {
       const p = (view.parts ?? []).find((x) => x.id === edit.partId)
       const want = ({ add_labor: 'labor_added', included: 'included', part_only: 'part_only', waive: 'waived', reopen: 'needs_review' } as Record<string, string>)[String((edit.labor as { action?: string } | undefined)?.action)]

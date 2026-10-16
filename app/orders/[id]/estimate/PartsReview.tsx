@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * Estimate parts (special-order + customer-supplied) with their installation-labor review, and the
+ * Installation-labor decisions for estimate parts (special-order + customer-supplied), and the
  * estimate review notices (labor, odor package overlap, odor choice). Every decision is explicit and
  * saved on the server; drafts save freely — only sending/invoicing waits for resolution.
  */
@@ -11,7 +11,7 @@ import type { EstimateEdit, PartView, ServiceView, ReviewIssue, LaborStatus } fr
 const dollars = (c: number) => (c / 100).toFixed(2)
 const parseCents = (s: string): number | null => { const t = s.trim(); if (!t) return null; const n = parseFloat(t.replace(/[^0-9.]/g, '')); return Number.isFinite(n) ? Math.max(0, Math.round(n * 100)) : null }
 const INPUT = 'w-full bg-gray-950 border border-gray-700 text-white rounded-xl px-3 py-2.5 text-base placeholder:text-gray-600'
-const BTN = 'rounded-xl font-semibold text-sm px-3 py-2.5 active:opacity-80 disabled:opacity-40'
+const BTN = 'rounded-xl font-semibold text-sm px-3 py-2.5 min-h-11 active:opacity-80 disabled:opacity-40'
 
 const LABOR_TEXT: Record<LaborStatus, string> = {
   needs_review: 'Labor not reviewed',
@@ -21,8 +21,8 @@ const LABOR_TEXT: Record<LaborStatus, string> = {
   waived: 'Labor waived',
 }
 
-export function ReviewNotices({ issues, services, busy, post, onChooseOdor }: {
-  issues: ReviewIssue[]; services: ServiceView[]; busy: boolean; post: (e: EstimateEdit) => Promise<boolean>; onChooseOdor: (serviceId: string) => void
+export function ReviewNotices({ issues, services, parts, busy, post, onChooseOdor }: {
+  issues: ReviewIssue[]; services: ServiceView[]; parts: PartView[]; busy: boolean; post: (e: EstimateEdit) => Promise<boolean>; onChooseOdor: (serviceId: string) => void
 }) {
   if (issues.length === 0) return null
   const title = (id: string) => services.find((s) => s.id === id)?.title ?? 'this line'
@@ -45,7 +45,12 @@ export function ReviewNotices({ issues, services, busy, post, onChooseOdor }: {
             const svc = services.find((s) => s.id === id)
             return svc ? <PartLikeReview key={id} service={svc} busy={busy} post={post} /> : null
           })}
-          {i.code === 'part_labor' && <p className="text-amber-200/70 text-xs mt-1">Confirm installation for each part in the Parts list above. You can keep editing; sending or invoicing waits until this is resolved.</p>}
+          {i.code === 'part_labor' && parts.filter((p) => p.laborStatus === 'needs_review').map((p) => (
+            <div key={p.id} className="mt-2 rounded-xl border border-amber-900/60 bg-gray-950/40 px-3 py-2.5">
+              <p className="text-amber-100 text-sm font-semibold break-words mb-2">{p.description}</p>
+              <LaborControls part={p} services={services} busy={busy} post={post} />
+            </div>
+          ))}
         </div>
       ))}
     </div>
@@ -64,7 +69,7 @@ function partWords(title: string): string {
  * line as the labor exactly as priced and add the part separately — or convert the whole line, which
  * keeps its full price as the part price. Nothing is converted or split automatically.
  */
-function PartLikeReview({ service, busy, post }: { service: ServiceView; busy: boolean; post: (e: EstimateEdit) => Promise<boolean> }) {
+export function PartLikeReview({ service, busy, post }: { service: ServiceView; busy: boolean; post: (e: EstimateEdit) => Promise<boolean> }) {
   const [mode, setMode] = useState<'none' | 'clarify'>('none')
   const [f, setF] = useState({ description: partWords(service.title), supply: 'shop' as 'shop' | 'customer', qty: '1', price: '' })
   const ambiguous = service.partLike === 'ambiguous'
@@ -109,44 +114,23 @@ function PartLikeReview({ service, busy, post }: { service: ServiceView; busy: b
   )
 }
 
-export function PartsList({ parts, services, busy, post }: { parts: PartView[]; services: ServiceView[]; busy: boolean; post: (e: EstimateEdit) => Promise<boolean> }) {
-  if (parts.length === 0) return null
-  return (
-    <section aria-label="Parts" className="space-y-2">
-      <h2 className="text-gray-500 text-xs uppercase tracking-widest">Parts · special order</h2>
-      {parts.map((p) => <PartCard key={p.id} part={p} services={services} busy={busy} post={post} />)}
-    </section>
-  )
-}
-
-function PartCard({ part, services, busy, post }: { part: PartView; services: ServiceView[]; busy: boolean; post: (e: EstimateEdit) => Promise<boolean> }) {
-  const [mode, setMode] = useState<'none' | 'add' | 'included' | 'waive' | 'edit' | 'remove'>('none')
+/** Installation-labor decision for one part. Every choice saves immediately and is audited server-side. */
+export function LaborControls({ part, services, busy, post }: { part: PartView; services: ServiceView[]; busy: boolean; post: (e: EstimateEdit) => Promise<boolean> }) {
+  const [mode, setMode] = useState<'none' | 'add' | 'included' | 'waive'>('none')
   const [laborPrice, setLaborPrice] = useState('')
   const [coverId, setCoverId] = useState('')
   const [reason, setReason] = useState('')
-  const [edit, setEdit] = useState({ sell: part.sellPriceCents != null ? dollars(part.sellPriceCents) : '', cost: part.unitCostCents != null ? dollars(part.unitCostCents) : '', qty: String(part.quantity), fitment: part.fitment ?? '', partNumber: part.partNumber ?? '' })
   const open = part.laborStatus === 'needs_review'
   const cover = services.find((s) => s.id === part.laborServiceId)
   const labor = (labor: Record<string, unknown>) => post({ action: 'part_labor', partId: part.id, labor }).then((ok) => { if (ok) setMode('none'); return ok })
 
   return (
-    <div className={`rounded-2xl border px-4 py-3 ${open ? 'border-amber-700/70 bg-amber-950/20' : 'border-gray-800 bg-gray-900'}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-white font-semibold break-words">{part.description}</p>
-          <p className="text-gray-400 text-xs break-words">
-            {part.supply === 'customer' ? 'Customer-supplied · no parts charge' : `Qty ${part.quantity}${part.sellPriceCents != null ? ` × $${dollars(part.sellPriceCents)}` : ' · price not set'}${part.unitCostCents != null ? ` · our cost $${dollars(part.unitCostCents)}` : ''}`}
-          </p>
-          {part.supply === 'shop' && <p className="text-gray-500 text-[11px] mt-0.5 break-words">Invoice: {part.invoiceText}</p>}
-        </div>
-        {part.lineCents != null && <span className="text-white tabular-nums shrink-0">${dollars(part.lineCents)}</span>}
-      </div>
-
-      <div className="mt-2 flex flex-wrap items-center gap-2">
+    <div>
+      <div className="flex flex-wrap items-center gap-2">
         <span className={`rounded-full px-2.5 py-1 text-xs ${open ? 'bg-amber-600/30 text-amber-200' : 'bg-gray-800 text-gray-300'}`}>
           {LABOR_TEXT[part.laborStatus]}{cover && !open ? ` · ${cover.title}` : ''}{part.laborStatus === 'waived' && part.laborNote ? ` — ${part.laborNote}` : ''}
         </span>
-        {!open && mode === 'none' && <button type="button" disabled={busy} onClick={() => labor({ action: 'reopen' })} className="text-blue-400 text-xs font-semibold min-h-10 px-1 inline-flex items-center">Change</button>}
+        {!open && mode === 'none' && <button type="button" disabled={busy} onClick={() => labor({ action: 'reopen' })} className="text-blue-400 text-xs font-semibold min-h-11 px-2 inline-flex items-center" aria-label={`Change installation labor for ${part.description}`}>Change</button>}
       </div>
 
       {open && mode === 'none' && (
@@ -179,34 +163,6 @@ function PartCard({ part, services, busy, post }: { part: PartView; services: Se
           <input aria-label="Reason for waiving labor" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={200} placeholder="Short reason (manager)" className={INPUT} />
           <div className="flex gap-2"><button type="submit" disabled={busy || reason.trim().length < 3} className={`${BTN} bg-amber-600 text-white flex-1`}>Waive installation labor</button><button type="button" onClick={() => setMode('none')} className={`${BTN} border border-gray-600 text-gray-200`}>Back</button></div>
         </form>
-      )}
-
-      {mode === 'none' && (
-        <div className="mt-2 flex gap-4 text-xs">
-          <button type="button" disabled={busy} onClick={() => setMode('edit')} className="text-blue-400 font-semibold min-h-10 px-1 inline-flex items-center">Edit part</button>
-          <button type="button" disabled={busy} onClick={() => setMode('remove')} className="text-red-400 font-semibold min-h-10 px-1 inline-flex items-center">Remove</button>
-        </div>
-      )}
-      {mode === 'edit' && (
-        <form className="mt-2 grid grid-cols-2 gap-2" onSubmit={(e) => {
-          e.preventDefault()
-          void post({ action: 'update_part', partId: part.id, patch: { quantity: edit.qty, fitment: edit.fitment, partNumber: edit.partNumber, unitCostCents: parseCents(edit.cost), ...(part.supply === 'shop' ? { sellPriceCents: parseCents(edit.sell) } : {}) } })
-            .then((ok) => { if (ok) setMode('none') })
-        }}>
-          <label className="text-gray-400 text-xs">Quantity<input value={edit.qty} onChange={(e) => setEdit({ ...edit, qty: e.target.value })} inputMode="decimal" className={`${INPUT} mt-1`} /></label>
-          <label className="text-gray-400 text-xs">Part #<input value={edit.partNumber} onChange={(e) => setEdit({ ...edit, partNumber: e.target.value })} className={`${INPUT} mt-1`} /></label>
-          <label className="text-gray-400 text-xs col-span-2">Fitment<input value={edit.fitment} onChange={(e) => setEdit({ ...edit, fitment: e.target.value })} className={`${INPUT} mt-1`} /></label>
-          <label className="text-gray-400 text-xs">Our cost each<input value={edit.cost} onChange={(e) => setEdit({ ...edit, cost: e.target.value })} inputMode="decimal" className={`${INPUT} mt-1`} /></label>
-          {part.supply === 'shop' && <label className="text-gray-400 text-xs">Customer price each<input value={edit.sell} onChange={(e) => setEdit({ ...edit, sell: e.target.value })} inputMode="decimal" className={`${INPUT} mt-1`} /></label>}
-          <div className="col-span-2 flex gap-2"><button type="submit" disabled={busy} className={`${BTN} bg-blue-600 text-white flex-1`}>Save part</button><button type="button" onClick={() => setMode('none')} className={`${BTN} border border-gray-600 text-gray-200`}>Cancel</button></div>
-        </form>
-      )}
-      {mode === 'remove' && (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <span className="text-red-200 text-xs">Remove this part from the estimate?</span>
-          <button type="button" disabled={busy} onClick={() => post({ action: 'remove_part', partId: part.id })} className={`${BTN} bg-red-600 text-white`}>Remove part</button>
-          <button type="button" onClick={() => setMode('none')} className={`${BTN} border border-gray-600 text-gray-200`}>Keep</button>
-        </div>
       )}
     </div>
   )
