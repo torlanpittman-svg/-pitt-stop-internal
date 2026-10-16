@@ -43,7 +43,7 @@ vi.mock('@/apps/quickbooks/retail-invoice-write', () => ({
   resolveRetailItems: async () => ({ labor: 'ITEM-LABOR', fees: 'ITEM-FEES' }),
 }))
 
-import { getOrCreateEstimate, promoteTextServices, setServicePrice, getFullEstimate, renameService, updateService, getEstimateView, addService, recomputeEstimate } from '@/apps/workflow/estimate-db'
+import { getOrCreateEstimate, promoteTextServices, setServicePrice, getFullEstimate, renameService, updateService, getEstimateView, addService, recomputeEstimate, removeEstimateService, prepareEstimateView } from '@/apps/workflow/estimate-db'
 import { buildRetailWorkPayload } from '@/apps/quickbooks/retail-invoice-service'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import type { OrderWithContext } from '@/apps/workflow/db'
@@ -155,6 +155,28 @@ describe('catalog identity preserves the QB item + canonical description across 
     expect(afterFull.description).toBe('Complete interior & exterior detail')
     expect(after.fallbacks).toEqual([])                        // never fell back to Labor
     expect(after.payload.totalCents).toBe(29000)
+    const [svc] = await db.select().from(jobServices).where(sql`id = ${fdId}::uuid`)
+    expect(svc).toMatchObject({ title: 'Full Detail - customer vehicle', catalogId: FD })
+  })
+
+  it('rename survives removing another service and reopening: same QB item + description, removed line gone', async () => {
+    const services = ['Full Detail', 'Express Wash']
+    const { orderId, estimateId } = await makeOrder(services)
+    const fdId = await priceByTitle(orderId, estimateId, 'Full Detail', 25000)
+    const ewId = await priceByTitle(orderId, estimateId, 'Express Wash', 4000)
+
+    await renameService(orderId, fdId, 'Full Detail - customer vehicle', 'Manager')
+    await removeEstimateService(orderId, ewId, 'Manager')
+    await prepareEstimateView(orderId, 'Manager')   // leave + reopen: nothing is re-promoted
+    await prepareEstimateView(orderId, 'Manager')
+
+    const [o] = await db.select().from(serviceOrders).where(sql`id = ${orderId}::uuid`)
+    expect(o.services).toEqual(['Full Detail - customer vehicle'])
+    const { payload, fallbacks } = await payloadFor(orderId, o.services!)
+    expect(fallbacks).toEqual([])
+    expect(payload.lines).toHaveLength(1)
+    expect(payload.lines[0]).toMatchObject({ itemId: 'QBI-FULL', description: 'Complete interior & exterior detail', amountCents: 25000 })
+    expect(payload.totalCents).toBe(25000)
     const [svc] = await db.select().from(jobServices).where(sql`id = ${fdId}::uuid`)
     expect(svc).toMatchObject({ title: 'Full Detail - customer vehicle', catalogId: FD })
   })

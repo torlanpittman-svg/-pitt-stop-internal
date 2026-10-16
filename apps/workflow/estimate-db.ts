@@ -571,8 +571,55 @@ export async function renameService(orderId: string, serviceId: string, rawTitle
     FROM svc, upd_service
   `)
 }
-export async function removeService(id: string): Promise<void> {
-  await getDb().delete(jobServices).where(eq(jobServices.id, id))
+/**
+ * Remove ONE service from an estimate durably (the Estimate page's swipe-Remove).
+ *
+ * Deleting only the job_services row is not enough: every page open runs prepareEstimateView →
+ * promoteTextServices, which re-seeds any title still present in the Job's employee-facing text
+ * list (service_orders.services). So the matching text entry is removed in the SAME statement —
+ * unless another remaining service still carries that name. The price line cascades; the remaining
+ * services' prices/qty/tax are untouched. Audited (`service_removed`, append-only). A retail QB
+ * invoice is never touched — only flagged "sync needed". Throws (nothing changed) if the service
+ * isn't a user service on THIS order's estimate, so a stale page or double-tap can't fake a save.
+ */
+export async function removeEstimateService(orderId: string, serviceId: string, actor: string | null): Promise<{ title: string; pricingImpactCents: number | null; qbSyncNeeded: boolean }> {
+  const db = getDb()
+  const est = await getEstimateRow(orderId)
+  const services = est ? await listUserServices(est.id) : []
+  const service = services.find((s) => s.id === serviceId)
+  if (!est || !service) throw new Error('That service is no longer on this estimate. Refresh to see the current list.')
+  const norm = (s: string) => s.trim().toLowerCase()   // same key promoteTextServices dedupes on
+  const nameStillUsed = services.some((s) => s.id !== serviceId && norm(s.title) === norm(service.title))
+  const lines = await db.select().from(jobLineItems).where(eq(jobLineItems.jobServiceId, serviceId))
+  const priced = lines.filter((l) => !l.generated).reduce((sum, l) => sum + lineAmountCents(l.priceCents, l.qty), 0)
+  const pricingImpactCents = priced > 0 ? priced : null
+  const key = norm(service.title)
+
+  const res = await db.execute(sql`
+    WITH del AS (
+      DELETE FROM job_services WHERE id = ${serviceId}::uuid AND job_estimate_id = ${est.id}::uuid AND source <> 'system'
+      RETURNING id, title
+    ), upd_order AS (
+      UPDATE service_orders so SET updated_at = now(), services = COALESCE((
+        SELECT jsonb_agg(to_jsonb(a.x) ORDER BY a.ord)
+        FROM jsonb_array_elements_text(so.services) WITH ORDINALITY AS a(x, ord)
+        WHERE lower(regexp_replace(a.x, '^\\s+|\\s+$', '', 'g')) <> ${key}), '[]'::jsonb)
+      FROM del
+      WHERE so.id = ${orderId}::uuid AND ${!nameStillUsed}::boolean AND jsonb_typeof(so.services) = 'array'
+      RETURNING so.id
+    )
+    INSERT INTO service_order_events(service_order_id, event_type, employee_name, note)
+    SELECT ${orderId}::uuid, 'service_removed', ${actor},
+      json_build_object('serviceId', del.id, 'removed', del.title, 'pricingImpactCents', ${pricingImpactCents}::int, 'source', 'estimate')::text
+    FROM del
+    RETURNING id
+  `)
+  const rows = (res as unknown as { rows?: unknown[] }).rows ?? (res as unknown as unknown[])
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error('That service is no longer on this estimate. Refresh to see the current list.')
+
+  await recomputeEstimate(est.id)   // itemized → remaining lines set the total; flat → unchanged
+  const qbSyncNeeded = await flagQbSyncNeededIfInvoiced(orderId, 'a service was removed after the invoice was created')
+  return { title: service.title, pricingImpactCents, qbSyncNeeded }
 }
 
 export interface LineInput {

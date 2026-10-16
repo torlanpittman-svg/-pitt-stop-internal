@@ -10,7 +10,7 @@ import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { estimateEnabled } from '@/apps/workflow/estimate'
 import {
   getOrCreateEstimate, getEstimateRow, getFullEstimate, recomputeEstimate,
-  addService, updateService, removeService, addLine, updateLine, removeLine,
+  addService, updateService, removeEstimateService, addLine, updateLine, removeLine,
   setTaxRate, setStatus, setApproval, convertEstimate, type LineInput,
   prepareEstimateView, getEstimateView, setServicePrice, setWorkTotal, itemizeEstimate, acceptItemizedTotal, flagQbSyncNeededIfInvoiced, renameService,
 } from '@/apps/workflow/estimate-db'
@@ -92,7 +92,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
       case 'update_service':  await updateService(String(body.serviceId), body.patch as Record<string, never>); break
-      case 'remove_service':  await removeService(String(body.serviceId)); await recomputeEstimate(await estimateId()); break
+      case 'remove_service': {
+        // Durable removal: also drops the Job's text entry so reopening can't re-promote it.
+        const removed = await removeEstimateService(id, String(body.serviceId), actor)
+        return NextResponse.json({ ok: true, removed, view: await getEstimateView(id) })
+      }
       case 'add_line':        await addLine(String(body.serviceId), body.line as LineInput); await recomputeEstimate(await estimateId()); break
       case 'update_line':     await updateLine(String(body.lineId), body.patch as Record<string, never>); await recomputeEstimate(await estimateId()); break
       case 'remove_line':     await removeLine(String(body.lineId)); await recomputeEstimate(await estimateId()); break

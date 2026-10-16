@@ -5,6 +5,7 @@ import NavHeader from '@/app/components/NavHeader'
 import EstimateActions from '@/app/estimates/EstimateActions'
 import SwipeRow from '@/app/components/SwipeRow'
 import OrderPhotos from '@/app/components/OrderPhotos'
+import { saveEstimateEdit, describeEdit, type EstimateEdit, type EstimateViewData } from './save-feedback'
 
 /**
  * Simplified mobile Estimate — "what are we doing, and what are we charging?".
@@ -13,8 +14,7 @@ import OrderPhotos from '@/app/components/OrderPhotos'
  * for the future richer desktop view). Fees are handled separately by the billing
  * engine and never appear here.
  */
-interface ServiceView { id: string; title: string; priceCents: number | null; suggestedCents: number | null }
-interface View { exists: boolean; flat: boolean; workTotalCents: number; services: ServiceView[]; incomplete: boolean; referenceCents: number | null }
+type View = EstimateViewData
 interface VehicleDetails { vin: string | null; color: string | null; licensePlate: string | null; bodyClass: string | null }
 interface Header { vehicleDetails: VehicleDetails; id: string; customer: string; vehicle: string; requested: string[]; standalone?: boolean; notes?: string | null }
 
@@ -89,52 +89,60 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   // Explicit save-state so the manager can always tell whether an edit is saving, saved, or failed —
   // and can recover a failed save (Retry) rather than silently losing it.
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  // What the status line says ("Removing “Wax”…", "“Wax” removed · Saved", "Couldn’t remove …").
+  const [saveMsg, setSaveMsg] = useState('')
+  // True once any edit in this visit was confirmed by the server — idle then reads "All changes saved".
+  const [savedOnce, setSavedOnce] = useState(false)
   // The last attempted save, kept so a failed one can be retried (estimate edit payload or customer name).
-  const lastSave = useRef<{ payload: Record<string, unknown> } | { customerName: string } | null>(null)
+  const lastSave = useRef<{ payload: EstimateEdit } | { customerName: string } | null>(null)
   const [customer, setCustomer] = useState(header.customer)
   const [editingCustomer, setEditingCustomer] = useState(false)
   // Bumped after a customer rename so EstimateActions reloads (the send/convert revision changed).
   const [customerRev, setCustomerRev] = useState(0)
   const [editingServiceId, setEditingServiceId] = useState<string | null>(null)
 
-  const post = useCallback(async (payload: Record<string, unknown>): Promise<boolean> => {
+  // Every estimate edit saves immediately. "Saved" is shown ONLY after the server confirms the
+  // change (see save-feedback.ts); a failure says what wasn't stored and offers Retry.
+  const post = useCallback(async (payload: EstimateEdit): Promise<boolean> => {
     lastSave.current = { payload }
-    setBusy(true); setErr(null); setSaveState('saving')
+    const labels = describeEdit(payload, view)
+    setBusy(true); setErr(null); setSaveState('saving'); setSaveMsg(labels.saving)
     try {
-      const res = await fetch(`/api/workflow/orders/${header.id}/estimate`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-        // keepalive lets a price save initiated on blur finish even if the page is then unloaded
-        // (tab close / hard refresh / mobile backgrounding). It is a backstop, NOT a guarantee — the
-        // save-state banner + Retry below are the authoritative "did it save?" signal.
-        keepalive: true,
-      })
-      const d = await res.json()
-      if (!res.ok || !d.ok) { setErr(d.error ?? 'Action failed'); setSaveState('error'); return false }
-      if (d.view) setView(d.view)
-      setSaveState('saved')
+      const out = await saveEstimateEdit(header.id, payload)
+      if (!out.ok) { setErr(out.error); setSaveMsg(labels.failed); setSaveState('error'); return false }
+      setView(out.view); setSaveMsg(labels.saved); setSaveState('saved'); setSavedOnce(true)
       return true
-    } catch { setErr('Network error'); setSaveState('error'); return false } finally { setBusy(false) }
-  }, [header.id])
+    } finally { setBusy(false) }
+  }, [header.id, view])
+
+  // Leaving while a save is in flight or after one failed would lose the change silently — warn.
+  useEffect(() => {
+    if (saveState !== 'saving' && saveState !== 'error') return
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [saveState])
 
   // A successful save shows "Saved" briefly, then returns to idle. An error stays until resolved.
   useEffect(() => {
     if (saveState !== 'saved') return
-    const t = setTimeout(() => setSaveState((s) => (s === 'saved' ? 'idle' : s)), 1600)
+    const t = setTimeout(() => setSaveState((s) => (s === 'saved' ? 'idle' : s)), 2500)
     return () => clearTimeout(t)
   }, [saveState])
 
   // Customer name correction (standalone estimates) — same records/ids, via the estimate's locked action route.
   const saveCustomerName = useCallback(async (name: string): Promise<void> => {
     lastSave.current = { customerName: name }
-    setBusy(true); setErr(null); setSaveState('saving')
+    setBusy(true); setErr(null); setSaveState('saving'); setSaveMsg('Saving customer name…')
     try {
       const res = await fetch(`/api/estimates/${header.id}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'customer_name', name }),
       })
       const d = await res.json().catch(() => ({}))
-      if (!res.ok) { setErr(d.error ?? 'Could not save the name'); setSaveState('error'); return }
-      setCustomer(d.customerName || name); setEditingCustomer(false); setCustomerRev((n) => n + 1); setSaveState('saved')
-    } catch { setErr('Network error'); setSaveState('error') } finally { setBusy(false) }
+      if (!res.ok) { setErr(d.error ?? `The server returned an error (${res.status}).`); setSaveMsg('Couldn’t save the customer name — the old name is still saved.'); setSaveState('error'); return }
+      setCustomer(d.customerName || name); setEditingCustomer(false); setCustomerRev((n) => n + 1)
+      setSaveMsg('Customer name saved'); setSaveState('saved'); setSavedOnce(true)
+    } catch { setErr('No connection — check the internet and try again.'); setSaveMsg('Couldn’t save the customer name — the old name is still saved.'); setSaveState('error') } finally { setBusy(false) }
   }, [header.id])
 
   const saveServiceName = useCallback(async (serviceId: string, title: string) => {
@@ -178,32 +186,29 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
           )}
           {header.notes && <p className="text-gray-500 text-sm mt-2 whitespace-pre-wrap">{header.notes}</p>}
         </div>
-        {/* Save-state banner — always tells the manager whether the last edit is saving, saved, or
-            failed, and offers Retry so a failed save is never silently lost. Sticky so it's visible
-            even after scrolling on mobile. */}
-        {saveState !== 'idle' && (
-          <div
-            role="status"
-            aria-live="polite"
-            className={`sticky top-2 z-20 mb-3 rounded-xl px-4 py-2.5 text-sm flex items-center justify-between gap-3 border ${
-              saveState === 'saving' ? 'border-gray-700 bg-gray-800 text-gray-200'
-                : saveState === 'saved' ? 'border-green-800/70 bg-green-950/40 text-green-300'
-                : 'border-red-800/70 bg-red-950/40 text-red-300'
-            }`}
-          >
-            <span className="font-medium">
-              {saveState === 'saving' && 'Saving…'}
-              {saveState === 'saved' && 'Saved ✓'}
-              {saveState === 'error' && `Couldn’t save — your change isn’t stored${err ? ` (${err})` : ''}.`}
-            </span>
-            {saveState === 'error' && (
+        {/* Save status — edits save automatically. Saving/Saved are a quiet line (Saved appears only
+            after the server confirms); a failure is a prominent red card that says what wasn't stored,
+            why, and offers Retry. Sticky so it stays visible after scrolling on mobile. */}
+        <div role="status" aria-live="polite" className="sticky top-2 z-20 mb-3 min-h-[1.75rem]">
+          {saveState === 'error' ? (
+            <div className="rounded-xl border border-red-800/70 bg-red-950/60 px-4 py-2.5 text-sm text-red-200 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-semibold">{saveMsg || 'Couldn’t save your change.'}</p>
+                {err && <p className="text-red-300/80 text-xs mt-0.5 break-words">{err}</p>}
+              </div>
               <button onClick={retryLastSave} disabled={busy}
                 className="shrink-0 rounded-lg bg-red-600 text-white font-semibold px-3 py-1.5 active:opacity-80 disabled:opacity-50">
                 Retry
               </button>
-            )}
-          </div>
-        )}
+            </div>
+          ) : (saveState !== 'idle' || savedOnce) && (
+            <p className={`inline-flex items-center gap-1.5 rounded-full bg-gray-950/90 px-2.5 py-1 text-xs ${saveState === 'saved' ? 'text-green-400' : 'text-gray-400'}`}>
+              {saveState === 'saving' && <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-gray-400 animate-pulse" />}
+              {saveState === 'saved' && <span aria-hidden>✓</span>}
+              {saveState === 'saving' ? saveMsg || 'Saving…' : saveState === 'saved' ? saveMsg || 'Saved' : 'All changes saved'}
+            </p>
+          )}
+        </div>
 
         <section aria-label="Vehicle information" className="mb-5 rounded-2xl border border-gray-800 bg-gray-900 p-4">
           <h2 className="font-semibold text-white mb-3">Vehicle information</h2>
@@ -258,9 +263,10 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
           <button
             onClick={() => {
               const title = newName.trim(); if (!title) return
-              const payload: Record<string, unknown> = { action: 'add_service', title }
+              const payload: EstimateEdit = { action: 'add_service', title }
               if (!isFlat && newPrice.trim()) payload.cents = parseDollars(newPrice)
-              post(payload); setNewName(''); setNewPrice('')
+              // Clear the fields only once the server confirms — a failed add keeps what was typed.
+              void post(payload).then((ok) => { if (ok) { setNewName(''); setNewPrice('') } })
             }}
             disabled={busy || !newName.trim()}
             className="bg-gray-800 border border-gray-700 rounded-xl px-4 text-sm font-semibold disabled:opacity-40">Add</button>
