@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const f = vi.hoisted(() => ({
   intake: {} as Record<string, unknown>, full: {} as Record<string, unknown>,
   contact: { customerName: 'Test Customer', customerEmail: 'customer@realshop.net', customerPhone: '5125550123' },
-  api: vi.fn(), order: { id: 'order', status: 'estimate', notes: null },
+  api: vi.fn(), ready: vi.fn(), order: { id: 'order', status: 'estimate', notes: null },
   payload: { lines: [{ itemId: 'labor', description: 'Interior detail', amountCents: 10000 }], privateNote: 'PSID:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', customerMemo: '2020 Honda Civic', totalCents: 10000 },
 }))
 vi.mock('@/platform/db', () => ({ getDb: () => ({
@@ -17,6 +17,8 @@ vi.mock('@/apps/settings/db', () => ({ getBusinessConfig: async () => ({ payment
 vi.mock('@/apps/quickbooks/retail-invoice-service', () => ({ buildRetailWorkPayload: async () => ({ payload: f.payload }) }))
 vi.mock('@/apps/quickbooks/retail-customer', () => ({ resolveRetailCustomer: async () => ({ qbCustomerId: 'customer-id' }), isPlaceholderEmail: (s: string) => !s || s === 'no@no.com' }))
 vi.mock('@/apps/quickbooks/client', () => ({ qbApiRequest: f.api }))
+// Parts labor review / odor checks (own tests in apps/workflow/service-matching.test.ts).
+vi.mock('@/apps/workflow/estimate-review', () => ({ assertEstimateReady: f.ready }))
 import { sendIntakeEstimate, intakeSummary, estimateBody, assertEstimateIdentity } from './quickbooks'
 
 const raw = () => ({ Id: 'qb-estimate', SyncToken: '1', ...estimateBody(f.payload, 'customer-id', f.contact.customerEmail), TotalAmt: 100, DocNumber: '1001' })
@@ -25,11 +27,19 @@ beforeEach(() => {
   f.full = { estimate: { id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', priceMode: 'itemized' }, services: [{ source: 'manual', title: 'Interior detail' }] }
   f.order.status = 'estimate'
   f.contact.customerEmail = 'customer@realshop.net'
+  f.ready.mockReset().mockResolvedValue(undefined)
   f.api.mockReset().mockImplementation(async (opts: { path: string }) => ({ Estimate: { ...raw(), ...(opts.path.endsWith('/send') ? { EmailStatus: 'EmailSent' } : {}) } }))
 })
 const send = async () => sendIntakeEstimate('order', 'Manager', (await intakeSummary('order')).revision)
 
 describe('standalone QuickBooks estimates', () => {
+  it('an estimate with an unresolved review (e.g. a part needing labor review) is refused before any QuickBooks call or email', async () => {
+    f.ready.mockRejectedValueOnce(new Error('Resolve before sending the estimate: 1 part needs labor review'))
+    await expect(send()).rejects.toThrow(/1 part needs labor review/)
+    expect(f.ready).toHaveBeenCalledWith('order', 'send')
+    expect(f.api).not.toHaveBeenCalled()
+    expect(f.intake.sentAt).toBeUndefined()
+  })
   it('creates and emails an Estimate, never an Invoice, and saves distinct linkage', async () => {
     await send()
     expect(f.intake.qbEstimateId).toBe('qb-estimate')

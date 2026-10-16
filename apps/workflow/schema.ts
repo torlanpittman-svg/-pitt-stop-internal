@@ -230,6 +230,24 @@ export const jobServices = pgTable(
     // retained rather than silently nulled (a null would re-enable label-based remapping). The
     // index needs no cross-module reference, so it is modeled here.
     catalogId:     uuid('catalog_id'),
+    // 'service' (work) | 'part' (a special-order part line; procurement detail lives in job_parts).
+    kind:          varchar('kind', { length: 12 }).notNull().default('service'),
+    // Job-specific detail kept SEPARATE from the title and the catalog identity ("passenger seat",
+    // "driver-side mirror"). Appended to the canonical QB description in one approved format
+    // (apps/quickbooks/retail-format.ts composeLineDescription) — never free-form invoice text.
+    detail:        varchar('detail', { length: 160 }),
+    // How the catalog identity was chosen: exact | alias | suggestion | shortcut | custom | legacy.
+    matchMethod:   varchar('match_method', { length: 16 }),
+    matchedBy:     varchar('matched_by', { length: 200 }),
+    matchedAt:     timestamp('matched_at', { withTimezone: true }),
+    // Set when a manager explicitly keeps this line alongside a package that already includes it.
+    overlapAckBy:  varchar('overlap_ack_by', { length: 200 }),
+    overlapAckAt:  timestamp('overlap_ack_at', { withTimezone: true }),
+    // The employee's original wording (traceability only; never sent to QuickBooks).
+    entryText:     varchar('entry_text', { length: 300 }),
+    // Canonical description captured when the catalog identity was chosen → later catalog edits apply
+    // to FUTURE additions only. Null on legacy rows = resolve the catalog's current description.
+    catalogDescription: text('catalog_description'),
     approvalState: varchar('approval_state', { length: 16 }).notNull().default('pending'),
     technician:    varchar('technician', { length: 200 }),
     notes:         text('notes'),

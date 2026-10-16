@@ -5,7 +5,9 @@ import NavHeader from '@/app/components/NavHeader'
 import EstimateActions from '@/app/estimates/EstimateActions'
 import SwipeRow from '@/app/components/SwipeRow'
 import OrderPhotos from '@/app/components/OrderPhotos'
-import { saveEstimateEdit, describeEdit, type EstimateEdit, type EstimateViewData } from './save-feedback'
+import { saveEstimateEdit, describeEdit, type EstimateEdit, type EstimateViewData, type ServiceView } from './save-feedback'
+import ServicePicker from './ServicePicker'
+import { PartsList, ReviewNotices } from './PartsReview'
 
 /**
  * Simplified mobile Estimate — "what are we doing, and what are we charging?".
@@ -55,6 +57,41 @@ function PriceInput({ cents, onCommit, busy, big }: { cents: number | null; onCo
 const ROW_CONTENT = 'flex items-center gap-3 bg-gray-900 border border-gray-800 px-4 py-3.5'
 const EDIT_BTN = 'shrink-0 text-blue-400 text-sm font-semibold px-2 py-1 -my-1 active:opacity-70 disabled:opacity-40'
 
+// ── Inline detail editor (area / component) — may be cleared ─────────────────────────
+function DetailEditor({ initial, busy, onSave, onCancel }: { initial: string; busy: boolean; onSave: (v: string) => void; onCancel: () => void }) {
+  const [text, setText] = useState(initial)
+  return (
+    <form className="flex flex-wrap items-center gap-2 w-full mt-2" onSubmit={(e) => { e.preventDefault(); if (text.trim() === initial.trim()) onCancel(); else onSave(text) }}>
+      <input aria-label="Area or component" value={text} autoFocus maxLength={120} disabled={busy} placeholder="e.g. passenger seat"
+        onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
+        className="flex-1 min-w-[10rem] bg-gray-950 border border-gray-600 text-white rounded-lg px-3 py-2 text-base" />
+      <div className="flex gap-2">
+        <button type="submit" disabled={busy} className="rounded-lg bg-blue-600 text-white font-semibold text-sm px-4 py-2 active:opacity-80 disabled:opacity-40">Save</button>
+        <button type="button" onClick={onCancel} disabled={busy} className="rounded-lg border border-gray-600 text-gray-200 text-sm px-4 py-2 active:opacity-80 disabled:opacity-40">Cancel</button>
+      </div>
+    </form>
+  )
+}
+
+/** What the service is matched to + exactly what the invoice line says. */
+function MatchLine({ s, busy, onChange }: { s: ServiceView; busy: boolean; onChange: () => void }) {
+  if (s.matchState === 'choose') {
+    return <button type="button" onClick={onChange} disabled={busy} className="mt-1 rounded-lg bg-amber-600/25 border border-amber-700/60 px-2.5 py-1 text-amber-200 text-xs font-semibold">Which odor treatment? Choose…</button>
+  }
+  if (s.matchState === 'unmatched') {
+    return <button type="button" onClick={onChange} disabled={busy} className="mt-1 text-amber-300/90 text-xs font-semibold">Not matched to a catalog service — choose…</button>
+  }
+  return (
+    <div className="mt-0.5 min-w-0">
+      <p className="text-gray-500 text-xs line-clamp-2 break-words">
+        {s.matchState === 'custom' ? 'Custom · ' : s.catalogName && s.catalogName !== s.title ? `${s.catalogName} · ` : ''}{s.description}
+      </p>
+      {s.matchState === 'matched' && s.qbMapped === false && <p className="text-gray-600 text-[11px]">QuickBooks item pending review — bills as Labor</p>}
+      {s.overlapAcknowledged && <p className="text-gray-600 text-[11px]">Kept alongside Complete Odor Treatment on purpose</p>}
+    </div>
+  )
+}
+
 // ── Inline name editor (customer name, service name): explicit Save / Cancel ─────────
 // 16px text so iOS doesn't zoom; Enter saves, Escape cancels. Saving the unchanged value just closes.
 function NameEditor({ label, initial, busy, onSave, onCancel }: {
@@ -84,8 +121,6 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   const [actionBusy, setActionBusy] = useState(false)
   const busy = editingBusy || actionBusy
   const [err, setErr] = useState<string | null>(null)
-  const [newName, setNewName] = useState('')
-  const [newPrice, setNewPrice] = useState('')
   // Explicit save-state so the manager can always tell whether an edit is saving, saved, or failed —
   // and can recover a failed save (Retry) rather than silently losing it.
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
@@ -100,6 +135,8 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   // Bumped after a customer rename so EstimateActions reloads (the send/convert revision changed).
   const [customerRev, setCustomerRev] = useState(0)
   const [editingServiceId, setEditingServiceId] = useState<string | null>(null)
+  const [rematchId, setRematchId] = useState<string | null>(null)
+  const [detailId, setDetailId] = useState<string | null>(null)
 
   // Every estimate edit saves immediately. "Saved" is shown ONLY after the server confirms the
   // change (see save-feedback.ts); a failure says what wasn't stored and offers Retry.
@@ -226,7 +263,10 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
 
         {/* Services */}
         <div className="space-y-2">
-          {services.map((s) => editingServiceId === s.id ? (
+          {services.map((s) => rematchId === s.id ? (
+            <ServicePicker key={s.id} orderId={header.id} mode="rematch" service={s} busy={busy} isFlat={isFlat} vehicleLabel={header.vehicle} canManage
+              onSave={post} onClose={() => setRematchId(null)} />
+          ) : editingServiceId === s.id ? (
             <div key={s.id} className={`${ROW_CONTENT} rounded-2xl`}>
               <NameEditor label="Service name" initial={s.title} busy={busy}
                 onSave={(title) => saveServiceName(s.id, title)} onCancel={() => setEditingServiceId(null)} />
@@ -238,6 +278,16 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
                   <p className="font-semibold truncate">{s.title}</p>
                   <button onClick={() => setEditingServiceId(s.id)} disabled={busy} aria-label={`Edit service name ${s.title}`} className={EDIT_BTN}>Edit</button>
                 </div>
+                <MatchLine s={s} busy={busy} onChange={() => setRematchId(s.id)} />
+                {detailId === s.id ? (
+                  <DetailEditor initial={s.detail ?? ''} busy={busy} onCancel={() => setDetailId(null)}
+                    onSave={(detail) => { void post({ action: 'set_detail', serviceId: s.id, detail }).then((ok) => { if (ok) setDetailId(null) }) }} />
+                ) : (
+                  <div className="flex gap-3 text-xs mt-0.5">
+                    <button onClick={() => setDetailId(s.id)} disabled={busy} className="text-blue-400/90 font-semibold min-h-10 px-1 inline-flex items-center" aria-label={`Area or component for ${s.title}`}>{s.detail ? `Area: ${s.detail}` : '+ Area'}</button>
+                    {s.matchState !== 'choose' && s.matchState !== 'unmatched' && <button onClick={() => setRematchId(s.id)} disabled={busy} className="text-blue-400/90 font-semibold min-h-10 px-1 inline-flex items-center" aria-label={`Change service for ${s.title}`}>Change</button>}
+                  </div>
+                )}
                 {!isFlat && s.suggestedCents != null && s.priceCents !== s.suggestedCents && (
                   <button onClick={() => post({ action: 'set_service_price', serviceId: s.id, cents: s.suggestedCents })}
                     className="text-gray-500 text-xs active:opacity-70">Suggested ${dollars(s.suggestedCents)}</button>
@@ -252,25 +302,18 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
           {services.length === 0 && <p className="text-gray-600 text-sm py-4 text-center">No services yet.</p>}
         </div>
 
-        {/* Add service */}
-        <div className="mt-3 flex gap-2">
-          <input className="flex-1 bg-gray-900 border border-gray-800 text-white rounded-xl px-3 py-2.5 text-sm"
-            placeholder="+ Add service" value={newName} onChange={(e) => setNewName(e.target.value)} />
-          {!isFlat && (
-            <input className="w-24 bg-gray-900 border border-gray-800 text-white rounded-xl px-3 py-2.5 text-sm"
-              placeholder="$ price" inputMode="decimal" value={newPrice} onChange={(e) => setNewPrice(e.target.value)} />
-          )}
-          <button
-            onClick={() => {
-              const title = newName.trim(); if (!title) return
-              const payload: EstimateEdit = { action: 'add_service', title }
-              if (!isFlat && newPrice.trim()) payload.cents = parseDollars(newPrice)
-              // Clear the fields only once the server confirms — a failed add keeps what was typed.
-              void post(payload).then((ok) => { if (ok) { setNewName(''); setNewPrice('') } })
-            }}
-            disabled={busy || !newName.trim()}
-            className="bg-gray-800 border border-gray-700 rounded-xl px-4 text-sm font-semibold disabled:opacity-40">Add</button>
+        {/* Parts (special order) with installation-labor review */}
+        <div className="mt-3"><PartsList parts={view.parts ?? []} services={services} busy={busy} post={post} /></div>
+
+        {/* Add service / part — shortcuts, rushed wording interpreted, full catalog, custom */}
+        <div className="mt-3">
+          <ServicePicker orderId={header.id} mode="add" busy={busy} isFlat={isFlat} vehicleLabel={header.vehicle} canManage onSave={post} />
         </div>
+
+        {/* Needs review before sending / invoicing (drafts still save) */}
+        {view.review && view.review.issues.length > 0 && (
+          <div className="mt-4"><ReviewNotices issues={view.review.issues} services={services} busy={busy} post={post} onChooseOdor={(id) => setRematchId(id)} /></div>
+        )}
 
         {/* Incomplete-pricing banner: a flat amount was agreed, but not every service is priced yet.
             We keep the agreed amount as a clearly-labeled REFERENCE and never present the partial

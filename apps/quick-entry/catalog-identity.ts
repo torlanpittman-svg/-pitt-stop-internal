@@ -14,6 +14,7 @@
 import { getDb } from '@/platform/db'
 import { isNull } from 'drizzle-orm'
 import { serviceCatalog, serviceAliases } from './schema'
+import { isGenericOdorKey } from './service-interpret'
 
 /** Normalize a service label for matching: trim, collapse inner whitespace, lowercase. */
 export const normalizeServiceKey = (s?: string | null): string =>
@@ -49,7 +50,10 @@ export function buildCatalogKeyIndex(
  * with no (non-archived) catalog match are omitted — they are genuinely custom (Labor fallback).
  */
 export async function resolveCatalogIds(titles: string[]): Promise<Map<string, string>> {
-  const wanted = new Set(titles.map(normalizeServiceKey).filter(Boolean))
+  // Generic odor wording ("Odor Treatment", "remove smell") is deliberately NOT auto-stamped: under
+  // the owner's definitions it could mean duct cleaning, ozone, or the Complete package, so the
+  // estimate asks which one (apps/workflow/estimate-review). Specific names still resolve.
+  const wanted = new Set(titles.map(normalizeServiceKey).filter((k) => k && !isGenericOdorKey(k)))
   if (wanted.size === 0) return new Map()
   const db = getDb()
   const [cats, aliases] = await Promise.all([

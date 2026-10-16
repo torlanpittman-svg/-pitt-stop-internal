@@ -11,7 +11,8 @@
  * (role-based permissions come later). Dealer prices come from the Dealer Check-In
  * rules engine, not AI. AutoLeap mapping is pending an API.
  */
-import { pgTable, uuid, text, varchar, integer, boolean, timestamp, jsonb, index, unique } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, varchar, integer, boolean, timestamp, jsonb, index, unique, uniqueIndex } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 
 export const serviceCatalog = pgTable(
   'service_catalog',
@@ -36,6 +37,11 @@ export const serviceCatalog = pgTable(
     qbDescription:     text('qb_description'),                              // Phase 1b: managed canonical customer-facing description (null → service name)
     autoleapMapStatus: varchar('autoleap_map_status', { length: 40 }).notNull().default('unmapped_pending_api'),
     reviewFlag:        boolean('review_flag').notNull().default(false),
+    // Business role used by matching/overlap rules: odor_duct | odor_ozone | odor_complete | installation.
+    serviceRole:       varchar('service_role', { length: 24 }),
+    roleConfirmedBy:   varchar('role_confirmed_by', { length: 200 }),
+    roleConfirmedAt:   timestamp('role_confirmed_at', { withTimezone: true }),
+    qbCandidateRef:    varchar('qb_candidate_ref', { length: 40 }),         // suggested EXISTING QB item (manager review)
     notes:             text('notes'),
     archivedAt:        timestamp('archived_at', { withTimezone: true }),  // soft delete
     createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -167,4 +173,40 @@ export const technicianInstructions = pgTable(
     createdAt:  timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('technician_instructions_group_idx').on(t.groupName)],
+)
+
+// Append-only audit of catalog review decisions + manager-approved alternate names (migration 0052).
+export const serviceCatalogEvents = pgTable(
+  'service_catalog_events',
+  {
+    id:        uuid('id').primaryKey().defaultRandom(),
+    catalogId: uuid('catalog_id').references(() => serviceCatalog.id, { onDelete: 'restrict' }),
+    eventType: varchar('event_type', { length: 40 }).notNull(),
+    actor:     varchar('actor', { length: 200 }),
+    note:      text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('service_catalog_events_catalog_idx').on(t.catalogId)],
+)
+
+// Manager-managed quick-select shortcuts (migration 0052). References a catalog item; label is display-only.
+export const serviceShortcuts = pgTable(
+  'service_shortcuts',
+  {
+    id:        uuid('id').primaryKey().defaultRandom(),
+    catalogId: uuid('catalog_id').notNull().references(() => serviceCatalog.id, { onDelete: 'restrict' }),
+    label:     varchar('label', { length: 80 }).notNull(),
+    groupName: varchar('group_name', { length: 40 }).notNull().default('Services'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    hiddenAt:  timestamp('hidden_at', { withTimezone: true }),
+    hiddenBy:  varchar('hidden_by', { length: 200 }),
+    createdBy: varchar('created_by', { length: 200 }),
+    updatedBy: varchar('updated_by', { length: 200 }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('service_shortcuts_active_catalog_uniq').on(t.catalogId).where(sql`hidden_at IS NULL`),
+    index('service_shortcuts_order_idx').on(t.groupName, t.sortOrder),
+  ],
 )

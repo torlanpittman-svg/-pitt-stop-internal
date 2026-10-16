@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { estimateIntakes } from './schema'
 import { getOrderWithContext, logEvent } from '@/apps/workflow/db'
+import { assertEstimateReady } from '@/apps/workflow/estimate-review'
 import { getFullEstimate, itemizeEstimate, recomputeEstimate } from '@/apps/workflow/estimate-db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { getBusinessConfig } from '@/apps/settings/db'
@@ -71,6 +72,8 @@ export async function sendIntakeEstimate(id: string, actor: string, expectedRevi
   const email = state.contact?.customerEmail?.trim() || ''
   if (!email || isPlaceholderEmail(email)) throw new Error('Add a valid customer email before sending.')
   if (state.draft.tax.cents || state.draft.tax.needsReview) throw new Error('Review tax treatment before sending this estimate through QuickBooks.')
+  // Parts labor review / odor package overlap / unchosen odor treatment — resolved before any QB write or email.
+  await assertEstimateReady(id, 'send')
   if (state.full.estimate.priceMode === 'explicit_pretax') {
     await itemizeEstimate(state.full.estimate.id, actor)
     state = await intakeSummary(id)

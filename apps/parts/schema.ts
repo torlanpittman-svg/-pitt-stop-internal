@@ -22,7 +22,7 @@ import {
   numeric,
   index,
 } from 'drizzle-orm/pg-core'
-import { serviceOrders, jobLineItems } from '@/apps/workflow/schema'
+import { serviceOrders, jobLineItems, jobServices } from '@/apps/workflow/schema'
 
 // needed → ordered → partially_received → received ; cancelled is terminal.
 export const jobParts = pgTable(
@@ -32,6 +32,20 @@ export const jobParts = pgTable(
     serviceOrderId: uuid('service_order_id').notNull().references(() => serviceOrders.id, { onDelete: 'cascade' }),
     // Optional link to the estimate/invoice line this part bills under (prevents double billing).
     jobLineItemId:  uuid('job_line_item_id').references(() => jobLineItems.id, { onDelete: 'set null' }),
+    // The estimate row (job_services.kind='part') that bills this part. Null for customer-supplied parts.
+    jobServiceId:   uuid('job_service_id').references(() => jobServices.id, { onDelete: 'set null' }),
+    // 'shop' = special-order part we buy for this job; 'customer' = customer-supplied (no parts charge).
+    supply:         varchar('supply', { length: 12 }).notNull().default('shop'),
+    fitment:        text('fitment'),
+
+    // Installation-labor review (migration 0052). needs_review | labor_added | included | part_only | waived.
+    // labor_added/included point at the covering labor service; if it is removed (SET NULL) or no
+    // longer covers the part, the review re-opens (apps/parts/labor-review.ts).
+    laborStatus:    varchar('labor_status', { length: 16 }).notNull().default('needs_review'),
+    laborServiceId: uuid('labor_service_id').references(() => jobServices.id, { onDelete: 'set null' }),
+    laborNote:      text('labor_note'),
+    laborDecidedBy: varchar('labor_decided_by', { length: 200 }),
+    laborDecidedAt: timestamp('labor_decided_at', { withTimezone: true }),
 
     description:    text('description').notNull(),
     partNumber:     varchar('part_number', { length: 80 }),
@@ -68,5 +82,7 @@ export const jobParts = pgTable(
   (t) => [
     index('job_parts_order_idx').on(t.serviceOrderId),
     index('job_parts_status_idx').on(t.status),
+    index('job_parts_service_idx').on(t.jobServiceId),
+    index('job_parts_labor_service_idx').on(t.laborServiceId),
   ]
 )

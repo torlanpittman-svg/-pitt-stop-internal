@@ -14,6 +14,13 @@ import { computeFees, eligibleBasisCents, reconcilePlan, explicitPretaxTotals, e
 import { getBusinessConfig } from '@/apps/settings/db'
 import { suggestedPricesForTitles } from '@/apps/quick-entry/db'
 import { resolveCatalogId, resolveCatalogIds, normalizeServiceKey } from '@/apps/quick-entry/catalog-identity'
+import { serviceCatalog } from '@/apps/quick-entry/schema'
+import { jobParts } from '@/apps/parts/schema'
+import { eligibleCatalogChoice, catalogDescriptionSnapshot, canonicalDescription } from '@/apps/quick-entry/service-match-db'
+import { composeLineDescription, partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
+import { loadEstimateReview } from './estimate-review'
+import { needsOdorChoice, type ReadinessIssue } from './estimate-readiness'
+import type { LaborStatus } from '@/apps/parts/labor-review'
 
 export type EstimateRow = typeof jobEstimates.$inferSelect
 export type JobServiceRow = typeof jobServices.$inferSelect
@@ -222,6 +229,8 @@ async function getServicePriceLine(serviceId: string): Promise<JobLineRow | null
 }
 /** Upsert a service's single price line to an exact amount (qty 1, non-taxable detailing). */
 async function upsertServicePrice(service: JobServiceRow, cents: number): Promise<void> {
+  // A part's price is per unit with its own qty/cost — edited through the part editor, never here.
+  if (service.kind === 'part') throw new Error('Edit a part’s price in the Parts section.')
   const existing = await getServicePriceLine(service.id)
   const price = Math.max(0, Math.round(cents))
   if (existing) await updateLine(existing.id, { priceCents: price, qty: 1 })
@@ -311,6 +320,19 @@ export async function seedSuggestedPrices(estimateId: string): Promise<void> {
   }
 }
 
+/**
+ * After a line's price was set/cleared OUTSIDE setServicePrice (a part's sell price): same rules as a
+ * price edit — a priced line on a flat Job itemizes it (agreed amount kept as a reference, never a
+ * fabricated split), then the reference is dropped only once complete and equal. Recomputes.
+ */
+export async function settlePricingAfterLineChange(estimateId: string, priced: boolean): Promise<void> {
+  const [est] = await getDb().select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
+  const flat = est?.priceMode === 'explicit_pretax' && est.explicitTotalCents != null
+  if (flat && priced) await itemizeFromFlat(estimateId)
+  if (!flat || priced) await syncItemizationState(estimateId)
+  await recomputeEstimate(estimateId)
+}
+
 /** Explicitly switch a flat Job to itemized so the manager can enter per-service prices. */
 export async function itemizeEstimate(estimateId: string, actor: string | null): Promise<void> {
   void actor
@@ -375,7 +397,31 @@ export async function setWorkTotal(estimateId: string, cents: number, actor: str
 
 /** A clean view for the mobile Estimate page — title + price per service, plus the one
  *  authoritative Work Total. Hides line types / cost / tax / approval entirely. */
-export interface EstimateServiceView { id: string; title: string; priceCents: number | null; suggestedCents: number | null }
+export interface EstimateServiceView {
+  id: string; title: string; priceCents: number | null; suggestedCents: number | null
+  /** Selected catalog identity (null = custom or not matched yet). */
+  catalogId?: string | null
+  catalogName?: string | null
+  /** Exactly what the invoice line will say (canonical description + detail, or the custom name). */
+  description?: string
+  detail?: string | null
+  matchMethod?: string | null
+  /** 'matched' | 'custom' (confirmed one-off) | 'unmatched' (legacy, no identity) | 'choose' (odor wording needs a treatment) */
+  matchState?: 'matched' | 'custom' | 'unmatched' | 'choose'
+  /** False → this service bills under the generic Labor item until a manager maps its QuickBooks item. */
+  qbMapped?: boolean
+  role?: string | null
+  entryText?: string | null
+  overlapAcknowledged?: boolean
+}
+export interface EstimatePartView {
+  id: string; serviceId: string | null; description: string; fitment: string | null; partNumber: string | null; supplier: string | null
+  quantity: number; unitCostCents: number | null; sellPriceCents: number | null; lineCents: number | null
+  supply: 'shop' | 'customer'; laborStatus: LaborStatus; laborServiceId: string | null; laborNote: string | null
+  /** Exactly what the invoice line will say. */
+  invoiceText: string
+}
+export interface EstimateReviewView { ready: boolean; issues: ReadinessIssue[] }
 export interface EstimateView {
   exists: boolean
   flat: boolean
@@ -387,29 +433,70 @@ export interface EstimateView {
   /** The agreed flat amount retained as a reference while itemizing is incomplete (null if the Job
    *  never had a flat price, or once the breakdown is complete). Shown clearly as "agreed reference". */
   referenceCents: number | null
+  parts?: EstimatePartView[]
+  review?: EstimateReviewView
 }
 
 export async function getEstimateView(orderId: string): Promise<EstimateView> {
   const full = await getFullEstimate(orderId)
-  if (!full) return { exists: false, flat: false, workTotalCents: 0, services: [], incomplete: false, referenceCents: null }
+  if (!full) return { exists: false, flat: false, workTotalCents: 0, services: [], incomplete: false, referenceCents: null, parts: [], review: { ready: true, issues: [] } }
   const est = full.estimate
-  const services = full.services.filter((s) => s.source !== 'system')
-  const sugg = await suggestedPricesForTitles(services.map((s) => s.title))
+  const userServices = full.services.filter((s) => s.source !== 'system')
+  const services = userServices.filter((s) => s.kind !== 'part')
+  const partServices = userServices.filter((s) => s.kind === 'part')
+  const db = getDb()
+  const catIds = [...new Set(userServices.map((s) => s.catalogId).filter((x): x is string => !!x))]
+  const [sugg, cats, review] = await Promise.all([
+    suggestedPricesForTitles(services.map((s) => s.title)),
+    catIds.length ? db.select().from(serviceCatalog).where(inArray(serviceCatalog.id, catIds)) : Promise.resolve([] as (typeof serviceCatalog.$inferSelect)[]),
+    loadEstimateReview(orderId),
+  ])
+  const catById = new Map(cats.map((c) => [c.id, c]))
+  const reviewSvc = new Map(review.services.map((s) => [s.id, s]))
   const views: EstimateServiceView[] = services.map((s) => {
     const line = s.lines.find((l) => !l.generated)
+    const c = s.catalogId ? catById.get(s.catalogId) : undefined
+    const base = c ? (s.catalogDescription ?? canonicalDescription(c)) : s.title
+    const rs = reviewSvc.get(s.id)
+    const matchState: EstimateServiceView['matchState'] = rs && needsOdorChoice(rs) ? 'choose' : c ? 'matched' : s.matchMethod === 'custom' ? 'custom' : 'unmatched'
     return {
       id: s.id, title: s.title,
       priceCents: line ? lineAmountCents(line.priceCents, line.qty) : null,
       suggestedCents: sugg[s.title.trim().toLowerCase()] ?? null,
+      catalogId: s.catalogId, catalogName: c?.name ?? null,
+      description: composeLineDescription(base, s.detail), detail: s.detail, matchMethod: s.matchMethod, matchState,
+      qbMapped: c ? (c.archivedAt == null && c.qbSyncEnabled && c.qbItemStatus === 'existing' && !!c.qbItemRef) : false,
+      role: c?.serviceRole ?? null, entryText: s.entryText, overlapAcknowledged: s.overlapAckAt != null,
     }
   })
+  // Parts (special-order + customer-supplied) with their effective labor review.
+  const partRows = await db.select().from(jobParts).where(and(eq(jobParts.serviceOrderId, orderId), ne(jobParts.status, 'cancelled'))).orderBy(asc(jobParts.createdAt))
+  const reviewPart = new Map(review.parts.map((p) => [p.id, p]))
+  const partSvcById = new Map(partServices.map((s) => [s.id, s]))
+  const parts: EstimatePartView[] = partRows.map((p) => {
+    const svc = p.jobServiceId ? partSvcById.get(p.jobServiceId) : undefined
+    const line = svc?.lines.find((l) => !l.generated)
+    return {
+      id: p.id, serviceId: svc?.id ?? null, description: p.description, fitment: p.fitment, partNumber: p.partNumber, supplier: p.supplier,
+      quantity: Number(p.quantity), unitCostCents: p.unitCostCents, sellPriceCents: line ? line.priceCents : null,
+      lineCents: line ? lineAmountCents(line.priceCents, line.qty) : null,
+      supply: p.supply === 'customer' ? 'customer' : 'shop',
+      laborStatus: (reviewPart.get(p.id)?.laborStatus ?? 'needs_review') as LaborStatus,
+      laborServiceId: p.laborServiceId, laborNote: p.laborNote,
+      invoiceText: line?.description || partLineDescription(p),
+    }
+  })
+  const partLines = partServices.map((s) => s.lines.find((l) => !l.generated))
   const flat = est.priceMode === 'explicit_pretax' && est.explicitTotalCents != null
-  const eligible = views.reduce((sum, v) => sum + (v.priceCents ?? 0), 0)
-  // Itemized but some service still unpriced → incomplete. Surface the retained flat amount as a
-  // labeled reference so the UI never presents the partial sum as the agreed total.
-  const incomplete = !flat && views.length > 0 && views.some((v) => v.priceCents == null)
+  const eligible = views.reduce((sum, v) => sum + (v.priceCents ?? 0), 0) + partLines.reduce((sum, l) => sum + (l ? lineAmountCents(l.priceCents, l.qty) : 0), 0)
+  // Itemized but some service (or shop-supplied part) still unpriced → incomplete. Surface the retained
+  // flat amount as a labeled reference so the UI never presents the partial sum as the agreed total.
+  const incomplete = !flat && (views.length + partServices.length) > 0 && (views.some((v) => v.priceCents == null) || partLines.some((l) => !l))
   const referenceCents = !flat ? (est.explicitTotalCents ?? null) : null
-  return { exists: true, flat, workTotalCents: flat ? est.explicitTotalCents! : eligible, services: views, incomplete, referenceCents }
+  return {
+    exists: true, flat, workTotalCents: flat ? est.explicitTotalCents! : eligible, services: views, incomplete, referenceCents,
+    parts, review: { ready: review.readiness.ready, issues: review.readiness.issues },
+  }
 }
 
 /** Page entry: ensure the estimate exists, mirror the Job's services, seed suggestions for a
@@ -425,7 +512,7 @@ export async function prepareEstimateView(orderId: string, actor: string | null)
 /** Seed job_services from the Job's employee-facing text services (idempotent). Each new row is
  *  stamped with its stable catalog identity (same name/alias policy as the QB payload) so its
  *  invoice item/description survives a later label edit. */
-export async function promoteTextServices(estimateId: string, orderId: string): Promise<number> {
+export async function promoteTextServices(estimateId: string, orderId: string, hints?: ReadonlyMap<string, string>): Promise<number> {
   const db = getDb()
   const [order] = await db.select({ services: serviceOrders.services }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
   const text = (order?.services ?? []).map((s) => s.trim()).filter(Boolean)
@@ -437,7 +524,15 @@ export async function promoteTextServices(estimateId: string, orderId: string): 
   const catalogIds = await resolveCatalogIds(toInsert.map((t) => t.title))
   let n = 0
   for (const { title, i } of toInsert) {
-    await db.insert(jobServices).values({ jobEstimateId: estimateId, title, source: 'promoted', sortOrder: i, catalogId: catalogIds.get(normalizeServiceKey(title)) ?? null })
+    // An explicit catalog choice made at intake (a tapped shortcut) wins over label matching.
+    const hinted = hints?.get(normalizeServiceKey(title))
+    const choice = hinted ? await eligibleCatalogChoice(hinted) : null
+    const catalogId = choice?.catalogId ?? catalogIds.get(normalizeServiceKey(title)) ?? null
+    await db.insert(jobServices).values({
+      jobEstimateId: estimateId, title, source: 'promoted', sortOrder: i, catalogId,
+      matchMethod: choice ? 'shortcut' : catalogId ? 'legacy' : null,
+      catalogDescription: await catalogDescriptionSnapshot(catalogId),
+    })
     n++
   }
   return n
@@ -481,6 +576,7 @@ export async function removeServiceFromJob(orderId: string, serviceName: string,
       const lines = await db.select().from(jobLineItems).where(eq(jobLineItems.jobServiceId, s.id))
       const priced = lines.filter((l) => !l.generated).reduce((sum, l) => sum + lineAmountCents(l.priceCents, l.qty), 0)
       if (priced > 0) pricingImpactCents = (pricingImpactCents ?? 0) + priced
+      await reopenLaborCoveredBy(orderId, s.id, actor, 'covering labor was removed')
       await db.delete(jobServices).where(eq(jobServices.id, s.id))   // job_line_items cascade
     }
     await recomputeEstimate(est.id)   // itemized → remaining lines set the total; flat → unchanged
@@ -494,11 +590,152 @@ export async function removeServiceFromJob(orderId: string, serviceName: string,
   return { removed: true, services: next, pricingImpactCents, qbSyncNeeded }
 }
 
-export async function addService(estimateId: string, title: string): Promise<JobServiceRow> {
-  const clean = title.trim()
-  const catalogId = await resolveCatalogId(clean)   // stable catalog identity for the QB payload
-  const [row] = await getDb().insert(jobServices).values({ jobEstimateId: estimateId, title: clean, source: 'manual', catalogId }).returning()
+export type MatchMethod = 'exact' | 'alias' | 'rule' | 'suggestion' | 'shortcut' | 'manual' | 'custom' | 'legacy'
+const MATCH_METHODS: readonly MatchMethod[] = ['exact', 'alias', 'rule', 'suggestion', 'shortcut', 'manual', 'custom', 'legacy']
+export const toMatchMethod = (m: unknown, fallback: MatchMethod): MatchMethod => (MATCH_METHODS as readonly string[]).includes(String(m)) ? (m as MatchMethod) : fallback
+
+export interface AddServiceOptions {
+  /** The user's explicit catalog choice (validated: live retail catalog only). */
+  catalogId?: string | null
+  /** Explicit "no catalog match — custom service" confirmation (bills as Labor with this wording). */
+  custom?: boolean
+  detail?: string | null
+  matchMethod?: MatchMethod
+  entryText?: string | null
+  actor?: string | null
+  kind?: 'service' | 'part'
+}
+
+/**
+ * Add a service row. With an explicit catalogId (picker / shortcut / confirmed suggestion) the
+ * identity is exactly that item — matching never changes price, qty, or tax. `custom` records an
+ * explicit one-off. With neither, the legacy name/alias resolver runs (unchanged behaviour for
+ * older callers). The canonical description is snapshotted so later catalog edits affect only
+ * future additions.
+ */
+/** Re-open the labor review of parts whose installation relied on this service (audited). */
+export async function reopenLaborCoveredBy(orderId: string, serviceId: string, actor: string | null, reason: string): Promise<number> {
+  const rows = await getDb().update(jobParts).set({ laborStatus: 'needs_review', laborServiceId: null, laborDecidedBy: actor, laborDecidedAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(jobParts.laborServiceId, serviceId), inArray(jobParts.laborStatus, ['labor_added', 'included']))).returning({ id: jobParts.id })
+  for (const r of rows) await logJobEvent(orderId, 'part_labor_reopened', actor, JSON.stringify({ partId: r.id, serviceId, reason }))
+  return rows.length
+}
+
+export async function addService(estimateId: string, title: string, opts: AddServiceOptions = {}): Promise<JobServiceRow> {
+  const clean = title.replace(/\s+/g, ' ').trim().slice(0, 200)
+  if (!clean) throw new Error('Enter a service name.')
+  let catalogId: string | null = null
+  let matchMethod: MatchMethod | null = null
+  if (opts.kind === 'part') {
+    matchMethod = null
+  } else if (opts.catalogId) {
+    const choice = await eligibleCatalogChoice(opts.catalogId)
+    if (!choice) throw new Error('That service is not in the catalog. Pick another or add it as a custom service.')
+    catalogId = choice.catalogId
+    matchMethod = opts.matchMethod ?? 'manual'
+  } else if (opts.custom) {
+    matchMethod = 'custom'
+  } else {
+    catalogId = await resolveCatalogId(clean)   // stable catalog identity for the QB payload
+    matchMethod = catalogId ? 'legacy' : null
+  }
+  const [row] = await getDb().insert(jobServices).values({
+    jobEstimateId: estimateId, title: clean, source: 'manual', catalogId, kind: opts.kind ?? 'service',
+    detail: cleanDetail(opts.detail), matchMethod, entryText: opts.entryText ? String(opts.entryText).slice(0, 300) : null,
+    matchedBy: matchMethod ? opts.actor ?? null : null, matchedAt: matchMethod ? new Date() : null,
+    catalogDescription: await catalogDescriptionSnapshot(catalogId),
+  }).returning()
   return row
+}
+
+/** Load a non-system service that belongs to THIS order's estimate, or throw. */
+async function ownService(orderId: string, serviceId: string): Promise<{ est: EstimateRow; service: JobServiceRow; services: JobServiceRow[] }> {
+  const est = await getEstimateRow(orderId)
+  const services = est ? await listUserServices(est.id) : []
+  const service = services.find((s) => s.id === serviceId)
+  if (!est || !service) throw new Error('That service is no longer on this estimate. Refresh to see the current list.')
+  return { est, service, services }
+}
+
+/**
+ * Correct a service's catalog identity (the "Change" action) — an explicit user decision, unlike a
+ * label rename, so it MAY repoint the identity. Price line, qty, tax flags, and sort order are not
+ * touched. Optionally retitles (when the title just mirrored the old match). If the identity
+ * changes, any parts that relied on this line for installation re-open their labor review, and a
+ * prior "keep alongside the package" acknowledgement is cleared. Audited (service_matched).
+ */
+export async function selectServiceMatch(orderId: string, serviceId: string, input: { catalogId?: string | null; custom?: boolean; detail?: string | null; title?: string | null; matchMethod?: MatchMethod }, actor: string | null): Promise<void> {
+  const { est, service, services } = await ownService(orderId, serviceId)
+  if (service.kind === 'part') throw new Error('Parts are edited in the Parts section.')
+  let catalogId: string | null = null
+  if (input.catalogId) {
+    const choice = await eligibleCatalogChoice(input.catalogId)
+    if (!choice) throw new Error('That service is not in the catalog. Pick another or add it as a custom service.')
+    catalogId = choice.catalogId
+  } else if (!input.custom) {
+    throw new Error('Pick a service, or confirm it as a custom service.')
+  }
+  const method: MatchMethod = catalogId ? (input.matchMethod ?? 'manual') : 'custom'
+  const title = input.title != null ? String(input.title).replace(/\s+/g, ' ').trim().slice(0, 200) : service.title
+  if (!title) throw new Error('Enter a service name.')
+  const norm = (x: string) => x.trim().toLowerCase()
+  if (title !== service.title && services.some((s) => s.id !== serviceId && norm(s.title) === norm(title))) throw new Error('Another service on this estimate already has that name.')
+  const detail = input.detail !== undefined ? cleanDetail(input.detail) : service.detail
+  const identityChanged = (service.catalogId ?? null) !== catalogId
+  const snapshot = identityChanged ? await catalogDescriptionSnapshot(catalogId) : service.catalogDescription
+  await getDb().execute(sql`
+    WITH svc AS (
+      SELECT id, title, catalog_id FROM job_services WHERE id = ${serviceId}::uuid AND job_estimate_id = ${est.id}::uuid AND source <> 'system'
+    ), upd AS (
+      UPDATE job_services js SET catalog_id = ${catalogId}::uuid, match_method = ${method}, matched_by = ${actor}, matched_at = now(),
+        detail = ${detail}, title = ${title}, catalog_description = ${snapshot},
+        entry_text = COALESCE(entry_text, CASE WHEN svc.title <> ${title} THEN left(svc.title, 300) END),
+        overlap_ack_by = CASE WHEN ${identityChanged}::boolean THEN NULL ELSE overlap_ack_by END,
+        overlap_ack_at = CASE WHEN ${identityChanged}::boolean THEN NULL ELSE overlap_ack_at END,
+        updated_at = now()
+      FROM svc WHERE js.id = svc.id RETURNING js.id
+    ), upd_line AS (
+      UPDATE job_line_items l SET name = ${title} FROM svc
+      WHERE l.job_service_id = svc.id AND l.generated = false AND l.name = svc.title AND svc.title <> ${title} RETURNING l.id
+    ), upd_order AS (
+      UPDATE service_orders so SET updated_at = now(), services = (
+        SELECT jsonb_agg(CASE WHEN lower(trim(a.x)) = lower(trim(svc.title)) THEN to_jsonb(${title}::text) ELSE to_jsonb(a.x) END ORDER BY a.ord)
+        FROM jsonb_array_elements_text(so.services) WITH ORDINALITY AS a(x, ord))
+      FROM svc
+      WHERE so.id = ${orderId}::uuid AND svc.title <> ${title} AND jsonb_typeof(so.services) = 'array'
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(so.services) AS b(x) WHERE lower(trim(b.x)) = lower(trim(svc.title)))
+      RETURNING so.id
+    ), reopen AS (
+      UPDATE job_parts SET labor_status = 'needs_review', labor_service_id = NULL, labor_decided_by = ${actor}, labor_decided_at = now(), updated_at = now()
+      WHERE labor_service_id IN (SELECT id FROM svc) AND ${identityChanged}::boolean AND labor_status IN ('labor_added', 'included')
+      RETURNING id
+    ), ev_reopen AS (
+      INSERT INTO service_order_events(service_order_id, event_type, employee_name, note)
+      SELECT ${orderId}::uuid, 'part_labor_reopened', ${actor}, json_build_object('partId', reopen.id, 'serviceId', ${serviceId}::text, 'reason', 'covering labor was changed')::text FROM reopen
+      RETURNING id
+    )
+    INSERT INTO service_order_events(service_order_id, event_type, employee_name, note)
+    SELECT ${orderId}::uuid, 'service_matched', ${actor},
+      json_build_object('serviceId', svc.id, 'from', json_build_object('catalogId', svc.catalog_id, 'title', svc.title),
+        'to', json_build_object('catalogId', ${catalogId}::uuid, 'title', ${title}::text, 'method', ${method}::text, 'detail', ${detail}::text))::text
+    FROM svc, upd
+  `)
+}
+
+/** Set/clear the job-specific detail ("passenger seat"). Identity, price, qty, tax untouched. Audited. */
+export async function setServiceDetail(orderId: string, serviceId: string, rawDetail: unknown, actor: string | null): Promise<void> {
+  const { service } = await ownService(orderId, serviceId)
+  const detail = cleanDetail(rawDetail)
+  if ((service.detail ?? null) === detail) return
+  await getDb().update(jobServices).set({ detail, updatedAt: new Date() }).where(eq(jobServices.id, serviceId))
+  await logJobEvent(orderId, 'service_detail', actor, JSON.stringify({ serviceId, from: service.detail, to: detail }))
+}
+
+/** Keep an Ozone/Air Duct line alongside Complete Odor Treatment ON PURPOSE (e.g. a second treatment). Audited. */
+export async function acknowledgeOdorOverlap(orderId: string, serviceId: string, actor: string | null): Promise<void> {
+  const { service } = await ownService(orderId, serviceId)
+  await getDb().update(jobServices).set({ overlapAckBy: actor, overlapAckAt: new Date(), updatedAt: new Date() }).where(eq(jobServices.id, serviceId))
+  await logJobEvent(orderId, 'odor_overlap_kept', actor, JSON.stringify({ serviceId, title: service.title }))
 }
 export async function updateService(id: string, patch: Partial<Pick<JobServiceRow, 'title' | 'technician' | 'notes' | 'approvalState' | 'sortOrder'>>): Promise<void> {
   const set: Record<string, unknown> = { ...patch, updatedAt: new Date() }
@@ -512,7 +749,10 @@ export async function updateService(id: string, patch: Partial<Pick<JobServiceRo
     const [cur] = await getDb().select({ catalogId: jobServices.catalogId, title: jobServices.title }).from(jobServices).where(eq(jobServices.id, id)).limit(1)
     if (cur && cur.catalogId == null) {
       const resolved = (await resolveCatalogId(cur.title)) ?? (await resolveCatalogId(title))
-      if (resolved) set.catalogId = sql`COALESCE(${jobServices.catalogId}, ${resolved}::uuid)`
+      if (resolved) {
+        set.catalogId = sql`COALESCE(${jobServices.catalogId}, ${resolved}::uuid)`
+        set.catalogDescription = sql`COALESCE(${jobServices.catalogDescription}, ${await catalogDescriptionSnapshot(resolved)})`
+      }
     }
   }
   await getDb().update(jobServices).set(set).where(eq(jobServices.id, id))
@@ -549,11 +789,14 @@ export async function renameService(orderId: string, serviceId: string, rawTitle
   const capturedCatalogId = service.catalogId != null
     ? null   // already identified → COALESCE below keeps it; do not re-resolve
     : (await resolveCatalogId(service.title)) ?? (await resolveCatalogId(title))
+  const capturedSnapshot = await catalogDescriptionSnapshot(capturedCatalogId)
   await db.execute(sql`
     WITH svc AS (
       SELECT id, title FROM job_services WHERE id = ${serviceId}::uuid AND job_estimate_id = ${est!.id}::uuid AND source <> 'system'
     ), upd_service AS (
-      UPDATE job_services SET title = ${title}, catalog_id = COALESCE(catalog_id, ${capturedCatalogId ?? null}::uuid), updated_at = now() WHERE id IN (SELECT id FROM svc) RETURNING id
+      UPDATE job_services SET title = ${title}, catalog_id = COALESCE(catalog_id, ${capturedCatalogId ?? null}::uuid),
+        catalog_description = CASE WHEN catalog_id IS NULL THEN ${capturedSnapshot} ELSE catalog_description END, updated_at = now()
+      WHERE id IN (SELECT id FROM svc) RETURNING id
     ), upd_line AS (
       UPDATE job_line_items l SET name = ${title} FROM svc
       WHERE l.job_service_id = svc.id AND l.generated = false AND l.name = svc.title RETURNING l.id
@@ -607,6 +850,20 @@ export async function removeEstimateService(orderId: string, serviceId: string, 
       FROM del
       WHERE so.id = ${orderId}::uuid AND ${!nameStillUsed}::boolean AND jsonb_typeof(so.services) = 'array'
       RETURNING so.id
+    ), reopen AS (
+      -- Parts whose installation relied on this line: the review re-opens (never silently "covered").
+      UPDATE job_parts SET labor_status = 'needs_review', labor_service_id = NULL, labor_decided_by = ${actor}, labor_decided_at = now(), updated_at = now()
+      WHERE labor_service_id IN (SELECT id FROM del) AND labor_status IN ('labor_added', 'included')
+      RETURNING id
+    ), ev_reopen AS (
+      INSERT INTO service_order_events(service_order_id, event_type, employee_name, note)
+      SELECT ${orderId}::uuid, 'part_labor_reopened', ${actor}, json_build_object('partId', reopen.id, 'serviceId', ${serviceId}::text, 'reason', 'covering labor was removed')::text FROM reopen
+      RETURNING id
+    ), cancel_part AS (
+      -- Removing a part's own line from the estimate = that special-order part is no longer needed.
+      UPDATE job_parts SET status = 'cancelled', updated_at = now(), updated_by = ${actor}
+      WHERE job_service_id IN (SELECT id FROM del) AND status <> 'cancelled'
+      RETURNING id
     )
     INSERT INTO service_order_events(service_order_id, event_type, employee_name, note)
     SELECT ${orderId}::uuid, 'service_removed', ${actor},

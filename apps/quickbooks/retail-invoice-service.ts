@@ -23,11 +23,13 @@ import { chooseInvoiceParty, type InvoiceParty } from './invoice-party'
 import { getOrderWithContext, logEvent, type OrderWithContext } from '@/apps/workflow/db'
 import { getEstimateRow, getFullEstimate, itemizeEstimate, type FullEstimate } from '@/apps/workflow/estimate-db'
 import { buildInvoiceDraft, type InvoiceDraft } from '@/apps/workflow/invoice-draft'
+import { loadEstimateReview } from '@/apps/workflow/estimate-review'
+import { SYNC_BLOCKING } from '@/apps/workflow/estimate-readiness'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { lineAmountCents } from '@/apps/workflow/estimate'
 import { getBusinessConfig, shopSuppliesLabel } from '@/apps/settings/db'
 import { buildRetailPayload, decideSendRecipient, RetailTotalMismatchError, type RetailWorkService, type RetailPayload } from './retail-invoice'
-import { serviceDescription, extractPsid } from './retail-format'
+import { serviceDescription, extractPsid, composeLineDescription, partLineDescription } from './retail-format'
 import { loadRetailItemIndex } from './retail-item-map'
 import { resolveRetailCustomer, resolveRetailCustomerIdentity, findRetailCustomerCandidates, persistRetailCustomerChoice, AmbiguousCustomerError, type QbCustomerCandidate } from './retail-customer'
 import { resolveRetailItems, createRetailInvoiceInQB, findRetailInvoiceByPsid, getRetailInvoiceRaw, updateRetailInvoiceInQB, fillRetailInvoiceEmail, sendRetailInvoiceInQB } from './retail-invoice-write'
@@ -96,14 +98,29 @@ export async function buildRetailWorkPayload(params: {
   const index = await loadRetailItemIndex()
   const userServices = (full?.services ?? []).filter((s) => s.source !== 'system')
   const fallbacks: string[] = []
+  const partsItem = index.partsItem()
   let workServices: RetailWorkService[] = userServices
     .map((s) => {
-      const l = s.lines.find((x) => !x.generated); if (!l) return null
+      const priced = s.lines.filter((x) => !x.generated); if (priced.length === 0) return null
+      // ONE QB line per service. A service with several hand-entered lines bills their sum (the old
+      // first-line-only read under-billed and then failed the Σlines === total invariant).
+      const amountCents = priced.reduce((sum, l) => sum + lineAmountCents(l.priceCents, l.qty), 0)
+      if (s.kind === 'part') {
+        // Special-order part: the EXISTING general parts item (never created per part) + the real
+        // part description / fitment / vendor part number captured on the line.
+        const l = priced[0]
+        const description = (l.description && l.description.trim()) || partLineDescription({ description: l.name, partNumber: l.partNumber })
+        if (!partsItem) fallbacks.push(`${s.title}→Labor (no QuickBooks parts item)`)
+        return { itemId: partsItem?.itemRef ?? items.labor, description, amountCents }
+      }
       // Resolve the QB item by the service's STABLE catalog identity (falls back to label only for
       // legacy rows with no stamped identity) so a relabeled service keeps its item + description.
       const m = index.matchService({ catalogId: s.catalogId, title: s.title })
       if (!m.usable) fallbacks.push(`${s.title}→Labor`)
-      return { itemId: m.usable ? m.itemRef! : items.labor, description: serviceDescription(s.title, m.description), amountCents: lineAmountCents(l.priceCents, l.qty) }
+      // Description captured when the identity was chosen wins (later catalog edits apply to future
+      // additions only); the job-specific detail is appended in the one approved format.
+      const base = serviceDescription(s.title, (s.catalogId && s.catalogDescription) || m.description)
+      return { itemId: m.usable ? m.itemRef! : items.labor, description: composeLineDescription(base, s.detail), amountCents }
     })
     .filter((x): x is RetailWorkService => !!x)
   // Safety net: an itemized Job with no priced service lines → one generic Labor line.
@@ -147,6 +164,10 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
   // Complete, but the itemized sum still differs from the agreed reference and the manager has not
   // accepted the new total yet — don't silently invoice a total that differs from what was agreed.
   if (draft.referenceCents != null) return { ok: false, status: 'refused', error: 'The itemized total differs from the agreed amount. Accept the itemized total in the Estimate before invoicing.' }
+  // Parts labor review / odor package overlap / unchosen odor treatment must be explicitly resolved
+  // first (drafts still save freely; job completion is never gated by this).
+  const review = await loadEstimateReview(orderId)
+  if (!review.readiness.ready) return { ok: false, status: 'refused', error: `Resolve in the Estimate before invoicing: ${review.readiness.summary}` }
 
   // (2) Compare-and-set lock — only one creator proceeds.
   const locked = await db.update(jobEstimates)
@@ -451,7 +472,7 @@ export async function sendRetailQBInvoice(params: { orderId: string; actor: stri
 // ── P-D3.3 retail SYNC (Phase C) — UPDATE the linked invoice in place ─────────
 export type SyncBlock =
   | 'no_invoice' | 'dealer' | 'not_priced' | 'invoice_missing' | 'identity_mismatch'
-  | 'customer_mismatch' | 'confirm_required' | 'syncing' | 'total_mismatch' | 'sync_failed'
+  | 'customer_mismatch' | 'confirm_required' | 'syncing' | 'total_mismatch' | 'sync_failed' | 'estimate_review'
 export interface RetailSyncResolution {
   ok: boolean
   block?: SyncBlock
@@ -522,6 +543,8 @@ export async function syncRetailQBInvoice(params: { orderId: string; actor: stri
   }
   // Already-sent invoices require an explicit confirm before we change what the customer got.
   if (pre.alreadySent && !params.confirmSent) return { ...pre, ok: false, block: 'confirm_required', alreadySent: true }
+  const syncIssues = (await loadEstimateReview(orderId)).readiness.issues.filter((i) => SYNC_BLOCKING.includes(i.code))
+  if (syncIssues.length) return { ok: false, block: 'estimate_review', error: `Resolve in the Estimate before syncing: ${syncIssues.map((i) => i.message).join(' ')}` }
 
   const est0 = await getEstimateRow(orderId)
   if (!est0 || !est0.qbInvoiceId) return { ok: false, block: 'no_invoice' }

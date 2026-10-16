@@ -3,6 +3,7 @@
  * No QuickBooks or AutoLeap. A captured job creates a workflow service_order so it
  * appears on /work-board, plus a quick_entry_jobs record (customer + lines).
  */
+import { normalizeServiceKey } from './catalog-identity'
 import { getDb } from '@/platform/db'
 import { sql } from 'drizzle-orm'
 import { quickEntryJobs } from './schema'
@@ -169,7 +170,9 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
   // Best-effort: this must never fail the Job creation (the Quick Entry contract).
   try {
     const est = await getOrCreateEstimate(order.id, input.createdBy ?? null)
-    await promoteTextServices(est.id, order.id)   // service_orders.services → job_services (deduped)
+    // Tapped shortcuts carry their catalog id → that exact identity is kept (label text is display only).
+    const hints = new Map(input.lines.filter((l) => l.catalogId && l.name.trim()).map((l) => [normalizeServiceKey(l.name), l.catalogId as string]))
+    await promoteTextServices(est.id, order.id, hints)   // service_orders.services → job_services (deduped)
     if (input.workPriceCents && input.workPriceCents > 0) {
       // Manager priced this Job: the amount is the authoritative pre-fee/pre-tax work
       // subtotal (explicit_pretax). No per-service line prices are fabricated.

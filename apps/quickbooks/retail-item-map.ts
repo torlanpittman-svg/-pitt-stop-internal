@@ -28,9 +28,12 @@ export interface RetailItemIndex {
   match(title: string): ItemMatch
   /** Resolve by the STABLE stamped catalog identity (preferred); falls back to the label when null. */
   matchService(input: { catalogId?: string | null; title: string }): ItemMatch
+  /** The EXISTING general QuickBooks parts item for special-order parts (NonInventory "Part",
+   *  else an item named "Parts"), or null. Lookup only — a parts item is never created. */
+  partsItem(): { itemRef: string; itemName: string } | null
 }
 
-interface LiveItem { id: string; name: string }
+interface LiveItem { id: string; name: string; type?: string }
 
 export async function loadRetailItemIndex(): Promise<RetailItemIndex> {
   const db = getDb()
@@ -39,7 +42,7 @@ export async function loadRetailItemIndex(): Promise<RetailItemIndex> {
     // was later archived; we must recognize it (and fall back to Labor) rather than silently remap.
     db.select().from(serviceCatalog),
     db.select().from(serviceAliases),
-    queryQBO<{ Item?: Array<{ Id: string; Name: string; Active?: boolean }> }>(`SELECT Id, Name, Active FROM Item MAXRESULTS 1000`),
+    queryQBO<{ Item?: Array<{ Id: string; Name: string; Active?: boolean; Type?: string }> }>(`SELECT Id, Name, Active, Type FROM Item MAXRESULTS 1000`),
   ])
   type Cat = typeof cats[number]
   const byId = new Map<string, Cat>(cats.map((c) => [c.id, c]))
@@ -50,7 +53,7 @@ export async function loadRetailItemIndex(): Promise<RetailItemIndex> {
   const liveByName = new Map<string, LiveItem>()
   for (const it of live.Item ?? []) {
     if (it.Active === false) continue
-    const item = { id: String(it.Id), name: it.Name }
+    const item = { id: String(it.Id), name: it.Name, type: it.Type }
     liveById.set(item.id, item)
     if (!liveByName.has(norm(it.Name))) liveByName.set(norm(it.Name), item)
   }
@@ -111,6 +114,13 @@ export async function loadRetailItemIndex(): Promise<RetailItemIndex> {
         return resolveFromCatalog(c)
       }
       return matchByTitle(title)   // legacy / genuinely custom rows with no stamped identity
+    },
+    partsItem() {
+      const all = [...liveById.values()]
+      const pick = all.find((i) => norm(i.name) === 'part' && i.type === 'NonInventory')
+        ?? all.find((i) => norm(i.name) === 'part')
+        ?? all.find((i) => norm(i.name) === 'parts')
+      return pick ? { itemRef: pick.id, itemName: pick.name } : null
     },
   }
 }

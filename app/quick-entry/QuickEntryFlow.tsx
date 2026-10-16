@@ -19,7 +19,7 @@ import { norm } from '@/apps/quick-entry/interpret'
 
 type Phase = 'details' | 'services' | 'review' | 'submitting' | 'done'
 interface Tier { size: string; condition: string; startPriceCents: number }
-interface Pkg { id: string; slug: string; name: string; hasSize: boolean; hasCondition: boolean; defaultPriceCents: number | null; tiers: Tier[] }
+interface Pkg { id: string; slug: string; name: string; hasSize: boolean; hasCondition: boolean; defaultPriceCents: number | null; tiers: Tier[]; group?: string | null }
 // Historical "Other" suggestion returned by /api/quick-entry/service-search (grounded in real work).
 interface ServiceMatch { display: string; familyKey: string; suggestedPriceCents: number | null; sampleSize: number; confidence: 'strong' | 'weak' | 'none'; evidenceLabel: string }
 interface Tech { slug: string; label: string; group: string }
@@ -40,6 +40,17 @@ type BizConfig = { shopSuppliesEnabled: boolean; shopSuppliesBps: number; shopSu
 const pct = (bps: number) => `${(bps / 100).toString()}%`
 const usd = (cents: number) => `$${(cents / 100).toFixed(2)}`
 const dollarsToCents = (s: string) => { const n = parseFloat(String(s).replace(/[^0-9.]/g, '')); return Number.isFinite(n) ? Math.round(n * 100) : 0 }
+
+/** Shortcuts in their managed groups, preserving order (ungrouped legacy menu → one group). */
+function groupPackages<T extends { group?: string | null }>(pkgs: T[]): [string | null, T[]][] {
+  const out: [string | null, T[]][] = []
+  for (const p of pkgs) {
+    const g = p.group ?? null
+    const last = out[out.length - 1]
+    if (last && last[0] === g) last[1].push(p); else out.push([g, [p]])
+  }
+  return out.length ? out : [[null, []]]
+}
 
 export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick-entry' | 'estimate' }) {
   const isEstimate = mode === 'estimate'
@@ -366,7 +377,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
           body: JSON.stringify({ requestId: requestId.current,
             customerName: `${cust.first} ${cust.last}`.trim(), customerPhone: cust.phone, customerEmail: cust.email,
             ...veh, vehicleId: vehicleMode === 'existing' ? selectedVehicleId : null,
-            notes: nlNote.trim(), lines: lines.filter(l => l.name.trim()).map(l => ({ name: l.name.trim(), priceCents: l.priceCents || 0 })),
+            notes: nlNote.trim(), lines: lines.filter(l => l.name.trim()).map(l => ({ name: l.name.trim(), priceCents: l.priceCents || 0, catalogId: l.catalogId ?? null })),
             workPriceCents: dollarsToCents(workPrice) || null,
           }),
         })
@@ -574,21 +585,32 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
               </div>
             )}
             <div>
-              <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Services — tap all that apply</p>
-              <div className="grid grid-cols-2 gap-2">
-                {catalog.packages.map((p) => (
-                  <button key={p.id} onClick={() => tapPackage(p)}
-                    className={`relative rounded-2xl border px-3 py-4 text-left ${isSelected(p.id) ? 'bg-blue-600/20 border-blue-500' : 'bg-gray-900 border-gray-800 active:bg-gray-800'}`}>
-                    <span className="text-white text-sm font-semibold">{p.name}</span>
-                    {isSelected(p.id) && <span className="absolute top-2 right-2 text-blue-400 text-sm">✓</span>}
-                  </button>
-                ))}
-                {/* "Other" — free-text custom service; no price, no catalog mapping */}
-                <button onClick={addOther} className="rounded-2xl bg-gray-900 border border-dashed border-gray-700 px-3 py-4 text-left active:bg-gray-800">
-                  <span className="text-white text-sm font-semibold">＋ Other</span>
-                  <span className="block text-gray-500 text-xs mt-0.5">What are we doing?</span>
-                </button>
+              <div className="flex items-baseline justify-between mb-2">
+                <p className="text-gray-500 text-xs uppercase tracking-widest">Services — tap all that apply</p>
+                {isEstimate && <a href="/quick-entry/services" className="text-gray-500 text-xs">Manage</a>}
               </div>
+              {/* Manager-managed shortcuts, grouped (same 2-column phone grid). "Other" stays last. */}
+              {groupPackages(catalog.packages).map(([g, pkgs], gi, all) => (
+                <div key={g ?? 'all'} className={gi > 0 ? 'mt-3' : ''}>
+                  {g && all.length > 1 && <p className="text-gray-600 text-[11px] uppercase tracking-widest mb-1.5">{g}</p>}
+                  <div className="grid grid-cols-2 gap-2">
+                    {pkgs.map((p) => (
+                      <button key={p.id} onClick={() => tapPackage(p)}
+                        className={`relative rounded-2xl border px-3 py-3.5 text-left ${isSelected(p.id) ? 'bg-blue-600/20 border-blue-500' : 'bg-gray-900 border-gray-800 active:bg-gray-800'}`}>
+                        <span className="text-white text-sm font-semibold pr-4 block">{p.name}</span>
+                        {isSelected(p.id) && <span className="absolute top-2 right-2 text-blue-400 text-sm">✓</span>}
+                      </button>
+                    ))}
+                    {gi === all.length - 1 && (
+                      /* "Other" — free-text custom service; no price, no catalog mapping */
+                      <button onClick={addOther} className="rounded-2xl bg-gray-900 border border-dashed border-gray-700 px-3 py-3.5 text-left active:bg-gray-800">
+                        <span className="text-white text-sm font-semibold">＋ Other</span>
+                        <span className="block text-gray-500 text-xs mt-0.5">What are we doing?</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
 
             {lines.length > 0 && (

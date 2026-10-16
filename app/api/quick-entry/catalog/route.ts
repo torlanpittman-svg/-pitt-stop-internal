@@ -3,14 +3,15 @@ import { NextResponse } from 'next/server'
 import { getFullCatalog } from '@/apps/quick-entry/db'
 import { isPlateLookupEnabled } from '@/apps/quick-entry/plate-lookup'
 import { nlEnabled, voiceEnabled } from '@/apps/settings/db'
+import { listShortcuts } from '@/apps/quick-entry/shortcuts'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-// Employee-facing Quick Entry menu: only these items (order + display label), plus
-// a client-side "Other". Resolved by slug against the FULL catalog so entries of any
-// kind (e.g. Wax, an add-on) can be surfaced without changing their catalog record.
-// Everything not listed here is hidden. Catalog records are never modified.
+// Employee-facing Quick Entry menu = the manager-managed service shortcuts (Manage services,
+// service_shortcuts, migration 0052), each resolved to its catalog record for size/condition tiers
+// and default price. FALLBACK ONLY (shortcut table unavailable): the original five-item menu below.
+// Catalog records are never modified.
 const QUICK_ENTRY_MENU: { slug: string; label?: string }[] = [
   { slug: 'interior_detail' },
   { slug: 'exterior_wash' },
@@ -23,10 +24,14 @@ export async function GET() {
   try {
     const full = await getFullCatalog()
     const bySlug = new Map(full.map((f) => [f.item.slug, f]))
-    const menu = QUICK_ENTRY_MENU.flatMap(({ slug, label }) => {
+    const shortcuts = await listShortcuts().catch(() => null)
+    const entries = shortcuts && shortcuts.length
+      ? shortcuts.map((sc) => ({ slug: sc.slug, label: sc.label, group: sc.group }))
+      : QUICK_ENTRY_MENU.map((m) => ({ ...m, group: undefined as string | undefined }))
+    const menu = entries.flatMap(({ slug, label, group }) => {
       const f = bySlug.get(slug); if (!f || !f.item.active) return []
       return [{
-        id: f.item.id, slug: f.item.slug, name: label ?? f.item.name,
+        id: f.item.id, slug: f.item.slug, name: label ?? f.item.name, group: group ?? null,
         hasSize: f.item.hasSize, hasCondition: f.item.hasCondition, defaultPriceCents: f.item.defaultPriceCents,
         tiers: f.tiers.map((t) => ({ size: t.size, condition: t.condition, startPriceCents: t.startPriceCents })),
       }]

@@ -5,8 +5,9 @@
 import { getDb } from '@/platform/db'
 import { and, eq, inArray } from 'drizzle-orm'
 import { jobParts } from './schema'
-import { jobServices, jobLineItems } from '@/apps/workflow/schema'
+import { jobLineItems } from '@/apps/workflow/schema'
 import { getOrCreateEstimate, addService, addLine, recomputeEstimate, flagQbSyncNeededIfInvoiced } from '@/apps/workflow/estimate-db'
+import { partLineDescription } from '@/apps/quickbooks/retail-format'
 import {
   applyReceipt,
   applyReturn,
@@ -289,7 +290,6 @@ export async function cancelPart(partId: string, actor?: string | null): Promise
   return row ? toPart(row) : null
 }
 
-const PARTS_SERVICE_TITLE = 'Parts'
 
 /**
  * Explicitly bill a tracked part: create ONE estimate/invoice line for it via the authoritative
@@ -318,24 +318,26 @@ export async function billPart(partId: string, actor?: string | null): Promise<{
   }
 
   const estimate = await getOrCreateEstimate(current.serviceOrderId, actor ?? null)
-  // Reuse a single "Parts" service bucket per estimate so part lines stay grouped.
-  const [svc] = await db
-    .select({ id: jobServices.id })
-    .from(jobServices)
-    .where(and(eq(jobServices.jobEstimateId, estimate.id), eq(jobServices.title, PARTS_SERVICE_TITLE)))
-    .limit(1)
-  const serviceId = svc?.id ?? (await addService(estimate.id, PARTS_SERVICE_TITLE)).id
+  // ONE estimate row per part (kind 'part'). The old shared "Parts" bucket put several lines under
+  // one service, but the retail QuickBooks payload is one line per service — so a second part was
+  // dropped from the invoice and creation failed the total check. Each part now bills as its own
+  // line under the existing general parts item, with its real description.
+  const serviceId = current.jobServiceId ?? (await addService(estimate.id, current.description.slice(0, 200), { kind: 'part', actor: actor ?? null })).id
 
   const name = [current.description, current.partNumber ? `#${current.partNumber}` : null].filter(Boolean).join(' ')
   const line = await addLine(serviceId, {
     type: 'part',
     name,
+    description: partLineDescription({ description: current.description, fitment: current.fitment, partNumber: current.partNumber }),
     qty: num(current.quantity),
     costCents: current.unitCostCents ?? 0,
     priceCents: current.sellPriceCents,
     partNumber: current.partNumber,
     brand: current.brand,
     supplier: current.supplier,
+    // Retail QuickBooks lines are built non-taxable (TaxCodeRef NON); a taxable part line made the
+    // invoice total mismatch and refuse. Tax treatment of parts is an open owner/accountant decision.
+    taxable: false,
     taxCategory: 'repair_parts',
   })
   await recomputeEstimate(estimate.id)
@@ -343,7 +345,7 @@ export async function billPart(partId: string, actor?: string | null): Promise<{
 
   const [row] = await db
     .update(jobParts)
-    .set({ jobLineItemId: line.id, updatedAt: new Date(), updatedBy: actor ?? null })
+    .set({ jobLineItemId: line.id, jobServiceId: serviceId, updatedAt: new Date(), updatedBy: actor ?? null })
     .where(eq(jobParts.id, partId))
     .returning()
   return { ok: true, part: toPart(row, true) }

@@ -13,19 +13,31 @@ import {
   addService, updateService, removeEstimateService, addLine, updateLine, removeLine,
   setTaxRate, setStatus, setApproval, convertEstimate, type LineInput,
   prepareEstimateView, getEstimateView, setServicePrice, setWorkTotal, itemizeEstimate, acceptItemizedTotal, flagQbSyncNeededIfInvoiced, renameService,
+  selectServiceMatch, setServiceDetail, acknowledgeOdorOverlap, toMatchMethod,
 } from '@/apps/workflow/estimate-db'
+import { interpretServiceEntry, listCatalogChoices } from '@/apps/quick-entry/service-match-db'
+import { listShortcuts, approveAlias } from '@/apps/quick-entry/shortcuts'
+import { addEstimatePart, updateEstimatePart, removeEstimatePart, decidePartLabor, addTireWork, type LaborAction } from '@/apps/parts/estimate-parts'
+import { assertEstimateReady } from '@/apps/workflow/estimate-review'
 import type { ApprovalState, EstimateStatus } from '@/apps/workflow/estimate'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-async function guard(req: Request): Promise<{ ok: true; name: string | null } | { ok: false; res: NextResponse }> {
+async function guard(req: Request): Promise<{ ok: true; name: string | null; role: string } | { ok: false; res: NextResponse }> {
   if (!estimateEnabled()) return { ok: false, res: NextResponse.json({ ok: false, error: 'not enabled' }, { status: 404 }) }
   const actor = await authenticatedActorFromRequest(req)
   if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) {
     return { ok: false, res: NextResponse.json({ ok: false, error: 'Manager access required.' }, { status: 403 }) }
   }
-  return { ok: true, name: actor.name }
+  return { ok: true, name: actor.name, role: actor.role }
+}
+
+/** Optional "remember this wording" (manager-approved alternate name). Never fails the save itself. */
+async function maybeRememberAlias(body: Record<string, unknown>, actor: string | null): Promise<string | null> {
+  if (body.rememberAlias !== true || typeof body.catalogId !== 'string' || !body.catalogId) return null
+  try { await approveAlias(body.catalogId, String(body.aliasText ?? body.entryText ?? ''), actor); return null }
+  catch (e) { return e instanceof Error ? e.message : 'Could not remember that wording.' }
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -77,12 +89,75 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         await flagQbSyncNeededIfInvoiced(id, 'the itemized total was accepted')
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
+      case 'interpret': {
+        // Read-only: understand the wording and propose real catalog items. Nothing is saved.
+        const entry = String(body.entry ?? '').slice(0, 300)
+        return NextResponse.json({ ok: true, ...(await interpretServiceEntry(entry)) })
+      }
+      case 'catalog_list': {
+        const [catalog, shortcuts] = await Promise.all([listCatalogChoices(), listShortcuts().catch(() => [])])
+        return NextResponse.json({ ok: true, catalog, shortcuts })
+      }
       case 'add_service': {
-        // Custom service (optionally with a price). A priced add itemizes; a name-only add
-        // on a flat Job leaves it flat.
+        // A confirmed catalog choice (picker / shortcut / suggestion), an explicit custom service, or
+        // (older clients) a bare title. A priced add itemizes; a name-only add on a flat Job stays flat.
+        // Matching never sets a price: only an explicitly entered amount is saved.
         const eid = await estimateId()
-        const svc = await addService(eid, String(body.title ?? '').trim() || 'Service')
+        const svc = await addService(eid, String(body.title ?? '').trim() || 'Service', {
+          catalogId: typeof body.catalogId === 'string' && body.catalogId ? body.catalogId : null,
+          custom: body.custom === true, detail: body.detail as string | null | undefined,
+          matchMethod: toMatchMethod(body.matchMethod, 'manual'), entryText: typeof body.entryText === 'string' ? body.entryText : null, actor,
+        })
         if (body.cents != null) await setServicePrice(eid, svc.id, Math.max(0, Math.round(Number(body.cents) || 0)), actor)
+        else await recomputeEstimate(eid)
+        const aliasError = await maybeRememberAlias(body, actor)
+        await flagQbSyncNeededIfInvoiced(id, 'a service was added')
+        return NextResponse.json({ ok: true, aliasError, view: await getEstimateView(id) })
+      }
+      case 'select_match': {
+        // Correct a wrong match (or resolve an unmatched/odor line). Price, qty, tax untouched.
+        await selectServiceMatch(id, String(body.serviceId), {
+          catalogId: typeof body.catalogId === 'string' && body.catalogId ? body.catalogId : null, custom: body.custom === true,
+          detail: body.detail as string | null | undefined, title: typeof body.title === 'string' ? body.title : null,
+          matchMethod: toMatchMethod(body.matchMethod, 'manual'),
+        }, actor)
+        const aliasError = await maybeRememberAlias(body, actor)
+        await flagQbSyncNeededIfInvoiced(id, 'a service match changed')
+        return NextResponse.json({ ok: true, aliasError, view: await getEstimateView(id) })
+      }
+      case 'set_detail': {
+        await setServiceDetail(id, String(body.serviceId), body.detail, actor)
+        await flagQbSyncNeededIfInvoiced(id, 'a service detail changed')
+        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
+      }
+      case 'keep_overlap': {
+        await acknowledgeOdorOverlap(id, String(body.serviceId), actor)
+        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
+      }
+      case 'add_part': {
+        const p = (body.part ?? {}) as Record<string, unknown>
+        const part = await addEstimatePart(id, {
+          description: String(p.description ?? ''), supply: p.supply === 'customer' ? 'customer' : 'shop',
+          fitment: p.fitment as string | null, partNumber: p.partNumber as string | null, supplier: p.supplier as string | null,
+          quantity: p.quantity as number | null, unitCostCents: p.unitCostCents as number | null, sellPriceCents: p.sellPriceCents as number | null,
+          entryText: typeof p.entryText === 'string' ? p.entryText : null,
+        }, actor)
+        return NextResponse.json({ ok: true, partId: part.id, view: await getEstimateView(id) })
+      }
+      case 'update_part': {
+        await updateEstimatePart(id, String(body.partId), (body.patch ?? {}) as never, actor)
+        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
+      }
+      case 'remove_part': {
+        await removeEstimatePart(id, String(body.partId), actor)
+        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
+      }
+      case 'part_labor': {
+        await decidePartLabor(id, String(body.partId), (body.labor ?? {}) as LaborAction, actor, g.role)
+        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
+      }
+      case 'add_tires': {
+        await addTireWork(id, (body.tires ?? {}) as never, actor, g.role)
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
       case 'rename_service': {
@@ -101,7 +176,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       case 'update_line':     await updateLine(String(body.lineId), body.patch as Record<string, never>); await recomputeEstimate(await estimateId()); break
       case 'remove_line':     await removeLine(String(body.lineId)); await recomputeEstimate(await estimateId()); break
       case 'set_tax':         await setTaxRate(await estimateId(), Number(body.bps)); await recomputeEstimate(await estimateId()); break
-      case 'set_status':      await setStatus(await estimateId(), id, body.status as EstimateStatus, actor); break
+      case 'set_status':
+        // Marking an estimate sent requires parts labor review / odor checks to be resolved first.
+        if (body.status === 'sent') await assertEstimateReady(id, 'send')
+        await setStatus(await estimateId(), id, body.status as EstimateStatus, actor); break
       case 'set_approval':    await setApproval(await estimateId(), id, String(body.serviceId), body.state as ApprovalState, actor); break
       case 'convert': {
         const r = await convertEstimate(await estimateId(), id, actor)
@@ -114,10 +192,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
     const order = await getOrderWithContext(id)
     if (!order) return NextResponse.json({ error: 'Estimate not found.' }, { status: 404 })
+    // Read-only lookups never take the edit lock (an AI call must not block a save/send).
+    if (action === 'interpret' || action === 'catalog_list') return await perform()
     if (order.status === 'estimate') {
       // Standalone quotes use the dedicated conversion and email routes. All edits share
       // the same lock as send/conversion so a customer cannot receive a half-edited quote.
-      const allowed = ['build', 'prepare', 'set_service_price', 'set_work_total', 'itemize', 'accept_total', 'add_service', 'rename_service', 'remove_service']
+      const allowed = ['build', 'prepare', 'set_service_price', 'set_work_total', 'itemize', 'accept_total', 'add_service', 'rename_service', 'remove_service',
+        'interpret', 'catalog_list', 'select_match', 'set_detail', 'keep_overlap', 'add_part', 'update_part', 'remove_part', 'part_labor', 'add_tires']
       if (!allowed.includes(action)) return NextResponse.json({ error: 'Use the estimate actions to send or move this estimate.' }, { status: 400 })
       return await withIntakeLock(id, async () => {
         if ((await getOrderWithContext(id))?.status !== 'estimate') throw new Error('This estimate has moved to the Work Board. Refresh before editing.')

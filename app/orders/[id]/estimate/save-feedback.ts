@@ -7,8 +7,22 @@
  * message, so the page never shows "Saved" for a change that isn't stored. Pure + fetch-injected so
  * it is unit-tested without a browser.
  */
-export interface ServiceView { id: string; title: string; priceCents: number | null; suggestedCents: number | null }
-export interface EstimateViewData { exists: boolean; flat: boolean; workTotalCents: number; services: ServiceView[]; incomplete: boolean; referenceCents: number | null }
+export interface ServiceView {
+  id: string; title: string; priceCents: number | null; suggestedCents: number | null
+  catalogId?: string | null; catalogName?: string | null; description?: string; detail?: string | null; matchMethod?: string | null
+  matchState?: 'matched' | 'custom' | 'unmatched' | 'choose'; qbMapped?: boolean; role?: string | null; entryText?: string | null; overlapAcknowledged?: boolean
+}
+export type LaborStatus = 'needs_review' | 'labor_added' | 'included' | 'part_only' | 'waived'
+export interface PartView {
+  id: string; serviceId: string | null; description: string; fitment: string | null; partNumber: string | null; supplier: string | null
+  quantity: number; unitCostCents: number | null; sellPriceCents: number | null; lineCents: number | null
+  supply: 'shop' | 'customer'; laborStatus: LaborStatus; laborServiceId: string | null; laborNote: string | null; invoiceText: string
+}
+export interface ReviewIssue { code: 'part_labor' | 'odor_overlap' | 'odor_choice'; message: string; ids: string[]; packageId?: string }
+export interface EstimateViewData {
+  exists: boolean; flat: boolean; workTotalCents: number; services: ServiceView[]; incomplete: boolean; referenceCents: number | null
+  parts?: PartView[]; review?: { ready: boolean; issues: ReviewIssue[] }
+}
 export type EstimateEdit = Record<string, unknown> & { action: string }
 export type SaveOutcome = { ok: true; view: EstimateViewData } | { ok: false; error: string }
 
@@ -25,6 +39,13 @@ export function describeEdit(edit: EstimateEdit, view: EstimateViewData): { savi
     case 'set_service_price': return { saving: 'Saving price…', saved: `Price for ${name} saved`, failed: `Couldn’t save the price for ${name} — the previous price is still saved.` }
     case 'add_service': return { saving: 'Adding service…', saved: `${quote(clean(edit.title))} added · Saved`, failed: `Couldn’t add ${quote(clean(edit.title))}.` }
     case 'set_work_total': return { saving: 'Saving Work Total…', saved: 'Work Total saved', failed: 'Couldn’t save the Work Total — the previous amount is still saved.' }
+    case 'select_match': return { saving: 'Saving service…', saved: `${name} updated · Saved`, failed: `Couldn’t change ${name} — the previous service is still saved.` }
+    case 'set_detail': return { saving: 'Saving detail…', saved: 'Detail saved', failed: `Couldn’t save the detail for ${name}.` }
+    case 'keep_overlap': return { saving: 'Saving…', saved: `Keeping ${name} · Saved`, failed: `Couldn’t save that choice for ${name}.` }
+    case 'add_part': case 'add_tires': return { saving: 'Adding part…', saved: 'Part added · Saved', failed: 'Couldn’t add the part — nothing was saved.' }
+    case 'update_part': return { saving: 'Saving part…', saved: 'Part saved', failed: 'Couldn’t save the part — the previous details are still saved.' }
+    case 'remove_part': return { saving: 'Removing part…', saved: 'Part removed · Saved', failed: 'Couldn’t remove the part — it’s still on the estimate.' }
+    case 'part_labor': return { saving: 'Saving labor review…', saved: 'Labor review saved', failed: 'Couldn’t save the labor review.' }
     default: return { saving: 'Saving…', saved: 'Saved', failed: 'Couldn’t save your change.' }
   }
 }
@@ -42,6 +63,20 @@ function confirmsEdit(edit: EstimateEdit, view: EstimateViewData): string | null
       return svc && svc.priceCents === edit.cents ? null : 'The server did not confirm the new price.'
     case 'add_service':
       return view.services.some((s) => clean(s.title).toLowerCase() === clean(edit.title).toLowerCase()) ? null : 'The server did not confirm the new service.'
+    case 'select_match':
+      if (!svc) return 'The server did not confirm the change.'
+      return (edit.custom === true ? svc.matchState === 'custom' : svc.catalogId === edit.catalogId) ? null : 'The server did not confirm the selected service.'
+    case 'set_detail':
+      return svc && clean(svc.detail) === clean(edit.detail) ? null : 'The server did not confirm the detail.'
+    case 'keep_overlap':
+      return svc?.overlapAcknowledged ? null : 'The server did not confirm the choice.'
+    case 'remove_part':
+      return (view.parts ?? []).some((p) => p.id === edit.partId) ? 'The server still lists this part.' : null
+    case 'part_labor': {
+      const p = (view.parts ?? []).find((x) => x.id === edit.partId)
+      const want = ({ add_labor: 'labor_added', included: 'included', part_only: 'part_only', waive: 'waived', reopen: 'needs_review' } as Record<string, string>)[String((edit.labor as { action?: string } | undefined)?.action)]
+      return p && p.laborStatus === want ? null : 'The server did not confirm the labor review.'
+    }
     default:
       return null
   }

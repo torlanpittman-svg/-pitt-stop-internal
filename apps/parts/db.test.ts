@@ -41,6 +41,9 @@ beforeAll(async () => {
       is_core boolean NOT NULL DEFAULT false, core_credit_cents int,
       returned_quantity numeric(10,2) NOT NULL DEFAULT 0, return_credit_cents int,
       notes text, created_by text, updated_by text,
+      job_service_id uuid, supply varchar(12) NOT NULL DEFAULT 'shop', fitment text,
+      labor_status varchar(16) NOT NULL DEFAULT 'needs_review', labor_service_id uuid, labor_note text,
+      labor_decided_by text, labor_decided_at timestamptz,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );

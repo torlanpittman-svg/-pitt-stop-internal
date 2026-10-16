@@ -7,6 +7,7 @@ import { estimateIntakes } from './schema'
 import { z } from 'zod'
 import { recomputeEstimate, getEstimateRow } from '@/apps/workflow/estimate-db'
 import { resolveCatalogIds, normalizeServiceKey } from '@/apps/quick-entry/catalog-identity'
+import { eligibleCatalogChoice, catalogDescriptionSnapshot } from '@/apps/quick-entry/service-match-db'
 import { getBusinessConfig } from '@/apps/settings/db'
 
 export const intakeInput = z.object({
@@ -19,7 +20,8 @@ export const intakeInput = z.object({
   model: z.string().trim().min(1).max(100),
   vin: z.union([z.string().trim().toUpperCase().regex(/^[A-HJ-NPR-Z0-9]{17}$/), z.literal('')]).default(''),
   vehicleId: z.uuid().nullable().optional(),
-  lines: z.array(z.object({ name: z.string().trim().min(1).max(200), priceCents: z.number().int().min(0).max(100000000) })).max(100).default([]),
+  // catalogId = the tapped shortcut / chosen catalog item (validated server-side); omitted for free text.
+  lines: z.array(z.object({ name: z.string().trim().min(1).max(200), priceCents: z.number().int().min(0).max(100000000), catalogId: z.uuid().nullable().optional() })).max(100).default([]),
   workPriceCents: z.number().int().min(0).max(100000000).nullable().optional(),
   notes: z.string().trim().max(5000).default(''),
 })
@@ -42,8 +44,19 @@ export async function createIntake(input: z.infer<typeof intakeInput>, actor: st
   const estimateId = randomUUID()
   // Stamp each service's STABLE catalog identity so the shared QB payload keeps the correct item +
   // canonical description even after the label is later edited (same policy as retail jobs).
+  // An explicit catalog choice (shortcut) wins; free text falls back to the name/alias resolver.
   const catalogIds = await resolveCatalogIds(input.lines.map((l) => l.name))
-  const services = input.lines.map((line, sortOrder) => ({ id: randomUUID(), jobEstimateId: estimateId, title: line.name, source: 'manual', sortOrder, catalogId: catalogIds.get(normalizeServiceKey(line.name)) ?? null }))
+  const chosen = await Promise.all(input.lines.map((l) => eligibleCatalogChoice(l.catalogId ?? null)))
+  const services = await Promise.all(input.lines.map(async (line, sortOrder) => {
+    const catalogId = chosen[sortOrder]?.catalogId ?? catalogIds.get(normalizeServiceKey(line.name)) ?? null
+    return {
+      id: randomUUID(), jobEstimateId: estimateId, title: line.name, source: 'manual', sortOrder, catalogId,
+      matchMethod: chosen[sortOrder] ? 'shortcut' : catalogId ? 'legacy' : null, catalogDescription: await catalogDescriptionSnapshot(catalogId),
+    }
+  }))
+  // A blank ($0) price on a new estimate means "not priced yet" — never an explicit free service. This
+  // keeps manual-price services (no catalog default) from being silently quoted at $0.
+  const pricedLines = services.flatMap((service, i) => input.lines[i].priceCents > 0 ? [{ service, priceCents: input.lines[i].priceCents }] : [])
   const cfg = await getBusinessConfig()
   // Neon batch is transactional: an estimate never appears briefly as an arrived Job,
   // and a failed contact/estimate insert cannot leave a half-created intake behind.
@@ -56,9 +69,9 @@ export async function createIntake(input: z.infer<typeof intakeInput>, actor: st
       customerEmail: input.customerEmail || null, customerPhone: input.customerPhone || null,
       year: vehicle.year, make: vehicle.make, model: vehicle.model, vin: vehicle.vin || null, createdBy: actor }),
     db.insert(jobEstimates).values({ id: estimateId, serviceOrderId: id, priceMode: input.workPriceCents ? 'explicit_pretax' : 'itemized', explicitTotalCents: input.workPriceCents || null, taxRateBps: cfg.defaultTaxBps, explicitTaxCategory: 'detailing', createdBy: actor, updatedBy: actor }),
-    ...(services.length ? [
-      db.insert(jobServices).values(services),
-      db.insert(jobLineItems).values(services.map((service, i) => ({ jobServiceId: service.id, type: 'labor', name: service.title, qty: '1', unit: 'each', priceCents: input.lines[i].priceCents, taxable: false, taxCategory: 'detailing' }))),
+    ...(services.length ? [db.insert(jobServices).values(services)] : []),
+    ...(pricedLines.length ? [
+      db.insert(jobLineItems).values(pricedLines.map(({ service, priceCents }) => ({ jobServiceId: service.id, type: 'labor', name: service.title, qty: '1', unit: 'each', priceCents, taxable: false, taxCategory: 'detailing' }))),
     ] : []),
     db.insert(estimateIntakes).values({ orderId: id }),
     db.insert(serviceOrderEvents).values({ serviceOrderId: id, eventType: 'estimate_intake', employeeName: actor, newStatus: 'estimate' }),
