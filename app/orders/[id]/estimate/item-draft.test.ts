@@ -3,7 +3,7 @@
  * is still different, and invalid input is caught before anything is sent.
  */
 import { describe, it, expect } from 'vitest'
-import { parseMoney, planServiceSave, serviceDraftFrom, planPartSave, partDraftFrom, isDirty } from './item-draft'
+import { parseMoney, planServiceSave, serviceDraftFrom, planPartSave, partDraftFrom, isDirty, rebaseDraft } from './item-draft'
 import { interpretSave, type PartView, type ServiceView, type EstimateViewData } from './save-feedback'
 
 const svc = (o: Partial<ServiceView> = {}): ServiceView => ({
@@ -111,5 +111,50 @@ describe('update_part is "Saved" only when the server view reflects it', () => {
   it('not confirmed when the part is missing or unchanged', () => {
     expect(interpretSave(edit, { ok: true, status: 200 }, { ok: true, view: view([]) }).ok).toBe(false)
     expect(interpretSave(edit, { ok: true, status: 200 }, { ok: true, view: view([part()]) }).ok).toBe(false)
+  })
+})
+
+describe('rebaseDraft — server changes while an editor is open', () => {
+  const odor = svc({ title: 'odor', priceCents: null, catalogId: null, catalogName: null, detail: null, matchState: 'choose' })
+  const ozone = svc({ title: 'Ozone Treatment', priceCents: null, catalogId: 'c-oz', catalogName: 'Ozone Treatment', detail: 'cabin', matchState: 'matched' })
+
+  it('choosing a service updates an untouched name and area — no false unsaved changes', () => {
+    const draft = rebaseDraft(serviceDraftFrom(odor), serviceDraftFrom(odor), serviceDraftFrom(ozone))
+    expect(draft).toEqual(serviceDraftFrom(ozone))
+    expect(isDirty(planServiceSave(ozone, draft, false))).toBe(false)
+  })
+
+  it('a deliberately edited name, price, or area stays as typed', () => {
+    const typed = { title: 'Smoke smell — cabin', price: '120', detail: 'rear seats' }
+    const draft = rebaseDraft(typed, serviceDraftFrom(odor), serviceDraftFrom(ozone))
+    expect(draft).toEqual(typed)
+    // Save then sends exactly those deliberate edits — never the old "odor" label.
+    expect(planServiceSave(ozone, draft, false)).toEqual({ ok: true, edits: [
+      { action: 'rename_service', serviceId: 's1', title: 'Smoke smell — cabin' },
+      { action: 'set_service_price', serviceId: 's1', cents: 12000 },
+      { action: 'set_detail', serviceId: 's1', detail: 'rear seats' },
+    ] })
+  })
+
+  it('only the edited field is kept; untouched ones follow the server', () => {
+    const draft = rebaseDraft({ ...serviceDraftFrom(odor), price: '90' }, serviceDraftFrom(odor), serviceDraftFrom(ozone))
+    expect(draft).toEqual({ title: 'Ozone Treatment', price: '90', detail: 'cabin' })
+    expect(planServiceSave(ozone, draft, false)).toEqual({ ok: true, edits: [{ action: 'set_service_price', serviceId: 's1', cents: 9000 }] })
+  })
+
+  it('partial save: the saved rename is no longer pending; the unsaved price still is', () => {
+    const s0 = svc()
+    const typed = { ...serviceDraftFrom(s0), title: 'Front seats', price: '60' }
+    const s1 = svc({ title: 'Front seats' }) // rename landed, price failed
+    const draft = rebaseDraft(typed, serviceDraftFrom(s0), serviceDraftFrom(s1))
+    expect(draft).toEqual(typed)
+    expect(planServiceSave(s1, draft, false)).toEqual({ ok: true, edits: [{ action: 'set_service_price', serviceId: 's1', cents: 6000 }] })
+  })
+
+  it('part editor: a server-side change follows untouched fields and keeps edited ones', () => {
+    const p0 = part(), p1 = part({ quantity: 2, lineCents: 25000, partNumber: 'MR-1' })
+    const draft = rebaseDraft({ ...partDraftFrom(p0), sell: '130' }, partDraftFrom(p0), partDraftFrom(p1))
+    expect(draft).toEqual({ ...partDraftFrom(p1), sell: '130' })
+    expect(planPartSave(p1, draft)).toEqual({ ok: true, edits: [{ action: 'update_part', partId: 'p1', patch: { sellPriceCents: 13000 } }] })
   })
 })

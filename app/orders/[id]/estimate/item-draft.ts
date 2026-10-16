@@ -71,5 +71,17 @@ export function planPartSave(p: PartView, d: PartDraft): Plan {
   return { ok: true, edits: Object.keys(patch).length ? [{ action: 'update_part', partId: p.id, patch }] : [] }
 }
 
+/**
+ * The server's copy changed while the editor was open (a committed action such as choosing the catalog
+ * service retitled the line, or one step of a multi-step Save landed). Fields the user hasn't touched
+ * since the last server copy follow the new server value; fields they deliberately edited stay as typed.
+ */
+export function rebaseDraft<T extends object>(draft: T, prevServer: T, nextServer: T): T {
+  const out = { ...draft }
+  for (const k of Object.keys(nextServer) as (keyof T)[]) if (draft[k] === prevServer[k]) out[k] = nextServer[k]
+  return out
+}
+export const sameDraft = <T extends object>(a: T, b: T) => (Object.keys(a) as (keyof T)[]).every((k) => a[k] === b[k])
+
 /** A draft with an invalid value still counts as unsaved work. */
 export const isDirty = (plan: Plan) => !plan.ok || plan.edits.length > 0

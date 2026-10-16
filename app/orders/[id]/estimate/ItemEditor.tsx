@@ -10,7 +10,7 @@
  */
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { EstimateEdit, PartView, ServiceView } from './save-feedback'
-import { dollars, isDirty, partDraftFrom, planPartSave, planServiceSave, serviceDraftFrom } from './item-draft'
+import { dollars, isDirty, partDraftFrom, planPartSave, planServiceSave, rebaseDraft, sameDraft, serviceDraftFrom } from './item-draft'
 import ServicePicker from './ServicePicker'
 import { LaborControls, PartLikeReview } from './PartsReview'
 
@@ -93,6 +93,10 @@ export function ServiceEditor({ service: s, orderId, vehicleLabel, isFlat, busy,
 }) {
   const ids = useId()
   const [d, setD] = useState(() => serviceDraftFrom(s))
+  // Follow server-side changes to the line for fields the user hasn't edited (see rebaseDraft).
+  const server = serviceDraftFrom(s)
+  const [prevServer, setPrevServer] = useState(server)
+  if (!sameDraft(server, prevServer)) { setPrevServer(server); setD((x) => rebaseDraft(x, prevServer, server)) }
   const [saving, setSaving] = useState(false)
   const [formErr, setFormErr] = useState<string | null>(null)
   const [rematch, setRematch] = useState(!!startRematch)
@@ -187,6 +191,9 @@ export function PartEditor({ part: p, services, busy, post, onDirtyChange, onClo
   onDirtyChange: (dirty: boolean) => void; onClose: (outcome: 'saved' | 'cancelled' | 'removed') => void
 }) {
   const [d, setD] = useState(() => partDraftFrom(p))
+  const server = partDraftFrom(p)
+  const [prevServer, setPrevServer] = useState(server)
+  if (!sameDraft(server, prevServer)) { setPrevServer(server); setD((x) => rebaseDraft(x, prevServer, server)) }
   const [saving, setSaving] = useState(false)
   const [formErr, setFormErr] = useState<string | null>(null)
   const plan = planPartSave(p, d)
