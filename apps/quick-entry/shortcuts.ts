@@ -297,23 +297,20 @@ export interface CatalogReviewItem {
   role: string | null; roleConfirmed: boolean; defaultPriceCents: number | null; description: string
 }
 
-/** Catalog items needing a manager decision: no confirmed QuickBooks item, an unconfirmed role, an
- *  approved description still to be written (flagged — invoices use the service name meanwhile), or
- *  the Complete Odor Treatment package without a default price. */
+/** Catalog items needing a manager decision: no confirmed QuickBooks item, an unconfirmed role, or an
+ *  approved description still to be written (flagged — invoices use the service name meanwhile). A
+ *  service without a default price is NOT an issue: its price is entered on each job. */
 export async function catalogReviewQueue(): Promise<CatalogReviewItem[]> {
   const rows = await getDb().select().from(serviceCatalog)
     .where(and(isNull(serviceCatalog.archivedAt), eq(serviceCatalog.active, true), or(isNull(serviceCatalog.source), ne(serviceCatalog.source, 'dealer_rules')),
       or(eq(serviceCatalog.qbSyncEnabled, false), ne(serviceCatalog.qbItemStatus, 'existing'), and(isNotNull(serviceCatalog.serviceRole), isNull(serviceCatalog.roleConfirmedAt)),
-        eq(serviceCatalog.reviewFlag, true), and(eq(serviceCatalog.serviceRole, 'odor_complete'), isNull(serviceCatalog.defaultPriceCents)))))
+        eq(serviceCatalog.reviewFlag, true))))
     .orderBy(asc(serviceCatalog.sortOrder))
   return rows.map((c) => {
     const reasons: string[] = []
     if (!isMapped(c)) reasons.push('No QuickBooks item confirmed — bills as generic Labor with its approved description.')
-    if (c.serviceRole && !c.roleConfirmedAt) reasons.push(c.slug === 'odor_ozone'
-      ? 'Named “Odor / Ozone Treatment”; its description covers ozone + fabric steam cleaning (no duct cleaning). Confirm it is the Ozone Treatment option.'
-      : 'Confirm this service’s role.')
+    if (c.serviceRole && !c.roleConfirmedAt) reasons.push('Confirm this service’s role.')
     if (c.reviewFlag && isMapped(c) && !(c.qbDescription && c.qbDescription.trim())) reasons.push(`No approved description yet — invoices say “${c.name}”. Write one in Edit (the QuickBooks item’s own text is job-specific and isn’t used).`)
-    if (c.serviceRole === 'odor_complete' && c.defaultPriceCents == null) reasons.push('Package price is entered on each job until a default is confirmed.')
     return { catalogId: c.id, name: c.name, reasons, qbCandidateRef: c.qbCandidateRef, notes: c.notes, role: c.serviceRole, roleConfirmed: !!c.roleConfirmedAt, defaultPriceCents: c.defaultPriceCents, description: canonicalDescription(c) }
   }).filter((r) => r.reasons.length > 0)
 }

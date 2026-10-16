@@ -120,7 +120,7 @@ function Row({ id, label, title, badge, sub, price, attention, onOpen }: {
 }
 
 function serviceAttention(s: ServiceView): string | null {
-  if (s.matchState === 'choose') return 'Choose odor treatment'
+  if (s.matchState === 'choose') return 'Choose the service'
   if (s.matchState === 'unmatched' && s.partLike) return s.partLike === 'part' ? 'Looks like a part' : 'Part or labor?'
   if (s.matchState === 'unmatched') return 'Not matched to a catalog service'
   return null
@@ -401,7 +401,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
     : s.priceCents != null ? <span className="font-semibold text-white">${dollars(s.priceCents)}</span>
     : cancelled ? <span className="text-gray-400 text-sm">Not priced</span> : <span className="text-amber-300 text-sm font-semibold">Add price</span>
   const issueTarget = (code: string, ids: string[]): (() => void) => {
-    if (code === 'odor_choice' && ids.length === 1) return () => openPane({ kind: 'service', id: ids[0], rematch: true }, `svc:${ids[0]}`)
+    if ((code === 'odor_choice' || code === 'name_choice') && ids.length === 1) return () => openPane({ kind: 'service', id: ids[0], rematch: true }, `svc:${ids[0]}`)
     const needing = parts.filter((p) => p.laborStatus === 'needs_review')
     if (code === 'part_labor' && needing.length === 1) return () => openPane({ kind: 'part', id: needing[0].id }, `part:${needing[0].id}`)
     return () => openPane({ kind: 'review' }, 'review')
@@ -492,7 +492,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
             <div key={i.code} className="flex items-center gap-3 rounded-xl border border-amber-800/70 bg-amber-950/30 px-4 py-2.5">
               <span aria-hidden className="text-amber-300">⚠</span>
               <p className="min-w-0 flex-1 text-sm text-amber-100">{i.message}</p>
-              <button type="button" data-row={i.code === 'odor_choice' ? undefined : 'review'} onClick={issueTarget(i.code, i.ids)}
+              <button type="button" data-row={i.code === 'odor_choice' || i.code === 'name_choice' ? undefined : 'review'} onClick={issueTarget(i.code, i.ids)}
                 className="shrink-0 min-h-11 rounded-lg px-3 text-sm font-semibold text-amber-200 hover:bg-amber-900/40">Review</button>
             </div>
           ))}

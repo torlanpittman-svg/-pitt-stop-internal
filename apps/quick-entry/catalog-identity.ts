@@ -21,28 +21,57 @@ export const normalizeServiceKey = (s?: string | null): string =>
   (s ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
 
 /**
- * Build a normalized name/alias → catalogId index over the given rows, preserving the established
- * retail mapper's precedence: a catalog NAME always beats an alias (an exact canonical name like
- * "Complete Detail" wins even when another catalog carries it as an alias), and an alias only fills
- * a key that no name (or earlier alias) already claimed. Among duplicate catalog names the last one
- * seen wins, matching the original mapper. Callers pass only the rows eligible to match (e.g.
- * non-archived).
+ * Build a normalized name/alias → catalogId index. Deterministic — the database's row order can never
+ * decide a match. Precedence, highest first:
+ *   1. the NAME of an active row      2. the NAME of a retired (inactive, non-archived) row
+ *   3. an ALIAS of an active row      4. an ALIAS of a retired row
+ * A key already claimed by a higher tier is never re-claimed. Within one tier, a key that two or more
+ * rows claim is AMBIGUOUS: it resolves to nothing (and is reported) so the line is reviewed instead of
+ * guessed — e.g. "Ceramic Coating" as an alias of both the 1-year and 3-year rows. So "Ozone" (alias of
+ * the active Ozone Treatment and of the retired "Odor / Ozone Treatment") always means Ozone Treatment.
+ * `active` defaults to true (callers that pass only eligible rows need not set it).
  */
+export function buildCatalogKeyIndexDetailed(
+  cats: ReadonlyArray<{ id: string; name: string; active?: boolean | null }>,
+  aliases: ReadonlyArray<{ catalogId: string; alias: string }>,
+): { index: Map<string, string>; ambiguous: Set<string> } {
+  const index = new Map<string, string>()
+  const ambiguous = new Set<string>()
+  const activeById = new Map(cats.map((c) => [c.id, c.active !== false]))
+  const tiers: Array<Array<{ key: string; id: string }>> = [
+    cats.filter((c) => c.active !== false).map((c) => ({ key: normalizeServiceKey(c.name), id: c.id })),
+    cats.filter((c) => c.active === false).map((c) => ({ key: normalizeServiceKey(c.name), id: c.id })),
+    aliases.filter((a) => activeById.get(a.catalogId) === true).map((a) => ({ key: normalizeServiceKey(a.alias), id: a.catalogId })),
+    aliases.filter((a) => activeById.get(a.catalogId) === false).map((a) => ({ key: normalizeServiceKey(a.alias), id: a.catalogId })),
+  ]
+  for (const tier of tiers) {
+    const claims = new Map<string, Set<string>>()
+    for (const { key, id } of tier) if (key && !index.has(key) && !ambiguous.has(key)) (claims.get(key) ?? claims.set(key, new Set()).get(key)!).add(id)
+    for (const [key, ids] of claims) {
+      if (ids.size === 1) index.set(key, [...ids][0])
+      else ambiguous.add(key)
+    }
+  }
+  return { index, ambiguous }
+}
+
+/** The name/alias → catalogId index (see buildCatalogKeyIndexDetailed for the precedence rules). */
 export function buildCatalogKeyIndex(
-  cats: ReadonlyArray<{ id: string; name: string }>,
+  cats: ReadonlyArray<{ id: string; name: string; active?: boolean | null }>,
   aliases: ReadonlyArray<{ catalogId: string; alias: string }>,
 ): Map<string, string> {
-  const byKey = new Map<string, string>()
-  const known = new Set(cats.map((c) => c.id))
-  // Names first (last writer wins) so a canonical name always outranks any alias.
-  for (const c of cats) { const k = normalizeServiceKey(c.name); if (k) byKey.set(k, c.id) }
-  // Aliases only fill keys no name (or earlier alias) already claimed (first alias writer wins).
-  for (const a of aliases) {
-    if (!known.has(a.catalogId)) continue
-    const k = normalizeServiceKey(a.alias)
-    if (k && !byKey.has(k)) byKey.set(k, a.catalogId)
-  }
-  return byKey
+  return buildCatalogKeyIndexDetailed(cats, aliases).index
+}
+
+/** Normalized labels that name more than one live (non-archived) catalog service at the same precedence
+ *  — a line saved with such a label and no catalog identity must be reviewed, never guessed. */
+export async function ambiguousServiceKeys(): Promise<Set<string>> {
+  const db = getDb()
+  const [cats, aliases] = await Promise.all([
+    db.select({ id: serviceCatalog.id, name: serviceCatalog.name, active: serviceCatalog.active }).from(serviceCatalog).where(isNull(serviceCatalog.archivedAt)),
+    db.select({ catalogId: serviceAliases.catalogId, alias: serviceAliases.alias }).from(serviceAliases),
+  ])
+  return buildCatalogKeyIndexDetailed(cats, aliases).ambiguous
 }
 
 /**

@@ -19,7 +19,7 @@ import { jobParts } from '@/apps/parts/schema'
 import { eligibleCatalogChoice, catalogDescriptionSnapshot, canonicalDescription } from '@/apps/quick-entry/service-match-db'
 import { composeLineDescription, partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
 import { loadEstimateReview } from './estimate-review'
-import { needsOdorChoice, servicePartLike, type ReadinessIssue } from './estimate-readiness'
+import { serviceChoiceReason, servicePartLike, type ChoiceReason, type ReadinessIssue } from './estimate-readiness'
 import type { LaborStatus } from '@/apps/parts/labor-review'
 
 export type EstimateRow = typeof jobEstimates.$inferSelect
@@ -407,13 +407,14 @@ export interface EstimateServiceView {
   description?: string
   detail?: string | null
   matchMethod?: string | null
-  /** 'matched' | 'custom' (confirmed one-off) | 'unmatched' (legacy, no identity) | 'choose' (odor wording needs a treatment) */
+  /** 'matched' | 'custom' (confirmed one-off) | 'unmatched' (legacy, no identity) | 'choose' (the service must be chosen) */
   matchState?: 'matched' | 'custom' | 'unmatched' | 'choose'
+  /** Why it must be chosen: odor wording, the retired odor package, or a name matching several services. */
+  chooseReason?: ChoiceReason | null
   /** False → this service bills under the generic Labor item until a manager maps its QuickBooks item. */
   qbMapped?: boolean
   role?: string | null
   entryText?: string | null
-  overlapAcknowledged?: boolean
   /** Reads like a physical part saved as a service: 'part' (convert or confirm) or 'ambiguous' (clarify). */
   partLike?: 'part' | 'ambiguous' | null
 }
@@ -461,7 +462,8 @@ export async function getEstimateView(orderId: string): Promise<EstimateView> {
     const c = s.catalogId ? catById.get(s.catalogId) : undefined
     const base = c ? (s.catalogDescription ?? canonicalDescription(c)) : s.title
     const rs = reviewSvc.get(s.id)
-    const matchState: EstimateServiceView['matchState'] = rs && needsOdorChoice(rs) ? 'choose' : c ? 'matched' : s.matchMethod === 'custom' ? 'custom' : 'unmatched'
+    const chooseReason = rs ? serviceChoiceReason(rs) : null
+    const matchState: EstimateServiceView['matchState'] = chooseReason ? 'choose' : c ? 'matched' : s.matchMethod === 'custom' ? 'custom' : 'unmatched'
     return {
       id: s.id, title: s.title,
       priceCents: line ? lineAmountCents(line.priceCents, line.qty) : null,
@@ -469,7 +471,7 @@ export async function getEstimateView(orderId: string): Promise<EstimateView> {
       catalogId: s.catalogId, catalogName: c?.name ?? null,
       description: composeLineDescription(base, s.detail), detail: s.detail, matchMethod: s.matchMethod, matchState,
       qbMapped: c ? (c.archivedAt == null && c.qbSyncEnabled && c.qbItemStatus === 'existing' && !!c.qbItemRef) : false,
-      role: c?.serviceRole ?? null, entryText: s.entryText, overlapAcknowledged: s.overlapAckAt != null,
+      chooseReason, role: c?.serviceRole ?? null, entryText: s.entryText,
       partLike: rs ? servicePartLike(rs) : null,
     }
   })
@@ -755,12 +757,6 @@ export async function setServiceDetail(orderId: string, serviceId: string, rawDe
   await logJobEvent(orderId, 'service_detail', actor, JSON.stringify({ serviceId, from: service.detail, to: detail }))
 }
 
-/** Keep an Ozone/Air Duct line alongside Complete Odor Treatment ON PURPOSE (e.g. a second treatment). Audited. */
-export async function acknowledgeOdorOverlap(orderId: string, serviceId: string, actor: string | null): Promise<void> {
-  const { service } = await ownService(orderId, serviceId)
-  await getDb().update(jobServices).set({ overlapAckBy: actor, overlapAckAt: new Date(), updatedAt: new Date() }).where(eq(jobServices.id, serviceId))
-  await logJobEvent(orderId, 'odor_overlap_kept', actor, JSON.stringify({ serviceId, title: service.title }))
-}
 export async function updateService(id: string, patch: Partial<Pick<JobServiceRow, 'title' | 'technician' | 'notes' | 'approvalState' | 'sortOrder'>>): Promise<void> {
   const set: Record<string, unknown> = { ...patch, updatedAt: new Date() }
   // A title edit here is also a label change: capture catalog identity the same way renameService

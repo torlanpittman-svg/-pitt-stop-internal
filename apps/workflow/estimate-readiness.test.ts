@@ -15,7 +15,7 @@ import { estimateReadiness, type ReadinessService, type ReadinessPart } from './
 
 let n = 0
 function svc(title: string, over: Partial<ReadinessService> = {}): ReadinessService {
-  return { id: `svc-${++n}`, title, kind: 'service', catalogId: null, role: null, matchMethod: null, overlapAckAt: null, ...over }
+  return { id: `svc-${++n}`, title, kind: 'service', catalogId: null, role: null, matchMethod: null, ...over }
 }
 const codesOf = (services: ReadinessService[], parts: ReadinessPart[] = []) =>
   estimateReadiness(services, parts).issues.map((i) => i.code as string)
@@ -58,5 +58,30 @@ describe('estimateReadiness — a part typed as a service must be caught before 
 
   it('a resolved estimate with only genuine services stays ready', () => {
     expect(estimateReadiness([svc('Paint driver-side mirror', { matchMethod: 'custom' }), svc('Interior Detail', { catalogId: 'cat-2' })], []).ready).toBe(true)
+  })
+})
+
+describe('odor services — three separate services, no package', () => {
+  it('Ozone Treatment + Air Duct Cleaning + Odor Treatment together is ready (no overlap warning)', () => {
+    const r = estimateReadiness([
+      svc('Ozone Treatment', { catalogId: 'oz', role: 'odor_ozone', matchMethod: 'exact' }),
+      svc('Air Duct Cleaning', { catalogId: 'duct', role: 'odor_duct', matchMethod: 'exact' }),
+      svc('Odor Treatment', { catalogId: 'odor', role: 'odor_treatment', matchMethod: 'exact' }),
+      svc('Second ozone pass', { catalogId: 'oz', role: 'odor_ozone', matchMethod: 'exact' }),
+    ], [])
+    expect(r).toMatchObject({ ready: true, issues: [] })
+  })
+  it('a line on the retired package needs the service chosen (history kept, never auto-reinterpreted)', () => {
+    const pkg = svc('Complete Odor Treatment', { catalogId: 'pkg', role: 'odor_complete', matchMethod: 'rule' })
+    const r = estimateReadiness([pkg], [])
+    expect(r.issues).toEqual([{ code: 'odor_choice', ids: [pkg.id], message: expect.stringMatching(/no longer offered/) }])
+  })
+  it('legacy odor wording without identity (generic or naming several services) needs a choice; ozone-only or duct-only is clear', () => {
+    for (const t of ['Remove smoke odor', 'Odor Treatment', 'Odor / Ozone', 'Ozone + air ducts']) expect(codesOf([svc(t)])).toEqual(['odor_choice'])
+    for (const t of ['Ozone', 'Clean air duct system']) expect(codesOf([svc(t)])).toEqual([])
+  })
+  it('a legacy name matching more than one service needs a choice; a confirmed custom line does not', () => {
+    expect(codesOf([svc('Ceramic Coating', { ambiguousName: true })])).toEqual(['name_choice'])
+    expect(codesOf([svc('Ceramic Coating', { ambiguousName: true, matchMethod: 'custom' })])).toEqual([])
   })
 })

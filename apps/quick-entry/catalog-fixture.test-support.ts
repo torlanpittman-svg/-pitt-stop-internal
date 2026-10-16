@@ -64,6 +64,8 @@ export const MIGRATION_0052 = readFileSync(path.join(process.cwd(), 'drizzle/mig
 
 export const MIGRATION_0053 = readFileSync(path.join(process.cwd(), 'drizzle/migrations/manual/0053_catalog_mappings_ozone_only.sql'), 'utf8')
 
+export const MIGRATION_0056 = readFileSync(path.join(process.cwd(), 'drizzle/migrations/manual/0056_odor_three_separate_services.sql'), 'utf8')
+
 const execSql = (db: Db, text: string) => (db as unknown as { $client: { exec: (sql: string) => Promise<unknown> } }).$client.exec(text)
 
 /** Run the real migration file (idempotent) against the PGlite database. */
@@ -74,10 +76,14 @@ export async function runMigration0052(db: Db): Promise<void> {
 export async function runMigration0053(db: Db): Promise<void> {
   await execSql(db, MIGRATION_0053)
 }
+/** Run the real 0056 odor follow-up: three separate services, package retired (idempotent). */
+export async function runMigration0056(db: Db): Promise<void> {
+  await execSql(db, MIGRATION_0056)
+}
 
-/** Insert the production-shaped base catalog, then apply migrations 0052 and (unless `upTo: 52`) 0053
- *  — i.e. the catalog exactly as production has it. Returns slug → id. */
-export async function seedProductionCatalog(db: Db, opts: { upTo?: 52 | 53 } = {}): Promise<Record<string, string>> {
+/** Insert the production-shaped base catalog, then apply migrations 0052, 0053 and 0056 (stopping at
+ *  `upTo`) — i.e. the catalog exactly as production has it. Returns slug → id. */
+export async function seedProductionCatalog(db: Db, opts: { upTo?: 52 | 53 | 56 } = {}): Promise<Record<string, string>> {
   for (const r of BASE) {
     const [c] = await db.insert(serviceCatalog).values({
       slug: r.slug, name: r.name, kind: r.kind ?? 'addon', quickEntry: true, hasSize: !!r.tiers, defaultPriceCents: r.tiers ? null : r.price ?? null,
@@ -87,7 +93,8 @@ export async function seedProductionCatalog(db: Db, opts: { upTo?: 52 | 53 } = {
     if (r.tiers) await db.insert(servicePriceTiers).values({ catalogId: c.id, size: 'Car', startPriceCents: 25000 })
   }
   await runMigration0052(db)
-  if ((opts.upTo ?? 53) >= 53) await runMigration0053(db)
+  if ((opts.upTo ?? 56) >= 53) await runMigration0053(db)
+  if ((opts.upTo ?? 56) >= 56) await runMigration0056(db)
   const all = await db.select({ id: serviceCatalog.id, slug: serviceCatalog.slug }).from(serviceCatalog)
   return Object.fromEntries(all.map((c) => [c.slug, c.id]))
 }

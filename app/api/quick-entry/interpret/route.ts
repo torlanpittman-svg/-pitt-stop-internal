@@ -21,7 +21,6 @@ import { nlEnabled } from '@/apps/settings/db'
 import { deterministicInterpret, priceFromToken, splitWorkEntries } from '@/apps/quick-entry/interpret'
 import { classifyUnmatched } from '@/apps/quick-entry/interpret-ai'
 import { interpretServiceEntry, listCatalogChoices, type AiStatus } from '@/apps/quick-entry/service-match-db'
-import { isOdorFamily } from '@/apps/quick-entry/service-interpret'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -39,7 +38,7 @@ export async function POST(req: Request) {
 
   // Price: the deterministic core only (a delimited price token, else a $-amount anywhere). Never in line mode.
   const priceCents = lineMode ? null : deterministicInterpret(text, []).priceCents
-  const pieces = lineMode ? [text.trim()] : splitWorkEntries(text, isOdorFamily).filter((p) => priceFromToken(p) == null)
+  const pieces = lineMode ? [text.trim()] : splitWorkEntries(text).filter((p) => priceFromToken(p) == null)
 
   const results = await Promise.all(pieces.map((p) => interpretServiceEntry(p)))
 

@@ -91,6 +91,19 @@ describe('suggestions by catalog identity', () => {
   })
 })
 
+describe('the three separate odor services use only their own approved defaults (0056)', () => {
+  it('Odor Treatment and Air Duct Cleaning have no default → no suggestion and no automatic price; never another service’s price', async () => {
+    const { orderId, est } = await freshEstimate()
+    await addService(est.id, 'Odor Treatment', { catalogId: ids.odor_treatment, actor: 'M' })
+    await addService(est.id, 'Air Duct Cleaning', { catalogId: ids.air_duct_cleaning, actor: 'M' })
+    await addService(est.id, 'Ozone Treatment', { catalogId: ids.ozone_treatment, actor: 'M' })
+    await seedSuggestedPrices(est.id)
+    const v = await getEstimateView(orderId)
+    expect(v.services.map((s) => [s.title, s.suggestedCents, s.priceCents])).toEqual([
+      ['Odor Treatment', null, null], ['Air Duct Cleaning', null, null], ['Ozone Treatment', null, null]])
+  })
+})
+
 describe('seeding a fresh Job uses the same identity rule (it saves prices, so it matters most)', () => {
   it('prices the priced service, leaves Ozone unpriced', async () => {
     const { orderId, est } = await freshEstimate()

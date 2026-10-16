@@ -107,15 +107,28 @@ describe('POST /api/quick-entry/interpret — the owner rushed-entry examples', 
     expect(e).toMatchObject({ entry: 'paint dr mirr assy', intent: 'service', area: 'driver-side mirror assembly', part: null })
     expect(e.candidates.map((c) => c.catalogId)).toContain(CAT.paint_refinish)
   })
-  it('"air ducts + ozone" stays ONE request → Complete Odor Treatment', async () => {
+  it('"air ducts + ozone" → TWO separate lines: Air Duct Cleaning and Ozone Treatment (no package)', async () => {
     const d = await entries('air ducts + ozone')
-    expect(d.entries).toHaveLength(1)
-    expect(d.entries[0]).toMatchObject({ status: 'resolved', intent: 'odor', candidates: [{ catalogId: CAT.complete_odor_treatment }] })
+    expect(d.entries.map((e) => e.entry)).toEqual(['air ducts', 'ozone'])
+    expect(d.entries[0]).toMatchObject({ status: 'resolved', candidates: [{ catalogId: CAT.air_duct_cleaning }] })
+    expect(d.entries[1]).toMatchObject({ status: 'resolved', candidates: [{ catalogId: CAT.ozone_treatment }] })
   })
-  it('"car smells bad" → an odor request that asks which of the three treatments', async () => {
+  it('"odor tx, ozone, air duct cleaning" → three separate lines, each its own service', async () => {
+    const d = await entries('odor tx, ozone, air duct cleaning')
+    expect(d.entries.map((e) => e.candidates[0]?.catalogId)).toEqual([CAT.odor_treatment, CAT.ozone_treatment, CAT.air_duct_cleaning])
+    expect(d.entries.every((e) => e.status === 'resolved' && e.candidates.length === 1)).toBe(true)
+  })
+  it('"car smells bad" → an odor request that asks which of the three separate services', async () => {
     const [e] = (await entries('car smells bad')).entries
     expect(e).toMatchObject({ status: 'choose', intent: 'odor' })
-    expect(e.candidates.map((c) => c.name).sort()).toEqual(['Air Duct Cleaning', 'Complete Odor Treatment', 'Ozone Treatment'])
+    expect(e.candidates.map((c) => c.name)).toEqual(['Odor Treatment', 'Ozone Treatment', 'Air Duct Cleaning'])
+  })
+  it('the retired package and combined records are never offered', async () => {
+    for (const text of ['complete odor treatment', 'odor / ozone treatment', 'car smells bad']) {
+      const [e] = (await entries(text)).entries
+      expect(e.candidates.map((c) => c.catalogId)).not.toContain(CAT.complete_odor_treatment)
+      expect(e.candidates.map((c) => c.catalogId)).not.toContain(CAT.odor_ozone)
+    }
   })
   it('"replace tires" → asks supply / install customer-supplied / both (nothing assumed)', async () => {
     const [e] = (await entries('replace tires')).entries

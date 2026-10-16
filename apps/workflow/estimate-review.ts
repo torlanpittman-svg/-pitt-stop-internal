@@ -1,5 +1,5 @@
 /**
- * Loads the estimate review state (parts labor review, odor package overlap, odor choice) for an
+ * Loads the estimate review state (parts labor review, odor/ambiguous-name choices, part-like lines) for an
  * order and evaluates it with the pure rules in estimate-readiness.ts. Read-only.
  *
  * Used by: the estimate view (visible notices), estimate SEND, and retail QuickBooks invoice
@@ -11,6 +11,7 @@ import { and, eq, ne, inArray } from 'drizzle-orm'
 import { jobEstimates, jobServices } from './schema'
 import { jobParts } from '@/apps/parts/schema'
 import { serviceCatalog } from '@/apps/quick-entry/schema'
+import { ambiguousServiceKeys, normalizeServiceKey } from '@/apps/quick-entry/catalog-identity'
 import { estimateReadiness, type Readiness, type ReadinessService, type ReadinessPart } from './estimate-readiness'
 import { effectiveLaborStatus } from '@/apps/parts/labor-review'
 import type { ServiceRole } from '@/apps/quick-entry/service-interpret'
@@ -27,11 +28,14 @@ export async function loadEstimateReview(orderId: string): Promise<EstimateRevie
   const svcRows = est
     ? await db.select({
       id: jobServices.id, title: jobServices.title, kind: jobServices.kind, catalogId: jobServices.catalogId,
-      matchMethod: jobServices.matchMethod, overlapAckAt: jobServices.overlapAckAt, role: serviceCatalog.serviceRole,
+      matchMethod: jobServices.matchMethod, role: serviceCatalog.serviceRole,
     }).from(jobServices).leftJoin(serviceCatalog, eq(serviceCatalog.id, jobServices.catalogId))
       .where(and(eq(jobServices.jobEstimateId, est.id), ne(jobServices.source, 'system')))
     : []
-  const services: ReadinessService[] = svcRows.map((s) => ({ ...s, role: (s.role as ServiceRole | null) ?? null }))
+  // Legacy lines with no identity whose name matches more than one service are reviewed, not guessed.
+  const ambiguous = svcRows.some((s) => !s.catalogId) ? await ambiguousServiceKeys() : new Set<string>()
+  const services: ReadinessService[] = svcRows.map((s) => ({ ...s, role: (s.role as ServiceRole | null) ?? null,
+    ambiguousName: !s.catalogId && ambiguous.has(normalizeServiceKey(s.title)) }))
   const partRows = await db.select().from(jobParts).where(and(eq(jobParts.serviceOrderId, orderId), ne(jobParts.status, 'cancelled')))
   const coverable = new Set(services.filter((s) => s.kind !== 'part').map((s) => s.id))
   const parts = partRows.map((p) => ({

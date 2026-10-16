@@ -75,7 +75,9 @@ describe('permissions (server-side)', () => {
     const menu = await (await catalogGET()).json()
     expect(menu.packages.map((p: { name: string }) => p.name)).toEqual([
       'Interior Detail', 'Exterior Wash', 'Mini Detail', 'Polish', 'Wax', 'Clay Bar', 'Headlight Restoration', 'Paint Touch-Up',
-      'Leather Conditioner', 'Cabin Air Filter', 'Engine Bay', 'Air Duct Cleaning', 'Ozone Treatment', 'Complete Odor Treatment'])
+      'Leather Conditioner', 'Cabin Air Filter', 'Engine Bay', 'Air Duct Cleaning', 'Ozone Treatment', 'Odor Treatment'])
+    // 0056: the package shortcut now points at the standalone Odor Treatment (three separate services).
+    expect(menu.packages.find((p: { name: string }) => p.name === 'Odor Treatment')).toMatchObject({ id: CAT.odor_treatment, group: 'Odor' })
     expect(menu.packages.find((p: { name: string }) => p.name === 'Polish')).toMatchObject({ id: CAT.paint_correction_1step, group: 'Paint & exterior' })
   })
 })
@@ -164,12 +166,12 @@ describe('review queue + usage suggestions', () => {
     CAT = await seedProductionCatalog(db, { upTo: 52 })
     const q = await catalogReviewQueue()
     const ozone = q.find((r) => r.catalogId === CAT.odor_ozone)!
-    expect(ozone.reasons.join(' ')).toMatch(/Confirm it is the Ozone Treatment option/)
+    expect(ozone.reasons.join(' ')).toMatch(/Confirm this service’s role/)
     expect(q.find((r) => r.catalogId === CAT.complete_odor_treatment)!.qbCandidateRef).toBe('68')
     await confirmServiceRole(CAT.odor_ozone, 'Owner')
     expect((await catalogReviewQueue()).some((r) => r.catalogId === CAT.odor_ozone)).toBe(false)
   })
-  it('after 0053: mapped items leave the QuickBooks queue; missing descriptions and the package price stay listed until written', async () => {
+  it('after 0053/0056: mapped items leave the QuickBooks queue; missing descriptions stay listed until written', async () => {
     const q = await catalogReviewQueue()
     const by = (slug: string) => q.find((r) => r.catalogId === CAT[slug])
     // The legacy combined row is out of new picks, so it is no longer a decision; the ozone-only row is confirmed.
@@ -179,7 +181,10 @@ describe('review queue + usage suggestions', () => {
       expect(by(slug)?.reasons.join(' '), slug).toMatch(/No approved description yet/)
       expect(by(slug)?.reasons.join(' '), slug).not.toMatch(/No QuickBooks item confirmed/)
     }
-    expect(by('complete_odor_treatment')!.reasons).toEqual(['Package price is entered on each job until a default is confirmed.'])
+    // No package any more: the retired package is not a decision, and Odor Treatment is mapped, described and
+    // confirmed — having no default price is fine (the price is entered on each job).
+    expect(by('complete_odor_treatment')).toBeUndefined()
+    expect(by('odor_treatment')).toBeUndefined()
     // Writing the approved description clears that item from the queue (audited, catalog only).
     await updateCatalogService(CAT.seat_shampoo, { description: 'Shampoo and extraction of upholstered seats.' }, 'Owner')
     expect((await catalogReviewQueue()).some((r) => r.catalogId === CAT.seat_shampoo)).toBe(false)

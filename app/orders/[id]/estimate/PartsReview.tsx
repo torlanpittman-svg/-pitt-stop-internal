@@ -2,7 +2,7 @@
 
 /**
  * Installation-labor decisions for estimate parts (special-order + customer-supplied), and the
- * estimate review notices (labor, odor package overlap, odor choice). Every decision is explicit and
+ * estimate review notices (labor, service choices for odor/ambiguous names, part-like lines). Every decision is explicit and
  * saved on the server; drafts save freely — only sending/invoicing waits for resolution.
  */
 import { useState } from 'react'
@@ -31,15 +31,8 @@ export function ReviewNotices({ issues, services, parts, busy, post, onChooseOdo
       {issues.map((i) => (
         <div key={i.code} className="rounded-2xl border border-amber-800/70 bg-amber-950/30 px-4 py-3">
           <p className="text-amber-200 text-sm font-semibold">{i.message}</p>
-          {i.code === 'odor_overlap' && i.ids.map((id) => (
-            <div key={id} className="mt-2 flex flex-wrap items-center gap-2">
-              <span className="text-amber-100/80 text-xs min-w-0 break-words">“{title(id)}”</span>
-              <button type="button" disabled={busy} onClick={() => post({ action: 'remove_service', serviceId: id })} className={`${BTN} bg-amber-600 text-white`}>Remove — package covers it</button>
-              <button type="button" disabled={busy} onClick={() => post({ action: 'keep_overlap', serviceId: id })} className={`${BTN} border border-amber-700 text-amber-100`}>Keep both on purpose</button>
-            </div>
-          ))}
-          {i.code === 'odor_choice' && i.ids.map((id) => (
-            <button key={id} type="button" disabled={busy} onClick={() => onChooseOdor(id)} className={`${BTN} mt-2 mr-2 bg-amber-600 text-white`}>Choose treatment for “{title(id)}”</button>
+          {(i.code === 'odor_choice' || i.code === 'name_choice') && i.ids.map((id) => (
+            <button key={id} type="button" disabled={busy} onClick={() => onChooseOdor(id)} className={`${BTN} mt-2 mr-2 bg-amber-600 text-white`}>Choose the service for “{title(id)}”</button>
           ))}
           {i.code === 'service_as_part' && i.ids.map((id) => {
             const svc = services.find((s) => s.id === id)

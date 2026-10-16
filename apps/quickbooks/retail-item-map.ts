@@ -20,6 +20,7 @@
 import { getDb } from '@/platform/db'
 import { serviceCatalog, serviceAliases } from '@/apps/quick-entry/schema'
 import { normalizeServiceKey as norm, buildCatalogKeyIndex } from '@/apps/quick-entry/catalog-identity'
+import { isGenericOdorKey } from '@/apps/quick-entry/service-interpret'
 import { queryQBO } from './client'
 
 export interface ItemMatch { itemRef: string | null; itemName: string; usable: boolean; description: string | null; via?: string; reason?: string }
@@ -59,8 +60,10 @@ export async function loadRetailItemIndex(): Promise<RetailItemIndex> {
   }
 
   // Shared name/alias → catalogId index (non-archived catalog only) — same policy that stamps
-  // job_services.catalog_id, so label-based lookup and identity resolution never disagree.
-  const keyIndex = buildCatalogKeyIndex(liveCats, aliases)
+  // job_services.catalog_id, so label-based lookup and identity resolution never disagree. Active rows
+  // outrank retired ones and same-tier ties resolve to nothing, so row order never picks the item or
+  // the invoice description (e.g. "Ozone" → Ozone Treatment, never the retired combined record).
+  const keyIndex = buildCatalogKeyIndex(liveCats.map((c) => ({ id: c.id, name: c.name, active: c.active })), aliases)
   const aliasesOf = new Map<string, string[]>()
   for (const a of aliases) {
     if (!byId.has(a.catalogId)) continue
@@ -98,6 +101,9 @@ export async function loadRetailItemIndex(): Promise<RetailItemIndex> {
   }
 
   const matchByTitle = (title: string): ItemMatch => {
+    // Generic odor wording with no stamped identity is never resolved by label: it could be any of the
+    // three separate odor services, so it is reviewed in the Estimate (never silently reinterpreted).
+    if (isGenericOdorKey(title)) return { itemRef: null, itemName: 'Labor', usable: false, description: null, reason: 'odor wording needs a service chosen → Labor' }
     const id = keyIndex.get(norm(title))
     const c = id ? byId.get(id) : undefined
     if (!c) return { itemRef: null, itemName: 'Labor', usable: false, description: null, reason: 'no catalog match → Labor' }

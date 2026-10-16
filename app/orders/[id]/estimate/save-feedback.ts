@@ -10,7 +10,9 @@
 export interface ServiceView {
   id: string; title: string; priceCents: number | null; suggestedCents: number | null
   catalogId?: string | null; catalogName?: string | null; description?: string; detail?: string | null; matchMethod?: string | null
-  matchState?: 'matched' | 'custom' | 'unmatched' | 'choose'; qbMapped?: boolean; role?: string | null; entryText?: string | null; overlapAcknowledged?: boolean
+  matchState?: 'matched' | 'custom' | 'unmatched' | 'choose'; qbMapped?: boolean; role?: string | null; entryText?: string | null
+  /** Why the service must be chosen (matchState 'choose'). */
+  chooseReason?: 'odor' | 'package' | 'name' | null
   partLike?: 'part' | 'ambiguous' | null
 }
 export type LaborStatus = 'needs_review' | 'labor_added' | 'included' | 'part_only' | 'waived'
@@ -19,7 +21,7 @@ export interface PartView {
   quantity: number; unitCostCents: number | null; sellPriceCents: number | null; lineCents: number | null
   supply: 'shop' | 'customer'; laborStatus: LaborStatus; laborServiceId: string | null; laborNote: string | null; invoiceText: string
 }
-export interface ReviewIssue { code: 'part_labor' | 'odor_overlap' | 'odor_choice' | 'service_as_part'; message: string; ids: string[]; packageId?: string }
+export interface ReviewIssue { code: 'part_labor' | 'odor_choice' | 'name_choice' | 'service_as_part'; message: string; ids: string[] }
 export interface EstimateViewData {
   exists: boolean; flat: boolean; workTotalCents: number; services: ServiceView[]; incomplete: boolean; referenceCents: number | null
   parts?: PartView[]; review?: { ready: boolean; issues: ReviewIssue[] }
@@ -42,7 +44,6 @@ export function describeEdit(edit: EstimateEdit, view: EstimateViewData): { savi
     case 'set_work_total': return { saving: 'Saving Work Total…', saved: 'Work Total saved', failed: 'Couldn’t save the Work Total — the previous amount is still saved.' }
     case 'select_match': return { saving: 'Saving service…', saved: `${name} updated · Saved`, failed: `Couldn’t change ${name} — the previous service is still saved.` }
     case 'set_detail': return { saving: 'Saving detail…', saved: 'Detail saved', failed: `Couldn’t save the detail for ${name}.` }
-    case 'keep_overlap': return { saving: 'Saving…', saved: `Keeping ${name} · Saved`, failed: `Couldn’t save that choice for ${name}.` }
     case 'add_part': case 'add_tires': return { saving: 'Adding part…', saved: 'Part added · Saved', failed: 'Couldn’t add the part — nothing was saved.' }
     case 'update_part': return { saving: 'Saving part…', saved: 'Part saved', failed: 'Couldn’t save the part — the previous details are still saved.' }
     case 'remove_part': {
@@ -76,8 +77,6 @@ function confirmsEdit(edit: EstimateEdit, view: EstimateViewData): string | null
       return (edit.custom === true ? svc.matchState === 'custom' : svc.catalogId === edit.catalogId) ? null : 'The server did not confirm the selected service.'
     case 'set_detail':
       return svc && clean(svc.detail) === clean(edit.detail) ? null : 'The server did not confirm the detail.'
-    case 'keep_overlap':
-      return svc?.overlapAcknowledged ? null : 'The server did not confirm the choice.'
     case 'convert_to_part':
       // The service row is gone from Services and a part now bills on that same row.
       return !svc && (view.parts ?? []).some((p) => p.serviceId === edit.serviceId) ? null : 'The server did not confirm the conversion.'

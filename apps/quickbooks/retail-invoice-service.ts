@@ -164,7 +164,7 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
   // Complete, but the itemized sum still differs from the agreed reference and the manager has not
   // accepted the new total yet — don't silently invoice a total that differs from what was agreed.
   if (draft.referenceCents != null) return { ok: false, status: 'refused', error: 'The itemized total differs from the agreed amount. Accept the itemized total in the Estimate before invoicing.' }
-  // Parts labor review / odor package overlap / unchosen odor treatment must be explicitly resolved
+  // Parts labor review / unchosen odor or ambiguous-name services must be explicitly resolved
   // first (drafts still save freely; job completion is never gated by this).
   const review = await loadEstimateReview(orderId)
   if (!review.readiness.ready) return { ok: false, status: 'refused', error: `Resolve in the Estimate before invoicing: ${review.readiness.summary}` }

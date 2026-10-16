@@ -162,7 +162,7 @@ export function ServiceEditor({ service: s, orderId, vehicleLabel, isFlat, busy,
             ) : (
               <button ref={matchButton} type="button" onClick={() => setRematch(true)} disabled={busy}
                 className={`${needsMatch ? `${BTN} w-full bg-amber-600 text-white` : 'min-h-11 px-1 text-blue-400 text-sm font-semibold'}`}>
-                {s.matchState === 'choose' ? 'Choose which odor treatment' : needsMatch ? 'Choose the catalog service' : 'Change service match'}
+                {needsMatch ? 'Choose the service' : 'Change service match'}
               </button>
             )}
           </More>
@@ -185,7 +185,13 @@ export function ServiceEditor({ service: s, orderId, vehicleLabel, isFlat, busy,
 
 /** The catalog service behind the line and exactly what the invoice line says (approved wording). */
 function MatchSummary({ s }: { s: ServiceView }) {
-  if (s.matchState === 'choose') return <p className="text-amber-200 text-sm">This could be Air Duct Cleaning, Ozone Treatment, or the Complete Odor Treatment (both). Choose which one before sending or invoicing.</p>
+  if (s.matchState === 'choose') {
+    return <p className="text-amber-200 text-sm">{s.chooseReason === 'package'
+      ? 'This line is on the retired Complete Odor Treatment package. Ozone Treatment, Air Duct Cleaning and Odor Treatment are separate services — choose the one performed here, and add any others as their own lines.'
+      : s.chooseReason === 'name'
+        ? 'This name matches more than one service. Choose which one it is before sending or invoicing.'
+        : 'Ozone Treatment, Air Duct Cleaning and Odor Treatment are separate services. Choose the one this line is, and add any others as their own lines, before sending or invoicing.'}</p>
+  }
   if (s.matchState === 'unmatched' && s.partLike) return <p className="text-amber-200 text-sm">{s.partLike === 'part' ? 'This looks like a part.' : 'This could be a part, the labor, or both.'} Choose below.</p>
   if (s.matchState === 'unmatched') return <p className="text-amber-200 text-sm">Not matched to a catalog service yet, so there is no approved invoice wording. Choose the service below.</p>
   return (
@@ -194,7 +200,6 @@ function MatchSummary({ s }: { s: ServiceView }) {
       {s.matchState !== 'custom' && <p className="text-white text-sm font-semibold">{s.catalogName ?? s.title}</p>}
       <p className="text-gray-300 text-sm mt-1"><span className="text-gray-400">Invoice reads: </span>{s.description}</p>
       {s.matchState === 'matched' && s.qbMapped === false && <p className="text-gray-400 text-xs mt-1">QuickBooks item pending review — bills as Labor.</p>}
-      {s.overlapAcknowledged && <p className="text-gray-400 text-xs mt-1">Kept alongside Complete Odor Treatment on purpose.</p>}
     </div>
   )
 }

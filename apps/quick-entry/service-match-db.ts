@@ -26,7 +26,7 @@ export interface CatalogChoice {
   qbMapped: boolean
 }
 
-const ROLES = new Set<ServiceRole>(['odor_duct', 'odor_ozone', 'odor_complete', 'installation'])
+const ROLES = new Set<ServiceRole>(['odor_duct', 'odor_ozone', 'odor_treatment', 'odor_complete', 'installation'])
 const toRole = (r: string | null | undefined): ServiceRole | null => (r && ROLES.has(r as ServiceRole) ? (r as ServiceRole) : null)
 
 /** The canonical description text for a catalog row (what the invoice line says before any detail). */

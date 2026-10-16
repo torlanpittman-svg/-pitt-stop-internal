@@ -72,7 +72,7 @@ export async function sendIntakeEstimate(id: string, actor: string, expectedRevi
   const email = state.contact?.customerEmail?.trim() || ''
   if (!email || isPlaceholderEmail(email)) throw new Error('Add a valid customer email before sending.')
   if (state.draft.tax.cents || state.draft.tax.needsReview) throw new Error('Review tax treatment before sending this estimate through QuickBooks.')
-  // Parts labor review / odor package overlap / unchosen odor treatment — resolved before any QB write or email.
+  // Parts labor review / unchosen odor or ambiguous-name services — resolved before any QB write or email.
   await assertEstimateReady(id, 'send')
   if (state.full.estimate.priceMode === 'explicit_pretax') {
     await itemizeEstimate(state.full.estimate.id, actor)

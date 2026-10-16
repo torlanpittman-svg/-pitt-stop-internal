@@ -37,7 +37,7 @@ export const serviceCatalog = pgTable(
     qbDescription:     text('qb_description'),                              // Phase 1b: managed canonical customer-facing description (null → service name)
     autoleapMapStatus: varchar('autoleap_map_status', { length: 40 }).notNull().default('unmapped_pending_api'),
     reviewFlag:        boolean('review_flag').notNull().default(false),
-    // Business role used by matching/overlap rules: odor_duct | odor_ozone | odor_complete | installation.
+    // Business role used by matching: odor_duct | odor_ozone | odor_treatment | installation (odor_complete = the retired package).
     serviceRole:       varchar('service_role', { length: 24 }),
     roleConfirmedBy:   varchar('role_confirmed_by', { length: 200 }),
     roleConfirmedAt:   timestamp('role_confirmed_at', { withTimezone: true }),

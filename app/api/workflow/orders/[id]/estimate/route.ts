@@ -13,7 +13,7 @@ import {
   addService, updateService, removeEstimateService, addLine, updateLine, removeLine,
   setTaxRate, setStatus, setApproval, convertEstimate, type LineInput,
   prepareEstimateView, getEstimateView, setServicePrice, setWorkTotal, itemizeEstimate, acceptItemizedTotal, flagQbSyncNeededIfInvoiced, renameService,
-  selectServiceMatch, setServiceDetail, acknowledgeOdorOverlap, toMatchMethod,
+  selectServiceMatch, setServiceDetail, toMatchMethod,
 } from '@/apps/workflow/estimate-db'
 import { interpretServiceEntry, listCatalogChoices } from '@/apps/quick-entry/service-match-db'
 import { listShortcuts, approveAlias } from '@/apps/quick-entry/shortcuts'
@@ -130,10 +130,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         await flagQbSyncNeededIfInvoiced(id, 'a service detail changed')
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
-      case 'keep_overlap': {
-        await acknowledgeOdorOverlap(id, String(body.serviceId), actor)
-        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
-      }
       case 'add_part': {
         const p = (body.part ?? {}) as Record<string, unknown>
         const part = await addEstimatePart(id, {
@@ -221,7 +217,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       // Standalone quotes use the dedicated conversion and email routes. All edits share
       // the same lock as send/conversion so a customer cannot receive a half-edited quote.
       const allowed = ['build', 'prepare', 'set_service_price', 'set_work_total', 'itemize', 'accept_total', 'add_service', 'rename_service', 'remove_service',
-        'interpret', 'catalog_list', 'select_match', 'set_detail', 'keep_overlap', 'add_part', 'update_part', 'remove_part', 'part_labor', 'add_tires',
+        'interpret', 'catalog_list', 'select_match', 'set_detail', 'add_part', 'update_part', 'remove_part', 'part_labor', 'add_tires',
         'convert_to_part', 'clarify_part']
       if (!allowed.includes(action)) return NextResponse.json({ error: 'Use the estimate actions to send or move this estimate.' }, { status: 400 })
       return await withIntakeLock(id, async () => {

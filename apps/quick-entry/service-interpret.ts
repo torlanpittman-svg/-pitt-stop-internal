@@ -5,7 +5,7 @@
  * "car smells bad"). This module turns the raw entry into a PROPOSAL the user confirms:
  *   1. corrects language (shorthand + near-miss typos) without changing meaning,
  *   2. resolves established, unambiguous matches (exact catalog name, approved alternate name,
- *      the owner's odor-package definition) for a one-tap add,
+ *      the owner's three separate odor services) for a one-tap add,
  *   3. otherwise offers a small set of REAL catalog candidates (keyword evidence; the AI pass in
  *      service-interpret-ai.ts adds semantic candidates), or asks one short question,
  *   4. separates the work (catalog identity) from the job-specific AREA/component ("passenger seat",
@@ -16,7 +16,13 @@
  */
 import { normalizeServiceKey } from './catalog-identity'
 
-export type ServiceRole = 'odor_duct' | 'odor_ozone' | 'odor_complete' | 'installation'
+/**
+ * Business roles. The owner's final definition (2026-10-16): three SEPARATE odor services — Air Duct
+ * Cleaning (odor_duct), Ozone Treatment (odor_ozone), and Odor Treatment = interior steam cleaning + smoke
+ * odor removal products (odor_treatment). There is no package; 'odor_complete' only marks the retired
+ * "Complete Odor Treatment" record that historical lines may still reference.
+ */
+export type ServiceRole = 'odor_duct' | 'odor_ozone' | 'odor_treatment' | 'odor_complete' | 'installation'
 
 export interface InterpretCatalogItem {
   id: string
@@ -213,7 +219,8 @@ export const SLUG_HINTS: Record<string, string[]> = {
   headliner_cleaning: ['headliner'],
   clay_bar: ['clay'],
   air_duct_cleaning: ['duct', 'vent', 'vents'],
-  odor_ozone: ['ozone'],
+  ozone_treatment: ['ozone'],
+  odor_treatment: ['odor', 'smell', 'smoke'],
 }
 
 const GENERIC_ITEM_WORDS = new Set(['detail', 'treatment', 'cleaning', 'clean', 'service', 'replacement', 'labor', 'year', '1', '3', 'step'])
@@ -238,20 +245,32 @@ function byRole(items: InterpretCatalogItem[], role: ServiceRole): InterpretCata
   return items.find((i) => i.role === role)
 }
 
-/** Generic odor wording ("odor treatment", "remove smell") that must NOT be auto-resolved to one option. */
+/** Odor/smell wording without ozone or duct words ("odor treatment", "remove smell"). Never resolved through
+ *  an ALIAS or a label guess (legacy lines keep needing review); only the exact service name or a choice. */
 export function isGenericOdorKey(text: string): boolean {
   const toks = tokenize(text).map((t) => SHORTHAND[t] ?? t)
   return toks.some((t) => ODOR_WORDS.has(stem(t)) || ODOR_WORDS.has(t)) && !toks.some((t) => t === 'ozone' || stem(t) === 'duct')
 }
 
+/** Which of the three separate odor services a wording mentions (odor/smell words = Odor Treatment). */
+export function odorServicesMentioned(text: string): Array<'odor_treatment' | 'odor_ozone' | 'odor_duct'> {
+  const toks = tokenize(text).map((t) => SHORTHAND[t] ?? t).map(stem)
+  const out: Array<'odor_treatment' | 'odor_ozone' | 'odor_duct'> = []
+  if (toks.some((t) => ODOR_WORDS.has(t))) out.push('odor_treatment')
+  if (toks.includes('ozone')) out.push('odor_ozone')
+  if (toks.includes('duct')) out.push('odor_duct')
+  return out
+}
+
 /**
- * Odor wording that genuinely needs a treatment choice: smell/odor words without "ozone" — e.g.
- * "Remove smoke odor", "Odor treatment/air duct cleaning" (duct only? or the Complete package?).
- * Duct-only or ozone-only wording is clear and is NOT flagged.
+ * A SAVED line (no catalog identity) whose odor wording needs a decision before sending/invoicing:
+ * generic smell/odor wording ("Remove smoke odor") or wording that names more than one of the three
+ * separate services ("Odor treatment/air duct cleaning", "Odor / Ozone"). It is never reinterpreted
+ * automatically. Ozone-only or duct-only wording is clear and is NOT flagged.
  */
 export function odorWordingNeedsChoice(text: string): boolean {
-  const toks = tokenize(text).map((t) => SHORTHAND[t] ?? t).map(stem)
-  return toks.some((t) => ODOR_WORDS.has(t)) && !toks.includes('ozone')
+  const m = odorServicesMentioned(text)
+  return m.includes('odor_treatment') || m.length > 1
 }
 
 /** Odor-family wording of ANY kind (generic, ozone, ducts) — used to flag unresolved legacy titles. */
@@ -294,27 +313,36 @@ export function interpretEntry(entry: string, items: InterpretCatalogItem[]): In
 
   // 1) Established matches — exact catalog name, then approved alternate name (raw or corrected).
   const keys = [...new Set([normalizeServiceKey(raw), normalizeServiceKey(corrected)])]
-  const genericOdor = isGenericOdorKey(raw)
+  // Exact service name first — raw OR corrected ("odr tx" → "odor treatment" → Odor Treatment).
   for (const key of keys) {
     const named = items.filter((i) => normalizeServiceKey(i.name) === key)
     if (named.length === 1) return done({ status: 'resolved', intent: 'service', candidates: [{ catalogId: named[0].id, via: 'exact' }], source: 'exact', area: null })
-    if (genericOdor) break   // "Odor Treatment" is an approved QB name for ozone, but the owner wants a choice
+  }
+  // Alternate names — never for generic odor wording (an old alias such as "Odor Treatment" → the
+  // retired combined ozone record must not decide what odor work means).
+  const genericOdor = isGenericOdorKey(raw) || isGenericOdorKey(corrected)
+  for (const key of genericOdor ? [] : keys) {
     const aliased = [...new Set(items.filter((i) => i.aliases.some((a) => normalizeServiceKey(a) === key)).map((i) => i.id))]
     if (aliased.length === 1) return done({ status: 'resolved', intent: 'service', candidates: [{ catalogId: aliased[0], via: 'alias' }], source: 'alias', area: null })
     if (aliased.length > 1) return done({ status: 'choose', intent: 'service', candidates: aliased.map((id) => ({ catalogId: id, via: 'alias' as const })), source: 'alias', question: 'This name is used for more than one service. Which one?' })
   }
 
-  // 2) Odor rules — the owner's definitions (duct only / ozone only / both = Complete package).
-  const duct = byRole(items, 'odor_duct'), ozone = byRole(items, 'odor_ozone'), complete = byRole(items, 'odor_complete')
+  // 2) Odor rules — the owner's three SEPARATE services (no package): ozone only → Ozone Treatment,
+  //    ducts only → Air Duct Cleaning. Smell/odor wording asks (Odor Treatment first), and wording that
+  //    names more than one service asks too — each is added as its own line, never combined or expanded.
+  const duct = byRole(items, 'odor_duct'), ozone = byRole(items, 'odor_ozone'), odorT = byRole(items, 'odor_treatment')
   const hasDuct = stems.includes('duct'), hasOzone = stems.includes('ozone'), hasOdor = stems.some((t) => ODOR_WORDS.has(t))
   if (hasDuct || hasOzone || hasOdor) {
     const c = (i: InterpretCatalogItem | undefined, via: CandidateVia) => (i ? [{ catalogId: i.id, via }] : [])
-    if (hasDuct && hasOzone && complete) return done({ status: 'resolved', intent: 'odor', candidates: [...c(complete, 'rule'), ...c(duct, 'rule'), ...c(ozone, 'rule')].slice(0, 1), source: 'rule', area: null })
+    const mentioned = [hasOdor ? odorT : undefined, hasOzone ? ozone : undefined, hasDuct ? duct : undefined].filter((i): i is InterpretCatalogItem => !!i)
+    if (mentioned.length > 1) {
+      return done({ status: 'choose', intent: 'odor', candidates: mentioned.flatMap((i) => c(i, 'rule')), source: 'rule', area: null,
+        question: 'This names more than one service. Add each one as its own line — which is this one?' })
+    }
     if (hasDuct && !hasOzone && !hasOdor && duct) return done({ status: 'resolved', intent: 'odor', candidates: c(duct, 'rule'), source: 'rule', area: null })
     if (hasOzone && !hasDuct && !hasOdor && ozone) return done({ status: 'resolved', intent: 'odor', candidates: c(ozone, 'rule'), source: 'rule', area: null })
-    const order = hasDuct ? [complete, duct, ozone] : hasOzone ? [ozone, complete, duct] : [complete, ozone, duct]
-    const candidates = order.flatMap((i) => c(i, 'rule'))
-    if (candidates.length) return done({ status: 'choose', intent: 'odor', candidates, source: 'rule', area: null, question: 'Which odor treatment is this?' })
+    const candidates = [odorT, ozone, duct].flatMap((i) => c(i, 'rule'))
+    if (candidates.length) return done({ status: 'choose', intent: 'odor', candidates, source: 'rule', area: null, question: 'Which odor service is this?' })
   }
 
   // 3) Tires — clarify supply vs. install and quantity (handled by the tire flow).

@@ -297,7 +297,6 @@ function AddShortcut({ data, groups, busy, act }: { data: Data; groups: string[]
 
 function ReviewCard({ r, qbItems, busy, act }: { r: ReviewItem; qbItems: QbItem[] | null; busy: boolean; act: (b: Record<string, unknown>, l: string) => Promise<boolean> }) {
   const [qb, setQb] = useState(r.qbCandidateRef ?? '')
-  const [price, setPrice] = useState(r.defaultPriceCents != null ? dollars(r.defaultPriceCents) : '')
   const needsQb = r.reasons.some((x) => x.startsWith('No QuickBooks'))
   return (
     <div className="rounded-2xl border border-amber-800/60 bg-amber-950/20 px-3 py-3 space-y-2">
@@ -308,12 +307,6 @@ function ReviewCard({ r, qbItems, busy, act }: { r: ReviewItem; qbItems: QbItem[
         <div className="flex gap-2 items-end">
           <div className="flex-1 min-w-0"><QbSelect value={qb} onChange={setQb} qbItems={qbItems} candidate={r.qbCandidateRef} /></div>
           <button disabled={busy || !qb} onClick={() => act({ action: 'update_catalog', catalogId: r.catalogId, qbItemRef: qb }, `Mapping ${r.name}`)} className={`${BTN} bg-blue-600 text-white shrink-0`}>Use item</button>
-        </div>
-      )}
-      {r.role === 'odor_complete' && r.defaultPriceCents == null && (
-        <div className="flex gap-2 items-end">
-          <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" placeholder="Package price $" aria-label={`Default price for ${r.name}`} className={INPUT} />
-          <button disabled={busy || !parseCents(price)} onClick={() => act({ action: 'update_catalog', catalogId: r.catalogId, priceMode: 'fixed', defaultPriceCents: parseCents(price) }, `Setting price for ${r.name}`)} className={`${BTN} bg-blue-600 text-white shrink-0`}>Set default</button>
         </div>
       )}
       {r.role && !r.roleConfirmed && <button disabled={busy} onClick={() => act({ action: 'confirm_role', catalogId: r.catalogId }, `Confirming ${r.name}`)} className={`${BTN} border border-amber-700 text-amber-100`}>Confirm</button>}

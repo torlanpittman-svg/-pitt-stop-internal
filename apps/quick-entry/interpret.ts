@@ -101,16 +101,16 @@ export function deterministicInterpret(text: string, services: CatalogService[])
 
 /**
  * Split a rushed Quick Entry line into separate pieces of work for the shared service interpreter:
- * commas / newlines / semicolons always split; " and " / " + " / " & " split too, EXCEPT inside odor
- * wording, where "air ducts + ozone" is ONE request (the Complete Odor Treatment). Price tokens are
- * kept as their own pieces so the caller can route them to the price (never to a service).
+ * commas / newlines / semicolons and " and " / " + " / " & " all split. Odor work is no exception —
+ * "air ducts + ozone" is two separate services (Air Duct Cleaning, Ozone Treatment), each its own line
+ * with its own price; there is no combined package. Price tokens are kept as their own pieces so the
+ * caller can route them to the price (never to a service).
  */
-export function splitWorkEntries(text: string, isOdorFamily: (s: string) => boolean): string[] {
+export function splitWorkEntries(text: string): string[] {
   const out: string[] = []
   for (const chunk of (text ?? '').split(/[,\n;]/)) {
     const c = chunk.trim()
     if (!c) continue
-    if (isOdorFamily(c)) { out.push(c); continue }
     for (const p of c.split(/\s+(?:and|\+|&)\s+/i)) if (p.trim()) out.push(p.trim())
   }
   return out.slice(0, 12).map((s) => s.slice(0, 300))

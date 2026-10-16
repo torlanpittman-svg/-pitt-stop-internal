@@ -1,6 +1,8 @@
 /**
  * Interpretation of rushed employee entry — deterministic core + AI merge/validation.
- * Catalog = the production-shaped retail catalog (names/aliases/roles as live on 2026-10-16).
+ * Catalog = the ELIGIBLE production retail catalog after 0056 (the owner's final odor definition: three
+ * separate services — Ozone Treatment, Air Duct Cleaning, Odor Treatment; no package). Retired rows
+ * ("Odor / Ozone Treatment", "Complete Odor Treatment") are never offered for matching.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { odorWordingNeedsChoice, interpretEntry, correctTokens, tokenize, extractArea, isGrounded, isGenericOdorKey, editDistance, type InterpretCatalogItem } from './service-interpret'
@@ -16,7 +18,8 @@ const CATALOG: InterpretCatalogItem[] = [
   C('ceramic_coating_3yr', 'Ceramic Coating — 3-Year', ['Ceramic Coating']),
   C('headliner_cleaning', 'Headliner Cleaning', ['Clean Headliner']),
   C('exterior_wash', 'Exterior Wash'),
-  C('odor_ozone', 'Odor / Ozone Treatment', ['Ozone', 'Ozone Treatment', 'Odor Treatment'], 'odor_ozone'),
+  C('ozone_treatment', 'Ozone Treatment', ['Ozone'], 'odor_ozone'),
+  C('odor_treatment', 'Odor Treatment', [], 'odor_treatment'),
   C('headlight_restoration', 'Headlight Restoration', ['Headlights']),
   C('engine_bay_clean', 'Engine Bay / Motor Clean', ['Engine bay', 'Clean Motor']),
   C('cabin_air_filter_replacement', 'Cabin Air Filter Replacement'),
@@ -25,7 +28,6 @@ const CATALOG: InterpretCatalogItem[] = [
   C('clay_bar', 'Clay Bar', ['Clay bar']),
   C('leather_conditioner', 'Leather Conditioner'),
   C('exterior_wax', 'Exterior Wax', ['Exterior Wax', 'Wax']),
-  C('complete_odor_treatment', 'Complete Odor Treatment', [], 'odor_complete'),
   C('installation_labor', 'Installation Labor', [], 'installation'),
   C('seat_shampoo', 'Seat Shampoo'),
   C('paint_refinish', 'Painting / Refinishing'),
@@ -55,17 +57,18 @@ describe('owner examples (rushed shorthand)', () => {
     expect(r.part?.description).toBe('Driver-side mirror assembly')
     expect(r.candidates[0]?.catalogId).toBe(id('installation_labor'))   // offered, never auto-added
   })
-  it('"air ducts + ozone" → Complete Odor Treatment by the approved package definition', () => {
+  it('"air ducts + ozone" names two separate services → asks which this line is (never one combined line)', () => {
     const r = interpretEntry('air ducts + ozone', CATALOG)
-    expect(r.status).toBe('resolved')
-    expect(r.candidates).toEqual([{ catalogId: id('complete_odor_treatment'), via: 'rule' }])
+    expect(r.status).toBe('choose')
+    expect(r.question).toMatch(/more than one service.*its own line/i)
+    expect(r.candidates.map((c) => c.catalogId)).toEqual([id('ozone_treatment'), id('air_duct_cleaning')])
   })
-  it('"car smells bad" → odor request; asks which treatment (all three options)', () => {
+  it('"car smells bad" → odor request; asks which service, Odor Treatment first (three separate options)', () => {
     const r = interpretEntry('car smells bad', CATALOG)
     expect(r.intent).toBe('odor')
     expect(r.status).toBe('choose')
-    expect(r.question).toMatch(/which odor treatment/i)
-    expect(r.candidates.map((c) => c.catalogId).sort()).toEqual([id('air_duct_cleaning'), id('complete_odor_treatment'), id('odor_ozone')].sort())
+    expect(r.question).toMatch(/which odor service/i)
+    expect(r.candidates.map((c) => c.catalogId)).toEqual([id('odor_treatment'), id('ozone_treatment'), id('air_duct_cleaning')])
   })
 })
 
@@ -86,9 +89,22 @@ describe('established matches resolve in one step', () => {
     expect(interpretEntry('exteror wsh', CATALOG).candidates[0]?.catalogId).toBe(id('exterior_wash'))
     expect(interpretEntry('hedlight restoraton', CATALOG)).toMatchObject({ status: 'resolved' })
   })
-  it('air duct only / ozone only follow the owner definitions', () => {
+  it('the three odor services each resolve directly by name', () => {
+    expect(interpretEntry('Ozone Treatment', CATALOG)).toMatchObject({ status: 'resolved', source: 'exact', candidates: [{ catalogId: id('ozone_treatment') }] })
+    expect(interpretEntry('air duct cleaning', CATALOG)).toMatchObject({ status: 'resolved', source: 'exact', candidates: [{ catalogId: id('air_duct_cleaning') }] })
+    expect(interpretEntry('odor treatment', CATALOG)).toMatchObject({ status: 'resolved', source: 'exact', candidates: [{ catalogId: id('odor_treatment') }] })
+  })
+  it('rushed/typo odor entries resolve to the right single service', () => {
+    expect(interpretEntry('odr tx', CATALOG)).toMatchObject({ status: 'resolved', corrected: 'odor treatment', candidates: [{ catalogId: id('odor_treatment') }] })
+    expect(interpretEntry('odor treatmnt', CATALOG)).toMatchObject({ status: 'resolved', candidates: [{ catalogId: id('odor_treatment') }] })
+    expect(interpretEntry('ozone tretment', CATALOG)).toMatchObject({ status: 'resolved', candidates: [{ catalogId: id('ozone_treatment') }] })
+    expect(interpretEntry('oz', CATALOG)).toMatchObject({ status: 'resolved', candidates: [{ catalogId: id('ozone_treatment') }] })
+    expect(interpretEntry('Ozone', CATALOG)).toMatchObject({ status: 'resolved', candidates: [{ catalogId: id('ozone_treatment') }] })
     expect(interpretEntry('clean the ducts', CATALOG)).toMatchObject({ status: 'resolved', candidates: [{ catalogId: id('air_duct_cleaning') }] })
-    expect(interpretEntry('Ozone Treatment', CATALOG)).toMatchObject({ status: 'resolved', candidates: [{ catalogId: id('odor_ozone') }] })
+    expect(interpretEntry('air duct cleanng', CATALOG)).toMatchObject({ status: 'resolved', candidates: [{ catalogId: id('air_duct_cleaning') }] })
+  })
+  it('selecting one odor service never brings another along (always exactly one candidate when resolved)', () => {
+    for (const e of ['odor treatment', 'Ozone Treatment', 'air duct cleaning', 'oz', 'clean the ducts']) expect(interpretEntry(e, CATALOG).candidates).toHaveLength(1)
   })
 })
 
@@ -98,17 +114,23 @@ describe('ambiguity and no match', () => {
     expect(r.status).toBe('choose')
     expect(r.candidates.map((c) => c.catalogId).sort()).toEqual([id('ceramic_coating_1yr'), id('ceramic_coating_3yr')].sort())
   })
-  it('generic "Odor Treatment" is NOT auto-resolved to ozone even though QuickBooks uses that name', () => {
-    const r = interpretEntry('Odor Treatment', CATALOG)
-    expect(r.status).toBe('choose')
-    expect(r.intent).toBe('odor')
+  it('old aliases of the retired combined record never decide odor wording', () => {
+    // "Odor Treatment" used to be an alias of the retired "Odor / Ozone Treatment"; with that row in the
+    // list (as if it were eligible) the exact Odor Treatment name still wins and the alias is ignored.
+    const withRetired = [...CATALOG, C('odor_ozone', 'Odor / Ozone Treatment', ['Ozone Treatment', 'Odor Treatment'], 'odor_ozone')]
+    expect(interpretEntry('Odor Treatment', withRetired).candidates).toEqual([{ catalogId: id('odor_treatment'), via: 'exact' }])
     expect(isGenericOdorKey('odor treatment')).toBe(true)
     expect(isGenericOdorKey('ozone treatment')).toBe(false)
   })
-  it('"odor treatment/air duct cleaning" (Mizell wording) offers the package first, then the separate options', () => {
+  it('"odor treatment/air duct cleaning" (Mizell wording) names two services → asks, offering exactly those two', () => {
     const r = interpretEntry('Odor treatment/air duct cleaning', CATALOG)
     expect(r.status).toBe('choose')
-    expect(r.candidates[0].catalogId).toBe(id('complete_odor_treatment'))
+    expect(r.candidates.map((c) => c.catalogId)).toEqual([id('odor_treatment'), id('air_duct_cleaning')])
+  })
+  it('all three named together → asks, offering all three (each becomes its own line)', () => {
+    const r = interpretEntry('odor tx w/ ozone and duct cleaning', CATALOG)
+    expect(r.status).toBe('choose')
+    expect(r.candidates.map((c) => c.catalogId).sort()).toEqual([id('odor_treatment'), id('ozone_treatment'), id('air_duct_cleaning')].sort())
   })
   it('tires → clarify supply vs install and quantity', () => {
     const r = interpretEntry('replace tires', CATALOG)
@@ -120,9 +142,9 @@ describe('ambiguity and no match', () => {
     expect(r.status).toBe('none')
     expect(r.candidates).toEqual([])
   })
-  it('only genuinely ambiguous odor wording needs a treatment choice (duct-only / ozone wording is clear)', () => {
-    for (const t of ['Remove Smoke Odor', 'Odor treatment/air duct cleaning', 'car smells bad', 'Odor Treatment']) expect(odorWordingNeedsChoice(t)).toBe(true)
-    for (const t of ['Clean air duct system', 'Air duct system cleaning', 'Clean air duct system to remove mold', 'Ozone', 'Ozone odor treatment', 'Interior detail']) expect(odorWordingNeedsChoice(t)).toBe(false)
+  it('saved legacy lines (no identity) needing review: generic odor wording or more than one service named', () => {
+    for (const t of ['Remove Smoke Odor', 'Odor treatment/air duct cleaning', 'car smells bad', 'Odor Treatment', 'Ozone odor treatment', 'Odor / Ozone', 'air ducts + ozone']) expect(odorWordingNeedsChoice(t)).toBe(true)
+    for (const t of ['Clean air duct system', 'Air duct system cleaning', 'Clean air duct system to remove mold', 'Ozone', 'Ozone treatment', 'Interior detail']) expect(odorWordingNeedsChoice(t)).toBe(false)
   })
   it('the original entry is preserved verbatim', () => {
     expect(interpretEntry('shamp pass seat!!', CATALOG).entry).toBe('shamp pass seat!!')
@@ -185,7 +207,7 @@ describe('AI pass — validated, grounded, fails soft', () => {
     expect(merged.area).toBe('passenger seat')
   })
   it('merge never overrides an established match or the odor rules', () => {
-    const det = interpretEntry('air ducts + ozone', CATALOG)
+    const det = interpretEntry('car smells bad', CATALOG)
     const merged = mergeAiInterpretation(det, { status: 'used', catalogIds: [id('interior_detail')], intent: 'service', area: null, partDescription: null, question: null }, new Set(CATALOG.map((c) => c.id)))
     expect(merged).toBe(det)
   })

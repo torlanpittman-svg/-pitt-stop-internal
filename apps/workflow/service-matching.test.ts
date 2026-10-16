@@ -47,7 +47,7 @@ vi.mock('@/apps/quickbooks/retail-customer', async (orig) => ({
 import { seedProductionCatalog, runMigration0052, LIVE_QB_ITEMS, CLEAR_TABLES } from '@/apps/quick-entry/catalog-fixture.test-support'
 import {
   getOrCreateEstimate, promoteTextServices, addService, setServicePrice, getEstimateView, getFullEstimate, renameService, selectServiceMatch,
-  setServiceDetail, acknowledgeOdorOverlap, removeEstimateService, prepareEstimateView,
+  setServiceDetail, removeEstimateService, prepareEstimateView,
 } from '@/apps/workflow/estimate-db'
 import { addEstimatePart, decidePartLabor, addTireWork, removeEstimatePart, updateEstimatePart } from '@/apps/parts/estimate-parts'
 import { addPart, billPart } from '@/apps/parts/db'
@@ -182,51 +182,123 @@ describe('catalog identity + approved description', () => {
   })
 })
 
-describe('odor treatments (owner definitions)', () => {
-  it('Complete Odor Treatment bills once with the approved wording; a separate Ozone line is an overlap until resolved', async () => {
+describe('odor services — three separate services, no package (owner final definition, 0056)', () => {
+  const ODOR_DESC = 'Steam cleaning the entire interior and using smoke odor removal products to get rid of the smells.'
+  const ductText = async () => { const [r] = await db.select().from(serviceCatalog).where(eq(serviceCatalog.slug, 'air_duct_cleaning')); return r.qbDescription?.trim() || r.name }
+
+  it('all three coexist on one estimate: separate lines, own prices, own items + approved wording; no warning, no duplicate charge', async () => {
     const { orderId, estimateId } = await order()
-    const pkg = await addService(estimateId, 'Complete Odor Treatment', { catalogId: CAT.complete_odor_treatment, matchMethod: 'rule', actor: 'Manager' })
-    const oz = await addService(estimateId, 'Ozone Treatment', { catalogId: CAT.ozone_treatment, matchMethod: 'alias', actor: 'Manager' })
-    await setServicePrice(estimateId, pkg.id, 35000, 'Manager')
-    await setServicePrice(estimateId, oz.id, 30000, 'Manager')
-    const review = (await getEstimateView(orderId)).review!
-    expect(review.ready).toBe(false)
-    expect(review.issues[0]).toMatchObject({ code: 'odor_overlap', packageId: pkg.id, ids: [oz.id] })
-    const refused = await createRetailQBInvoice({ orderId, actor: 'Manager' })
-    expect(refused).toMatchObject({ ok: false, status: 'refused' })
-    expect(refused.error).toMatch(/Complete Odor Treatment already includes/)
-    expect(qb.posts).toEqual([])
-    // Explicit resolution: replace (remove the separate line) — never silent.
-    await removeEstimateService(orderId, oz.id, 'Manager')
-    expect((await getEstimateView(orderId)).review!.ready).toBe(true)
+    const oz = await addService(estimateId, 'Ozone Treatment', { catalogId: CAT.ozone_treatment, matchMethod: 'exact', actor: 'Manager' })
+    const duct = await addService(estimateId, 'Air Duct Cleaning', { catalogId: CAT.air_duct_cleaning, matchMethod: 'exact', actor: 'Manager' })
+    const odor = await addService(estimateId, 'Odor Treatment', { catalogId: CAT.odor_treatment, matchMethod: 'exact', actor: 'Manager' })
+    await setServicePrice(estimateId, oz.id, 9000, 'Manager')
+    await setServicePrice(estimateId, duct.id, 7000, 'Manager')
+    await setServicePrice(estimateId, odor.id, 12000, 'Manager')
+    const v = await getEstimateView(orderId)
+    expect(v.review).toMatchObject({ ready: true, issues: [] })
+    expect(v.services.map((x) => [x.title, x.catalogName, x.matchState, x.priceCents])).toEqual([
+      ['Ozone Treatment', 'Ozone Treatment', 'matched', 9000], ['Air Duct Cleaning', 'Air Duct Cleaning', 'matched', 7000], ['Odor Treatment', 'Odor Treatment', 'matched', 12000]])
+    expect(v.workTotalCents).toBe(28000)
+    const { payload: p, draft } = await payload(orderId)
+    expect(p.lines).toEqual([
+      { itemId: '24', description: 'Ozone treatment.', amountCents: 9000 },
+      { itemId: '76', description: await ductText(), amountCents: 7000 },
+      { itemId: '68', description: ODOR_DESC, amountCents: 12000 },
+    ])
+    expect(draft.workPriceCents).toBe(28000)
+  })
+
+  it('selecting Odor Treatment adds exactly one line, billed under its own item (#68 "Odor Treatment", never Ozone #24)', async () => {
+    const { orderId, estimateId } = await order()
+    const odor = await addService(estimateId, 'Odor Treatment', { catalogId: CAT.odor_treatment, matchMethod: 'shortcut', actor: 'Manager' })
+    await setServicePrice(estimateId, odor.id, 15000, 'Manager')
+    const v = await getEstimateView(orderId)
+    expect(v.services).toHaveLength(1)
+    expect(v.services[0]).toMatchObject({ suggestedCents: null, description: ODOR_DESC })   // no default price → entered per job
     const { payload: p } = await payload(orderId)
-    // Billed under the existing QuickBooks "Odor Treatment" item (#68, migration 0053) with the approved wording.
-    expect(p.lines).toEqual([{ itemId: '68', description: 'Complete odor treatment, including air duct cleaning and ozone treatment.', amountCents: 35000 }])
+    expect(p.lines).toEqual([{ itemId: '68', description: ODOR_DESC, amountCents: 15000 }])
   })
 
-  it('keeping a separate line on purpose is an explicit, audited decision', async () => {
+  it('renaming the line keeps its identity, item, approved wording and price (and survives reopening)', async () => {
     const { orderId, estimateId } = await order()
-    await addService(estimateId, 'Complete Odor Treatment', { catalogId: CAT.complete_odor_treatment, actor: 'Manager' })
-    const duct = await addService(estimateId, 'Air Duct Cleaning', { catalogId: CAT.air_duct_cleaning, actor: 'Manager' })
-    expect((await loadEstimateReview(orderId)).readiness.issues.map((i) => i.code)).toEqual(['odor_overlap'])
-    await acknowledgeOdorOverlap(orderId, duct.id, 'Manager')
-    expect((await loadEstimateReview(orderId)).readiness.ready).toBe(true)
-    expect(await events(orderId, 'odor_overlap_kept')).toHaveLength(1)
+    const odor = await addService(estimateId, 'Odor Treatment', { catalogId: CAT.odor_treatment, actor: 'Manager' })
+    await setServicePrice(estimateId, odor.id, 15000, 'Manager')
+    await renameService(orderId, odor.id, 'Smoke smell — full interior', 'Manager')
+    await prepareEstimateView(orderId, 'Manager')
+    expect((await getEstimateView(orderId)).services[0]).toMatchObject({ title: 'Smoke smell — full interior', catalogId: CAT.odor_treatment, matchState: 'matched', priceCents: 15000 })
+    expect((await payload(orderId)).payload.lines).toEqual([{ itemId: '68', description: ODOR_DESC, amountCents: 15000 }])
   })
 
-  it('generic odor wording from intake is not auto-stamped; it must be chosen before invoicing', async () => {
+  it('removing one odor line leaves the others exactly as they were', async () => {
+    const { orderId, estimateId } = await order()
+    const oz = await addService(estimateId, 'Ozone Treatment', { catalogId: CAT.ozone_treatment, actor: 'Manager' })
+    const odor = await addService(estimateId, 'Odor Treatment', { catalogId: CAT.odor_treatment, actor: 'Manager' })
+    await setServicePrice(estimateId, oz.id, 9000, 'Manager')
+    await setServicePrice(estimateId, odor.id, 12000, 'Manager')
+    await removeEstimateService(orderId, oz.id, 'Manager')
+    await prepareEstimateView(orderId, 'Manager')
+    expect((await payload(orderId)).payload.lines).toEqual([{ itemId: '68', description: ODOR_DESC, amountCents: 12000 }])
+  })
+
+  it('generic odor wording from intake is not auto-stamped or reinterpreted; it must be chosen before invoicing', async () => {
     const { orderId, estimateId } = await order(['Odor Treatment'])
     const [row] = await db.select().from(jobServices).where(eq(jobServices.jobEstimateId, estimateId))
     expect(row.catalogId).toBeNull()
     await setServicePrice(estimateId, row.id, 30000, 'Manager')
-    expect((await getEstimateView(orderId)).services[0].matchState).toBe('choose')
-    expect((await createRetailQBInvoice({ orderId, actor: 'Manager' })).error).toMatch(/Choose which odor treatment/)
-    // The legacy combined "Odor / Ozone Treatment" is no longer offered for new picks…
+    expect((await getEstimateView(orderId)).services[0]).toMatchObject({ matchState: 'choose', chooseReason: 'odor' })
+    expect((await createRetailQBInvoice({ orderId, actor: 'Manager' })).error).toMatch(/Choose which service “Odor Treatment” is/)
+    expect(qb.posts).toEqual([])
+    // Retired records are not offered…
     await expect(selectServiceMatch(orderId, row.id, { catalogId: CAT.odor_ozone }, 'Manager')).rejects.toThrow(/not in the catalog/)
-    await selectServiceMatch(orderId, row.id, { catalogId: CAT.ozone_treatment, title: 'Ozone Treatment' }, 'Manager')
+    await expect(selectServiceMatch(orderId, row.id, { catalogId: CAT.complete_odor_treatment }, 'Manager')).rejects.toThrow(/not in the catalog/)
+    // …the manager's choice stamps the identity; price/qty untouched.
+    await selectServiceMatch(orderId, row.id, { catalogId: CAT.odor_treatment, title: 'Odor Treatment' }, 'Manager')
     expect((await loadEstimateReview(orderId)).readiness.ready).toBe(true)
-    expect((await db.select().from(jobServices).where(eq(jobServices.id, row.id)))[0]).toMatchObject({ title: 'Ozone Treatment', entryText: 'Odor Treatment', catalogId: CAT.ozone_treatment })
     expect((await svcLine(row.id)).priceCents).toBe(30000)
+    expect((await payload(orderId)).payload.lines).toEqual([{ itemId: '68', description: ODOR_DESC, amountCents: 30000 }])
+  })
+
+  it('combined legacy wording ("Odor treatment/air duct cleaning") is reviewed, never split or reinterpreted automatically', async () => {
+    const { orderId, estimateId } = await order(['Odor treatment/air duct cleaning'])
+    const rows = await db.select().from(jobServices).where(eq(jobServices.jobEstimateId, estimateId))
+    expect(rows).toHaveLength(1)
+    expect(rows[0].catalogId).toBeNull()
+    expect((await getEstimateView(orderId)).review!.issues.map((i) => i.code)).toEqual(['odor_choice'])
+  })
+
+  it('a line still on the retired Complete Odor Treatment package keeps its history and must be reviewed before invoicing', async () => {
+    const { orderId, estimateId } = await order()
+    const [pkg] = await db.insert(jobServices).values({ jobEstimateId: estimateId, title: 'Complete Odor Treatment', source: 'manual', sortOrder: 0, catalogId: CAT.complete_odor_treatment, matchMethod: 'rule' }).returning()
+    await setServicePrice(estimateId, pkg.id, 35000, 'Manager')
+    const v = await getEstimateView(orderId)
+    expect(v.services[0]).toMatchObject({ matchState: 'choose', chooseReason: 'package', catalogName: 'Complete Odor Treatment' })
+    expect(v.review!.issues[0]).toMatchObject({ code: 'odor_choice', message: expect.stringMatching(/no longer offered/) })
+    expect((await createRetailQBInvoice({ orderId, actor: 'Manager' })).status).toBe('refused')
+    // Not repurposed: the record still means the old package (history), it just isn't billed until reviewed.
+    expect((await payload(orderId)).payload.lines).toEqual([{ itemId: '68', description: 'Complete odor treatment, including air duct cleaning and ozone treatment.', amountCents: 35000 }])
+    await selectServiceMatch(orderId, pkg.id, { catalogId: CAT.odor_treatment, title: 'Odor Treatment' }, 'Manager')
+    expect((await loadEstimateReview(orderId)).readiness.ready).toBe(true)
+  })
+
+  it('legacy "Ozone" lines (no identity) always bill as Ozone Treatment — never the retired combined record', async () => {
+    const { orderId, estimateId } = await order()
+    const [row] = await db.insert(jobServices).values({ jobEstimateId: estimateId, title: 'Ozone', source: 'promoted', sortOrder: 0 }).returning()
+    await setServicePrice(estimateId, row.id, 8000, 'Manager')
+    expect((await getEstimateView(orderId)).review!.ready).toBe(true)
+    expect((await payload(orderId)).payload.lines).toEqual([{ itemId: '24', description: 'Ozone treatment.', amountCents: 8000 }])
+  })
+
+  it('a legacy name that matches two services ("Ceramic Coating") is reviewed instead of guessing the warranty length', async () => {
+    const { orderId, estimateId } = await order()
+    const [row] = await db.insert(jobServices).values({ jobEstimateId: estimateId, title: 'Ceramic Coating', source: 'promoted', sortOrder: 0 }).returning()
+    await setServicePrice(estimateId, row.id, 80000, 'Manager')
+    const v = await getEstimateView(orderId)
+    expect(v.services[0]).toMatchObject({ matchState: 'choose', chooseReason: 'name' })
+    expect(v.review!.issues.map((i) => i.code)).toEqual(['name_choice'])
+    expect((await createRetailQBInvoice({ orderId, actor: 'Manager' })).error).toMatch(/matches more than one service/)
+    await selectServiceMatch(orderId, row.id, { catalogId: CAT.ceramic_coating_3yr }, 'Manager')
+    expect((await loadEstimateReview(orderId)).readiness.ready).toBe(true)
+    expect((await payload(orderId)).payload.lines[0]).toMatchObject({ itemId: '70', description: expect.stringMatching(/3 years/) })
   })
 })
 
