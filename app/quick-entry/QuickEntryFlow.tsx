@@ -13,9 +13,8 @@ import { resolveBack } from '@/app/components/back-origin'
 import PhotoInput from '@/app/components/PhotoInput'
 import NavHeader from '@/app/components/NavHeader'
 import { useIdentity } from '@/app/components/IdentityBar'
-import { type JobLine } from '@/apps/quick-entry/job-lines'
+import { type JobLine, type InterpEntry, linesFromEntries, chooseCandidate, keepAsTyped, choosePart, chooseTires, reopenChoice } from '@/apps/quick-entry/job-lines'
 import { type CustomerMatch, type CustVehicle } from '@/apps/quick-entry/customers'
-import { norm } from '@/apps/quick-entry/interpret'
 
 type Phase = 'details' | 'services' | 'review' | 'submitting' | 'done'
 interface Tier { size: string; condition: string; startPriceCents: number }
@@ -292,35 +291,38 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
     setLines((xs) => xs.map((l) => (l.key === key ? { ...l, priceCents: s.suggestedPriceCents! } : l)))
   }
 
-  // Natural-language intake (P-B3) — merges into the SAME lines (dedup by title),
-  // preserving bubbles/custom. Populates Work Price only when the server allows it
-  // (manager/admin). Additional input method; the bubble flow is untouched.
+  // Natural-language intake — the SAME shared interpretation the manager estimate uses (typos,
+  // shorthand, odor rules, part detection, area). Clear matches are added directly; anything unclear is
+  // added AS TYPED with a short question on the line. Populates Work Price only when the server allows
+  // it (manager/admin). If the server or AI is unavailable the typed text stays in the box.
   const interpretNL = useCallback(async () => {
     const text = nlText.trim()
     if (!text) return
     setNlBusy(true); setNlMsg(null)
     try {
       const r = await fetch('/api/quick-entry/interpret', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })
-      const d = await r.json()
-      if (!d?.ok) { setNlMsg('Could not interpret that.'); return }
-      setLines((xs) => {
-        const have = new Set(xs.map((l) => norm(l.name)))
-        const add: JobLine[] = []
-        for (const s of (d.services ?? []) as { title: string; catalogId: string | null }[]) {
-          const k = norm(s.title)
-          if (!k || have.has(k)) continue
-          have.add(k)
-          add.push({ key: `nl${keySeq++}`, catalogId: s.catalogId ?? null, kind: s.catalogId ? 'package' : 'custom', name: s.title, priceCents: 0 })
-        }
-        return [...xs, ...add]
-      })
+      const d = await r.json().catch(() => null)
+      if (!r.ok || !d?.ok) { setNlMsg('Couldn’t read that right now — your text is still here. Tap services below or use ＋ Other.'); return }
+      const entries = (d.entries ?? []) as InterpEntry[]
+      const added = linesFromEntries(entries, lines, () => `nl${keySeq++}`)
+      setLines((xs) => [...xs, ...added])
       if (d.note) setNlNote((n) => (n ? `${n}; ${d.note}` : d.note))
       if (d.priceAllowed && d.priceCents) setWorkPrice((d.priceCents / 100).toFixed(2))
-      const added = (d.services ?? []).length
-      setNlMsg(added || d.note || d.priceCents ? `Added ${added} service${added === 1 ? '' : 's'}${d.priceCents && d.priceAllowed ? ` · $${(d.priceCents / 100).toFixed(2)}` : ''}${d.note ? ' · note' : ''}` : 'Nothing recognized — try the buttons.')
+      const ask = added.filter((l) => l.pending).length
+      const parts = [
+        added.length ? `Added ${added.length} line${added.length === 1 ? '' : 's'}` : '',
+        ask ? `${ask} need${ask === 1 ? 's' : ''} a quick answer below` : '',
+        d.priceCents && d.priceAllowed ? `$${(d.priceCents / 100).toFixed(2)}` : '',
+        d.note ? 'note' : '',
+        d.ai === 'unavailable' || d.ai === 'failed' ? 'smart suggestions are offline — check the lines' : '',
+      ].filter(Boolean)
+      setNlMsg(parts.length ? parts.join(' · ') : 'Nothing recognized — try the buttons.')
       setNlText('')
-    } catch { setNlMsg('Network error — try again.') } finally { setNlBusy(false) }
-  }, [nlText])
+    } catch { setNlMsg('Network error — your text is still here. Try again.') } finally { setNlBusy(false) }
+  }, [nlText, lines])
+  const updateLine = (key: string, f: (l: JobLine) => JobLine | null) =>
+    setLines((xs) => xs.map((l) => (l.key === key ? f(l) ?? l : l)))
+  const [tireQty, setTireQty] = useState<Record<string, string>>({})
 
   // P-B4 voice: browser-native Web Speech API (webkitSpeechRecognition on iOS Safari).
   // Feature-detected; unsupported → no mic. Voice ONLY fills the same nlText field and
@@ -377,7 +379,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
           body: JSON.stringify({ requestId: requestId.current,
             customerName: `${cust.first} ${cust.last}`.trim(), customerPhone: cust.phone, customerEmail: cust.email,
             ...veh, vehicleId: vehicleMode === 'existing' ? selectedVehicleId : null,
-            notes: nlNote.trim(), lines: lines.filter(l => l.name.trim()).map(l => ({ name: l.name.trim(), priceCents: l.priceCents || 0, catalogId: l.catalogId ?? null })),
+            notes: nlNote.trim(), lines: lines.filter(l => l.name.trim()).map(l => ({ name: l.name.trim(), priceCents: l.priceCents || 0, catalogId: l.catalogId ?? null, entryText: l.entryText ?? null, detail: l.detail ?? null })),
             workPriceCents: dollarsToCents(workPrice) || null,
           }),
         })
@@ -394,7 +396,8 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
           vehicleId: vehicleMode === 'existing' ? selectedVehicleId : null,  // reuse the exact saved vehicle (no duplicate)
           lines: lines
             .filter((l) => l.kind !== 'custom' || l.name.trim())  // drop empty "Other" lines
-            .map((l) => ({ catalogId: l.catalogId, kind: l.kind, name: l.name.trim(), size: null, condition: null, priceCents: l.priceCents || 0 })),
+            .map((l) => ({ catalogId: l.catalogId, kind: l.kind, name: l.name.trim(), size: null, condition: null, priceCents: l.priceCents || 0,
+              entryText: l.entryText ?? null, detail: l.detail ?? null, matchMethod: l.matchMethod ?? null, partSupply: l.partSupply ?? null, tires: l.tires ?? null })),
           techInstructions: SHOW_TECH_INSTRUCTIONS ? [...tech] : [], createdBy: 'quick_entry',
           // Manager-entered AUTHORITATIVE invoice work price (server drops it for non-managers).
           workPriceCents: dollarsToCents(workPrice) || null,
@@ -403,7 +406,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
           agreedPriceCents: expectedTotalCents || null,
           agreedServices: lines.filter((l) => (l.kind !== 'custom' || l.name.trim()) && l.priceCents > 0).map((l) => {
             const s = suggByKey[l.key]
-            return { originalText: l.name.trim(), matchedFamily: s?.familyKey ?? null, matchedDisplay: s?.display ?? null, suggestedCents: s?.suggestedPriceCents ?? null, sampleSize: s?.sampleSize ?? null, confirmedCents: l.priceCents }
+            return { originalText: (l.entryText || l.name).trim(), matchedFamily: s?.familyKey ?? null, matchedDisplay: s?.display ?? null, suggestedCents: s?.suggestedPriceCents ?? null, sampleSize: s?.sampleSize ?? null, confirmedCents: l.priceCents }
           }),
           isUrgent,
           internalNote: nlNote.trim() || null,
@@ -625,22 +628,77 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
                         <div className="flex-1 min-w-0">
                           {l.kind === 'custom' ? (
                             // Free-text custom service → smart historical search (supports keyboard mic)
-                            <input value={l.name} onChange={(e) => { setLineName(l.key, e.target.value); searchOther(l.key, e.target.value) }} placeholder="What are we doing?" autoFocus
-                              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-sm" />
+                            <input value={l.name} onChange={(e) => { setLineName(l.key, e.target.value); searchOther(l.key, e.target.value) }} placeholder="What are we doing?" autoFocus={!l.entryText}
+                              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-base" />
                           ) : (
                             <p className="text-white text-sm truncate">{l.name}</p>
+                          )}
+                          {/* What was typed + the job-specific area, so a wrong match is easy to spot and fix */}
+                          {!l.pending && (l.detail || l.partSupply || l.tires || (l.entryText && l.entryText.toLowerCase() !== l.name.toLowerCase())) && (
+                            <p className="text-gray-500 text-[11px] break-words">
+                              {l.partSupply ? (l.partSupply === 'shop' ? 'Part · we supply · ' : 'Part · customer’s · ') : ''}
+                              {l.detail ? `Area: ${l.detail}` : ''}{l.detail && l.entryText ? ' · ' : ''}
+                              {l.entryText && l.entryText.toLowerCase() !== l.name.toLowerCase() ? `typed “${l.entryText}”` : ''}
+                            </p>
                           )}
                         </div>
                         {/* Editable price */}
                         <div className="flex items-center rounded-lg bg-gray-800 border border-gray-700 px-2 w-24 shrink-0">
                           <span className="text-gray-500 text-sm">$</span>
                           <input value={l.priceCents ? (l.priceCents / 100).toString() : ''} onChange={(e) => setLinePrice(l.key, e.target.value)}
-                            inputMode="decimal" placeholder="0" className="w-full bg-transparent px-1 py-1 text-white text-sm text-right focus:outline-none" />
+                            inputMode="decimal" placeholder="0" className="w-full bg-transparent px-1 py-1.5 text-white text-base text-right focus:outline-none" />
                         </div>
-                        <button onClick={() => removeLine(l.key)} className="text-gray-600 text-lg px-1">×</button>
+                        <button onClick={() => removeLine(l.key)} aria-label={`Remove ${l.name}`} className="text-gray-500 text-xl min-w-11 min-h-11 inline-flex items-center justify-center">×</button>
                       </div>
+                      {!l.pending && ((l.catalogId && (l.alts?.length ?? 0) > 0) || l.partSupply || l.tires) ? (
+                        <button type="button" onClick={() => updateLine(l.key, (x) => (x.partSupply || x.tires ? { ...keepAsTyped(x), pending: { intent: x.tires ? 'tires' : 'part', question: null, candidates: [], part: { description: x.name } } } : reopenChoice(x)))}
+                          className="text-blue-400 text-xs font-semibold min-h-10 px-1 inline-flex items-center">Not right? Change</button>
+                      ) : null}
+                      {l.pending && (
+                        <div className="mt-1.5 rounded-xl border border-amber-800/60 bg-amber-950/20 px-2.5 py-2" role="group" aria-label={`Clarify ${l.name}`}>
+                          {l.entryText && <p className="text-gray-400 text-[11px] break-words">You typed “{l.entryText}”</p>}
+                          <p className="text-amber-200 text-xs font-semibold">
+                            {l.pending.intent === 'part' ? `“${l.pending.part?.description ?? l.name}” looks like a part. Who supplies it?`
+                              : l.pending.intent === 'tires' ? 'Tires: are we supplying them, installing the customer’s, or both? How many?'
+                              : l.pending.question ?? 'Did you mean…'}
+                          </p>
+                          {l.pending.intent === 'part' && (
+                            <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                              <button type="button" onClick={() => updateLine(l.key, (x) => choosePart(x, 'shop'))} className="min-h-11 rounded-lg bg-amber-600 text-white text-xs font-semibold px-2">We supply it</button>
+                              <button type="button" onClick={() => updateLine(l.key, (x) => choosePart(x, 'customer'))} className="min-h-11 rounded-lg border border-amber-700 text-amber-100 text-xs font-semibold px-2">Customer’s part</button>
+                            </div>
+                          )}
+                          {l.pending.intent === 'tires' && (
+                            <div className="mt-1.5 space-y-1.5">
+                              <label className="flex items-center gap-2 text-amber-100 text-xs">How many?
+                                <input value={tireQty[l.key] ?? ''} onChange={(e) => setTireQty((m) => ({ ...m, [l.key]: e.target.value.replace(/[^0-9]/g, '').slice(0, 2) }))}
+                                  inputMode="numeric" placeholder="4" className="w-16 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-base" />
+                              </label>
+                              <div className="grid grid-cols-3 gap-1.5">
+                                {([['supply', 'We supply'], ['install_customer', 'Install theirs'], ['both', 'Supply + install']] as const).map(([mode, label]) => (
+                                  <button key={mode} type="button" disabled={!(Number(tireQty[l.key]) >= 1 && Number(tireQty[l.key]) <= 12)}
+                                    onClick={() => updateLine(l.key, (x) => chooseTires(x, mode, Number(tireQty[l.key])))}
+                                    className="min-h-11 rounded-lg bg-amber-600 text-white text-xs font-semibold px-1 disabled:opacity-40">{label}</button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {l.pending.candidates.length > 0 && (
+                            <div className="mt-1.5 flex flex-wrap gap-1.5">
+                              {l.pending.candidates.map((c) => (
+                                <button key={c.catalogId} type="button" onClick={() => updateLine(l.key, (x) => chooseCandidate(x, c))}
+                                  className="min-h-11 rounded-lg bg-blue-600/25 border border-blue-700 text-blue-100 text-xs font-semibold px-2.5 text-left">{c.name}</button>
+                              ))}
+                            </div>
+                          )}
+                          <button type="button" onClick={() => updateLine(l.key, keepAsTyped)} className="mt-1.5 min-h-10 text-gray-300 text-xs underline underline-offset-2">
+                            {l.pending.intent === 'part' ? 'Not a part — keep as typed' : 'Keep as typed'}
+                          </button>
+                          {l.pending.intent === 'odor' || l.pending.intent === 'part' ? <p className="text-amber-200/60 text-[11px]">Unsure? Keep it as typed — the manager confirms it on the estimate.</p> : null}
+                        </div>
+                      )}
                       {/* Historical suggestion for "Other" (grounded; proposal only) */}
-                      {l.kind === 'custom' && l.name.trim().length >= 2 && (
+                      {l.kind === 'custom' && !l.pending && !l.partSupply && !l.tires && l.name.trim().length >= 2 && (
                         sugg && sugg.suggestedPriceCents != null ? (
                           <button type="button" onClick={() => applySuggestion(l.key, sugg)}
                             className="mt-1.5 w-full flex items-center justify-between rounded-lg bg-blue-950/30 border border-blue-900/50 px-2.5 py-1.5 text-left active:opacity-70">

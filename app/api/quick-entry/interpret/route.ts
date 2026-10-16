@@ -1,24 +1,26 @@
 /**
  * POST /api/quick-entry/interpret  { text }
- * Turns free text into structured suggestions that merge into the SAME Quick Entry
- * lines. Deterministic core owns the price + exact catalog/alias matches; a constrained
- * AI pass classifies the remainder (semantic catalog match / custom work / internal
- * note). The server re-validates every AI result against the real catalog, caps custom
- * text, and only returns a price to a manager/admin. Never writes anything.
+ * Turns an employee's rushed free text into reviewable suggestions for the SAME Quick Entry lines,
+ * using the SAME shared service interpretation as the manager estimate (apps/quick-entry/
+ * service-match-db): shorthand + typo correction, exact names / approved alternate names, the owner's
+ * odor rules, tire clarification, part-vs-service detection, the job-specific area, and — only when
+ * there is no established match — the constrained AI pass, which can only pick real catalog items.
+ * Each entry keeps the employee's original wording. Nothing is saved here.
+ *
+ * The deterministic core still owns the explicit work price (returned ONLY to a manager/admin), and
+ * the old note classifier still turns an instruction ("call when done") into an internal note
+ * instead of a service. AI unavailable → deterministic results only; the typed text is never lost.
  */
 import { NextResponse } from 'next/server'
 import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
-import { getFullCatalog } from '@/apps/quick-entry/db'
 import { nlEnabled } from '@/apps/settings/db'
-import { deterministicInterpret, norm, type CatalogService, type RecognizedService } from '@/apps/quick-entry/interpret'
-import { classifyUnmatched, aiConfigured } from '@/apps/quick-entry/interpret-ai'
+import { deterministicInterpret, priceFromToken, splitWorkEntries } from '@/apps/quick-entry/interpret'
+import { classifyUnmatched } from '@/apps/quick-entry/interpret-ai'
+import { interpretServiceEntry, listCatalogChoices, type AiStatus } from '@/apps/quick-entry/service-match-db'
+import { isOdorFamily } from '@/apps/quick-entry/service-interpret'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
-
-// Bubble label overrides (mirror the Quick Entry menu) so an NL "wax"/"polish" resolves
-// to the SAME title as the bubble and dedupes correctly.
-const LABEL: Record<string, string> = { paint_correction_1step: 'Polish', exterior_wax: 'Wax' }
 
 export async function POST(req: Request) {
   if (!(await nlEnabled())) return NextResponse.json({ ok: false, error: 'disabled' }, { status: 404 })
@@ -27,44 +29,42 @@ export async function POST(req: Request) {
 
   const body = await req.json().catch(() => ({})) as { text?: string }
   const text = (body.text ?? '').slice(0, 2000)
-  if (!text.trim()) return NextResponse.json({ ok: true, services: [], note: null, priceCents: null, priceAllowed })
+  if (!text.trim()) return NextResponse.json({ ok: true, entries: [], note: null, priceCents: null, priceAllowed, ai: 'skipped' })
 
-  // Retail catalog (exclude dealer services) with bubble labels applied.
-  const full = await getFullCatalog()
-  const services: CatalogService[] = full
-    .filter((f) => f.item.active && f.item.source !== 'dealer_rules' && !f.item.slug.startsWith('dealer_'))
-    .map((f) => {
-      const title = LABEL[f.item.slug] ?? f.item.name
-      return { catalogId: f.item.id, title, terms: [norm(title), norm(f.item.name), ...f.aliases.map((a) => norm(a.alias))] }
-    })
+  // Price: the deterministic core only (a delimited price token, else a $-amount anywhere).
+  const { priceCents } = deterministicInterpret(text, [])
+  const pieces = splitWorkEntries(text, isOdorFamily).filter((p) => priceFromToken(p) == null)
 
-  const det = deterministicInterpret(text, services)
-  const ai = await classifyUnmatched(det.unmatched, services.map((s) => s.title))
+  const results = await Promise.all(pieces.map((p) => interpretServiceEntry(p)))
 
-  const out: RecognizedService[] = []
-  const seen = new Set<string>()
-  const push = (r: RecognizedService) => { const k = norm(r.title); if (k && !seen.has(k)) { seen.add(k); out.push(r) } }
-  det.recognized.forEach(push)
-
+  // Pieces nothing recognized: an instruction becomes an internal note (not a service line).
+  const unknown = results.map((r, i) => ({ r, i })).filter(({ r }) => r.interpretation.status === 'none' && r.interpretation.intent === 'unknown')
   const notes: string[] = []
-  for (const c of ai) {
-    if (c.type === 'service' && c.catalogTitle) {
-      const svc = services.find((s) => norm(s.title) === norm(c.catalogTitle!))   // validate against the real catalog
-      if (svc) push({ title: svc.title, catalogId: svc.catalogId, source: 'semantic' })
-      else push({ title: c.phrase.slice(0, 120), catalogId: null, source: 'custom' })   // hallucinated title → custom
-    } else if (c.type === 'note') {
-      const n = (c.noteText || c.phrase).trim().slice(0, 200); if (n) notes.push(n)
-    } else {
-      push({ title: c.phrase.slice(0, 120), catalogId: null, source: 'custom' })
-    }
+  const asNote = new Set<number>()
+  if (unknown.length) {
+    const titles = (await listCatalogChoices()).map((c) => c.name)
+    const cls = await classifyUnmatched(unknown.map(({ r }) => r.interpretation.entry), titles)
+    cls.forEach((c, k) => {
+      if (c.type !== 'note') return
+      const n = (c.noteText || c.phrase).trim().slice(0, 200)
+      if (n) { notes.push(n); asNote.add(unknown[k].i) }
+    })
   }
+
+  const entries = results.filter((_, i) => !asNote.has(i)).map(({ interpretation: it, choices, ai }) => ({
+    entry: it.entry, corrected: it.corrected, status: it.status, intent: it.intent, area: it.area, part: it.part,
+    question: it.question, source: it.source, ai,
+    candidates: choices.map((c) => ({ catalogId: c.catalogId, name: c.name, description: c.description, role: c.role })),
+  }))
+  const statuses = new Set<AiStatus>(results.map((r) => r.ai))
+  const ai: AiStatus = statuses.has('used') ? 'used' : statuses.has('failed') ? 'failed' : statuses.has('unavailable') ? 'unavailable' : 'skipped'
 
   return NextResponse.json({
     ok: true,
-    services: out,
+    entries,
     note: notes.join('; ').slice(0, 500) || null,
-    priceCents: priceAllowed ? det.priceCents : null,   // employees never receive a price
+    priceCents: priceAllowed ? priceCents : null,   // employees never receive a price
     priceAllowed,
-    aiUsed: aiConfigured(),
+    ai,
   })
 }

@@ -12,13 +12,14 @@
  * enters. All changes are audited (service_order_events, append-only).
  */
 import { getDb } from '@/platform/db'
-import { and, eq, ne } from 'drizzle-orm'
+import { and, eq, ne, sql } from 'drizzle-orm'
 import { jobParts } from './schema'
 import { jobServices, jobLineItems, serviceOrderEvents } from '@/apps/workflow/schema'
 import {
   getOrCreateEstimate, getEstimateRow, addService, addLine, updateLine, removeLine, setServicePrice,
-  settlePricingAfterLineChange, flagQbSyncNeededIfInvoiced, removeEstimateService,
+  settlePricingAfterLineChange, flagQbSyncNeededIfInvoiced, removeEstimateService, selectServiceMatch,
 } from '@/apps/workflow/estimate-db'
+import { classifyPartWording } from '@/apps/quick-entry/service-interpret'
 import { partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
 import { listCatalogChoices } from '@/apps/quick-entry/service-match-db'
 import { validateLaborDecision, effectiveLaborStatus, type LaborDecision } from './labor-review'
@@ -154,6 +155,17 @@ export async function removeEstimatePart(orderId: string, partId: string, actor:
     return
   }
   await getDb().update(jobParts).set({ status: 'cancelled', updatedAt: new Date(), updatedBy: actor }).where(eq(jobParts.id, partId))
+  // A customer-supplied part entered at Quick Entry also sits on the Work Board label list; drop that
+  // label too (unless another live line still uses the name) so reopening never re-creates it as a service.
+  const key = p.description.trim().toLowerCase()
+  await getDb().execute(sql`
+    UPDATE service_orders so SET updated_at = now(), services = COALESCE((
+      SELECT jsonb_agg(to_jsonb(a.x) ORDER BY a.ord) FROM jsonb_array_elements_text(so.services) WITH ORDINALITY AS a(x, ord)
+       WHERE lower(btrim(a.x)) <> ${key}), '[]'::jsonb)
+     WHERE so.id = ${orderId}::uuid AND jsonb_typeof(so.services) = 'array'
+       AND NOT EXISTS (SELECT 1 FROM job_parts jp WHERE jp.service_order_id = so.id AND jp.status <> 'cancelled' AND lower(btrim(jp.description)) = ${key})
+       AND NOT EXISTS (SELECT 1 FROM job_services js JOIN job_estimates je ON je.id = js.job_estimate_id
+                        WHERE je.service_order_id = so.id AND lower(btrim(js.title)) = ${key})`)
   await event(orderId, 'part_removed', actor, { partId, description: p.description, supply: p.supply })
 }
 
@@ -249,4 +261,127 @@ export async function addTireWork(orderId: string, input: TireWorkInput, actor: 
   }, actor)
   if (input.mode === 'supply') await decidePartLabor(orderId, part.id, { action: 'part_only' }, actor, role)
   else await decidePartLabor(orderId, part.id, { action: 'add_labor', cents: input.installCents ?? null, detail: installDetail }, actor, role)
+}
+
+// ── A part saved as an ordinary service line ("Driver-side mirror assembly") ────────────────────
+
+/** A user (non-system) estimate row of THIS order, or null. */
+async function estimateRowOfOrder(orderId: string, serviceId: string) {
+  const est = await getEstimateRow(orderId)
+  if (!est) return null
+  const [svc] = await getDb().select().from(jobServices)
+    .where(and(eq(jobServices.id, serviceId), eq(jobServices.jobEstimateId, est.id), ne(jobServices.source, 'system'))).limit(1)
+  return svc ? { est, svc } : null
+}
+
+const rowsOf = (res: unknown): Record<string, unknown>[] => {
+  const r = (res as { rows?: unknown[] }).rows ?? res
+  return Array.isArray(r) ? (r as Record<string, unknown>[]) : []
+}
+
+export interface ConvertToPartInput { supply?: 'shop' | 'customer'; fitment?: string | null; partNumber?: string | null; supplier?: string | null }
+
+/**
+ * Convert a service line that is really a physical part into a special-order part — an explicit user
+ * decision (never automatic). The SAME estimate row and its ONE priced line are kept: price, quantity,
+ * taxable flag, tax category and cost are untouched, so the totals cannot move and nothing is charged
+ * twice. Only the row's kind, the line's type/description (part text + fitment / part #) and a new
+ * job_parts record (labor review open) change, in ONE statement; a retry or double-tap finds the row
+ * already converted and returns the same part (unique live part per row, migration 0053). The original
+ * wording is kept. Real work ("Paint driver-side mirror"), a catalog-matched service, or a line with
+ * several price lines is refused. A linked QuickBooks invoice is flagged for sync, never rewritten.
+ */
+export async function convertServiceToPart(orderId: string, serviceId: string, input: ConvertToPartInput, actor: string | null): Promise<PartRow> {
+  const own = await estimateRowOfOrder(orderId, serviceId)
+  if (!own) throw new Error('That line is no longer on this estimate. Refresh to see the current list.')
+  const { est, svc } = own
+  const db = getDb()
+  if (svc.kind === 'part') {
+    const [existing] = await db.select().from(jobParts).where(and(eq(jobParts.jobServiceId, svc.id), ne(jobParts.status, 'cancelled'))).limit(1)
+    if (existing) return existing   // already converted (retry / double-tap)
+    throw new Error('That line is already a part.')
+  }
+  if (svc.catalogId) throw new Error(`“${svc.title}” is matched to a catalog service. Change its match first if it is really a part.`)
+  if (!classifyPartWording(svc.title)) throw new Error(`“${svc.title}” describes work, not a part — it stays a service.`)
+  if (input.supply === 'customer') throw new Error('A customer-supplied part has no parts charge. Keep this line as the installation labor and add the customer’s part separately.')
+  const lines = (await db.select().from(jobLineItems).where(eq(jobLineItems.jobServiceId, svc.id))).filter((l) => !l.generated)
+  if (lines.length > 1) throw new Error('This line has several prices. Clarify it (keep it as labor and add the part separately) instead of converting the whole line.')
+  const fitment = text(input.fitment, 200)
+  const partNumber = text(input.partNumber, 80)
+  const supplier = text(input.supplier, 120)
+  const description = svc.title.slice(0, 200)
+  const lineDesc = partLineDescription({ description, fitment, partNumber })
+
+  const res = await db.execute(sql`
+    WITH svc AS (
+      SELECT id, title FROM job_services
+       WHERE id = ${svc.id}::uuid AND job_estimate_id = ${est.id}::uuid AND source <> 'system' AND kind = 'service' AND catalog_id IS NULL
+    ), line AS (
+      SELECT l.id, l.qty, l.price_cents, l.cost_cents, l.taxable FROM job_line_items l JOIN svc ON l.job_service_id = svc.id WHERE l.generated = false LIMIT 1
+    ), upd AS (
+      UPDATE job_services js SET kind = 'part', match_method = NULL, matched_by = ${actor}, matched_at = now(),
+        entry_text = COALESCE(js.entry_text, left(svc.title, 300)), updated_at = now()
+        FROM svc WHERE js.id = svc.id AND js.kind = 'service'
+      RETURNING js.id
+    ), upd_line AS (
+      UPDATE job_line_items l SET type = 'part', description = ${lineDesc},
+        part_number = COALESCE(${partNumber}, l.part_number), supplier = COALESCE(${supplier}, l.supplier)
+        FROM line, upd WHERE l.id = line.id
+      RETURNING l.id
+    ), part AS (
+      INSERT INTO job_parts (service_order_id, description, part_number, supplier, fitment, supply, quantity, unit_cost_cents, sell_price_cents,
+        job_service_id, job_line_item_id, status, labor_status, created_by, updated_by)
+      SELECT ${orderId}::uuid, ${description}, ${partNumber}, ${supplier}, ${fitment}, 'shop', COALESCE((SELECT qty FROM line), 1),
+        (SELECT NULLIF(cost_cents, 0) FROM line), (SELECT price_cents FROM line), upd.id, (SELECT id FROM line), 'needed', 'needs_review', ${actor}, ${actor}
+        FROM upd
+      RETURNING id
+    ), reopen AS (
+      -- Parts that counted on this line as their installation labor: a part can't install a part.
+      UPDATE job_parts SET labor_status = 'needs_review', labor_service_id = NULL, labor_decided_by = ${actor}, labor_decided_at = now(), updated_at = now()
+       WHERE labor_service_id IN (SELECT id FROM upd) AND labor_status IN ('labor_added', 'included')
+      RETURNING id
+    ), ev_reopen AS (
+      INSERT INTO service_order_events(service_order_id, event_type, employee_name, note)
+      SELECT ${orderId}::uuid, 'part_labor_reopened', ${actor}, json_build_object('partId', reopen.id, 'serviceId', ${svc.id}::text, 'reason', 'covering line was converted to a part')::text FROM reopen
+      RETURNING id
+    ), ev AS (
+      INSERT INTO service_order_events(service_order_id, event_type, employee_name, note)
+      SELECT ${orderId}::uuid, 'service_converted_to_part', ${actor},
+        json_build_object('serviceId', ${svc.id}::text, 'partId', part.id, 'description', ${description}::text, 'entry', ${svc.entryText}::text,
+          'priceCents', (SELECT price_cents FROM line), 'qty', (SELECT qty FROM line), 'taxable', (SELECT taxable FROM line),
+          'fitment', ${fitment}::text, 'partNumber', ${partNumber}::text, 'unchanged', 'price, quantity, tax')::text
+        FROM part
+      RETURNING id
+    )
+    SELECT id FROM part
+  `)
+  const partId = rowsOf(res)[0]?.id as string | undefined
+  const [row] = await db.select().from(jobParts)
+    .where(partId ? eq(jobParts.id, partId) : and(eq(jobParts.jobServiceId, svc.id), ne(jobParts.status, 'cancelled'))).limit(1)
+  if (!row) throw new Error('That line changed while converting. Refresh and try again.')
+  await flagQbSyncNeededIfInvoiced(orderId, 'a service line was converted to a part')
+  return row
+}
+
+/**
+ * Clarify a part-like line that is really (or also) WORK — e.g. "Replace windshield" priced as one
+ * job, or installing a customer's tires: the line stays exactly as it is (price untouched) and is
+ * confirmed as a service, the part is added separately (shop part at the price the user enters —
+ * blank allowed — or a customer-supplied part with no charge), and that part's installation labor is
+ * linked to this line ("already included"). Nothing is split or re-priced automatically. A retry finds
+ * the part already linked and returns it.
+ */
+export async function clarifyServiceWithPart(orderId: string, serviceId: string, input: EstimatePartInput, actor: string | null, role: string | null): Promise<PartRow> {
+  const own = await estimateRowOfOrder(orderId, serviceId)
+  if (!own || own.svc.kind === 'part') throw new Error('That line is no longer a service on this estimate. Refresh to see the current list.')
+  const { svc } = own
+  const description = text(input.description, 200)
+  if (!description) throw new Error('Describe the part (e.g. “Windshield”).')
+  const [linked] = await getDb().select().from(jobParts)
+    .where(and(eq(jobParts.serviceOrderId, orderId), eq(jobParts.laborServiceId, svc.id), eq(jobParts.description, description), ne(jobParts.status, 'cancelled'))).limit(1)
+  if (linked) return linked   // retry / double-tap
+  if (svc.catalogId == null && svc.matchMethod !== 'custom') await selectServiceMatch(orderId, svc.id, { custom: true }, actor)
+  const part = await addEstimatePart(orderId, { ...input, description, entryText: input.entryText ?? svc.entryText ?? svc.title }, actor)
+  await decidePartLabor(orderId, part.id, { action: 'included', serviceId: svc.id }, actor, role)
+  return part
 }

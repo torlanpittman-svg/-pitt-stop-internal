@@ -19,7 +19,7 @@ import { jobParts } from '@/apps/parts/schema'
 import { eligibleCatalogChoice, catalogDescriptionSnapshot, canonicalDescription } from '@/apps/quick-entry/service-match-db'
 import { composeLineDescription, partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
 import { loadEstimateReview } from './estimate-review'
-import { needsOdorChoice, type ReadinessIssue } from './estimate-readiness'
+import { needsOdorChoice, servicePartLike, type ReadinessIssue } from './estimate-readiness'
 import type { LaborStatus } from '@/apps/parts/labor-review'
 
 export type EstimateRow = typeof jobEstimates.$inferSelect
@@ -413,6 +413,8 @@ export interface EstimateServiceView {
   role?: string | null
   entryText?: string | null
   overlapAcknowledged?: boolean
+  /** Reads like a physical part saved as a service: 'part' (convert or confirm) or 'ambiguous' (clarify). */
+  partLike?: 'part' | 'ambiguous' | null
 }
 export interface EstimatePartView {
   id: string; serviceId: string | null; description: string; fitment: string | null; partNumber: string | null; supplier: string | null
@@ -467,6 +469,7 @@ export async function getEstimateView(orderId: string): Promise<EstimateView> {
       description: composeLineDescription(base, s.detail), detail: s.detail, matchMethod: s.matchMethod, matchState,
       qbMapped: c ? (c.archivedAt == null && c.qbSyncEnabled && c.qbItemStatus === 'existing' && !!c.qbItemRef) : false,
       role: c?.serviceRole ?? null, entryText: s.entryText, overlapAcknowledged: s.overlapAckAt != null,
+      partLike: rs ? servicePartLike(rs) : null,
     }
   })
   // Parts (special-order + customer-supplied) with their effective labor review.
@@ -509,28 +512,48 @@ export async function prepareEstimateView(orderId: string, actor: string | null)
   return getEstimateView(orderId)
 }
 
+export interface PromoteHint {
+  /** Explicit catalog choice made at intake (tapped shortcut / confirmed suggestion) — validated here. */
+  catalogId?: string | null
+  /** The employee's original wording, when it differs from the label. */
+  entryText?: string | null
+  /** Job-specific detail ("passenger seat") kept separate from the identity. */
+  detail?: string | null
+  /** How the identity was chosen ('custom' = confirmed one-off service, never label-matched). */
+  matchMethod?: MatchMethod | null
+}
+
 /** Seed job_services from the Job's employee-facing text services (idempotent). Each new row is
  *  stamped with its stable catalog identity (same name/alias policy as the QB payload) so its
  *  invoice item/description survives a later label edit. */
-export async function promoteTextServices(estimateId: string, orderId: string, hints?: ReadonlyMap<string, string>): Promise<number> {
+export async function promoteTextServices(estimateId: string, orderId: string, hints?: ReadonlyMap<string, string | PromoteHint>): Promise<number> {
   const db = getDb()
   const [order] = await db.select({ services: serviceOrders.services }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
   const text = (order?.services ?? []).map((s) => s.trim()).filter(Boolean)
   if (text.length === 0) return 0
   const existing = await db.select({ title: jobServices.title }).from(jobServices).where(eq(jobServices.jobEstimateId, estimateId))
-  const have = new Set(existing.map((s) => s.title.trim().toLowerCase()))
+  // A live part on this Job (incl. a customer-supplied part, which has no estimate row) is never
+  // re-created as a service from its Work Board label.
+  const liveParts = await db.select({ description: jobParts.description }).from(jobParts).where(and(eq(jobParts.serviceOrderId, orderId), ne(jobParts.status, 'cancelled')))
+  const have = new Set([...existing.map((s) => s.title), ...liveParts.map((p) => p.description)].map((t) => t.trim().toLowerCase()))
   const toInsert = text.map((title, i) => ({ title, i })).filter(({ title }) => !have.has(title.toLowerCase()))
   if (toInsert.length === 0) return 0
   const catalogIds = await resolveCatalogIds(toInsert.map((t) => t.title))
   let n = 0
   for (const { title, i } of toInsert) {
-    // An explicit catalog choice made at intake (a tapped shortcut) wins over label matching.
-    const hinted = hints?.get(normalizeServiceKey(title))
-    const choice = hinted ? await eligibleCatalogChoice(hinted) : null
-    const catalogId = choice?.catalogId ?? catalogIds.get(normalizeServiceKey(title)) ?? null
+    // An explicit catalog choice made at intake (a tapped shortcut / confirmed suggestion) wins over
+    // label matching; a confirmed custom service is never label-matched.
+    const raw = hints?.get(normalizeServiceKey(title))
+    const hint: PromoteHint | undefined = typeof raw === 'string' ? { catalogId: raw } : raw
+    const choice = hint?.catalogId ? await eligibleCatalogChoice(hint.catalogId) : null
+    const custom = !choice && hint?.matchMethod === 'custom'
+    const catalogId = choice?.catalogId ?? (custom ? null : catalogIds.get(normalizeServiceKey(title)) ?? null)
+    const entry = hint?.entryText ? String(hint.entryText).replace(/\s+/g, ' ').trim().slice(0, 300) : ''
     await db.insert(jobServices).values({
       jobEstimateId: estimateId, title, source: 'promoted', sortOrder: i, catalogId,
-      matchMethod: choice ? 'shortcut' : catalogId ? 'legacy' : null,
+      matchMethod: choice ? (hint?.matchMethod && hint.matchMethod !== 'custom' ? hint.matchMethod : 'shortcut') : custom ? 'custom' : catalogId ? 'legacy' : null,
+      detail: cleanDetail(hint?.detail),
+      entryText: entry && entry.toLowerCase() !== title.toLowerCase() ? entry : null,
       catalogDescription: await catalogDescriptionSnapshot(catalogId),
     })
     n++

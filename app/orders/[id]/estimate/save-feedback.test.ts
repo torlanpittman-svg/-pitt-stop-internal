@@ -70,3 +70,25 @@ describe('describeEdit — the status line names what is saving / saved / failed
     expect(describeEdit({ action: 'set_service_price', serviceId: 's2', cents: 1 }, before).failed).toBe('Couldn’t save the price for “Interior detail” — the previous price is still saved.')
   })
 })
+
+describe('part-review edits — Saved only when the returned view shows the change', () => {
+  const withPart = (serviceId: string, laborServiceId: string | null = null, description = 'Mirror'): EstimateViewData => ({
+    ...view([['s2', 'Interior detail', 17500]]),
+    parts: [{ id: 'p1', serviceId, description, fitment: null, partNumber: null, supplier: null, quantity: 1, unitCostCents: null, sellPriceCents: 26500, lineCents: 26500,
+      supply: 'shop', laborStatus: 'needs_review', laborServiceId, laborNote: null, invoiceText: description }],
+  })
+  it('convert_to_part: confirmed when the service row is gone from Services and a part bills on that row', () => {
+    expect(interpretSave({ action: 'convert_to_part', serviceId: 's1' }, { ok: true, status: 200 }, { ok: true, view: withPart('s1') }).ok).toBe(true)
+    expect(interpretSave({ action: 'convert_to_part', serviceId: 's1' }, { ok: true, status: 200 }, { ok: true, view: before }).ok).toBe(false)
+  })
+  it('clarify_part: confirmed only when the named part is linked to this line', () => {
+    const v = { ...withPart('other', 's2', 'Windshield') }
+    expect(interpretSave({ action: 'clarify_part', serviceId: 's2', part: { description: 'Windshield' } }, { ok: true, status: 200 }, { ok: true, view: v }).ok).toBe(true)
+    expect(interpretSave({ action: 'clarify_part', serviceId: 's2', part: { description: 'Windshield' } }, { ok: true, status: 200 }, { ok: true, view: before }).ok).toBe(false)
+  })
+  it('a failed conversion keeps a plain message saying nothing changed', async () => {
+    const out = await saveEstimateEdit('o1', { action: 'convert_to_part', serviceId: 's1' }, fakeFetch(500, { ok: false, error: 'describes work, not a part' }))
+    expect(out).toEqual({ ok: false, error: 'describes work, not a part' })
+    expect(describeEdit({ action: 'convert_to_part', serviceId: 's1' }, before).failed).toMatch(/still a service line, unchanged/)
+  })
+})

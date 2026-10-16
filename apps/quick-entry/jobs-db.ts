@@ -11,7 +11,9 @@ import { getFullCatalog, listTechnicianInstructions, type FullCatalogItem, type 
 import { serviceLabels } from './job-lines'
 import { findOrCreateVehicle, getVehicleById, createServiceOrder } from '@/apps/workflow/db'
 import { findOrCreateIntakeCustomer } from '@/apps/directory/intake-customer'
-import { getOrCreateEstimate, promoteTextServices, recomputeEstimate, setExplicitPrice, setAgreedPrice, setInternalNote } from '@/apps/workflow/estimate-db'
+import { getOrCreateEstimate, promoteTextServices, recomputeEstimate, setExplicitPrice, setAgreedPrice, setInternalNote, toMatchMethod, type PromoteHint } from '@/apps/workflow/estimate-db'
+import { addEstimatePart, addTireWork, installationCatalog } from '@/apps/parts/estimate-parts'
+import { cleanDetail } from '@/apps/quickbooks/retail-format'
 import { searchServiceHistory, type HistoryEntry, type ServiceMatch } from './service-history'
 
 // ── Retail service-history knowledge base (grounded in real completed work) ──
@@ -71,6 +73,51 @@ export async function getQuickEntryCatalog(): Promise<QuickEntryCatalog> {
 export interface JobLineInput {
   catalogId?: string | null; kind: 'package' | 'addon' | 'custom'
   name: string; size?: string | null; condition?: string | null; priceCents: number
+  /** The employee's original typed wording (kept for traceability; never sent to QuickBooks). */
+  entryText?: string | null
+  /** Job-specific area/component ("passenger seat"), kept separate from the service identity. */
+  detail?: string | null
+  /** How the identity was chosen at intake (exact / alias / rule / suggestion / shortcut / custom). */
+  matchMethod?: string | null
+  /** Confirmed physical part: who supplies it. The line's name is the part description. */
+  partSupply?: 'shop' | 'customer' | null
+  /** "Replace tires" clarified: supplying, installing customer-supplied tires, or both, and how many. */
+  tires?: { mode: 'supply' | 'install_customer' | 'both'; quantity: number } | null
+}
+
+const INTAKE_METHODS = new Set(['exact', 'alias', 'rule', 'suggestion', 'shortcut'])
+
+/** Server-side clean-up of the optional intake fields (never trust the client's shapes). */
+export function sanitizeJobLine(l: JobLineInput): JobLineInput {
+  const entry = typeof l.entryText === 'string' ? l.entryText.replace(/\s+/g, ' ').trim().slice(0, 300) : ''
+  const tq = Number(l.tires?.quantity)
+  const tires = l.tires && ['supply', 'install_customer', 'both'].includes(l.tires.mode) && Number.isInteger(tq) && tq >= 1 && tq <= 12
+    ? { mode: l.tires.mode, quantity: tq } : null
+  return {
+    ...l,
+    name: String(l.name ?? '').replace(/\s+/g, ' ').trim().slice(0, 160),
+    entryText: entry || null,
+    detail: cleanDetail(l.detail),
+    // Only how a REAL catalog choice was made; a client can never mark a line a confirmed one-off
+    // ('custom'), which would skip the manager's odor / part review on the estimate.
+    matchMethod: l.catalogId && INTAKE_METHODS.has(String(l.matchMethod)) ? toMatchMethod(l.matchMethod, 'shortcut') : null,
+    partSupply: l.partSupply === 'shop' || l.partSupply === 'customer' ? l.partSupply : null,
+    tires,
+  }
+}
+
+const tireNoun = (qty: number) => (qty === 1 ? 'Tire' : 'Tires')
+
+/** Work Board label(s) for one intake line — exactly the estimate row titles it will produce. */
+function labelsFor(l: JobLineInput, installName: string | null): string[] {
+  if (l.tires && installName) {
+    const noun = tireNoun(l.tires.quantity)
+    if (l.tires.mode === 'supply') return [noun]
+    if (l.tires.mode === 'both') return [noun, installName]
+    return [`Customer-supplied ${noun.toLowerCase()}`, installName]
+  }
+  if (l.partSupply) return [l.name]
+  return [l.detail && !l.name.toLowerCase().includes(l.detail.toLowerCase()) ? `${l.name} — ${l.detail}` : l.name]
 }
 export interface VehicleIdAudit {
   idMethod?: string | null        // plate_lookup | vin_camera | vin_upload | vin_manual | vehicle_manual
@@ -114,9 +161,15 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
     ?? await findOrCreateVehicle({ vin: v.vin ?? null, year: v.year ?? null, make: v.make ?? null, model: v.model ?? null, color: v.color ?? null })
 
   const vehicleLabel = [v.year, v.make, v.model].filter(Boolean).join(' ') || v.vin || 'vehicle'
-  // Selected service labels (standard package names + custom "Other" text), for the
-  // Work Board card. Non-empty names only; no price / catalog metadata.
-  const labels = serviceLabels(input.lines)
+  const lines = input.lines.map(sanitizeJobLine).filter((l) => l.name || l.tires)
+  // Clarified tire work adds the catalog's installation service (no installation service → the line
+  // is kept as plain typed text instead, so nothing is lost).
+  const install = lines.some((l) => l.tires && l.tires.mode !== 'supply') ? await installationCatalog().catch(() => null) : null
+  const installName = install?.name ?? null
+  const usable = (l: JobLineInput) => !l.tires || l.tires.mode === 'supply' || !!installName
+  // Selected service labels (standard package names + custom "Other" text + confirmed parts), for the
+  // Work Board card — each is exactly the estimate row title it becomes, so nothing is re-created twice.
+  const labels = [...new Set(serviceLabels(lines.flatMap((l) => (usable(l) ? labelsFor(l, installName) : [l.name])).map((name) => ({ name }))))]
   const services = labels.join(', ')
   const notes = `Quick Entry · ${input.customerName} · ${vehicleLabel}${services ? ` · ${services}` : ''}`.slice(0, 500)
 
@@ -145,7 +198,7 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
 
   const db = getDb()
   const a = input.audit ?? {}
-  const totalCents = input.lines.reduce((s, l) => s + (Number(l.priceCents) || 0), 0)
+  const totalCents = lines.reduce((s, l) => s + (Number(l.priceCents) || 0), 0)
   const [job] = await db.insert(quickEntryJobs).values({
     serviceOrderId: order.id, vehicleId: vehicle.id,
     customerName: input.customerName, customerPhone: input.customerPhone ?? null, customerEmail: input.customerEmail ?? null,
@@ -170,8 +223,31 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
   // Best-effort: this must never fail the Job creation (the Quick Entry contract).
   try {
     const est = await getOrCreateEstimate(order.id, input.createdBy ?? null)
-    // Tapped shortcuts carry their catalog id → that exact identity is kept (label text is display only).
-    const hints = new Map(input.lines.filter((l) => l.catalogId && l.name.trim()).map((l) => [normalizeServiceKey(l.name), l.catalogId as string]))
+    const actor = input.createdBy ?? null
+    // Confirmed parts and clarified tire work go through the ONE parts workflow first (special-order
+    // part + installation-labor review; no price is invented — the manager prices them on the estimate).
+    // Each is best-effort: on failure its label is promoted below as a plain service, so nothing is lost.
+    for (const l of lines) {
+      try {
+        if (l.tires && usable(l)) await addTireWork(order.id, { mode: l.tires.mode, quantity: l.tires.quantity, entryText: l.entryText ?? l.name }, actor, null)
+        else if (l.partSupply) await addEstimatePart(order.id, { description: l.name, supply: l.partSupply, entryText: l.entryText ?? null }, actor)
+      } catch (err) {
+        console.error('[quick-entry] part intake failed (kept as a service line):', err)
+      }
+    }
+    // Tapped shortcuts / confirmed suggestions carry their catalog id → that exact identity is kept
+    // (label text is display only), with the employee's original wording and the job-specific detail.
+    const agreed = input.agreedServices ?? []
+    const hints = new Map<string, PromoteHint>()
+    for (const l of lines) {
+      if (l.tires || l.partSupply) continue
+      const label = labelsFor(l, installName)[0]
+      const typed = l.entryText
+        ?? agreed.find((a) => a.originalText && normalizeServiceKey(a.originalText) !== normalizeServiceKey(l.name)
+          && [a.matchedDisplay, a.matchedFamily].some((m) => m && normalizeServiceKey(m) === normalizeServiceKey(l.name)))?.originalText
+        ?? null
+      hints.set(normalizeServiceKey(label), { catalogId: l.catalogId ?? null, entryText: typed, detail: l.detail ?? null, matchMethod: (l.matchMethod as PromoteHint['matchMethod']) ?? null })
+    }
     await promoteTextServices(est.id, order.id, hints)   // service_orders.services → job_services (deduped)
     if (input.workPriceCents && input.workPriceCents > 0) {
       // Manager priced this Job: the amount is the authoritative pre-fee/pre-tax work

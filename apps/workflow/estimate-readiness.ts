@@ -9,8 +9,11 @@
  *  - odor_overlap   Ozone Treatment / Air Duct Cleaning alongside Complete Odor Treatment, which
  *                   already bills both once — replace the separate line or explicitly keep it
  *  - odor_choice    generic odor wording with no chosen treatment ("Odor treatment", "remove smell")
+ *  - service_as_part a physical part saved as an ordinary service line ("Driver-side mirror assembly"),
+ *                   so it would skip the installation-labor review — convert it, confirm it is a
+ *                   service, or clarify it (part wording with "replace"/"R&R" is never auto-converted)
  */
-import { odorWordingNeedsChoice, type ServiceRole } from '@/apps/quick-entry/service-interpret'
+import { odorWordingNeedsChoice, classifyPartWording, type ServiceRole } from '@/apps/quick-entry/service-interpret'
 import { laborReviewSummary } from '@/apps/parts/labor-review'
 
 export interface ReadinessService {
@@ -19,7 +22,7 @@ export interface ReadinessService {
 }
 export interface ReadinessPart { id: string; description: string; laborStatus: string }
 
-export type ReadinessCode = 'part_labor' | 'odor_overlap' | 'odor_choice'
+export type ReadinessCode = 'part_labor' | 'odor_overlap' | 'odor_choice' | 'service_as_part'
 export interface ReadinessIssue { code: ReadinessCode; message: string; ids: string[]; packageId?: string }
 export interface Readiness { ready: boolean; issues: ReadinessIssue[]; summary: string | null }
 
@@ -37,6 +40,13 @@ export function detectOdorOverlap(services: ReadinessService[]): OdorOverlap | n
 /** A service still needing an odor-treatment choice: odor wording, no identity, not a confirmed custom line. */
 export function needsOdorChoice(s: ReadinessService): boolean {
   return s.kind !== 'part' && !s.catalogId && s.matchMethod !== 'custom' && odorWordingNeedsChoice(s.title)
+}
+
+/** A service line that reads like a physical part: no catalog identity, not confirmed as a custom
+ *  service, and part wording ('part') or part-plus-work wording that needs clarifying ('ambiguous'). */
+export function servicePartLike(s: ReadinessService): 'part' | 'ambiguous' | null {
+  if (s.kind === 'part' || s.catalogId || s.matchMethod === 'custom') return null
+  return classifyPartWording(s.title)
 }
 
 /** Issues that can block SYNC of an already-created invoice: only ones that cannot exist on historical
@@ -57,6 +67,13 @@ export function estimateReadiness(services: ReadinessService[], parts: Readiness
   if (choice.length) {
     issues.push({ code: 'odor_choice', ids: choice.map((s) => s.id),
       message: choice.length === 1 ? `Choose which odor treatment “${choice[0].title}” means.` : `${choice.length} odor requests need a treatment chosen.` })
+  }
+  const partLike = services.filter((s) => servicePartLike(s))
+  if (partLike.length) {
+    issues.push({ code: 'service_as_part', ids: partLike.map((s) => s.id),
+      message: partLike.length === 1
+        ? `“${partLike[0].title}” looks like a part — convert it to a part, confirm it is a service, or clarify it.`
+        : `${partLike.length} service lines look like parts — convert, confirm as services, or clarify them.` })
   }
   return { ready: issues.length === 0, issues, summary: issues.length ? issues.map((i) => i.message).join(' ') : null }
 }

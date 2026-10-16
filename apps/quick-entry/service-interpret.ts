@@ -260,6 +260,25 @@ export function isOdorFamily(text: string): boolean {
   return toks.some((t) => ODOR_WORDS.has(t) || t === 'ozone' || t === 'duct')
 }
 
+/**
+ * Does a SAVED service title read like a physical part rather than work? Used to catch parts that
+ * were typed (or reached the estimate) as ordinary service lines, so they get the same installation-
+ * labor review as real part rows. Reuses the interpreter's own part rules — never a second policy.
+ *   'part'      — a part on its own ("Driver-side mirror assembly", "Wiper blades")
+ *   'ambiguous' — part wording that may also include the work or a combined price ("Replace windshield",
+ *                 "R&R bumper", "Replace tires"): needs an explicit clarification, never auto-converted
+ *   null        — work on a component ("Paint mirror covers", "Windshield chip repair") or not part-like
+ */
+export function classifyPartWording(title: string): 'part' | 'ambiguous' | null {
+  const it = interpretEntry(title, [])
+  if (it.intent === 'tires' || it.intent === 'part_and_service') return 'ambiguous'
+  if (it.intent !== 'part') return null
+  const toks = tokenize(title)
+  const replaces = toks.some((t) => ['replace', 'replaced', 'replacement', 'install', 'installed', 'installation'].includes(t))
+  const rAndR = /\br\s*(?:&|and|\/)\s*r\b/i.test(title) || /\br\s*n\s*r\b/i.test(title)
+  return replaces || rAndR ? 'ambiguous' : 'part'
+}
+
 const isTireEntry = (toks: string[]) => toks.some((t) => stem(t) === 'tire') && !toks.some((t) => ['rotation', 'rotate', 'sensor', 'spare', 'storage', 'pressure'].includes(stem(t)))
 
 export function interpretEntry(entry: string, items: InterpretCatalogItem[]): Interpretation {

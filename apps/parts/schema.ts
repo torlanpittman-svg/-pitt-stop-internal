@@ -21,7 +21,9 @@ import {
   integer,
   numeric,
   index,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { serviceOrders, jobLineItems, jobServices } from '@/apps/workflow/schema'
 
 // needed → ordered → partially_received → received ; cancelled is terminal.
@@ -84,5 +86,7 @@ export const jobParts = pgTable(
     index('job_parts_status_idx').on(t.status),
     index('job_parts_service_idx').on(t.jobServiceId),
     index('job_parts_labor_service_idx').on(t.laborServiceId),
+    // One live part record per estimate part row (migration 0053) — a retried conversion can't duplicate it.
+    uniqueIndex('job_parts_active_service_uniq').on(t.jobServiceId).where(sql`job_service_id IS NOT NULL AND status <> 'cancelled'`),
   ]
 )

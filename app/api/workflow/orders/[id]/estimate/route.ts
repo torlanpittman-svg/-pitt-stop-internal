@@ -17,7 +17,7 @@ import {
 } from '@/apps/workflow/estimate-db'
 import { interpretServiceEntry, listCatalogChoices } from '@/apps/quick-entry/service-match-db'
 import { listShortcuts, approveAlias } from '@/apps/quick-entry/shortcuts'
-import { addEstimatePart, updateEstimatePart, removeEstimatePart, decidePartLabor, addTireWork, type LaborAction } from '@/apps/parts/estimate-parts'
+import { addEstimatePart, updateEstimatePart, removeEstimatePart, decidePartLabor, addTireWork, convertServiceToPart, clarifyServiceWithPart, type LaborAction } from '@/apps/parts/estimate-parts'
 import { assertEstimateReady } from '@/apps/workflow/estimate-review'
 import type { ApprovalState, EstimateStatus } from '@/apps/workflow/estimate'
 
@@ -156,6 +156,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         await decidePartLabor(id, String(body.partId), (body.labor ?? {}) as LaborAction, actor, g.role)
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
+      case 'convert_to_part': {
+        // A part saved as a service line → a real part (same row + price line; price/qty/tax untouched).
+        const p = (body.part ?? {}) as Record<string, unknown>
+        await convertServiceToPart(id, String(body.serviceId), {
+          fitment: p.fitment as string | null, partNumber: p.partNumber as string | null, supplier: p.supplier as string | null,
+        }, actor)
+        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
+      }
+      case 'clarify_part': {
+        // Keep this line as the work (price untouched) and add the part separately, linked as its labor.
+        const p = (body.part ?? {}) as Record<string, unknown>
+        await clarifyServiceWithPart(id, String(body.serviceId), {
+          description: String(p.description ?? ''), supply: p.supply === 'customer' ? 'customer' : 'shop',
+          fitment: p.fitment as string | null, partNumber: p.partNumber as string | null, supplier: p.supplier as string | null,
+          quantity: p.quantity as number | null, unitCostCents: p.unitCostCents as number | null, sellPriceCents: p.sellPriceCents as number | null,
+        }, actor, g.role)
+        return NextResponse.json({ ok: true, view: await getEstimateView(id) })
+      }
       case 'add_tires': {
         await addTireWork(id, (body.tires ?? {}) as never, actor, g.role)
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
@@ -198,7 +216,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       // Standalone quotes use the dedicated conversion and email routes. All edits share
       // the same lock as send/conversion so a customer cannot receive a half-edited quote.
       const allowed = ['build', 'prepare', 'set_service_price', 'set_work_total', 'itemize', 'accept_total', 'add_service', 'rename_service', 'remove_service',
-        'interpret', 'catalog_list', 'select_match', 'set_detail', 'keep_overlap', 'add_part', 'update_part', 'remove_part', 'part_labor', 'add_tires']
+        'interpret', 'catalog_list', 'select_match', 'set_detail', 'keep_overlap', 'add_part', 'update_part', 'remove_part', 'part_labor', 'add_tires',
+        'convert_to_part', 'clarify_part']
       if (!allowed.includes(action)) return NextResponse.json({ error: 'Use the estimate actions to send or move this estimate.' }, { status: 400 })
       return await withIntakeLock(id, async () => {
         if ((await getOrderWithContext(id))?.status !== 'estimate') throw new Error('This estimate has moved to the Work Board. Refresh before editing.')

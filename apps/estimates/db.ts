@@ -1,3 +1,4 @@
+import { cleanDetail } from '@/apps/quickbooks/retail-format'
 import { randomUUID } from 'node:crypto'
 import { and, eq, desc, isNull, or, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
@@ -21,7 +22,9 @@ export const intakeInput = z.object({
   vin: z.union([z.string().trim().toUpperCase().regex(/^[A-HJ-NPR-Z0-9]{17}$/), z.literal('')]).default(''),
   vehicleId: z.uuid().nullable().optional(),
   // catalogId = the tapped shortcut / chosen catalog item (validated server-side); omitted for free text.
-  lines: z.array(z.object({ name: z.string().trim().min(1).max(200), priceCents: z.number().int().min(0).max(100000000), catalogId: z.uuid().nullable().optional() })).max(100).default([]),
+  lines: z.array(z.object({ name: z.string().trim().min(1).max(200), priceCents: z.number().int().min(0).max(100000000), catalogId: z.uuid().nullable().optional(),
+    // What was typed and the job-specific area (Quick Entry interpretation) — kept with the line, never invoice text on their own.
+    entryText: z.string().max(300).nullable().optional(), detail: z.string().max(160).nullable().optional() })).max(100).default([]),
   workPriceCents: z.number().int().min(0).max(100000000).nullable().optional(),
   notes: z.string().trim().max(5000).default(''),
 })
@@ -51,6 +54,7 @@ export async function createIntake(input: z.infer<typeof intakeInput>, actor: st
     const catalogId = chosen[sortOrder]?.catalogId ?? catalogIds.get(normalizeServiceKey(line.name)) ?? null
     return {
       id: randomUUID(), jobEstimateId: estimateId, title: line.name, source: 'manual', sortOrder, catalogId,
+      entryText: line.entryText && line.entryText.trim().toLowerCase() !== line.name.toLowerCase() ? line.entryText.trim() : null, detail: cleanDetail(line.detail),
       matchMethod: chosen[sortOrder] ? 'shortcut' : catalogId ? 'legacy' : null, catalogDescription: await catalogDescriptionSnapshot(catalogId),
     }
   }))

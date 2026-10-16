@@ -53,7 +53,8 @@ beforeEach(async () => {
   CAT = await seedProductionCatalog(db)
 })
 const req = (body?: unknown) => new Request('http://x/api/quick-entry/services', body ? { method: 'POST', body: JSON.stringify(body) } : undefined)
-const auditTypes = async () => (await db.select().from(serviceCatalogEvents)).map((e) => e.eventType).filter((t) => t !== 'catalog_seeded')
+// Only what the test itself did — the seeding migrations' own audit rows are excluded.
+const auditTypes = async () => (await db.select().from(serviceCatalogEvents)).filter((e) => !e.actor?.startsWith('migration ')).map((e) => e.eventType)
 
 describe('permissions (server-side)', () => {
   it('employees and signed-out users cannot read or change service configuration', async () => {
@@ -158,13 +159,30 @@ describe('approved alternate names', () => {
 })
 
 describe('review queue + usage suggestions', () => {
-  it('lists unresolved catalog decisions, incl. the ambiguous Odor / Ozone name, until confirmed', async () => {
+  it('before 0053: lists the ambiguous Odor / Ozone name until a manager confirms it', async () => {
+    for (const t of CLEAR_TABLES) await db.execute(`DELETE FROM ${t}`)
+    CAT = await seedProductionCatalog(db, { upTo: 52 })
     const q = await catalogReviewQueue()
     const ozone = q.find((r) => r.catalogId === CAT.odor_ozone)!
     expect(ozone.reasons.join(' ')).toMatch(/Confirm it is the Ozone Treatment option/)
     expect(q.find((r) => r.catalogId === CAT.complete_odor_treatment)!.qbCandidateRef).toBe('68')
     await confirmServiceRole(CAT.odor_ozone, 'Owner')
     expect((await catalogReviewQueue()).some((r) => r.catalogId === CAT.odor_ozone)).toBe(false)
+  })
+  it('after 0053: mapped items leave the QuickBooks queue; missing descriptions and the package price stay listed until written', async () => {
+    const q = await catalogReviewQueue()
+    const by = (slug: string) => q.find((r) => r.catalogId === CAT[slug])
+    // The legacy combined row is out of new picks, so it is no longer a decision; the ozone-only row is confirmed.
+    expect(by('odor_ozone')).toBeUndefined()
+    expect(by('ozone_treatment')).toBeUndefined()
+    for (const slug of ['seat_shampoo', 'paint_refinish', 'installation_labor', 'air_duct_cleaning', 'cabin_air_filter_replacement', 'paint_touch_up']) {
+      expect(by(slug)?.reasons.join(' '), slug).toMatch(/No approved description yet/)
+      expect(by(slug)?.reasons.join(' '), slug).not.toMatch(/No QuickBooks item confirmed/)
+    }
+    expect(by('complete_odor_treatment')!.reasons).toEqual(['Package price is entered on each job until a default is confirmed.'])
+    // Writing the approved description clears that item from the queue (audited, catalog only).
+    await updateCatalogService(CAT.seat_shampoo, { description: 'Shampoo and extraction of upholstered seats.' }, 'Owner')
+    expect((await catalogReviewQueue()).some((r) => r.catalogId === CAT.seat_shampoo)).toBe(false)
   })
   it('usage suggestions are read-only and never re-add a shortcut a manager hid', async () => {
     const wax = (await listShortcuts()).find((s) => s.catalogId === CAT.exterior_wax)!

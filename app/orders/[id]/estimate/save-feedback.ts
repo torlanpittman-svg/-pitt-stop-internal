@@ -11,6 +11,7 @@ export interface ServiceView {
   id: string; title: string; priceCents: number | null; suggestedCents: number | null
   catalogId?: string | null; catalogName?: string | null; description?: string; detail?: string | null; matchMethod?: string | null
   matchState?: 'matched' | 'custom' | 'unmatched' | 'choose'; qbMapped?: boolean; role?: string | null; entryText?: string | null; overlapAcknowledged?: boolean
+  partLike?: 'part' | 'ambiguous' | null
 }
 export type LaborStatus = 'needs_review' | 'labor_added' | 'included' | 'part_only' | 'waived'
 export interface PartView {
@@ -18,7 +19,7 @@ export interface PartView {
   quantity: number; unitCostCents: number | null; sellPriceCents: number | null; lineCents: number | null
   supply: 'shop' | 'customer'; laborStatus: LaborStatus; laborServiceId: string | null; laborNote: string | null; invoiceText: string
 }
-export interface ReviewIssue { code: 'part_labor' | 'odor_overlap' | 'odor_choice'; message: string; ids: string[]; packageId?: string }
+export interface ReviewIssue { code: 'part_labor' | 'odor_overlap' | 'odor_choice' | 'service_as_part'; message: string; ids: string[]; packageId?: string }
 export interface EstimateViewData {
   exists: boolean; flat: boolean; workTotalCents: number; services: ServiceView[]; incomplete: boolean; referenceCents: number | null
   parts?: PartView[]; review?: { ready: boolean; issues: ReviewIssue[] }
@@ -46,6 +47,8 @@ export function describeEdit(edit: EstimateEdit, view: EstimateViewData): { savi
     case 'update_part': return { saving: 'Saving part…', saved: 'Part saved', failed: 'Couldn’t save the part — the previous details are still saved.' }
     case 'remove_part': return { saving: 'Removing part…', saved: 'Part removed · Saved', failed: 'Couldn’t remove the part — it’s still on the estimate.' }
     case 'part_labor': return { saving: 'Saving labor review…', saved: 'Labor review saved', failed: 'Couldn’t save the labor review.' }
+    case 'convert_to_part': return { saving: 'Converting to a part…', saved: `${name} is now a part · Saved`, failed: `Couldn’t convert ${name} — it’s still a service line, unchanged.` }
+    case 'clarify_part': return { saving: 'Adding the part…', saved: 'Part added and linked · Saved', failed: `Couldn’t add the part for ${name} — nothing was changed.` }
     default: return { saving: 'Saving…', saved: 'Saved', failed: 'Couldn’t save your change.' }
   }
 }
@@ -70,6 +73,13 @@ function confirmsEdit(edit: EstimateEdit, view: EstimateViewData): string | null
       return svc && clean(svc.detail) === clean(edit.detail) ? null : 'The server did not confirm the detail.'
     case 'keep_overlap':
       return svc?.overlapAcknowledged ? null : 'The server did not confirm the choice.'
+    case 'convert_to_part':
+      // The service row is gone from Services and a part now bills on that same row.
+      return !svc && (view.parts ?? []).some((p) => p.serviceId === edit.serviceId) ? null : 'The server did not confirm the conversion.'
+    case 'clarify_part': {
+      const want = clean((edit.part as { description?: unknown } | undefined)?.description).toLowerCase()
+      return svc && (view.parts ?? []).some((p) => p.laborServiceId === edit.serviceId && clean(p.description).toLowerCase() === want) ? null : 'The server did not confirm the part.'
+    }
     case 'remove_part':
       return (view.parts ?? []).some((p) => p.id === edit.partId) ? 'The server still lists this part.' : null
     case 'part_labor': {

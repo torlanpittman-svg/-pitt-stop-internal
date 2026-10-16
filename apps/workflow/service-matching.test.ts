@@ -96,6 +96,9 @@ const svcLine = async (serviceId: string) => (await db.select().from(jobLineItem
 
 describe('migration 0052 (the real file)', () => {
   it('is idempotent and seeds the catalog rows, roles, and the 14 usage-based shortcuts exactly once', async () => {
+    // The catalog exactly as 0052 left it (0053's follow-up is covered in apps/quick-entry/service-mapping.test.ts).
+    for (const t of CLEAR_TABLES) await db.execute(`DELETE FROM ${t}`)
+    CAT = await seedProductionCatalog(db, { upTo: 52 })
     await runMigration0052(db)   // second run (seedProductionCatalog already ran it once)
     for (const slug of ['complete_odor_treatment', 'installation_labor', 'seat_shampoo', 'paint_refinish']) expect(CAT[slug]).toBeTruthy()
     const cats = await db.select().from(serviceCatalog)
@@ -173,9 +176,9 @@ describe('catalog identity + approved description', () => {
     const [v] = await db.insert(vehicles).values({ make: 'Kia', model: 'Soul' }).returning()
     const [o] = await db.insert(serviceOrders).values({ orderNumber: `SM-${++seq}`, vehicleId: v.id, source: 'quick_entry', serviceType: 'retail', status: 'arrived', services: ['Ozone Treatment', 'Engine Bay'] }).returning()
     const est = await getOrCreateEstimate(o.id, 'Employee')
-    await promoteTextServices(est.id, o.id, new Map([['ozone treatment', CAT.odor_ozone], ['engine bay', CAT.engine_bay_clean]]))
+    await promoteTextServices(est.id, o.id, new Map([['ozone treatment', CAT.ozone_treatment], ['engine bay', CAT.engine_bay_clean]]))
     const rows = await db.select().from(jobServices).where(eq(jobServices.jobEstimateId, est.id))
-    expect(rows.map((r) => [r.title, r.catalogId, r.matchMethod])).toEqual([['Ozone Treatment', CAT.odor_ozone, 'shortcut'], ['Engine Bay', CAT.engine_bay_clean, 'shortcut']])
+    expect(rows.map((r) => [r.title, r.catalogId, r.matchMethod])).toEqual([['Ozone Treatment', CAT.ozone_treatment, 'shortcut'], ['Engine Bay', CAT.engine_bay_clean, 'shortcut']])
   })
 })
 
@@ -183,7 +186,7 @@ describe('odor treatments (owner definitions)', () => {
   it('Complete Odor Treatment bills once with the approved wording; a separate Ozone line is an overlap until resolved', async () => {
     const { orderId, estimateId } = await order()
     const pkg = await addService(estimateId, 'Complete Odor Treatment', { catalogId: CAT.complete_odor_treatment, matchMethod: 'rule', actor: 'Manager' })
-    const oz = await addService(estimateId, 'Ozone Treatment', { catalogId: CAT.odor_ozone, matchMethod: 'alias', actor: 'Manager' })
+    const oz = await addService(estimateId, 'Ozone Treatment', { catalogId: CAT.ozone_treatment, matchMethod: 'alias', actor: 'Manager' })
     await setServicePrice(estimateId, pkg.id, 35000, 'Manager')
     await setServicePrice(estimateId, oz.id, 30000, 'Manager')
     const review = (await getEstimateView(orderId)).review!
@@ -197,7 +200,8 @@ describe('odor treatments (owner definitions)', () => {
     await removeEstimateService(orderId, oz.id, 'Manager')
     expect((await getEstimateView(orderId)).review!.ready).toBe(true)
     const { payload: p } = await payload(orderId)
-    expect(p.lines).toEqual([{ itemId: '53', description: 'Complete odor treatment, including air duct cleaning and ozone treatment.', amountCents: 35000 }])
+    // Billed under the existing QuickBooks "Odor Treatment" item (#68, migration 0053) with the approved wording.
+    expect(p.lines).toEqual([{ itemId: '68', description: 'Complete odor treatment, including air duct cleaning and ozone treatment.', amountCents: 35000 }])
   })
 
   it('keeping a separate line on purpose is an explicit, audited decision', async () => {
@@ -217,9 +221,11 @@ describe('odor treatments (owner definitions)', () => {
     await setServicePrice(estimateId, row.id, 30000, 'Manager')
     expect((await getEstimateView(orderId)).services[0].matchState).toBe('choose')
     expect((await createRetailQBInvoice({ orderId, actor: 'Manager' })).error).toMatch(/Choose which odor treatment/)
-    await selectServiceMatch(orderId, row.id, { catalogId: CAT.odor_ozone, title: 'Ozone Treatment' }, 'Manager')
+    // The legacy combined "Odor / Ozone Treatment" is no longer offered for new picks…
+    await expect(selectServiceMatch(orderId, row.id, { catalogId: CAT.odor_ozone }, 'Manager')).rejects.toThrow(/not in the catalog/)
+    await selectServiceMatch(orderId, row.id, { catalogId: CAT.ozone_treatment, title: 'Ozone Treatment' }, 'Manager')
     expect((await loadEstimateReview(orderId)).readiness.ready).toBe(true)
-    expect((await db.select().from(jobServices).where(eq(jobServices.id, row.id)))[0]).toMatchObject({ title: 'Ozone Treatment', entryText: 'Odor Treatment', catalogId: CAT.odor_ozone })
+    expect((await db.select().from(jobServices).where(eq(jobServices.id, row.id)))[0]).toMatchObject({ title: 'Ozone Treatment', entryText: 'Odor Treatment', catalogId: CAT.ozone_treatment })
     expect((await svcLine(row.id)).priceCents).toBe(30000)
   })
 })
@@ -253,7 +259,8 @@ describe('special-order parts + installation labor review', () => {
     expect(v.review!.ready).toBe(true)
     // Example from the brief: part + painting + installation = three distinct invoice lines.
     const { payload: p, draft } = await payload(orderId)
-    expect(p.lines.map((l) => [l.itemId, l.amountCents])).toEqual([['1010000001', 26500], ['53', 15000], ['53', 7500]])
+    // Part (general Part item) + painting (existing "Paint" #57) + installation (existing "Install" #73).
+    expect(p.lines.map((l) => [l.itemId, l.amountCents])).toEqual([['1010000001', 26500], ['57', 15000], ['73', 7500]])
     expect(p.totalCents).toBe(draft.totalCents)
   })
 
@@ -317,7 +324,7 @@ describe('special-order parts + installation labor review', () => {
     expect(v.services[0]).toMatchObject({ catalogId: CAT.installation_labor, priceCents: 10000, detail: '4 tires, including mounting, balancing' })
     expect(v.review!.ready).toBe(true)
     const { payload: p } = await payload(orderId)
-    expect(p.lines.map((l) => [l.itemId, l.amountCents])).toEqual([['1010000001', 75600], ['53', 10000]])
+    expect(p.lines.map((l) => [l.itemId, l.amountCents])).toEqual([['1010000001', 75600], ['73', 10000]])
     expect(JSON.stringify(p.lines)).not.toMatch(/disposal/)
   })
 
@@ -374,9 +381,11 @@ describe('the actual outgoing QuickBooks invoice (create)', () => {
     expect(qb.posts.map((p) => p.path)).toEqual(['/invoice'])
     const body = qb.posts[0].body as { Line: Array<{ Description: string; Amount: number; SalesItemLineDetail: { ItemRef: { value: string }; TaxCodeRef: { value: string } } }> }
     expect(body.Line.map((l) => [l.SalesItemLineDetail.ItemRef.value, l.Description, l.Amount, l.SalesItemLineDetail.TaxCodeRef.value])).toEqual([
-      ['53', 'Seat Shampoo — passenger seat', 60, 'NON'],
+      // Existing items (Clean seats #23, Part, Install #73) — never generic Labor — and the line text is the
+      // service name + area, NOT the item's historical "Clean rear seats" wording.
+      ['23', 'Seat Shampoo — passenger seat', 60, 'NON'],
       ['1010000001', 'Driver-side mirror assembly — Fits: 2019 Ford F-150 — Part #: FL3Z-17683', 265, 'NON'],
-      ['53', 'Installation Labor — Driver-side mirror assembly', 75, 'NON'],
+      ['73', 'Installation Labor — Driver-side mirror assembly', 75, 'NON'],
     ])
   })
 })

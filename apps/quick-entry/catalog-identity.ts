@@ -12,7 +12,7 @@
  * label edit. Matching is case/spacing-insensitive against the catalog name and every alias.
  */
 import { getDb } from '@/platform/db'
-import { isNull } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { serviceCatalog, serviceAliases } from './schema'
 import { isGenericOdorKey } from './service-interpret'
 
@@ -48,6 +48,8 @@ export function buildCatalogKeyIndex(
 /**
  * Resolve a set of service titles to their catalog ids, keyed by the NORMALIZED title. Titles
  * with no (non-archived) catalog match are omitted — they are genuinely custom (Labor fallback).
+ * Only ACTIVE rows are stamped onto new lines: a row retired from new picks (e.g. the legacy combined
+ * "Odor / Ozone Treatment", 0053) keeps its existing lines but never acquires new ones by label.
  */
 export async function resolveCatalogIds(titles: string[]): Promise<Map<string, string>> {
   // Generic odor wording ("Odor Treatment", "remove smell") is deliberately NOT auto-stamped: under
@@ -57,7 +59,7 @@ export async function resolveCatalogIds(titles: string[]): Promise<Map<string, s
   if (wanted.size === 0) return new Map()
   const db = getDb()
   const [cats, aliases] = await Promise.all([
-    db.select({ id: serviceCatalog.id, name: serviceCatalog.name }).from(serviceCatalog).where(isNull(serviceCatalog.archivedAt)),
+    db.select({ id: serviceCatalog.id, name: serviceCatalog.name }).from(serviceCatalog).where(and(isNull(serviceCatalog.archivedAt), eq(serviceCatalog.active, true))),
     db.select({ catalogId: serviceAliases.catalogId, alias: serviceAliases.alias }).from(serviceAliases),
   ])
   const index = buildCatalogKeyIndex(cats, aliases)

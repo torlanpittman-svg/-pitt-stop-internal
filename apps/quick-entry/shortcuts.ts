@@ -229,7 +229,9 @@ export async function updateCatalogService(catalogId: string, patch: {
       const qb = await assertLiveQbItem(String(patch.qbItemRef))
       if (qb.id !== c.qbItemRef || !c.qbSyncEnabled || c.qbItemStatus !== 'existing') {
         before.qbItem = { ref: c.qbItemRef, status: c.qbItemStatus, sync: c.qbSyncEnabled }; after.qbItem = { ref: qb.id, name: qb.name }
-        Object.assign(set, { qbItemRef: qb.id, qbItemStatus: 'existing', qbSyncEnabled: true, reviewFlag: false })
+        // Stays flagged while there is no approved description (invoices would just say the name).
+        const desc = set.qbDescription !== undefined ? set.qbDescription : c.qbDescription
+        Object.assign(set, { qbItemRef: qb.id, qbItemStatus: 'existing', qbSyncEnabled: true, reviewFlag: !(typeof desc === 'string' && desc.trim()) })
       }
     } else if (c.qbSyncEnabled || c.qbItemStatus !== 'mapping_review') {
       before.qbItem = { ref: c.qbItemRef, status: c.qbItemStatus, sync: c.qbSyncEnabled }; after.qbItem = 'Labor until mapped'
@@ -237,6 +239,7 @@ export async function updateCatalogService(catalogId: string, patch: {
     }
   }
   if (Object.keys(set).length === 0) return
+  if (typeof set.qbDescription === 'string' && set.qbDescription.trim() && c.reviewFlag && isMapped({ ...c, ...set } as typeof c)) set.reviewFlag = false
   await getDb().update(serviceCatalog).set({ ...set, updatedAt: new Date() }).where(eq(serviceCatalog.id, catalogId))
   await audit(catalogId, 'catalog_updated', actor, { name: c.name, before, after })
 }
@@ -294,11 +297,14 @@ export interface CatalogReviewItem {
   role: string | null; roleConfirmed: boolean; defaultPriceCents: number | null; description: string
 }
 
-/** Catalog items needing a manager decision: no confirmed QuickBooks item, or an unconfirmed role. */
+/** Catalog items needing a manager decision: no confirmed QuickBooks item, an unconfirmed role, an
+ *  approved description still to be written (flagged — invoices use the service name meanwhile), or
+ *  the Complete Odor Treatment package without a default price. */
 export async function catalogReviewQueue(): Promise<CatalogReviewItem[]> {
   const rows = await getDb().select().from(serviceCatalog)
     .where(and(isNull(serviceCatalog.archivedAt), eq(serviceCatalog.active, true), or(isNull(serviceCatalog.source), ne(serviceCatalog.source, 'dealer_rules')),
-      or(eq(serviceCatalog.qbSyncEnabled, false), ne(serviceCatalog.qbItemStatus, 'existing'), and(isNotNull(serviceCatalog.serviceRole), isNull(serviceCatalog.roleConfirmedAt)))))
+      or(eq(serviceCatalog.qbSyncEnabled, false), ne(serviceCatalog.qbItemStatus, 'existing'), and(isNotNull(serviceCatalog.serviceRole), isNull(serviceCatalog.roleConfirmedAt)),
+        eq(serviceCatalog.reviewFlag, true), and(eq(serviceCatalog.serviceRole, 'odor_complete'), isNull(serviceCatalog.defaultPriceCents)))))
     .orderBy(asc(serviceCatalog.sortOrder))
   return rows.map((c) => {
     const reasons: string[] = []
@@ -306,9 +312,10 @@ export async function catalogReviewQueue(): Promise<CatalogReviewItem[]> {
     if (c.serviceRole && !c.roleConfirmedAt) reasons.push(c.slug === 'odor_ozone'
       ? 'Named “Odor / Ozone Treatment”; its description covers ozone + fabric steam cleaning (no duct cleaning). Confirm it is the Ozone Treatment option.'
       : 'Confirm this service’s role.')
+    if (c.reviewFlag && isMapped(c) && !(c.qbDescription && c.qbDescription.trim())) reasons.push(`No approved description yet — invoices say “${c.name}”. Write one in Edit (the QuickBooks item’s own text is job-specific and isn’t used).`)
     if (c.serviceRole === 'odor_complete' && c.defaultPriceCents == null) reasons.push('Package price is entered on each job until a default is confirmed.')
     return { catalogId: c.id, name: c.name, reasons, qbCandidateRef: c.qbCandidateRef, notes: c.notes, role: c.serviceRole, roleConfirmed: !!c.roleConfirmedAt, defaultPriceCents: c.defaultPriceCents, description: canonicalDescription(c) }
-  })
+  }).filter((r) => r.reasons.length > 0)
 }
 
 /**

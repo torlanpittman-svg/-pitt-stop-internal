@@ -78,8 +78,11 @@ function MatchLine({ s, busy, onChange }: { s: ServiceView; busy: boolean; onCha
   if (s.matchState === 'choose') {
     return <button type="button" onClick={onChange} disabled={busy} className="mt-1 rounded-lg bg-amber-600/25 border border-amber-700/60 px-2.5 py-1 text-amber-200 text-xs font-semibold">Which odor treatment? Choose…</button>
   }
+  if (s.matchState === 'unmatched' && s.partLike) {
+    return <p className="mt-1 text-amber-300/90 text-xs font-semibold">{s.partLike === 'part' ? 'Looks like a part' : 'Part or labor?'} — review below</p>
+  }
   if (s.matchState === 'unmatched') {
-    return <button type="button" onClick={onChange} disabled={busy} className="mt-1 text-amber-300/90 text-xs font-semibold">Not matched to a catalog service — choose…</button>
+    return <button type="button" onClick={onChange} disabled={busy} className="mt-0.5 min-h-10 inline-flex items-center text-amber-300/90 text-xs font-semibold">Not matched to a catalog service — choose…</button>
   }
   return (
     <div className="mt-0.5 min-w-0">

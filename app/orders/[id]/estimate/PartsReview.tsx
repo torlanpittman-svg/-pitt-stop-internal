@@ -41,9 +41,70 @@ export function ReviewNotices({ issues, services, busy, post, onChooseOdor }: {
           {i.code === 'odor_choice' && i.ids.map((id) => (
             <button key={id} type="button" disabled={busy} onClick={() => onChooseOdor(id)} className={`${BTN} mt-2 mr-2 bg-amber-600 text-white`}>Choose treatment for “{title(id)}”</button>
           ))}
+          {i.code === 'service_as_part' && i.ids.map((id) => {
+            const svc = services.find((s) => s.id === id)
+            return svc ? <PartLikeReview key={id} service={svc} busy={busy} post={post} /> : null
+          })}
           {i.code === 'part_labor' && <p className="text-amber-200/70 text-xs mt-1">Confirm installation for each part in the Parts list above. You can keep editing; sending or invoicing waits until this is resolved.</p>}
         </div>
       ))}
+    </div>
+  )
+}
+
+/** The part wording of a line without the work words ("Replace front windshield" → "Front windshield"). */
+function partWords(title: string): string {
+  const t = title.replace(/\b(r\s*(?:&|and|\/)\s*r|replace(?:ment)?|install(?:ation|ed)?|new)\b/gi, ' ').replace(/\s+/g, ' ').trim()
+  return t ? t[0].toUpperCase() + t.slice(1) : title
+}
+
+/**
+ * A service line that reads like a part. Clear part wording: convert it (same row, same price/qty/tax)
+ * or confirm it's a service. Part + work wording ("Replace windshield", "R&R bumper", tires): keep the
+ * line as the labor exactly as priced and add the part separately — or convert the whole line, which
+ * keeps its full price as the part price. Nothing is converted or split automatically.
+ */
+function PartLikeReview({ service, busy, post }: { service: ServiceView; busy: boolean; post: (e: EstimateEdit) => Promise<boolean> }) {
+  const [mode, setMode] = useState<'none' | 'clarify'>('none')
+  const [f, setF] = useState({ description: partWords(service.title), supply: 'shop' as 'shop' | 'customer', qty: '1', price: '' })
+  const ambiguous = service.partLike === 'ambiguous'
+  const convert = <button type="button" disabled={busy} onClick={() => post({ action: 'convert_to_part', serviceId: service.id })} className={`${BTN} ${ambiguous ? 'border border-amber-700 text-amber-100' : 'bg-amber-600 text-white'}`}>{ambiguous ? 'Whole line is the part' : 'Convert to part'}</button>
+  const isService = <button type="button" disabled={busy} onClick={() => post({ action: 'select_match', serviceId: service.id, custom: true })} className={`${BTN} border border-amber-700 text-amber-100`}>{ambiguous ? 'Labor only — no part' : 'It’s a service'}</button>
+  return (
+    <div className="mt-2 rounded-xl border border-amber-900/60 bg-gray-950/40 px-3 py-2.5">
+      <p className="text-amber-100 text-sm font-semibold break-words">“{service.title}”{service.priceCents != null ? ` · $${dollars(service.priceCents)}` : ''}</p>
+      {service.entryText && service.entryText !== service.title && <p className="text-gray-500 text-[11px] break-words">Typed as “{service.entryText}”</p>}
+      <p className="text-amber-200/70 text-xs mt-0.5">{ambiguous
+        ? 'Could be the part, the work, or both. If we supply the part, add it separately so installation is accounted for.'
+        : 'Looks like a part. As a part it gets an installation-labor check; price, quantity and tax stay exactly as they are.'}</p>
+      {mode === 'none' && (
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          {ambiguous
+            ? <><button type="button" disabled={busy} onClick={() => setMode('clarify')} className={`${BTN} bg-amber-600 text-white col-span-2`}>Keep as labor, add the part…</button>{isService}{convert}</>
+            : <>{convert}{isService}<button type="button" disabled={busy} onClick={() => setMode('clarify')} className={`${BTN} border border-amber-700 text-amber-100 col-span-2`}>Clarify — it’s the labor, add the part…</button></>}
+        </div>
+      )}
+      {mode === 'clarify' && (
+        <form className="mt-2 grid grid-cols-2 gap-2" onSubmit={(e) => {
+          e.preventDefault()
+          void post({ action: 'clarify_part', serviceId: service.id, part: { description: f.description, supply: f.supply, quantity: f.qty, sellPriceCents: f.supply === 'shop' ? parseCents(f.price) : null } })
+            .then((ok) => { if (ok) setMode('none') })
+        }}>
+          <p className="col-span-2 text-gray-300 text-xs">“{service.title}” stays as the labor at its current price. The part is added below and linked to it.</p>
+          <label className="text-gray-400 text-xs col-span-2">Part<input value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} className={`${INPUT} mt-1`} /></label>
+          <fieldset className="col-span-2 grid grid-cols-2 gap-2">
+            <legend className="sr-only">Who supplies the part?</legend>
+            {(['shop', 'customer'] as const).map((v) => (
+              <button key={v} type="button" aria-pressed={f.supply === v} onClick={() => setF({ ...f, supply: v })}
+                className={`${BTN} ${f.supply === v ? 'bg-blue-600 text-white' : 'border border-gray-600 text-gray-200'}`}>{v === 'shop' ? 'We supply it' : 'Customer’s part'}</button>
+            ))}
+          </fieldset>
+          <label className="text-gray-400 text-xs">Quantity<input value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} inputMode="decimal" className={`${INPUT} mt-1`} /></label>
+          {f.supply === 'shop' && <label className="text-gray-400 text-xs">Part price each<input value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} inputMode="decimal" placeholder="blank = later" className={`${INPUT} mt-1`} /></label>}
+          {f.supply === 'shop' && service.priceCents != null && <p className="col-span-2 text-amber-200/70 text-[11px]">If ${dollars(service.priceCents)} already included the part, lower this line’s price yourself — nothing is split automatically.</p>}
+          <div className="col-span-2 flex gap-2"><button type="submit" disabled={busy || !f.description.trim()} className={`${BTN} bg-blue-600 text-white flex-1`}>Add part</button><button type="button" onClick={() => setMode('none')} className={`${BTN} border border-gray-600 text-gray-200`}>Back</button></div>
+        </form>
+      )}
     </div>
   )
 }
