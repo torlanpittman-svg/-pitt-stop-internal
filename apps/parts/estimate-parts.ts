@@ -11,13 +11,14 @@
  * Nothing here invents a parts/labor split, a price, or a quantity: prices are only what the user
  * enters. All changes are audited (service_order_events, append-only).
  */
+import { randomUUID } from 'node:crypto'
 import { getDb } from '@/platform/db'
 import { and, eq, ne, sql } from 'drizzle-orm'
 import { jobParts } from './schema'
 import { jobServices, jobLineItems, serviceOrderEvents } from '@/apps/workflow/schema'
 import {
   getOrCreateEstimate, getEstimateRow, addService, addLine, updateLine, removeLine, setServicePrice,
-  settlePricingAfterLineChange, flagQbSyncNeededIfInvoiced, removeEstimateService, selectServiceMatch,
+  settlePricingAfterLineChange, flagQbSyncNeededIfInvoiced, removeEstimateService,
 } from '@/apps/workflow/estimate-db'
 import { classifyPartWording } from '@/apps/quick-entry/service-interpret'
 import { partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
@@ -368,20 +369,126 @@ export async function convertServiceToPart(orderId: string, serviceId: string, i
  * job, or installing a customer's tires: the line stays exactly as it is (price untouched) and is
  * confirmed as a service, the part is added separately (shop part at the price the user enters —
  * blank allowed — or a customer-supplied part with no charge), and that part's installation labor is
- * linked to this line ("already included"). Nothing is split or re-priced automatically. A retry finds
- * the part already linked and returns it.
+ * linked to this line ("already included").
+ *
+ * ATOMIC + IDEMPOTENT. Every write — confirm the line as labor, create the part's estimate row and
+ * priced line, the job_parts record, link the labor, and the audit — happens in ONE SQL statement, so
+ * a failure can never leave the review cleared without a part, an unpriced orphan line, or a half-
+ * linked part. (The Neon HTTP driver has single-statement/batch execution but not interactive
+ * multi-statement `db.transaction`; this is deliberately one statement so the whole graph commits or
+ * rolls back together.) A retry, double-tap, or two simultaneous requests collapse to ONE part via the
+ * clarify CLAIM (job_parts_clarify_uniq, migration 0054) — ON CONFLICT DO NOTHING. Derived pricing and
+ * the QB-sync flag are finalized on BOTH the first-write and the retry path from the SAVED part (never
+ * stale request values), so a crash AFTER the commit but before the recompute is fully repaired by a
+ * retry. All input is validated BEFORE any write (an invalid quantity/price rejects with the part
+ * review still intact). A retry with the SAME input returns the saved part; a retry that CHANGES the
+ * price/quantity/cost/fitment/part#/supplier is refused with a clear "already added — edit it" error
+ * rather than silently discarding the change.
  */
 export async function clarifyServiceWithPart(orderId: string, serviceId: string, input: EstimatePartInput, actor: string | null, role: string | null): Promise<PartRow> {
   const own = await estimateRowOfOrder(orderId, serviceId)
   if (!own || own.svc.kind === 'part') throw new Error('That line is no longer a service on this estimate. Refresh to see the current list.')
-  const { svc } = own
+  const { est, svc } = own
+  // Validate EVERYTHING before touching the database (so a bad quantity/price can't clear the review).
   const description = text(input.description, 200)
   if (!description) throw new Error('Describe the part (e.g. “Windshield”).')
-  const [linked] = await getDb().select().from(jobParts)
-    .where(and(eq(jobParts.serviceOrderId, orderId), eq(jobParts.laborServiceId, svc.id), eq(jobParts.description, description), ne(jobParts.status, 'cancelled'))).limit(1)
-  if (linked) return linked   // retry / double-tap
-  if (svc.catalogId == null && svc.matchMethod !== 'custom') await selectServiceMatch(orderId, svc.id, { custom: true }, actor)
-  const part = await addEstimatePart(orderId, { ...input, description, entryText: input.entryText ?? svc.entryText ?? svc.title }, actor)
-  await decidePartLabor(orderId, part.id, { action: 'included', serviceId: svc.id }, actor, role)
-  return part
+  const supply: 'shop' | 'customer' = input.supply === 'customer' ? 'customer' : 'shop'
+  const quantity = qtyOf(input.quantity)
+  const unitCostCents = money(input.unitCostCents)
+  const sellPriceCents = supply === 'customer' ? null : money(input.sellPriceCents)
+  const fitment = text(input.fitment, 200)
+  const partNumber = text(input.partNumber, 80)
+  const supplier = text(input.supplier, 120)
+  const entryText = (input.entryText ?? svc.entryText ?? svc.title)?.slice(0, 300) ?? null
+  // "Already included on this line" must be a valid labor decision (manager rule is enforced for waivers,
+  // not for linking) — this also proves the clarified line is a legitimate cover for the part.
+  const err = validateLaborDecision({ status: 'included', serviceId: svc.id }, { role, coverable: new Set([svc.id]) })
+  if (err) throw new Error(err)
+  const lineDesc = partLineDescription({ description, fitment, partNumber })
+  // Pre-generate the part estimate row + line ids so the whole graph can be inserted in one statement
+  // with forward references (no row is written twice); foreign keys are checked at statement end.
+  const partSvcId = randomUUID()
+  const partLineId = randomUUID()
+  const shopSvcId = supply === 'shop' ? partSvcId : null
+  const shopLineId = supply === 'shop' && sellPriceCents != null ? partLineId : null
+  const db = getDb()
+
+  const res = await db.execute(sql`
+    WITH svc AS (
+      SELECT id FROM job_services
+       WHERE id = ${svc.id}::uuid AND job_estimate_id = ${est.id}::uuid AND source <> 'system' AND kind = 'service'
+    ), claim AS (
+      INSERT INTO job_parts (service_order_id, description, part_number, supplier, fitment, supply, quantity,
+        unit_cost_cents, sell_price_cents, job_service_id, job_line_item_id, labor_service_id, clarifies_service_id,
+        status, labor_status, labor_decided_by, labor_decided_at, created_by, updated_by, created_at, updated_at)
+      SELECT ${orderId}::uuid, ${description}, ${partNumber}, ${supplier}, ${fitment}, ${supply}, ${String(quantity)}::numeric,
+        ${unitCostCents}::int, ${sellPriceCents}::int, ${shopSvcId}::uuid, ${shopLineId}::uuid, svc.id, svc.id,
+        'needed', 'included', ${actor}, now(), ${actor}, ${actor}, now(), now()
+      FROM svc
+      ON CONFLICT (clarifies_service_id, description, supply) WHERE clarifies_service_id IS NOT NULL AND status <> 'cancelled'
+      DO NOTHING
+      RETURNING id
+    ), part_svc AS (
+      -- A shop part bills on its own estimate row; a customer-supplied part has none.
+      INSERT INTO job_services (id, job_estimate_id, title, source, kind, entry_text, sort_order, created_at, updated_at)
+      SELECT ${partSvcId}::uuid, ${est.id}::uuid, ${description}, 'manual', 'part', ${entryText}, 0, now(), now()
+      FROM claim WHERE ${supply} = 'shop'
+      RETURNING id
+    ), part_line AS (
+      -- Only when a price was entered (blank is allowed and stays unpriced). job_line_items has no updated_at.
+      INSERT INTO job_line_items (id, job_service_id, type, name, description, qty, unit, cost_cents, price_cents, taxable, tax_category, part_number, supplier, created_at)
+      SELECT ${partLineId}::uuid, ${partSvcId}::uuid, 'part', ${description}, ${lineDesc}, ${String(quantity)}, 'each',
+        ${unitCostCents ?? 0}::int, ${sellPriceCents}::int, false, 'repair_parts', ${partNumber}, ${supplier}, now()
+      FROM part_svc WHERE ${sellPriceCents}::int IS NOT NULL
+      RETURNING id
+    ), upd_orig AS (
+      -- The clarified line is confirmed as labor (keeps its price); only when it had no identity yet.
+      UPDATE job_services SET match_method = 'custom', matched_by = ${actor}, matched_at = now(), updated_at = now()
+       WHERE id = ${svc.id}::uuid AND catalog_id IS NULL AND match_method IS DISTINCT FROM 'custom' AND EXISTS (SELECT 1 FROM claim)
+      RETURNING id
+    ), ev_match AS (
+      INSERT INTO service_order_events (service_order_id, event_type, employee_name, note)
+      SELECT ${orderId}::uuid, 'service_matched', ${actor},
+        json_build_object('serviceId', ${svc.id}::text, 'to', json_build_object('custom', true), 'reason', 'clarified as labor; part added separately')::text
+      FROM upd_orig
+      RETURNING id
+    ), ev_part AS (
+      INSERT INTO service_order_events (service_order_id, event_type, employee_name, note)
+      SELECT ${orderId}::uuid, 'part_added', ${actor},
+        json_build_object('partId', claim.id, 'description', ${description}::text, 'supply', ${supply}::text,
+          'quantity', ${quantity}::numeric, 'sellPriceCents', ${sellPriceCents}::int, 'via', 'clarify', 'laborServiceId', ${svc.id}::text)::text
+      FROM claim
+      RETURNING id
+    ), ev_labor AS (
+      INSERT INTO service_order_events (service_order_id, event_type, employee_name, note)
+      SELECT ${orderId}::uuid, 'part_labor_review', ${actor},
+        json_build_object('partId', claim.id, 'part', ${description}::text, 'status', 'included', 'laborServiceId', ${svc.id}::text)::text
+      FROM claim
+      RETURNING id
+    )
+    SELECT id FROM claim
+  `)
+
+  const wonId = rowsOf(res)[0]?.id as string | undefined
+  const [saved] = wonId
+    ? await db.select().from(jobParts).where(eq(jobParts.id, wonId)).limit(1)
+    : await db.select().from(jobParts)
+        .where(and(eq(jobParts.serviceOrderId, orderId), eq(jobParts.clarifiesServiceId, svc.id), eq(jobParts.description, description), eq(jobParts.supply, supply), ne(jobParts.status, 'cancelled'))).limit(1)
+  // No claim and no prior part → the service line wasn't a live service of this order after all.
+  if (!saved) throw new Error('That line is no longer a service on this estimate. Refresh to see the current list.')
+
+  // Finalize derived pricing + QB-sync on BOTH the first-write and the retry/duplicate path, using the
+  // SAVED part (not stale request values). Idempotent (recompute is derived from the lines), so a
+  // post-commit crash before this step is fully repaired when the client retries.
+  await settlePricingAfterLineChange(est.id, saved.sellPriceCents != null)
+  await flagQbSyncNeededIfInvoiced(orderId, 'a part was added')
+
+  // A retry/double-tap with the SAME input returns the saved part; a conflicting retry that tries to
+  // CHANGE it is refused (the saved part is untouched) so the user's new values are never silently lost.
+  if (!wonId) {
+    const changed = Number(saved.quantity) !== quantity || saved.unitCostCents !== unitCostCents || saved.sellPriceCents !== sellPriceCents
+      || saved.fitment !== fitment || saved.partNumber !== partNumber || saved.supplier !== supplier
+    if (changed) throw new Error('A part was already added to clarify this line. Edit that part to change its price, quantity, or details.')
+  }
+  return saved
 }

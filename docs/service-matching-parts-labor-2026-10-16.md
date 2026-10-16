@@ -96,7 +96,42 @@ via `addTireWork` (no prices). It promotes labels with `PromoteHint` (identity, 
   unchanged. A unique live part per row (`job_parts_active_service_uniq`) makes retries safe. Audited
   as `service_converted_to_part`.
 - `clarify_part` (`clarifyServiceWithPart`): the line stays as the labor at its price, the part is added
-  separately and linked as `included`.
+  separately and linked as `included`. **Atomic + idempotent (migration 0054).** Input is validated
+  BEFORE any write (a bad quantity/price rejects with the `service_as_part` warning still intact — the
+  line is never pre-confirmed as custom), then the confirm-as-labor, the part's estimate row + priced
+  line, the `job_parts` record, the labor link and the audit all run in ONE SQL statement (forward-
+  referenced ids; FKs checked at statement end), so a mid-operation failure (e.g. a DB error) rolls the
+  whole graph back and leaves the review untouched. A retry, double-tap, or two simultaneous requests
+  collapse to ONE part via the clarify CLAIM `job_parts.clarifies_service_id` + partial unique index
+  `job_parts_clarify_uniq` (`ON CONFLICT DO NOTHING`), scoped to (clarified line, description, source)
+  so ordinary same-named parts from different sources are unaffected. Derived pricing + the QB-sync flag
+  are finalized on BOTH the first-write and the retry path from the SAVED part's values, so a crash
+  after the commit but before the recompute is fully repaired on retry. A retry with the SAME input
+  returns the saved part; a conflicting retry that CHANGES price/quantity/cost/fitment/part#/supplier is
+  refused with an explicit "already added — edit it" error rather than silently discarding the change.
+  Audited as `part_added` + `part_labor_review` (+ `service_matched` when the line is newly confirmed).
 - "It's a service": `select_match` with `custom`.
 
 "Replace…/R&R…/tires" wording is `ambiguous` and is never auto-converted.
+
+## Follow-up (migration 0054 — clarify-as-part atomicity)
+`drizzle/migrations/manual/0054_clarify_part_idempotency.sql` — additive/idempotent. Adds
+`job_parts.clarifies_service_id` (FK → `job_services`, `ON DELETE SET NULL`) and the partial unique
+index `job_parts_clarify_uniq (clarifies_service_id, description, supply) WHERE clarifies_service_id IS
+NOT NULL AND status <> 'cancelled'`. No data change, no QuickBooks item touched. Must be applied before
+the code deploys (the clarify `ON CONFLICT` targets this index).
+
+
+### Independent release verification (2026-10-16)
+- Reproduced invalid clarification clearing review and simultaneous clarification creating duplicate
+  charged parts on 24bfc46; regression tests now cover rejection, retries, concurrent calls, conflicting
+  values, post-commit recovery, atomic rollback, and migration scope.
+- Full suite: 148 files / 1,565 tests passed. Typecheck and webpack production build passed.
+  Lint remains at the pre-existing baseline: 182 errors / 60 warnings (not a clean lint run).
+- Updated the older hand-built parts test schema with the new nullable clarification field.
+- Owner approved all six proposed catalog descriptions; saved them in production with append-only
+  catalog audit entries. These apply to future additions, without rewriting historical invoices.
+- Owner approved one temporary live test job and soft-cancel cleanup. Signed-in browser testing has
+  confirmed rushed-entry matching, part conversion, installation labor, save/reopen, a service rename
+  retaining its catalog identity, and a removed service staying removed after reload. No QuickBooks
+  invoice, email, or text was created/sent. Final clarification retry and cleanup follow this deploy.

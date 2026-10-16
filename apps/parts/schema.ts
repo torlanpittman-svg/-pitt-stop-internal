@@ -45,6 +45,10 @@ export const jobParts = pgTable(
     // longer covers the part, the review re-opens (apps/parts/labor-review.ts).
     laborStatus:    varchar('labor_status', { length: 16 }).notNull().default('needs_review'),
     laborServiceId: uuid('labor_service_id').references(() => jobServices.id, { onDelete: 'set null' }),
+    // The service line a "clarify as part" operation attached this part to — the idempotency CLAIM for
+    // that operation (migration 0054). Only set by clarifyServiceWithPart; null for every other part,
+    // so ordinary same-named parts with different sources are never constrained.
+    clarifiesServiceId: uuid('clarifies_service_id').references(() => jobServices.id, { onDelete: 'set null' }),
     laborNote:      text('labor_note'),
     laborDecidedBy: varchar('labor_decided_by', { length: 200 }),
     laborDecidedAt: timestamp('labor_decided_at', { withTimezone: true }),
@@ -88,5 +92,9 @@ export const jobParts = pgTable(
     index('job_parts_labor_service_idx').on(t.laborServiceId),
     // One live part record per estimate part row (migration 0053) — a retried conversion can't duplicate it.
     uniqueIndex('job_parts_active_service_uniq').on(t.jobServiceId).where(sql`job_service_id IS NOT NULL AND status <> 'cancelled'`),
+    // At most one live clarification part per (clarified service line, description, source) — migration
+    // 0054. A retried, double-tapped, or concurrent "clarify as part" collapses to ONE part (the whole
+    // operation is a single atomic statement), while ordinary parts (clarifies_service_id null) are free.
+    uniqueIndex('job_parts_clarify_uniq').on(t.clarifiesServiceId, t.description, t.supply).where(sql`clarifies_service_id IS NOT NULL AND status <> 'cancelled'`),
   ]
 )
