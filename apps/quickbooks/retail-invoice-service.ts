@@ -99,7 +99,9 @@ export async function buildRetailWorkPayload(params: {
   let workServices: RetailWorkService[] = userServices
     .map((s) => {
       const l = s.lines.find((x) => !x.generated); if (!l) return null
-      const m = index.match(s.title)
+      // Resolve the QB item by the service's STABLE catalog identity (falls back to label only for
+      // legacy rows with no stamped identity) so a relabeled service keeps its item + description.
+      const m = index.matchService({ catalogId: s.catalogId, title: s.title })
       if (!m.usable) fallbacks.push(`${s.title}→Labor`)
       return { itemId: m.usable ? m.itemRef! : items.labor, description: serviceDescription(s.title, m.description), amountCents: lineAmountCents(l.priceCents, l.qty) }
     })

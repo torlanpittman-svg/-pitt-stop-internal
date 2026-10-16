@@ -6,6 +6,7 @@ import { quickEntryJobs } from '@/apps/quick-entry/schema'
 import { estimateIntakes } from './schema'
 import { z } from 'zod'
 import { recomputeEstimate, getEstimateRow } from '@/apps/workflow/estimate-db'
+import { resolveCatalogIds, normalizeServiceKey } from '@/apps/quick-entry/catalog-identity'
 import { getBusinessConfig } from '@/apps/settings/db'
 
 export const intakeInput = z.object({
@@ -39,7 +40,10 @@ export async function createIntake(input: z.infer<typeof intakeInput>, actor: st
   const vehicleId = savedVehicle?.id ?? randomUUID()
   const vehicle = savedVehicle ?? input
   const estimateId = randomUUID()
-  const services = input.lines.map((line, sortOrder) => ({ id: randomUUID(), jobEstimateId: estimateId, title: line.name, source: 'manual', sortOrder }))
+  // Stamp each service's STABLE catalog identity so the shared QB payload keeps the correct item +
+  // canonical description even after the label is later edited (same policy as retail jobs).
+  const catalogIds = await resolveCatalogIds(input.lines.map((l) => l.name))
+  const services = input.lines.map((line, sortOrder) => ({ id: randomUUID(), jobEstimateId: estimateId, title: line.name, source: 'manual', sortOrder, catalogId: catalogIds.get(normalizeServiceKey(line.name)) ?? null }))
   const cfg = await getBusinessConfig()
   // Neon batch is transactional: an estimate never appears briefly as an arrived Job,
   // and a failed contact/estimate insert cannot leave a half-created intake behind.

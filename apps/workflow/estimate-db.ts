@@ -13,6 +13,7 @@ import {
 import { computeFees, eligibleBasisCents, reconcilePlan, explicitPretaxTotals, effectiveFeeConfig, isDealerOrder, FEE_TAX_CATEGORY, type FeeCode } from './fees'
 import { getBusinessConfig } from '@/apps/settings/db'
 import { suggestedPricesForTitles } from '@/apps/quick-entry/db'
+import { resolveCatalogId, resolveCatalogIds, normalizeServiceKey } from '@/apps/quick-entry/catalog-identity'
 
 export type EstimateRow = typeof jobEstimates.$inferSelect
 export type JobServiceRow = typeof jobServices.$inferSelect
@@ -421,7 +422,9 @@ export async function prepareEstimateView(orderId: string, actor: string | null)
   return getEstimateView(orderId)
 }
 
-/** Seed job_services from the Job's employee-facing text services (idempotent). */
+/** Seed job_services from the Job's employee-facing text services (idempotent). Each new row is
+ *  stamped with its stable catalog identity (same name/alias policy as the QB payload) so its
+ *  invoice item/description survives a later label edit. */
 export async function promoteTextServices(estimateId: string, orderId: string): Promise<number> {
   const db = getDb()
   const [order] = await db.select({ services: serviceOrders.services }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
@@ -429,10 +432,12 @@ export async function promoteTextServices(estimateId: string, orderId: string): 
   if (text.length === 0) return 0
   const existing = await db.select({ title: jobServices.title }).from(jobServices).where(eq(jobServices.jobEstimateId, estimateId))
   const have = new Set(existing.map((s) => s.title.trim().toLowerCase()))
+  const toInsert = text.map((title, i) => ({ title, i })).filter(({ title }) => !have.has(title.toLowerCase()))
+  if (toInsert.length === 0) return 0
+  const catalogIds = await resolveCatalogIds(toInsert.map((t) => t.title))
   let n = 0
-  for (const [i, title] of text.entries()) {
-    if (have.has(title.toLowerCase())) continue
-    await db.insert(jobServices).values({ jobEstimateId: estimateId, title, source: 'promoted', sortOrder: i })
+  for (const { title, i } of toInsert) {
+    await db.insert(jobServices).values({ jobEstimateId: estimateId, title, source: 'promoted', sortOrder: i, catalogId: catalogIds.get(normalizeServiceKey(title)) ?? null })
     n++
   }
   return n
@@ -490,19 +495,42 @@ export async function removeServiceFromJob(orderId: string, serviceName: string,
 }
 
 export async function addService(estimateId: string, title: string): Promise<JobServiceRow> {
-  const [row] = await getDb().insert(jobServices).values({ jobEstimateId: estimateId, title: title.trim(), source: 'manual' }).returning()
+  const clean = title.trim()
+  const catalogId = await resolveCatalogId(clean)   // stable catalog identity for the QB payload
+  const [row] = await getDb().insert(jobServices).values({ jobEstimateId: estimateId, title: clean, source: 'manual', catalogId }).returning()
   return row
 }
 export async function updateService(id: string, patch: Partial<Pick<JobServiceRow, 'title' | 'technician' | 'notes' | 'approvalState' | 'sortOrder'>>): Promise<void> {
-  await getDb().update(jobServices).set({ ...patch, updatedAt: new Date() }).where(eq(jobServices.id, id))
+  const set: Record<string, unknown> = { ...patch, updatedAt: new Date() }
+  // A title edit here is also a label change: capture catalog identity the same way renameService
+  // does — from the EXISTING label first (so a known service keeps its item even if relabeled to
+  // another name), else from the corrected label (so a typo can newly resolve). Never overwrites an
+  // identity that is already set (COALESCE), so repeated edits can't repoint the QB item.
+  if (patch.title !== undefined) {
+    const title = String(patch.title).replace(/\s+/g, ' ').trim()
+    set.title = title
+    const [cur] = await getDb().select({ catalogId: jobServices.catalogId, title: jobServices.title }).from(jobServices).where(eq(jobServices.id, id)).limit(1)
+    if (cur && cur.catalogId == null) {
+      const resolved = (await resolveCatalogId(cur.title)) ?? (await resolveCatalogId(title))
+      if (resolved) set.catalogId = sql`COALESCE(${jobServices.catalogId}, ${resolved}::uuid)`
+    }
+  }
+  await getDb().update(jobServices).set(set).where(eq(jobServices.id, id))
 }
 /**
  * Correct a service's estimate LABEL in place (typo fix) — same job_services row, so its price
  * line (qty, price, tax flags), approval, and sort order are untouched. The price line's name is
  * kept in step only when it still mirrors the old title, and the Job's employee-facing services
  * text is renamed too so promoteTextServices never re-adds the old spelling on reopen.
- * The label is NOT the QuickBooks invoice text: the QB payload still uses the catalog's canonical
- * qb_description whenever the (corrected) title matches a catalog service. One SQL statement → atomic.
+ *
+ * The label is NOT the QuickBooks invoice text. A service carries a STABLE catalog_id identity so
+ * the QB payload keeps the catalog's correct Product/Service item + canonical qb_description
+ * regardless of the label. We CAPTURE that identity before renaming: an already-identified service
+ * keeps its item (relabeling it — even to another catalog item's name — never repoints it), and a
+ * previously-unmatched service resolves from the EXISTING label first, then from the corrected
+ * label (so a genuine typo fix can newly match). COALESCE makes the write concurrency-safe: a
+ * mapping already set (here or by a racing writer) is never overwritten. No QuickBooks call is made
+ * on rename. One SQL statement → atomic.
  */
 export async function renameService(orderId: string, serviceId: string, rawTitle: string, actor: string | null): Promise<void> {
   const title = String(rawTitle ?? '').replace(/\s+/g, ' ').trim()
@@ -516,11 +544,16 @@ export async function renameService(orderId: string, serviceId: string, rawTitle
   if (service.title === title) return
   const norm = (s: string) => s.trim().toLowerCase()
   if (services.some((s) => s.id !== serviceId && norm(s.title) === norm(title))) throw new Error('Another service on this estimate already has that name.')
+  // Capture catalog identity only when the row has none yet (existing identity is locked): the
+  // current label takes precedence over the new one, so relabeling a known service never repoints it.
+  const capturedCatalogId = service.catalogId != null
+    ? null   // already identified → COALESCE below keeps it; do not re-resolve
+    : (await resolveCatalogId(service.title)) ?? (await resolveCatalogId(title))
   await db.execute(sql`
     WITH svc AS (
       SELECT id, title FROM job_services WHERE id = ${serviceId}::uuid AND job_estimate_id = ${est!.id}::uuid AND source <> 'system'
     ), upd_service AS (
-      UPDATE job_services SET title = ${title}, updated_at = now() WHERE id IN (SELECT id FROM svc) RETURNING id
+      UPDATE job_services SET title = ${title}, catalog_id = COALESCE(catalog_id, ${capturedCatalogId ?? null}::uuid), updated_at = now() WHERE id IN (SELECT id FROM svc) RETURNING id
     ), upd_line AS (
       UPDATE job_line_items l SET name = ${title} FROM svc
       WHERE l.job_service_id = svc.id AND l.generated = false AND l.name = svc.title RETURNING l.id

@@ -219,6 +219,17 @@ export const jobServices = pgTable(
     id:            uuid('id').primaryKey().defaultRandom(),
     jobEstimateId: uuid('job_estimate_id').notNull().references(() => jobEstimates.id, { onDelete: 'cascade' }),
     title:         varchar('title', { length: 200 }).notNull(),
+    // STABLE catalog identity (apps/quick-entry service_catalog.id), separate from the editable
+    // `title` label. Stamped at insert/rename by the catalog-identity matcher so a QuickBooks
+    // invoice line keeps its correct Product/Service item + canonical qb_description even after a
+    // manager edits the label (e.g. "Full Detail" → "Full Detail - customer vehicle"). Null for
+    // genuinely custom one-off services (generic Labor fallback) and legacy rows pending backfill.
+    // The FK is declared in migration 0051 (SQL only) to avoid a circular schema import with
+    // apps/quick-entry — same pattern as serviceOrders.customerId. It is ON DELETE RESTRICT: the
+    // catalog is soft-deleted (archived_at), never hard-deleted, so historical identity links are
+    // retained rather than silently nulled (a null would re-enable label-based remapping). The
+    // index needs no cross-module reference, so it is modeled here.
+    catalogId:     uuid('catalog_id'),
     approvalState: varchar('approval_state', { length: 16 }).notNull().default('pending'),
     technician:    varchar('technician', { length: 200 }),
     notes:         text('notes'),
@@ -227,7 +238,10 @@ export const jobServices = pgTable(
     createdAt:     timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt:     timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('job_services_estimate_idx').on(t.jobEstimateId)],
+  (t) => [
+    index('job_services_estimate_idx').on(t.jobEstimateId),
+    index('job_services_catalog_idx').on(t.catalogId),
+  ],
 )
 
 export const jobLineItems = pgTable(
