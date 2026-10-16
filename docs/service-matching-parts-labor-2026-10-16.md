@@ -114,6 +114,15 @@ via `addTireWork` (no prices). It promotes labels with `PromoteHint` (identity, 
 
 "Replace…/R&R…/tires" wording is `ambiguous` and is never auto-converted.
 
+**Removing a part (`removeEstimatePart` → `removeEstimateService`).** Deleting a shop part's estimate row
+cascades its billing line and `SET NULL`s the part's `job_service_id`; the same statement also cancels
+that `job_parts` row. The cancel UPDATE now explicitly nulls the part's own `job_service_id` and
+`job_line_item_id` (and the reopen UPDATE nulls `clarifies_service_id` when it pointed at the deleted
+covering line) so the written tuple never retains a reference to a row that disappears in the same
+statement — otherwise the `SET NULL` foreign-key actions race the UPDATE and the FK re-check raises
+`23503`. Description/price are kept for history; the covering labor line's price is untouched and its
+removal still re-opens the part's labor review.
+
 ## Follow-up (migration 0054 — clarify-as-part atomicity)
 `drizzle/migrations/manual/0054_clarify_part_idempotency.sql` — additive/idempotent. Adds
 `job_parts.clarifies_service_id` (FK → `job_services`, `ON DELETE SET NULL`) and the partial unique
@@ -126,7 +135,7 @@ the code deploys (the clarify `ON CONFLICT` targets this index).
 - Reproduced invalid clarification clearing review and simultaneous clarification creating duplicate
   charged parts on 24bfc46; regression tests now cover rejection, retries, concurrent calls, conflicting
   values, post-commit recovery, atomic rollback, and migration scope.
-- Full suite: 148 files / 1,565 tests passed. Typecheck and webpack production build passed.
+- Full suite after the removal follow-up: 148 files / 1,567 tests passed. Typecheck and webpack production build passed.
   Lint remains at the pre-existing baseline: 182 errors / 60 warnings (not a clean lint run).
 - Updated the older hand-built parts test schema with the new nullable clarification field.
 - Owner approved all six proposed catalog descriptions; saved them in production with append-only
@@ -134,4 +143,9 @@ the code deploys (the clarify `ON CONFLICT` targets this index).
 - Owner approved one temporary live test job and soft-cancel cleanup. Signed-in browser testing has
   confirmed rushed-entry matching, part conversion, installation labor, save/reopen, a service rename
   retaining its catalog identity, and a removed service staying removed after reload. No QuickBooks
-  invoice, email, or text was created/sent. Final clarification retry and cleanup follow this deploy.
+  invoice, email, or text was created/sent. Clarification rejection/correction/reopen passed live on
+  be48cea. Cleanup then exposed a production foreign-key failure during part removal; reproduced on
+  the approved temporary job inside BEGIN/ROLLBACK. The explicit-unlink variant succeeded and rolled
+  back cleanly. PGlite does not reproduce that engine-specific failure; regression tests verify the
+  intended final state. This removal correction requires no further migration; final UI cleanup follows
+  its deployment.

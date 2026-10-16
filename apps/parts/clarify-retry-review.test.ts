@@ -44,9 +44,9 @@ vi.mock('@/apps/workflow/estimate-db', async (orig) => {
 })
 
 import { seedProductionCatalog, CLEAR_TABLES } from '@/apps/quick-entry/catalog-fixture.test-support'
-import { getOrCreateEstimate, addService, addLine, getEstimateView } from '@/apps/workflow/estimate-db'
+import { getOrCreateEstimate, addService, addLine, getEstimateView, removeEstimateService } from '@/apps/workflow/estimate-db'
 import { loadEstimateReview } from '@/apps/workflow/estimate-review'
-import { clarifyServiceWithPart } from '@/apps/parts/estimate-parts'
+import { clarifyServiceWithPart, removeEstimatePart } from '@/apps/parts/estimate-parts'
 import { serviceOrders, vehicles, jobParts, jobServices, jobLineItems, jobEstimates, serviceOrderEvents } from '@/drizzle/schema'
 
 let db: PgliteDatabase<typeof schema>
@@ -83,6 +83,39 @@ const eventCount = async (orderId: string, type: string) =>
 const estTotal = async (orderId: string) => (await db.select().from(jobEstimates).where(eq(jobEstimates.serviceOrderId, orderId)))[0].totalCents
 
 describe('review: clarification is failure-safe and idempotent', () => {
+  it('removing a clarified shop part cancels it, drops its billed line, and keeps the labor line priced', async () => {
+    const { orderId, estimateId } = await order()
+    const svc = await partTypedAsService(estimateId)
+    const part = await clarifyServiceWithPart(orderId, svc.id, { description: 'Windshield', supply: 'shop', quantity: 1, sellPriceCents: 8000 }, 'Manager', 'manager')
+    const lineId = part.jobLineItemId
+    await removeEstimatePart(orderId, part.id, 'Manager')
+    const [saved] = await db.select().from(jobParts).where(eq(jobParts.id, part.id))
+    expect(saved.status).toBe('cancelled')
+    expect(saved.jobServiceId).toBeNull()        // own structural links cleared so no FK dangles as the row is deleted
+    expect(saved.jobLineItemId).toBeNull()
+    expect(await db.select().from(jobLineItems).where(eq(jobLineItems.id, lineId!))).toHaveLength(0)   // billed line gone
+    const v = await getEstimateView(orderId)
+    expect(v.parts).toHaveLength(0)
+    expect(v.services[0].priceCents).toBe(26500)   // the labor line (its price) is untouched
+    expect(await partCount(orderId)).toBe(1)        // soft-cancel, not a duplicate
+  })
+
+  it('removing the covering labor line reopens the clarified part, clears its labor + clarify keys, keeps its price', async () => {
+    const { orderId, estimateId } = await order()
+    const svc = await partTypedAsService(estimateId)
+    const part = await clarifyServiceWithPart(orderId, svc.id, { description: 'Windshield', supply: 'shop', quantity: 1, sellPriceCents: 8000 }, 'Manager', 'manager')
+    await removeEstimateService(orderId, svc.id, 'Manager')   // delete the service that was covering installation
+    const [reopened] = await db.select().from(jobParts).where(eq(jobParts.id, part.id))
+    expect(reopened.status).not.toBe('cancelled')     // the part itself survives
+    expect(reopened.sellPriceCents).toBe(8000)        // its price is preserved
+    expect(reopened.laborServiceId).toBeNull()        // link to the deleted labor cleared
+    expect(reopened.clarifiesServiceId).toBeNull()    // and the clarify key that pointed at it
+    expect(reopened.laborStatus).toBe('needs_review')
+    expect(await codes(orderId)).toContain('part_labor')   // review re-opens
+    expect(await partCount(orderId)).toBe(1)               // no orphan / double-charged part
+    expect(await eventCount(orderId, 'part_labor_reopened')).toBe(1)
+  })
+
   it('invalid quantity rejects and leaves the part warning in place (no write)', async () => {
     const { orderId, estimateId } = await order()
     const svc = await partTypedAsService(estimateId)

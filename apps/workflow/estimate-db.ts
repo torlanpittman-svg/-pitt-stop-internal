@@ -875,7 +875,12 @@ export async function removeEstimateService(orderId: string, serviceId: string, 
       RETURNING so.id
     ), reopen AS (
       -- Parts whose installation relied on this line: the review re-opens (never silently "covered").
-      UPDATE job_parts SET labor_status = 'needs_review', labor_service_id = NULL, labor_decided_by = ${actor}, labor_decided_at = now(), updated_at = now()
+      -- Also drop a clarification key that pointed at THIS now-deleted line (a key to a different,
+      -- surviving service is preserved) so the updated row keeps no reference to a row being deleted in
+      -- the same statement — otherwise the SET NULL foreign keys and this UPDATE race and FK re-check fails.
+      UPDATE job_parts SET labor_status = 'needs_review', labor_service_id = NULL,
+        clarifies_service_id = CASE WHEN clarifies_service_id IN (SELECT id FROM del) THEN NULL ELSE clarifies_service_id END,
+        labor_decided_by = ${actor}, labor_decided_at = now(), updated_at = now()
       WHERE labor_service_id IN (SELECT id FROM del) AND labor_status IN ('labor_added', 'included')
       RETURNING id
     ), ev_reopen AS (
@@ -883,8 +888,12 @@ export async function removeEstimateService(orderId: string, serviceId: string, 
       SELECT ${orderId}::uuid, 'part_labor_reopened', ${actor}, json_build_object('partId', reopen.id, 'serviceId', ${serviceId}::text, 'reason', 'covering labor was removed')::text FROM reopen
       RETURNING id
     ), cancel_part AS (
-      -- Removing a part's own line from the estimate = that special-order part is no longer needed.
-      UPDATE job_parts SET status = 'cancelled', updated_at = now(), updated_by = ${actor}
+      -- Removing a part's own line from the estimate = that special-order part is no longer needed. Its
+      -- job_services row is being deleted here and its billing line cascades away, so null the part's own
+      -- structural links in the SAME update: the cancelled tuple must not retain a job_service_id /
+      -- job_line_item_id pointing at a row that disappears in this statement, or the FK re-check (whose
+      -- SET NULL action races this UPDATE) raises 23503. Price/description are kept for history.
+      UPDATE job_parts SET status = 'cancelled', job_service_id = NULL, job_line_item_id = NULL, updated_at = now(), updated_by = ${actor}
       WHERE job_service_id IN (SELECT id FROM del) AND status <> 'cancelled'
       RETURNING id
     )
