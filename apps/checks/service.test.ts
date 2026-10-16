@@ -68,7 +68,7 @@ beforeEach(async () => {
     enabled: true, liveEnabled: true, qboRealmId: 'REALM-PROD', templateMode: 'blank_full', micrEnabled: true,
     banks: { operating: { key: 'operating', qboAccountId: '31', label: 'Op' }, auto_sales: { key: 'auto_sales', qboAccountId: '48', label: 'AS' } },
     categoryAccounts: { shop_general: '51', customer_job: '16', equipment: '112', owner_personal: '21', other: '20', auto_sales: '88' },
-    layout: DEFAULT_LAYOUT, display: { companyName: 'Pitt Stop', companyAddr: null, bankName: 'AMB', bankAddr: null },
+    layout: DEFAULT_LAYOUT, display: { companyName: 'Pitt Stop', companyAddr: null, companyPhone: null, bankName: 'AMB', bankAddr: null },
   }
   h.resolveVendor.mockReset().mockResolvedValue({ id: 'V1', displayName: 'Thompson Derrig', active: true })
   h.findChecksByDocNumber.mockReset().mockResolvedValue([])

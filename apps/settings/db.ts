@@ -85,6 +85,7 @@ export const SETTINGS: Record<string, SettingDef> = {
   // NON-SENSITIVE check-face text (safe to store): appears printed on the check. NOT routing/account.
   check_company_name:           { key: 'check_company_name',           type: 'string', def: 'Pitt Stop Detail & Auto Sales', env: 'CHECK_COMPANY_NAME' },
   check_company_addr:           { key: 'check_company_addr',           type: 'string', def: '', env: 'CHECK_COMPANY_ADDR' },
+  check_company_phone:          { key: 'check_company_phone',          type: 'string', def: '(979) 696-6640', env: 'CHECK_COMPANY_PHONE' },
   check_bank_name:              { key: 'check_bank_name',              type: 'string', def: 'American Momentum Bank', env: 'CHECK_BANK_NAME' },
   check_bank_addr:              { key: 'check_bank_addr',              type: 'string', def: '', env: 'CHECK_BANK_ADDR' },
   // MICR kill-switch. Default OFF. A negotiable MICR line prints ONLY when this is on AND the SECRET

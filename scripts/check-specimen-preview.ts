@@ -26,7 +26,7 @@ async function main() {
     enabled: true, liveEnabled: false, qboRealmId: '', templateMode: 'blank_full' as const, micrEnabled: false,
     banks: { operating: { key: 'operating' as const, qboAccountId: '', label: '' }, auto_sales: { key: 'auto_sales' as const, qboAccountId: '', label: '' } },
     categoryAccounts: {}, layout,
-    display: { companyName: 'Pitt Stop Detail & Auto Sales', companyAddr: null, bankName: 'American Momentum Bank', bankAddr: null },
+    display: { companyName: 'Pitt Stop Detail & Auto Sales', companyAddr: null, companyPhone: null, bankName: 'American Momentum Bank', bankAddr: null },
   }
   const template = resolveSpecimenMicr(assembleCheckTemplate(cfg, layout, { test: false, specimen: true }))
   if (template?.micr?.mode !== 'e13b') { console.error('E-13B font not available (run from the repo root).'); process.exit(1) }

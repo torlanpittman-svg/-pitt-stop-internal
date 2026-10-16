@@ -14,7 +14,7 @@ function cfg(overrides: Partial<CheckConfig> = {}): CheckConfig {
     categoryAccounts: {},
     layout: DEFAULT_LAYOUT,
     templateMode: 'blank_full',
-    display: { companyName: 'Pitt Stop', companyAddr: null, bankName: 'American Momentum Bank', bankAddr: null },
+    display: { companyName: 'Pitt Stop', companyAddr: null, companyPhone: null, bankName: 'American Momentum Bank', bankAddr: null },
     micrEnabled: false,
     ...overrides,
   }

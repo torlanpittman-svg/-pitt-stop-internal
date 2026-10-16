@@ -22,7 +22,7 @@ const KEYS = [
   'check_operating_bank_qbo_id', 'check_operating_bank_label',
   'check_autosales_bank_qbo_id', 'check_autosales_bank_label',
   'check_category_accounts', 'check_layout',
-  'check_template', 'check_company_name', 'check_company_addr', 'check_bank_name', 'check_bank_addr',
+  'check_template', 'check_company_name', 'check_company_addr', 'check_company_phone', 'check_bank_name', 'check_bank_addr',
   'micr_enabled', 'micr_layout',
 ] as const
 
@@ -40,7 +40,7 @@ function asObject(v: unknown): Record<string, unknown> {
 }
 
 export interface BankConfig { key: BankKey; qboAccountId: string; label: string }
-export interface CheckFaceDisplay { companyName: string; companyAddr: string | null; bankName: string; bankAddr: string | null }
+export interface CheckFaceDisplay { companyName: string; companyAddr: string | null; companyPhone: string | null; bankName: string; bankAddr: string | null }
 export interface CheckConfig {
   enabled: boolean          // feature visible/usable (form + workflow render)
   liveEnabled: boolean      // OWNER authorization to record REAL checks (QB Purchase + consume a number).
@@ -76,6 +76,7 @@ export async function getCheckConfig(): Promise<CheckConfig> {
     display: {
       companyName: str('check_company_name', 'Pitt Stop Detail & Auto Sales'),
       companyAddr: str('check_company_addr') || null,
+      companyPhone: str('check_company_phone') || null,   // default lives in the SETTINGS registry
       bankName: str('check_bank_name', 'American Momentum Bank'),
       bankAddr: str('check_bank_addr') || null,
     },

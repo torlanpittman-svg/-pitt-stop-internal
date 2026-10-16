@@ -16,7 +16,7 @@ type Config = {
   categoryAccounts: Record<string, string>
   layout: { position: string; offsetX: number; offsetY: number; fields: string[] }
   templateMode?: string
-  display?: { companyName: string; companyAddr: string | null; bankName: string; bankAddr: string | null }
+  display?: { companyName: string; companyAddr: string | null; companyPhone: string | null; bankName: string; bankAddr: string | null }
   micrEnabled?: boolean
 }
 type Micr = { enabledFlagOn: boolean; secretsPresent: boolean; routingValid: boolean; accountValid: boolean; fontInstalled: boolean; ready: boolean; routingMask: string; accountMask: string }
@@ -48,6 +48,7 @@ export default function ChecksAdmin() {
   const [micr, setMicr] = useState<Micr | null>(null)
   const [companyName, setCompanyName] = useState('')
   const [companyAddr, setCompanyAddr] = useState('')
+  const [companyPhone, setCompanyPhone] = useState('')
   const [bankName, setBankName] = useState('')
   const [bankAddr, setBankAddr] = useState('')
   const [micrEnabled, setMicrEnabled] = useState(false)
@@ -60,7 +61,7 @@ export default function ChecksAdmin() {
       setEnabled(s.config.enabled); setOpBank(s.config.banks.operating.qboAccountId); setAsBank(s.config.banks.auto_sales.qboAccountId)
       setCatMap(s.config.categoryAccounts || {})
       setOffsetX(String(s.config.layout.offsetX ?? 0)); setOffsetY(String(s.config.layout.offsetY ?? 0)); setPosition(s.config.layout.position ?? 'top')
-      setCompanyName(s.config.display?.companyName ?? ''); setCompanyAddr(s.config.display?.companyAddr ?? '')
+      setCompanyName(s.config.display?.companyName ?? ''); setCompanyAddr(s.config.display?.companyAddr ?? ''); setCompanyPhone(s.config.display?.companyPhone ?? '')
       setBankName(s.config.display?.bankName ?? ''); setBankAddr(s.config.display?.bankAddr ?? ''); setMicrEnabled(!!s.config.micrEnabled)
     } catch (e) { setErr(String((e as Error).message)) } finally { setLoading(false) }
   }, [])
@@ -82,7 +83,7 @@ export default function ChecksAdmin() {
         enabled, operatingBankQboId: opBank, autoSalesBankQboId: asBank,
         categoryAccounts: catMap,
         layout: { position, offsetX: parseFloat(offsetX) || 0, offsetY: parseFloat(offsetY) || 0 },
-        companyName, companyAddr, bankName, bankAddr, micrEnabled,
+        companyName, companyAddr, companyPhone, bankName, bankAddr, micrEnabled,
       })
       setReadiness(res.readiness); setConfig(res.config); setMicr(res.micr); setMsg('Saved ✓')
     } catch (e) { setErr(String((e as Error).message)); setMsg(null) }
@@ -165,6 +166,7 @@ export default function ChecksAdmin() {
         <h2 className="font-semibold">Check face (Blue Summit BLANK stock — we print the whole check)</h2>
         <label className="block text-sm">Company name<input value={companyName} onChange={(e) => setCompanyName(e.target.value)} className="mt-1 w-full rounded border px-2 py-2" /></label>
         <label className="block text-sm">Company address (one line)<input value={companyAddr} onChange={(e) => setCompanyAddr(e.target.value)} className="mt-1 w-full rounded border px-2 py-2" /></label>
+        <label className="block text-sm">Company phone<input value={companyPhone} onChange={(e) => setCompanyPhone(e.target.value)} className="mt-1 w-full rounded border px-2 py-2" /></label>
         <label className="block text-sm">Bank name<input value={bankName} onChange={(e) => setBankName(e.target.value)} className="mt-1 w-full rounded border px-2 py-2" /></label>
         <label className="block text-sm">Bank address (one line)<input value={bankAddr} onChange={(e) => setBankAddr(e.target.value)} className="mt-1 w-full rounded border px-2 py-2" /></label>
         <p className="text-xs text-neutral-500">Non-sensitive text printed on the check face. Routing/account are NOT entered here.</p>

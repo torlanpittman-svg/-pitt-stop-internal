@@ -59,6 +59,7 @@ interface SetupBody {
   // they live only in server-only env (MICR_ROUTING/MICR_ACCOUNT).
   companyName?: string
   companyAddr?: string
+  companyPhone?: string
   bankName?: string
   bankAddr?: string
   templateMode?: 'blank_full' | 'preprinted'
@@ -91,6 +92,7 @@ export async function POST(req: Request) {
   if (body.layout && typeof body.layout === 'object') ops.push(updateSetting('check_layout', body.layout, who))
   if (typeof body.companyName === 'string') ops.push(updateSetting('check_company_name', body.companyName.trim(), who))
   if (typeof body.companyAddr === 'string') ops.push(updateSetting('check_company_addr', body.companyAddr.trim(), who))
+  if (typeof body.companyPhone === 'string') ops.push(updateSetting('check_company_phone', body.companyPhone.trim(), who))
   if (typeof body.bankName === 'string') ops.push(updateSetting('check_bank_name', body.bankName.trim(), who))
   if (typeof body.bankAddr === 'string') ops.push(updateSetting('check_bank_addr', body.bankAddr.trim(), who))
   if (body.templateMode === 'blank_full' || body.templateMode === 'preprinted') ops.push(updateSetting('check_template', body.templateMode, who))

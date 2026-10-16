@@ -10,6 +10,16 @@ stock" had superseded it; that was wrong and has been removed.
 Path: Pitt Stop OS (phone) → cloud print queue → Windows shop-laptop bridge (`LAPTOP-RF8IO1H2`,
 `C:\pittstop`, SumatraPDF `noscale`) → Brother HL-L2420DW.
 
+## Company phone on check face — 2026-10-16, NOT deployed
+
+Branch `feat/check-company-phone` (worktree off origin/main 8ce52a6). New setting `check_company_phone`
+(SETTINGS default "(979) 696-6640", env CHECK_COMPANY_PHONE, editable on /admin/checks) → `display.companyPhone`
+→ template text at x0.35, y0.66 (8pt regular, directly under companyAddr; y0.52 if no address).
+PDF op diff vs no-phone: exactly one added text op; lines/boxes/MICR/value fields identical.
+One display block serves both operating and auto_sales banks (no per-bank company info exists).
+Already-queued print payload snapshots are not rewritten. No print, check, or QBO write performed.
+Physical paper confirmation pending after deploy.
+
 ## Purchase payload fix — deployment approved 2026-10-13
 
 Owner attempted check10356 (Test/$1). QBO Purchase400/code2010 rejected unsupported property.

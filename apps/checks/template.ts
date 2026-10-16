@@ -18,6 +18,7 @@ export interface TplBox { xIn: number; yIn: number; wIn: number; hIn: number; wi
 export interface CheckFaceDisplay {
   companyName: string
   companyAddr?: string | null
+  companyPhone?: string | null
   bankName: string
   bankAddr?: string | null
 }
@@ -62,6 +63,8 @@ export function buildCheckTemplate(display: CheckFaceDisplay, layout: CheckLayou
   // ── Upper block (top-anchored) ──
   const texts: TplText[] = [ T(display.companyName, 0.35, 0.30, 12, 'left', true) ]
   if (display.companyAddr) texts.push(T(display.companyAddr, 0.35, 0.52, 8))
+  // Phone sits on the next 8pt line under the address (or directly under the name when no address is set).
+  if (display.companyPhone) texts.push(T(display.companyPhone, 0.35, display.companyAddr ? 0.66 : 0.52, 8))
   texts.push(
     T('DATE', 5.70, 0.40, 7),
     T('PAY TO THE', 0.35, 1.02, 7),
