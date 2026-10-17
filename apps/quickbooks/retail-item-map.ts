@@ -20,7 +20,7 @@
 import { getDb } from '@/platform/db'
 import { serviceCatalog, serviceAliases } from '@/apps/quick-entry/schema'
 import { normalizeServiceKey as norm, buildCatalogKeyIndex } from '@/apps/quick-entry/catalog-identity'
-import { isGenericOdorKey } from '@/apps/quick-entry/service-interpret'
+import { isGenericOdorKey, ceramicCoatingDuration } from '@/apps/quick-entry/service-interpret'
 import { queryQBO } from './client'
 
 export interface ItemMatch { itemRef: string | null; itemName: string; usable: boolean; description: string | null; via?: string; reason?: string }
@@ -104,6 +104,9 @@ export async function loadRetailItemIndex(): Promise<RetailItemIndex> {
     // Generic odor wording with no stamped identity is never resolved by label: it could be any of the
     // three separate odor services, so it is reviewed in the Estimate (never silently reinterpreted).
     if (isGenericOdorKey(title)) return { itemRef: null, itemName: 'Labor', usable: false, description: null, reason: 'odor wording needs a service chosen → Labor' }
+    // Ceramic coating without a chosen 1-Year/3-Year identity is never mapped by label (the review gate
+    // refuses create/sync before this point; this keeps the mapper itself from guessing).
+    if (ceramicCoatingDuration(title) !== null) return { itemRef: null, itemName: 'Labor', usable: false, description: null, reason: 'ceramic coating needs 1-Year or 3-Year chosen' }
     const id = keyIndex.get(norm(title))
     const c = id ? byId.get(id) : undefined
     if (!c) return { itemRef: null, itemName: 'Labor', usable: false, description: null, reason: 'no catalog match → Labor' }

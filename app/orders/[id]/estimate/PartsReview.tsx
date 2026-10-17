@@ -31,7 +31,7 @@ export function ReviewNotices({ issues, services, parts, busy, post, onChooseOdo
       {issues.map((i) => (
         <div key={i.code} className="rounded-2xl border border-amber-800/70 bg-amber-950/30 px-4 py-3">
           <p className="text-amber-200 text-sm font-semibold">{i.message}</p>
-          {(i.code === 'odor_choice' || i.code === 'name_choice') && i.ids.map((id) => (
+          {(i.code === 'odor_choice' || i.code === 'ceramic_choice' || i.code === 'name_choice') && i.ids.map((id) => (
             <button key={id} type="button" disabled={busy} onClick={() => onChooseOdor(id)} className={`${BTN} mt-2 mr-2 bg-amber-600 text-white`}>Choose the service for “{title(id)}”</button>
           ))}
           {i.code === 'service_as_part' && i.ids.map((id) => {

@@ -12,7 +12,7 @@ export interface ServiceView {
   catalogId?: string | null; catalogName?: string | null; description?: string; detail?: string | null; matchMethod?: string | null
   matchState?: 'matched' | 'custom' | 'unmatched' | 'choose'; qbMapped?: boolean; role?: string | null; entryText?: string | null
   /** Why the service must be chosen (matchState 'choose'). */
-  chooseReason?: 'odor' | 'package' | 'name' | null
+  chooseReason?: 'odor' | 'package' | 'ceramic' | 'name' | null
   partLike?: 'part' | 'ambiguous' | null
 }
 export type LaborStatus = 'needs_review' | 'labor_added' | 'included' | 'part_only' | 'waived'
@@ -21,7 +21,7 @@ export interface PartView {
   quantity: number; unitCostCents: number | null; sellPriceCents: number | null; lineCents: number | null
   supply: 'shop' | 'customer'; laborStatus: LaborStatus; laborServiceId: string | null; laborNote: string | null; invoiceText: string
 }
-export interface ReviewIssue { code: 'part_labor' | 'odor_choice' | 'name_choice' | 'service_as_part'; message: string; ids: string[] }
+export interface ReviewIssue { code: 'part_labor' | 'odor_choice' | 'ceramic_choice' | 'name_choice' | 'service_as_part'; message: string; ids: string[] }
 export interface EstimateViewData {
   exists: boolean; flat: boolean; workTotalCents: number; services: ServiceView[]; incomplete: boolean; referenceCents: number | null
   parts?: PartView[]; review?: { ready: boolean; issues: ReviewIssue[] }

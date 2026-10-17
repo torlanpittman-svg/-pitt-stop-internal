@@ -11,7 +11,7 @@
  * Pure test — no DB/QB/network. Fails on baseline because `service_as_part` is not detected yet.
  */
 import { describe, it, expect } from 'vitest'
-import { estimateReadiness, type ReadinessService, type ReadinessPart } from './estimate-readiness'
+import { estimateReadiness, SYNC_BLOCKING, type ReadinessService, type ReadinessPart } from './estimate-readiness'
 
 let n = 0
 function svc(title: string, over: Partial<ReadinessService> = {}): ReadinessService {
@@ -80,8 +80,21 @@ describe('odor services — three separate services, no package', () => {
     for (const t of ['Remove smoke odor', 'Odor Treatment', 'Odor / Ozone', 'Ozone + air ducts']) expect(codesOf([svc(t)])).toEqual(['odor_choice'])
     for (const t of ['Ozone', 'Clean air duct system']) expect(codesOf([svc(t)])).toEqual([])
   })
-  it('a legacy name matching more than one service needs a choice; a confirmed custom line does not', () => {
-    expect(codesOf([svc('Ceramic Coating', { ambiguousName: true })])).toEqual(['name_choice'])
-    expect(codesOf([svc('Ceramic Coating', { ambiguousName: true, matchMethod: 'custom' })])).toEqual([])
+  it('a legacy name matching more than one service needs a choice; a confirmed custom line of unrelated work does not', () => {
+    expect(codesOf([svc('Detail Special', { ambiguousName: true })])).toEqual(['name_choice'])
+    expect(codesOf([svc('Detail Special', { ambiguousName: true, matchMethod: 'custom' })])).toEqual([])
+  })
+  it('ceramic coating without a chosen identity always needs 1-Year/3-Year — even custom, even with a duration in the label', () => {
+    for (const t of ['Ceramic Coating', 'ceramic coatng', 'Ceramic', '3 year ceramic coating', 'Hydro slick ceramic coating']) {
+      expect(codesOf([svc(t)]), t).toEqual(['ceramic_choice'])
+      expect(codesOf([svc(t, { matchMethod: 'custom' })]), `${t} (custom)`).toEqual(['ceramic_choice'])
+    }
+    expect(codesOf([svc('Ceramic Coating — 3-Year', { catalogId: 'cc3', matchMethod: 'exact' })])).toEqual([])
+  })
+  it('ceramic-named work that is NOT a coating stays a normal custom service', () => {
+    for (const t of ['Ceramic window tint', 'Ceramic brake pads', 'Speed coat ceramic spray']) expect(codesOf([svc(t, { matchMethod: 'custom' })]), t).toEqual([])
+  })
+  it('an unresolved ceramic choice blocks invoice SYNC as well as creation', () => {
+    expect(SYNC_BLOCKING).toContain('ceramic_choice')
   })
 })

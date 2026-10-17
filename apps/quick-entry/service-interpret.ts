@@ -53,6 +53,9 @@ export interface Interpretation {
   part: { description: string } | null
   /** One short question when the scope is genuinely unclear. */
   question: string | null
+  /** May this wording be added as a custom one-off service? False for odor work and ceramic coating, which
+   *  must always be one of their catalog services (enforced again on the server). */
+  customAllowed?: boolean
   source: CandidateVia | 'none'
 }
 
@@ -276,6 +279,24 @@ export function odorWordingNeedsChoice(text: string): boolean {
   return m.includes('odor_treatment') || m.length > 1
 }
 
+/**
+ * Ceramic COATING wording and the protection length it states — the single rule shared by the interpreter,
+ * server validation, the review gate and the invoice mapper. Returns null when the wording is not ceramic
+ * coating (including ceramic window tint/film, ceramic brake pads, spray-on "speed coat" sealants),
+ * '1yr' / '3yr' when exactly one duration is stated, and 'unspecified' otherwise. Spelling variants are
+ * corrected first ("ceramik", "cermaic coatng"). Never decided by price or database order.
+ */
+export function ceramicCoatingDuration(text: string): '1yr' | '3yr' | 'unspecified' | null {
+  const toks = correctTokens(tokenize(text ?? ''), ['ceramic', 'coating'])
+  if (!toks.includes('ceramic')) return null
+  if (toks.some((t) => CERAMIC_NOT_COATING.has(t))) return null
+  const yr = (t: string) => t.match(/^(\d+)(?:yr|yrs|year|years)$/)?.[1]
+  const one = toks.some((t) => t === '1' || t === 'one' || t === '12' || yr(t) === '1')
+  const three = toks.some((t) => t === '3' || t === 'three' || t === '36' || yr(t) === '3')
+  return one && !three ? '1yr' : three && !one ? '3yr' : 'unspecified'
+}
+const CERAMIC_NOT_COATING = new Set(['tint', 'tinting', 'window', 'windows', 'film', 'brake', 'brakes', 'pad', 'pads', 'rotor', 'rotors', 'spray', 'speed', 'sealant', 'wax'])
+
 /** Odor-family wording of ANY kind (generic, ozone, ducts) — used to flag unresolved legacy titles. */
 export function isOdorFamily(text: string): boolean {
   const toks = tokenize(text).map((t) => SHORTHAND[t] ?? t).map(stem)
@@ -310,8 +331,9 @@ export function interpretEntry(entry: string, items: InterpretCatalogItem[]): In
   const corrected = tokens.join(' ')
   const stems = tokens.map(stem)
   const base = { entry: raw, corrected, area: extractArea(tokens), part: null as Interpretation['part'], question: null as string | null }
+  const customAllowed = odorServicesMentioned(raw).length === 0 && odorServicesMentioned(corrected).length === 0 && ceramicCoatingDuration(raw) === null
   const done = (o: Omit<Interpretation, 'entry' | 'corrected' | 'area' | 'part' | 'question'> & Partial<Interpretation>): Interpretation =>
-    ({ ...base, ...o, candidates: o.candidates.slice(0, MAX_CANDIDATES) })
+    ({ ...base, customAllowed, ...o, candidates: o.candidates.slice(0, MAX_CANDIDATES) })
   if (!raw) return done({ status: 'none', intent: 'unknown', candidates: [], source: 'none' })
 
   // 1) Established matches — exact catalog name, then approved alternate name (raw or corrected).
@@ -325,7 +347,7 @@ export function interpretEntry(entry: string, items: InterpretCatalogItem[]): In
   // retired combined ozone record must not decide what odor work means).
   const genericOdor = isGenericOdorKey(raw) || isGenericOdorKey(corrected)
   // Ceramic coating is decided by its own rule below (duration), never by the shared "Ceramic Coating" alias.
-  for (const key of genericOdor || stems.includes('ceramic') ? [] : keys) {
+  for (const key of genericOdor || ceramicCoatingDuration(raw) ? [] : keys) {
     const aliased = [...new Set(items.filter((i) => i.aliases.some((a) => normalizeServiceKey(a) === key)).map((i) => i.id))]
     if (aliased.length === 1) return done({ status: 'resolved', intent: 'service', candidates: [{ catalogId: aliased[0], via: 'alias' }], source: 'alias', area: null })
     if (aliased.length > 1) return done({ status: 'choose', intent: 'service', candidates: aliased.map((id) => ({ catalogId: id, via: 'alias' as const })), source: 'alias', question: 'This name is used for more than one service. Which one?' })
@@ -352,10 +374,10 @@ export function interpretEntry(entry: string, items: InterpretCatalogItem[]): In
   // 2b) Ceramic coating — two options that differ only by protection length. A stated duration picks one
   //     ("3 yr ceramic", "1-Year Ceramic Coating"); otherwise ask. Never guessed, never row order.
   const c1 = items.find((i) => i.slug === 'ceramic_coating_1yr'), c3 = items.find((i) => i.slug === 'ceramic_coating_3yr')
-  if (stems.includes('ceramic') && (c1 || c3)) {
-    const one = tokens.some((t) => t === '1' || t === 'one' || t === '1yr' || t === '12'), three = tokens.some((t) => t === '3' || t === 'three' || t === '3yr' || t === '36')
-    if (one && !three && c1) return done({ status: 'resolved', intent: 'service', candidates: [{ catalogId: c1.id, via: 'rule' }], source: 'rule', area: null })
-    if (three && !one && c3) return done({ status: 'resolved', intent: 'service', candidates: [{ catalogId: c3.id, via: 'rule' }], source: 'rule', area: null })
+  const ceramic = ceramicCoatingDuration(raw)
+  if (ceramic && (c1 || c3)) {
+    if (ceramic === '1yr' && c1) return done({ status: 'resolved', intent: 'service', candidates: [{ catalogId: c1.id, via: 'rule' }], source: 'rule', area: null })
+    if (ceramic === '3yr' && c3) return done({ status: 'resolved', intent: 'service', candidates: [{ catalogId: c3.id, via: 'rule' }], source: 'rule', area: null })
     const both = [c1, c3].filter((i): i is InterpretCatalogItem => !!i).map((i) => ({ catalogId: i.id, via: 'rule' as const }))
     return done({ status: 'choose', intent: 'service', candidates: both, source: 'rule', area: null, question: 'Which ceramic coating — 1-Year or 3-Year protection?' })
   }

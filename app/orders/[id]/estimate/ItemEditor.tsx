@@ -188,7 +188,9 @@ function MatchSummary({ s }: { s: ServiceView }) {
   if (s.matchState === 'choose') {
     return <p className="text-amber-200 text-sm">{s.chooseReason === 'package'
       ? 'This line is on the retired Complete Odor Treatment package. Ozone Treatment, Air Duct Cleaning and Odor Treatment are separate services — choose the one performed here, and add any others as their own lines.'
-      : s.chooseReason === 'name'
+      : s.chooseReason === 'ceramic'
+        ? 'Choose 1-Year or 3-Year Ceramic Coating for this line before sending or invoicing. The price stays as entered.'
+        : s.chooseReason === 'name'
         ? 'This name matches more than one service. Choose which one it is before sending or invoicing.'
         : 'Ozone Treatment, Air Duct Cleaning and Odor Treatment are separate services. Choose the one this line is, and add any others as their own lines, before sending or invoicing.'}</p>
   }

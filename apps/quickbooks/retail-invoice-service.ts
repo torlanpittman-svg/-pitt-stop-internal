@@ -533,6 +533,10 @@ export async function syncRetailQBInvoice(params: { orderId: string; actor: stri
   const { orderId, actor } = params
   const db = getDb()
 
+  // Estimate review first (local, no QuickBooks call): an unresolved ceramic coating or parts-labor review
+  // never reaches QuickBooks — not even a read.
+  const syncIssues = (await loadEstimateReview(orderId)).readiness.issues.filter((i) => SYNC_BLOCKING.includes(i.code))
+  if (syncIssues.length) return { ok: false, block: 'estimate_review', error: `Resolve in the Estimate before syncing: ${syncIssues.map((i) => i.message).join(' ')}` }
   const pre = await resolveRetailSync(orderId)
   if (!pre.ok) {
     if (pre.needsReview) {
@@ -543,9 +547,6 @@ export async function syncRetailQBInvoice(params: { orderId: string; actor: stri
   }
   // Already-sent invoices require an explicit confirm before we change what the customer got.
   if (pre.alreadySent && !params.confirmSent) return { ...pre, ok: false, block: 'confirm_required', alreadySent: true }
-  const syncIssues = (await loadEstimateReview(orderId)).readiness.issues.filter((i) => SYNC_BLOCKING.includes(i.code))
-  if (syncIssues.length) return { ok: false, block: 'estimate_review', error: `Resolve in the Estimate before syncing: ${syncIssues.map((i) => i.message).join(' ')}` }
-
   const est0 = await getEstimateRow(orderId)
   if (!est0 || !est0.qbInvoiceId) return { ok: false, block: 'no_invoice' }
   const wasSent = !!pre.alreadySent

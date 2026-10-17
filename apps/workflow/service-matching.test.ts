@@ -52,7 +52,10 @@ import {
 import { addEstimatePart, decidePartLabor, addTireWork, removeEstimatePart, updateEstimatePart } from '@/apps/parts/estimate-parts'
 import { addPart, billPart } from '@/apps/parts/db'
 import { updateCatalogService } from '@/apps/quick-entry/shortcuts'
-import { buildRetailWorkPayload, createRetailQBInvoice } from '@/apps/quickbooks/retail-invoice-service'
+import { buildRetailWorkPayload, createRetailQBInvoice, syncRetailQBInvoice } from '@/apps/quickbooks/retail-invoice-service'
+import { SYNC_BLOCKING } from '@/apps/workflow/estimate-readiness'
+import { interpretServiceEntry } from '@/apps/quick-entry/service-match-db'
+import { jobEstimates } from '@/drizzle/schema'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { getOrderWithContext, transitionOrder } from '@/apps/workflow/db'
 import { loadEstimateReview } from '@/apps/workflow/estimate-review'
@@ -313,12 +316,94 @@ describe('odor services — three separate services, no package (owner final def
     const [row] = await db.insert(jobServices).values({ jobEstimateId: estimateId, title: 'Ceramic Coating', source: 'promoted', sortOrder: 0 }).returning()
     await setServicePrice(estimateId, row.id, 80000, 'Manager')
     const v = await getEstimateView(orderId)
-    expect(v.services[0]).toMatchObject({ matchState: 'choose', chooseReason: 'name' })
-    expect(v.review!.issues.map((i) => i.code)).toEqual(['name_choice'])
-    expect((await createRetailQBInvoice({ orderId, actor: 'Manager' })).error).toMatch(/matches more than one service/)
+    expect(v.services[0]).toMatchObject({ matchState: 'choose', chooseReason: 'ceramic' })
+    expect(v.review!.issues.map((i) => i.code)).toEqual(['ceramic_choice'])
+    expect((await createRetailQBInvoice({ orderId, actor: 'Manager' })).error).toMatch(/Choose 1-Year or 3-Year Ceramic Coating/)
     await selectServiceMatch(orderId, row.id, { catalogId: CAT.ceramic_coating_3yr }, 'Manager')
     expect((await loadEstimateReview(orderId)).readiness.ready).toBe(true)
     expect((await payload(orderId)).payload.lines[0]).toMatchObject({ itemId: '70', description: expect.stringMatching(/3 years/) })
+  })
+})
+
+describe('ceramic coating — 1-Year or 3-Year, never generic Labor', () => {
+  const ONE = /approximately 1 year of protection/, THREE = /approximately 3 years of protection/
+
+  it('rushed and misspelled entries: a stated duration selects the service; otherwise it asks; custom is never offered', async () => {
+    const r = async (t: string) => (await interpretServiceEntry(t, { useAi: false })).interpretation
+    for (const [t, slug] of [['3 year ceramic', 'ceramic_coating_3yr'], ['ceramic coating 3yr', 'ceramic_coating_3yr'], ['3-Year Ceramic Coating', 'ceramic_coating_3yr'],
+      ['cermaic coatng 3 years', 'ceramic_coating_3yr'], ['1 yr ceramic', 'ceramic_coating_1yr'], ['one year ceramik coating', 'ceramic_coating_1yr']] as const) {
+      expect(await r(t), t).toMatchObject({ status: 'resolved', candidates: [{ catalogId: CAT[slug] }] })
+    }
+    for (const t of ['ceramic coating', 'Ceramic Coating', 'ceramik coatng', 'ceramic', 'ceramic coating 1 or 3 yr']) {
+      const it = await r(t)
+      expect(it, t).toMatchObject({ status: 'choose', question: 'Which ceramic coating — 1-Year or 3-Year protection?', customAllowed: false })
+      expect(it.candidates.map((c) => c.catalogId), t).toEqual([CAT.ceramic_coating_1yr, CAT.ceramic_coating_3yr])
+    }
+    expect((await r('ceramic window tint')).customAllowed).toBe(true)
+  })
+
+  it('custom and title-only bypass attempts are refused on the server; unrelated custom work still works', async () => {
+    const { orderId, estimateId } = await order()
+    await expect(addService(estimateId, 'Ceramic coating', { custom: true, actor: 'Manager' })).rejects.toThrow(/1-Year or 3-Year Ceramic Coating/)
+    await expect(addService(estimateId, 'ceramik coatng', { custom: true, actor: 'Manager' })).rejects.toThrow(/1-Year or 3-Year/)
+    await expect(addService(estimateId, '3 year ceramic coating', { actor: 'Manager' })).rejects.toThrow(/1-Year or 3-Year/)   // title only, no identity
+    const [legacy] = await db.insert(jobServices).values({ jobEstimateId: estimateId, title: 'Ceramic coating', source: 'promoted', sortOrder: 0 }).returning()
+    await expect(selectServiceMatch(orderId, legacy.id, { custom: true }, 'Manager')).rejects.toThrow(/1-Year or 3-Year/)
+    const tint = await addService(estimateId, 'Ceramic window tint', { custom: true, actor: 'Manager' })
+    const odd = await addService(estimateId, 'Pinstripe touch-up (customer request)', { custom: true, actor: 'Manager' })
+    const v = await getEstimateView(orderId)
+    expect(v.services.filter((x) => x.id === tint.id || x.id === odd.id).map((x) => x.matchState)).toEqual(['custom', 'custom'])
+  })
+
+  it('an unresolved ceramic line (even saved as custom) cannot reach invoice CREATION — nothing is sent to QuickBooks', async () => {
+    const { orderId, estimateId } = await order()
+    const [row] = await db.insert(jobServices).values({ jobEstimateId: estimateId, title: 'Ceramic coating', source: 'promoted', sortOrder: 0, matchMethod: 'custom' }).returning()
+    await setServicePrice(estimateId, row.id, 104211, 'Manager')
+    const v = await getEstimateView(orderId)
+    expect(v.services[0]).toMatchObject({ matchState: 'choose', chooseReason: 'ceramic' })
+    expect(v.review!.issues.map((i) => i.code)).toEqual(['ceramic_choice'])
+    const refused = await createRetailQBInvoice({ orderId, actor: 'Manager' })
+    expect(refused).toMatchObject({ ok: false, status: 'refused' })
+    expect(refused.error).toMatch(/Choose 1-Year or 3-Year Ceramic Coating/)
+    expect(qb.posts).toEqual([])
+  })
+
+  it('…nor invoice SYNC of an existing invoice — refused before any QuickBooks write', async () => {
+    const { orderId, estimateId } = await order()
+    const [row] = await db.insert(jobServices).values({ jobEstimateId: estimateId, title: 'Ceramic', source: 'promoted', sortOrder: 0 }).returning()
+    await setServicePrice(estimateId, row.id, 90000, 'Manager')
+    await db.update(jobEstimates).set({ qbInvoiceId: 'INV-T', qbInvoiceNumber: '9999', qbStatus: 'created' }).where(eq(jobEstimates.id, estimateId))
+    const blocking = (await loadEstimateReview(orderId)).readiness.issues.filter((i) => SYNC_BLOCKING.includes(i.code))
+    expect(blocking.map((i) => i.code)).toEqual(['ceramic_choice'])
+    const res = await syncRetailQBInvoice({ orderId, actor: 'Manager' })
+    expect(res).toMatchObject({ ok: false, block: 'estimate_review', error: expect.stringMatching(/Choose 1-Year or 3-Year Ceramic Coating/) })
+    expect(qb.posts).toEqual([])
+    expect((await db.select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)))[0].qbStatus).toBe('created')
+  })
+
+  it('choosing keeps the deliberately entered price (no default, no inference from the amount); identity, item #70 and the duration wording survive rename + reopen', async () => {
+    const { orderId, estimateId } = await order()
+    const [row] = await db.insert(jobServices).values({ jobEstimateId: estimateId, title: 'Ceramic coating', source: 'promoted', sortOrder: 0 }).returning()
+    await setServicePrice(estimateId, row.id, 104211, 'Manager')   // $1,042.11 — neither default ($800 / $2,000)
+    await selectServiceMatch(orderId, row.id, { catalogId: CAT.ceramic_coating_1yr, title: 'Ceramic Coating — 1-Year' }, 'Manager')
+    let v = await getEstimateView(orderId)
+    expect(v.services[0]).toMatchObject({ catalogId: CAT.ceramic_coating_1yr, priceCents: 104211, suggestedCents: 80000, matchState: 'matched' })
+    expect(v.review!.ready).toBe(true)
+    await renameService(orderId, row.id, 'Ceramic — customer’s SUV', 'Manager')
+    await prepareEstimateView(orderId, 'Manager')
+    v = await getEstimateView(orderId)
+    expect(v.services[0]).toMatchObject({ title: 'Ceramic — customer’s SUV', catalogId: CAT.ceramic_coating_1yr, priceCents: 104211 })
+    const lines = (await payload(orderId)).payload.lines
+    expect(lines).toEqual([{ itemId: '70', description: expect.stringMatching(ONE), amountCents: 104211 }])
+    expect(lines[0].description).not.toMatch(THREE)
+  })
+
+  it('a new 3-Year line keeps the price the user typed, not the catalog default', async () => {
+    const { orderId, estimateId } = await order()
+    const svc = await addService(estimateId, 'Ceramic Coating — 3-Year', { catalogId: CAT.ceramic_coating_3yr, matchMethod: 'rule', actor: 'Manager' })
+    await setServicePrice(estimateId, svc.id, 175000, 'Manager')
+    const { payload: p } = await payload(orderId)
+    expect(p.lines).toEqual([{ itemId: '70', description: expect.stringMatching(THREE), amountCents: 175000 }])
   })
 })
 

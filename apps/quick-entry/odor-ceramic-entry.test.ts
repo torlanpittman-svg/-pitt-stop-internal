@@ -5,7 +5,7 @@
  * ambiguous names. Pure — no DB.
  */
 import { describe, it, expect } from 'vitest'
-import { interpretEntry, odorWordingNeedsChoice, type InterpretCatalogItem } from './service-interpret'
+import { interpretEntry, odorWordingNeedsChoice, ceramicCoatingDuration, type InterpretCatalogItem } from './service-interpret'
 import { isSuggestableHistoryName } from './jobs-db'
 
 const C = (slug: string, name: string, aliases: string[] = [], role: InterpretCatalogItem['role'] = null): InterpretCatalogItem => ({ id: `id-${slug}`, slug, name, aliases, role })
@@ -59,4 +59,19 @@ describe('Quick Entry history never re-offers retired or ambiguous work', () => 
     expect(isSuggestableHistoryName(n, ambiguous)).toBe(false)
   })
   it.each(['Interior detail', 'Headlight restoration', 'Clay bar'])('"%s" still is', (n) => expect(isSuggestableHistoryName(n, ambiguous)).toBe(true))
+})
+
+describe('ceramicCoatingDuration — the one shared ceramic rule', () => {
+  it.each([
+    ['ceramic coating', 'unspecified'], ['Ceramic', 'unspecified'], ['ceramik coatng', 'unspecified'], ['cermaic coating', 'unspecified'],
+    ['3 year ceramic', '3yr'], ['ceramic coating 3yr', '3yr'], ['3yrs ceramic', '3yr'], ['three year ceramic coating', '3yr'], ['Ceramic Coating — 3-Year', '3yr'],
+    ['1 yr ceramic', '1yr'], ['one year ceramic', '1yr'], ['1-Year Ceramic Coating', '1yr'], ['12 month ceramic', '1yr'],
+    ['ceramic 1 or 3 year', 'unspecified'], ['Hydro slick ceramic coating', 'unspecified'],
+    ['ceramic window tint', null], ['ceramic brake pads', null], ['Speed coat ceramic', null], ['ceramic spray sealant', null], ['interior detail', null],
+  ] as const)('"%s" → %s', (t, want) => expect(ceramicCoatingDuration(t)).toBe(want))
+
+  it('custom entry is never offered for ceramic coating or odor work; still offered for unrelated work', () => {
+    for (const t of ['ceramic coating', '3 year ceramic', 'ceramik', 'smoke smell', 'ozone']) expect(interpretEntry(t, CATALOG).customAllowed, t).toBe(false)
+    for (const t of ['pinstripe touch up', 'ceramic window tint', 'xyzzy']) expect(interpretEntry(t, CATALOG).customAllowed, t).toBe(true)
+  })
 })

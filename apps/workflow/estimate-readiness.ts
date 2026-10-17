@@ -10,6 +10,8 @@
  *                   wording naming more than one of the three separate odor services (Ozone Treatment,
  *                   Air Duct Cleaning, Odor Treatment), or a line still on the retired "Complete Odor
  *                   Treatment" package. Never reinterpreted automatically.
+ *  - ceramic_choice a ceramic-coating line with no catalog identity (incl. a custom one-off): 1-Year or
+ *                   3-Year must be chosen — it never bills as generic Labor (blocks create AND sync)
  *  - name_choice    a legacy line (no catalog identity) whose name matches more than one service
  *                   ("Ceramic Coating" → 1-year or 3-year) — choose one instead of a guess
  *  - service_as_part a physical part saved as an ordinary service line ("Driver-side mirror assembly"),
@@ -17,7 +19,7 @@
  *                   service, or clarify it (part wording with "replace"/"R&R" is never auto-converted)
  * There is no odor package any more, so several odor services on one estimate are normal (no warning).
  */
-import { odorWordingNeedsChoice, classifyPartWording, type ServiceRole } from '@/apps/quick-entry/service-interpret'
+import { odorWordingNeedsChoice, ceramicCoatingDuration, classifyPartWording, type ServiceRole } from '@/apps/quick-entry/service-interpret'
 import { laborReviewSummary } from '@/apps/parts/labor-review'
 
 export interface ReadinessService {
@@ -28,18 +30,20 @@ export interface ReadinessService {
 }
 export interface ReadinessPart { id: string; description: string; laborStatus: string }
 
-export type ReadinessCode = 'part_labor' | 'odor_choice' | 'name_choice' | 'service_as_part'
+export type ReadinessCode = 'part_labor' | 'odor_choice' | 'ceramic_choice' | 'name_choice' | 'service_as_part'
 export interface ReadinessIssue { code: ReadinessCode; message: string; ids: string[] }
 export interface Readiness { ready: boolean; issues: ReadinessIssue[]; summary: string | null }
 
 /** Why a line must have its service chosen before invoicing (null = it doesn't). */
-export type ChoiceReason = 'odor' | 'package' | 'name'
+export type ChoiceReason = 'odor' | 'package' | 'ceramic' | 'name'
 export function serviceChoiceReason(s: ReadinessService): ChoiceReason | null {
   if (s.kind === 'part') return null
   if (s.catalogId) return s.role === 'odor_complete' ? 'package' : null
   // Odor wording always needs one of the three real services — even on a "custom" one-off line, so an
   // obsolete service ("Remove Smoke Odor") can't come back as a custom line.
   if (odorWordingNeedsChoice(s.title)) return 'odor'
+  // Ceramic coating too: 1-Year or 3-Year must be chosen, even on a "custom" line (never generic Labor).
+  if (ceramicCoatingDuration(s.title) !== null) return 'ceramic'
   if (s.matchMethod === 'custom') return null
   if (s.ambiguousName) return 'name'
   return null
@@ -58,9 +62,10 @@ export function servicePartLike(s: ReadinessService): 'part' | 'ambiguous' | nul
   return classifyPartWording(s.title)
 }
 
-/** Issues that can block SYNC of an already-created invoice: only parts labor (new on every job). Legacy
- *  odor wording, the retired package, and ambiguous legacy names never block correcting an invoice. */
-export const SYNC_BLOCKING: readonly ReadinessCode[] = ['part_labor']
+/** Issues that can block SYNC of an already-created invoice: parts labor, and an unresolved ceramic coating
+ *  (it must never be synced as generic Labor). Legacy odor wording, the retired package, and other
+ *  ambiguous legacy names never block correcting an invoice. */
+export const SYNC_BLOCKING: readonly ReadinessCode[] = ['part_labor', 'ceramic_choice']
 
 export function estimateReadiness(services: ReadinessService[], parts: ReadinessPart[]): Readiness {
   const issues: ReadinessIssue[] = []
@@ -75,6 +80,11 @@ export function estimateReadiness(services: ReadinessService[], parts: Readiness
         : serviceChoiceReason(one) === 'package'
           ? `“${one.title}” was the Complete Odor Treatment package, which is no longer offered — choose the service performed.`
           : `Choose which service “${one.title}” is.` })
+  }
+  const ceramic = services.filter((s) => serviceChoiceReason(s) === 'ceramic')
+  if (ceramic.length) {
+    issues.push({ code: 'ceramic_choice', ids: ceramic.map((s) => s.id),
+      message: ceramic.length === 1 ? `Choose 1-Year or 3-Year Ceramic Coating for “${ceramic[0].title}”.` : `${ceramic.length} ceramic coating lines need 1-Year or 3-Year chosen.` })
   }
   const named = services.filter((s) => serviceChoiceReason(s) === 'name')
   if (named.length) {

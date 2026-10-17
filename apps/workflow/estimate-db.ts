@@ -19,17 +19,21 @@ import { jobParts } from '@/apps/parts/schema'
 import { eligibleCatalogChoice, catalogDescriptionSnapshot, canonicalDescription } from '@/apps/quick-entry/service-match-db'
 import { composeLineDescription, partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
 import { loadEstimateReview } from './estimate-review'
-import { odorServicesMentioned } from '@/apps/quick-entry/service-interpret'
+import { odorServicesMentioned, ceramicCoatingDuration } from '@/apps/quick-entry/service-interpret'
 import { serviceChoiceReason, servicePartLike, type ChoiceReason, type ReadinessIssue } from './estimate-readiness'
 import type { LaborStatus } from '@/apps/parts/labor-review'
 
 
-/** Odor work is always one of the three catalog services (Ozone Treatment, Air Duct Cleaning, Odor
- *  Treatment) — never a custom one-off, so retired services ("Remove Smoke Odor", "Complete Odor
- *  Treatment") can't be recreated as custom lines. */
+/** Some work is always one of its catalog services, never a custom one-off (which would bill as generic
+ *  Labor): odor work (Ozone Treatment, Air Duct Cleaning, Odor Treatment — so retired services like
+ *  "Remove Smoke Odor" can't come back) and ceramic coating (1-Year or 3-Year). Same shared rules as the
+ *  interpreter. Unrelated custom services are unaffected. */
 function assertNotCustomOdor(title: string): void {
   if (odorServicesMentioned(title).length > 0) {
     throw new Error('Odor work is added as Ozone Treatment, Air Duct Cleaning, or Odor Treatment — choose the service performed (add each one as its own line).')
+  }
+  if (ceramicCoatingDuration(title) !== null) {
+    throw new Error('Ceramic coating is added as 1-Year or 3-Year Ceramic Coating — choose which one.')
   }
 }
 export type EstimateRow = typeof jobEstimates.$inferSelect
@@ -675,6 +679,8 @@ export async function addService(estimateId: string, title: string, opts: AddSer
   } else {
     catalogId = await resolveCatalogId(clean)   // stable catalog identity for the QB payload
     matchMethod = catalogId ? 'legacy' : null
+    // A bare ceramic-coating title never becomes an unmatched line that would bill as generic Labor.
+    if (!catalogId && ceramicCoatingDuration(clean) !== null) throw new Error('Ceramic coating is added as 1-Year or 3-Year Ceramic Coating — choose which one.')
   }
   const [row] = await getDb().insert(jobServices).values({
     jobEstimateId: estimateId, title: clean, source: 'manual', catalogId, kind: opts.kind ?? 'service',

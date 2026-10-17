@@ -22,6 +22,8 @@ interface Interpretation {
   intent: 'service' | 'part' | 'part_and_service' | 'odor' | 'tires' | 'unknown'
   candidates: { catalogId: string; via: 'exact' | 'alias' | 'rule' | 'keyword' | 'ai' }[]
   area: string | null; part: { description: string } | null; question: string | null
+  /** False for odor work and ceramic coating — always one of their catalog services (server enforces too). */
+  customAllowed?: boolean
 }
 interface InterpretResponse { interpretation: Interpretation; choices: CatalogChoice[]; ai: 'used' | 'unavailable' | 'failed' | 'skipped' }
 
@@ -181,8 +183,8 @@ export default function ServicePicker({ orderId, mode, service, busy, isFlat, ve
       {!picked && (result || lookErr || mode === 'rematch') && panel !== 'part' && panel !== 'tires' && (
         <div className="flex flex-wrap gap-2">
           <button type="button" onClick={() => setPanel(panel === 'browse' ? 'none' : 'browse')} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200`}>{panel === 'browse' ? 'Hide list' : 'Browse all services'}</button>
-          {/* Odor work is always one of the three services — never a custom one-off (retired services can't come back). */}
-          {entry.trim() && it?.intent !== 'odor' && <button type="button" onClick={() => setPanel('custom')} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200`}>Custom service…</button>}
+          {/* Odor work and ceramic coating are always one of their catalog services — never a custom one-off (server enforces too). */}
+          {entry.trim() && it?.intent !== 'odor' && it?.customAllowed !== false && <button type="button" onClick={() => setPanel('custom')} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200`}>Custom service…</button>}
           {mode === 'add' && <button type="button" onClick={() => setPanel('part')} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200`}>Add a part…</button>}
         </div>
       )}
