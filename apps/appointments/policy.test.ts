@@ -5,7 +5,8 @@ import {
 } from './policy'
 
 const TZ = 'America/Chicago'
-const cfg = (over: Partial<BookingConfig> = {}): BookingConfig => ({ ...DEFAULT_BOOKING_CONFIG, enabled: true, slotCapacity: 2, dailyUnits: 6, ...over })
+/** The launch configuration (owner decision 2026-10-19) with online booking switched on. */
+const cfg = (over: Partial<BookingConfig> = {}): BookingConfig => ({ ...DEFAULT_BOOKING_CONFIG, enabled: true, ...over })
 /** A shop-local wall-clock instant. */
 const at = (date: string, hhmm: string) => zonedToUtc(date, hhmm, TZ)
 const one = { detail: 1, mechanic: 0 }
@@ -102,41 +103,92 @@ describe('closed days, holidays and blocks', () => {
   })
 })
 
-describe('capacity', () => {
+describe('capacity — drop-off spacing (launch model)', () => {
   const load = (time: string, d = 1, m = 0): BookedLoad => ({ localDate: TUE, localTime: time, unitsDetail: d, unitsMechanic: m })
+  const ALL = slotTimes(DEFAULT_BOOKING_CONFIG.days.tue, 15)
 
-  it('a time disappears once it reaches drop-offs-per-time', () => {
-    const [day] = avail(cfg({ slotCapacity: 2 }), at(MON, '06:00'), TUE, [load('08:00'), load('08:00')])
-    expect(day.slots.find((s) => s.time === '08:00')).toMatchObject({ available: false, reason: 'full' })
+  it('launch defaults: 1 public drop-off per time, 15-minute spacing, no daily cap, workload limits off', () => {
+    const d = DEFAULT_BOOKING_CONFIG
+    expect(d.slotCapacity).toBe(1)
+    expect(d.intervalMinutes).toBe(15)
+    expect(d.dailyAppointmentLimit).toBeNull()
+    expect(d.workloadLimitsEnabled).toBe(false)
+    expect(d.dailyUnits).toBeNull()
+    expect(d.sameDayEnabled).toBe(true)
+    expect(d.sameDayLeadMinutes).toBe(60)
+    expect(d.enabled).toBe(false) // public booking still ships OFF until a manager turns it on
+    expect(bookingReadiness(mergeBookingConfig({ enabled: true })).ready).toBe(true)
+    expect(publicBookingOpen(mergeBookingConfig({ enabled: true }))).toBe(true)
+  })
+
+  it('a booked time is no longer offered; the next 15-minute time still is', () => {
+    const [day] = avail(cfg(), at(MON, '06:00'), TUE, [load('08:30')])
+    expect(day.slots.find((s) => s.time === '08:30')).toMatchObject({ available: false, reason: 'full' })
+    expect(day.slots.find((s) => s.time === '08:45')?.available).toBe(true)
     expect(day.slots.find((s) => s.time === '08:15')?.available).toBe(true)
   })
 
-  it('the whole day disappears once daily workload units are used', () => {
-    const [day] = avail(cfg({ dailyUnits: 3 }), at(MON, '06:00'), TUE, [load('08:00', 2), load('09:00', 1)])
-    expect(openTimes(day)).toEqual([])
+  it('many bookings in a day never close the day — every unbooked time stays open', () => {
+    const booked = ALL.filter((_, i) => i % 2 === 0) // 8 bookings
+    const [day] = avail(cfg(), at(MON, '06:00'), TUE, booked.map((t) => load(t)))
+    expect(day.closed).toBe(false)
+    expect(openTimes(day)).toEqual(ALL.filter((t) => !booked.includes(t)))
+    // 15 of 16 taken: the last one is still bookable
+    const [nearlyFull] = avail(cfg(), at(MON, '06:00'), TUE, ALL.slice(0, 15).map((t) => load(t)))
+    expect(openTimes(nearlyFull)).toEqual(['11:00'])
   })
 
-  it('heavier services need more units (a 2-unit coating does not fit one remaining unit)', () => {
-    const c = cfg({ dailyUnits: 3 })
+  it('ceramic coating at 8:00 takes only 8:00 — 8:15, 8:30 and every later open time remain', () => {
+    const ceramic = resolveServices(cfg(), ['ceramic_coating'], { publicOnly: true })
+    expect(ceramic.ok && ceramic.need.detail).toBe(2) // weight is still stored…
+    const [day] = avail(cfg(), at(MON, '06:00'), TUE, [load('08:00', 2)])
+    expect(openTimes(day)).toEqual(ALL.filter((t) => t !== '08:00')) // …but closes nothing else
+  })
+
+  it('paint correction does not remove unrelated later times either', () => {
+    const [day] = avail(cfg(), at(MON, '06:00'), TUE, [load('07:15', 2), load('09:00', 2), load('10:00', 2)])
+    expect(openTimes(day)).toEqual(ALL.filter((t) => !['07:15', '09:00', '10:00'].includes(t)))
+  })
+
+  it('service weights have no effect while workload limits are off, even if unit numbers are stored', () => {
+    const c = cfg({ dailyUnits: 3, categoryLimits: { detail: 1, mechanic: 1 } })
+    const heavy = [load('07:15', 2), load('07:30', 2), load('07:45', 0, 2)]
+    expect(capacityAllows(c, heavy, TUE, '09:00', { detail: 2, mechanic: 0 })).toBe(true)
+    expect(capacityAllows(c, heavy, TUE, '09:15', { detail: 0, mechanic: 2 })).toBe(true)
+  })
+
+  it('daily capacity stays unlimited until a manager explicitly sets a limit', () => {
+    const loads = ALL.slice(0, 10).map((t) => load(t))
+    expect(capacityAllows(cfg(), loads, TUE, '11:00', one)).toBe(true)
+    const capped = cfg({ dailyAppointmentLimit: 10 })
+    expect(capacityAllows(capped, loads, TUE, '11:00', one)).toBe(false)
+    expect(capacityAllows(cfg({ dailyAppointmentLimit: 11 }), loads, TUE, '11:00', one)).toBe(true)
+  })
+
+  it('workload limits still work when a manager turns them on (kept for later)', () => {
+    const c = cfg({ workloadLimitsEnabled: true, dailyUnits: 3 })
     const loads = [load('08:00', 2)]
     expect(capacityAllows(c, loads, TUE, '09:00', { detail: 1, mechanic: 0 })).toBe(true)
     expect(capacityAllows(c, loads, TUE, '09:00', { detail: 2, mechanic: 0 })).toBe(false)
+    const cat = cfg({ workloadLimitsEnabled: true, dailyUnits: 10, categoryLimits: { detail: null, mechanic: 1 } })
+    expect(capacityAllows(cat, [load('08:00', 0, 1)], TUE, '09:00', { detail: 0, mechanic: 1 })).toBe(false)
+    expect(capacityAllows(cat, [load('08:00', 0, 1)], TUE, '09:00', { detail: 1, mechanic: 0 })).toBe(true)
+    // turning them on without numbers keeps public booking off instead of guessing a cap
+    expect(bookingReadiness(cfg({ workloadLimitsEnabled: true })).ready).toBe(false)
   })
 
-  it('optional per-category limits apply only to that category', () => {
-    const c = cfg({ dailyUnits: 10, categoryLimits: { detail: null, mechanic: 1 } })
-    const loads = [load('08:00', 0, 1)]
-    expect(capacityAllows(c, loads, TUE, '09:00', { detail: 0, mechanic: 1 })).toBe(false)
-    expect(capacityAllows(c, loads, TUE, '09:00', { detail: 1, mechanic: 0 })).toBe(true)
+  it('a stored per-time limit of 2 allows two drop-offs at one time', () => {
+    const [day] = avail(cfg({ slotCapacity: 2 }), at(MON, '06:00'), TUE, [load('08:00')])
+    expect(day.slots.find((s) => s.time === '08:00')?.available).toBe(true)
   })
 
-  it('unset capacity numbers keep public booking OFF (no invented cap)', () => {
-    const c = mergeBookingConfig({ enabled: true })
-    expect(c.slotCapacity).toBeNull()
-    expect(c.dailyUnits).toBeNull()
-    expect(bookingReadiness(c).ready).toBe(false)
-    expect(publicBookingOpen(c)).toBe(false)
-    expect(publicBookingOpen(mergeBookingConfig({ enabled: true, slotCapacity: 2, dailyUnits: 8 }))).toBe(true)
+  it('the spacing is configurable (30 minutes)', () => {
+    expect(openTimes(avail(cfg({ intervalMinutes: 30 }), at(MON, '06:00'), TUE)[0]))
+      .toEqual(['07:15', '07:45', '08:15', '08:45', '09:15', '09:45', '10:15', '10:45'])
+  })
+
+  it('a missing per-time limit keeps public booking OFF', () => {
+    expect(publicBookingOpen(mergeBookingConfig({ enabled: true, slotCapacity: null }))).toBe(false)
   })
 })
 

@@ -55,10 +55,15 @@ export default function SettingsForm({ cfg }: { cfg: BookingConfig }) {
 
       <section className="space-y-3">
         <h2 className="font-semibold">Capacity</h2>
-        <p className="text-xs text-gray-500">Owner&apos;s numbers. Blank = not set (online booking stays off until both of the first two are set).</p>
+        <p className="text-xs text-gray-500">The appointment time is the drop-off time only. These numbers space customer arrivals apart; they do not schedule technicians or bays.</p>
         <div className="grid grid-cols-2 gap-3">
-          <Num name="slotCapacity" label="Drop-offs allowed per time" value={cfg.slotCapacity} />
-          <Num name="dailyUnits" label="Daily workload units" value={cfg.dailyUnits} hint="Each service uses its weight below." />
+          <Num name="slotCapacity" label="Public drop-offs per time" value={cfg.slotCapacity} hint="1 = one customer per time." />
+          <Num name="dailyAppointmentLimit" label="Daily appointment limit" value={cfg.dailyAppointmentLimit} hint="Blank = unlimited." />
+        </div>
+        <Check name="workloadLimitsEnabled" label="Limit daily workload (uses the service weights below)" on={cfg.workloadLimitsEnabled} />
+        <p className="text-xs text-gray-500">Off = weights are stored but never close a time or a day.</p>
+        <div className="grid grid-cols-2 gap-3">
+          <Num name="dailyUnits" label="Daily workload units" value={cfg.dailyUnits} hint="Only used when workload limits are on." />
           <Num name="limitDetail" label="Daily detailing units (optional)" value={cfg.categoryLimits.detail} />
           <Num name="limitMechanic" label="Daily mechanic units (optional)" value={cfg.categoryLimits.mechanic} />
         </div>

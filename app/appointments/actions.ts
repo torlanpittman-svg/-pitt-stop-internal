@@ -124,6 +124,8 @@ export async function saveSettingsAction(_prev: ActionResult | null, form: FormD
       maxAdvanceDays: Number(form.get('maxAdvanceDays') ?? cur.maxAdvanceDays),
       federalHolidaysClosed: form.get('federalHolidaysClosed') === 'on',
       slotCapacity: num(form.get('slotCapacity')),
+      dailyAppointmentLimit: num(form.get('dailyAppointmentLimit')),
+      workloadLimitsEnabled: form.get('workloadLimitsEnabled') === 'on',
       dailyUnits: num(form.get('dailyUnits')),
       categoryLimits: { detail: num(form.get('limitDetail')), mechanic: num(form.get('limitMechanic')) },
       cancelCutoffMinutes: Number(form.get('cancelCutoffMinutes') ?? cur.cancelCutoffMinutes),

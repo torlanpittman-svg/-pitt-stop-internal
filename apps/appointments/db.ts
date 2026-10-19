@@ -87,6 +87,11 @@ function capacitySql(cfg: BookingConfig, date: string, time: string, need: Need,
   if (cfg.slotCapacity != null) {
     parts.push(sql`(SELECT count(*) FROM appointments WHERE local_date = ${date}::date AND local_time = ${time} AND ${active}${ex}) < ${cfg.slotCapacity}`)
   }
+  if (cfg.dailyAppointmentLimit != null) {
+    parts.push(sql`(SELECT count(*) FROM appointments WHERE local_date = ${date}::date AND ${active}${ex}) < ${cfg.dailyAppointmentLimit}`)
+  }
+  // Workload units (service weights) only count when a manager has turned workload limits on.
+  if (!cfg.workloadLimitsEnabled) return parts.length ? sql.join(parts, sql` AND `) : sql`true`
   if (cfg.dailyUnits != null) {
     parts.push(sql`(SELECT coalesce(sum(units_detail + units_mechanic), 0) FROM appointments WHERE local_date = ${date}::date AND ${active}${ex}) + ${need.detail + need.mechanic} <= ${cfg.dailyUnits}`)
   }

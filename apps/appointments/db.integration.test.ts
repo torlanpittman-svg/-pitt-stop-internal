@@ -56,7 +56,9 @@ const count = async (table: string, where = 'true') =>
 // The rate-limit window compares DB created_at (real now) ≥ NOW − 1h, which holds for any later real date.
 const NOW = zonedToUtc('2026-10-19', '06:00', 'America/Chicago')
 const TUE = '2026-10-20'
-const CFG: BookingConfig = { ...DEFAULT_BOOKING_CONFIG, enabled: true, slotCapacity: 1, dailyUnits: 10 }
+// The launch configuration (owner decision 2026-10-19): one public drop-off per 15-minute time, no daily cap,
+// workload limits off. Only `enabled` differs from the shipped defaults.
+const CFG: BookingConfig = { ...DEFAULT_BOOKING_CONFIG, enabled: true }
 let seq = 0
 const input = (over: Partial<BookingInput> = {}): BookingInput => ({
   idempotencyKey: `test-key-${++seq}-${Math.random().toString(36).slice(2, 8)}`,
@@ -119,13 +121,69 @@ describe('public booking', () => {
     expect(days[0].slots.find((s) => s.time === '08:00')).toMatchObject({ available: false, reason: 'full' })
   })
 
-  it('concurrent requests cannot exceed capacity', async () => {
+  it('concurrent attempts at the same time: exactly one public booking wins', async () => {
+    const results = await Promise.allSettled(Array.from({ length: 6 }, (_, i) =>
+      createAppointment(input({ time: '09:15', email: `racer${i}@example.com`, phone: `97955502${10 + i}` }), pub())))
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter((r) => r.status === 'rejected' && (r.reason as BookingError).code === 'full')).toHaveLength(5)
+    expect(await count('appointments', `local_time = '09:15' AND status = 'confirmed'`)).toBe(1)
+  })
+
+  it('a stored per-time limit above 1 is still enforced under concurrency', async () => {
     const cfg = { ...CFG, slotCapacity: 2 }
     const results = await Promise.allSettled(Array.from({ length: 6 }, (_, i) =>
-      createAppointment(input({ email: `racer${i}@example.com`, phone: `97955502${10 + i}` }), pub({ cfg }))))
+      createAppointment(input({ email: `racer${i}@example.com`, phone: `97955503${10 + i}` }), pub({ cfg }))))
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(2)
-    expect(results.filter((r) => r.status === 'rejected' && (r.reason as BookingError).code === 'full')).toHaveLength(4)
     expect(await count('appointments', `local_time = '08:00' AND status = 'confirmed'`)).toBe(2)
+  })
+
+  it('a double-tapped Confirm sent twice at once creates one appointment', async () => {
+    const i = input({ time: '10:00' })
+    const [a, b] = await Promise.allSettled([createAppointment(i, pub()), createAppointment(i, pub())])
+    const ok = [a, b].filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof createAppointment>>> => r.status === 'fulfilled')
+    expect(ok).toHaveLength(2) // both taps succeed and point at the same appointment
+    expect(new Set(ok.map((r) => r.value.appointment.id)).size).toBe(1)
+    expect(await count('appointments')).toBe(1)
+  })
+
+  it('the next 15-minute time stays bookable after a time is taken', async () => {
+    await createAppointment(input({ time: '08:30' }), pub())
+    await expect(createAppointment(input({ time: '08:30', email: 'b@example.com', phone: '9795550301' }), pub())).rejects.toMatchObject({ code: 'full' })
+    const { appointment } = await createAppointment(input({ time: '08:45', email: 'b@example.com', phone: '9795550301' }), pub())
+    expect(appointment.localTime).toBe('08:45')
+  })
+
+  it('a busy day never closes: 15 bookings, and 11:00 (the last drop-off) is still bookable', async () => {
+    const times = ['07:15', '07:30', '07:45', '08:00', '08:15', '08:30', '08:45', '09:00', '09:15', '09:30', '09:45', '10:00', '10:15', '10:30', '10:45']
+    for (const [n, time] of times.entries()) {
+      // a mix of heavy services: weights are stored but must not use up the day
+      const serviceKeys = n % 3 === 0 ? ['ceramic_coating'] : n % 3 === 1 ? ['paint_correction'] : ['complete_detail']
+      await createAppointment(input({ time, serviceKeys, email: `busy${n}@example.com`, phone: `97955504${10 + n}` }), pub())
+    }
+    const { days } = await getAvailability({ cfg: CFG, serviceKeys: ['ceramic_coating'], fromDate: TUE, days: 1, now: NOW })
+    expect(days[0].closed).toBe(false)
+    expect(days[0].slots.filter((s) => s.available).map((s) => s.time)).toEqual(['11:00'])
+    const { appointment } = await createAppointment(input({ time: '11:00', serviceKeys: ['ceramic_coating'], email: 'last@example.com', phone: '9795550499' }), pub())
+    expect(appointment.localTime).toBe('11:00')
+    expect(await count('appointments', `local_date = '${TUE}' AND status = 'confirmed'`)).toBe(16)
+  })
+
+  it('a ceramic coating at 8:00 leaves 8:15, 8:30 and every later time open', async () => {
+    const { appointment } = await createAppointment(input({ serviceKeys: ['ceramic_coating'] }), pub())
+    expect(appointment.unitsDetail).toBe(2) // weight recorded for a possible future workload limit
+    await createAppointment(input({ time: '08:15', serviceKeys: ['paint_correction'], email: 'p@example.com', phone: '9795550302' }), pub())
+    const { days } = await getAvailability({ cfg: CFG, serviceKeys: ['ceramic_coating'], fromDate: TUE, days: 1, now: NOW })
+    const open = days[0].slots.filter((s) => s.available).map((s) => s.time)
+    expect(open).not.toContain('08:00')
+    expect(open).not.toContain('08:15')
+    expect(open).toHaveLength(14)
+    expect(open).toContain('08:30')
+  })
+
+  it('a manager-enabled daily limit is enforced by the atomic insert', async () => {
+    const cfg = { ...CFG, dailyAppointmentLimit: 1 }
+    await createAppointment(input(), pub({ cfg }))
+    await expect(createAppointment(input({ time: '09:00', email: 'c@example.com', phone: '9795550303' }), pub({ cfg }))).rejects.toMatchObject({ code: 'full' })
   })
 
   it('rejects after-cutoff, closed and unready configurations server-side', async () => {
@@ -146,7 +204,7 @@ describe('public booking', () => {
 
   it('rate-limits one connection', async () => {
     const ipHash = hashIp('203.0.113.9')
-    const cfg = { ...CFG, slotCapacity: 50, dailyUnits: 50 }
+    const cfg = { ...CFG, slotCapacity: 50 }
     for (let i = 0; i < PUBLIC_HOURLY_LIMIT; i++) await createAppointment(input({ email: `rl${i}@example.com` }), pub({ cfg, ipHash }))
     await expect(createAppointment(input({ email: 'rl-extra@example.com' }), pub({ cfg, ipHash }))).rejects.toMatchObject({ code: 'rate_limited' })
   })
@@ -236,11 +294,15 @@ describe('staff bookings', () => {
     expect(appointment.createdBy).toBe('Darryl')
   })
 
-  it('a manager override can exceed capacity on purpose', async () => {
-    await createAppointment(input(), staff())
-    await expect(createAppointment(input({ email: 'x@example.com' }), staff())).rejects.toMatchObject({ code: 'full' })
-    const { appointment } = await createAppointment(input({ email: 'x@example.com' }), staff({ override: true }))
+  it('a manager override can add a second appointment at an already-booked public time', async () => {
+    await createAppointment(input({ time: '08:30' }), pub())
+    await expect(createAppointment(input({ time: '08:30', email: 'x@example.com' }), staff())).rejects.toMatchObject({ code: 'full' })
+    const { appointment } = await createAppointment(input({ time: '08:30', email: 'x@example.com' }), staff({ override: true }))
     expect(appointment.status).toBe('confirmed')
+    expect(appointment.capacityOverride).toBe(true)
+    expect(await count('appointments', `local_time = '08:30' AND status = 'confirmed'`)).toBe(2)
+    // the public page still treats 8:30 as taken
+    await expect(createAppointment(input({ time: '08:30', email: 'y@example.com', phone: '9795550304' }), pub())).rejects.toMatchObject({ code: 'full' })
   })
 
   it('re-running an AutoLeap import does not duplicate appointments or customers', async () => {

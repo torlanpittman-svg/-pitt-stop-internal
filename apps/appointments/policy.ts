@@ -2,16 +2,19 @@
  * Booking rules — PURE (no DB, no network). Everything availability depends on lives here so it can be
  * tested exhaustively: shop-local time (America/Chicago incl. DST), the online drop-off window
  * (default Mon–Fri 7:15–11:00 AM inclusive), same-day lead time, booking horizon, actual-date federal
- * holidays (no observed-day shifting — owner decision 2026-10-15), manager closures, and the simple
- * capacity model:
+ * holidays (no observed-day shifting — owner decision 2026-10-15), manager closures, and capacity.
  *
- *   • slotCapacity      — how many drop-offs may share one time
- *   • dailyUnits        — total workload units per day; each booking service has a weight (default 1)
- *   • categoryLimits    — optional per-category daily units (detail / mechanic)
+ * The appointment time is the customer's DROP-OFF time only — not when work starts, not a bay or a
+ * technician. So capacity only spaces arrivals apart (owner decision 2026-10-19):
  *
- * Capacity numbers are OWNER decisions. They default to null and public booking stays off until they are
- * set (bookingReadiness). Displayed availability is informational — the atomic insert in db.ts re-checks
- * capacity under a per-day lock, so two customers can never take the same last opening.
+ *   • slotCapacity          — public drop-offs per time (default 1: one customer per 15-minute time)
+ *   • dailyAppointmentLimit — optional cap on bookings per day (default null = unlimited)
+ *   • workload limits       — dailyUnits / categoryLimits with per-service weights. Kept for later but
+ *                             OFF by default (workloadLimitsEnabled=false); while off, weights have no
+ *                             effect on availability.
+ *
+ * Displayed availability is informational — the atomic insert in db.ts re-checks capacity under a per-day
+ * lock, so two customers can never take the same time.
  */
 
 export type ServiceCategory = 'detail' | 'mechanic'
@@ -43,7 +46,12 @@ export interface BookingConfig {
   maxAdvanceDays: number
   days: Record<Weekday, DayHours>
   federalHolidaysClosed: boolean
+  /** Public drop-offs allowed per time. */
   slotCapacity: number | null
+  /** Optional cap on active bookings per day; null = unlimited. */
+  dailyAppointmentLimit: number | null
+  /** When false (default), dailyUnits / categoryLimits / service weights do not affect availability. */
+  workloadLimitsEnabled: boolean
   dailyUnits: number | null
   categoryLimits: Record<ServiceCategory, number | null>
   /** Customers may cancel online until this many minutes before the drop-off time. */
@@ -83,7 +91,9 @@ export const DEFAULT_BOOKING_CONFIG: BookingConfig = {
   maxAdvanceDays: 30,
   days: { sun: weekday(false), mon: weekday(true), tue: weekday(true), wed: weekday(true), thu: weekday(true), fri: weekday(true), sat: weekday(false) },
   federalHolidaysClosed: true,
-  slotCapacity: null,
+  slotCapacity: 1,
+  dailyAppointmentLimit: null,
+  workloadLimitsEnabled: false,
   dailyUnits: null,
   categoryLimits: { detail: null, mechanic: null },
   cancelCutoffMinutes: 60,
@@ -143,6 +153,8 @@ export function mergeBookingConfig(raw: unknown): BookingConfig {
     days,
     federalHolidaysClosed: bool(r.federalHolidaysClosed, d.federalHolidaysClosed),
     slotCapacity: 'slotCapacity' in r ? posIntOrNull(r.slotCapacity) : d.slotCapacity,
+    dailyAppointmentLimit: 'dailyAppointmentLimit' in r ? posIntOrNull(r.dailyAppointmentLimit) : d.dailyAppointmentLimit,
+    workloadLimitsEnabled: bool(r.workloadLimitsEnabled, d.workloadLimitsEnabled),
     dailyUnits: 'dailyUnits' in r ? posIntOrNull(r.dailyUnits) : d.dailyUnits,
     categoryLimits: { detail: posIntOrNull(cl.detail), mechanic: posIntOrNull(cl.mechanic) },
     cancelCutoffMinutes: intIn(r.cancelCutoffMinutes, 0, 7 * 24 * 60, d.cancelCutoffMinutes),
@@ -159,11 +171,13 @@ export function mergeBookingConfig(raw: unknown): BookingConfig {
 function safeJson(s: string): unknown { try { return JSON.parse(s) } catch { return {} } }
 function validTimeZone(tz: string): boolean { try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true } catch { return false } }
 
-/** Public booking may only run when the owner has set the capacity numbers. */
+/** Public booking may only run with a per-time drop-off limit (and workload numbers, if workload limits are on). */
 export function bookingReadiness(cfg: BookingConfig): { ready: boolean; missing: string[] } {
   const missing: string[] = []
-  if (cfg.slotCapacity == null) missing.push('Drop-offs allowed per time')
-  if (cfg.dailyUnits == null) missing.push('Daily workload units')
+  if (cfg.slotCapacity == null) missing.push('Public drop-offs per time')
+  if (cfg.workloadLimitsEnabled && cfg.dailyUnits == null && cfg.categoryLimits.detail == null && cfg.categoryLimits.mechanic == null) {
+    missing.push('Workload limit numbers (or turn workload limits off)')
+  }
   if (!cfg.services.some((s) => s.enabled)) missing.push('At least one online service')
   if (!WEEKDAYS.some((w) => cfg.days[w].open)) missing.push('At least one open day')
   return { ready: missing.length === 0, missing }
@@ -298,6 +312,8 @@ export function dateClosedReason(cfg: BookingConfig, date: string, now: Date, bl
 export function capacityAllows(cfg: BookingConfig, loads: BookedLoad[], date: string, time: string, need: Need): boolean {
   const day = loads.filter((l) => l.localDate === date)
   if (cfg.slotCapacity != null && day.filter((l) => l.localTime === time).length >= cfg.slotCapacity) return false
+  if (cfg.dailyAppointmentLimit != null && day.length >= cfg.dailyAppointmentLimit) return false
+  if (!cfg.workloadLimitsEnabled) return true
   const usedD = day.reduce((s, l) => s + l.unitsDetail, 0)
   const usedM = day.reduce((s, l) => s + l.unitsMechanic, 0)
   if (cfg.dailyUnits != null && usedD + usedM + need.detail + need.mechanic > cfg.dailyUnits) return false

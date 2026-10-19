@@ -1,7 +1,10 @@
 # Appointments — the AutoLeap booking replacement
 
-Status (2026-10-19): built, tested, validated on the Neon development branch. **Not deployed.** Public
-booking ships **OFF** until a manager sets the capacity numbers.
+Status (2026-10-19): built, tested, validated on the Neon development branch. Public booking ships **OFF**
+until a manager turns it on at `/appointments/settings`.
+
+**The appointment time is the customer's drop-off time only** — not when work starts, not a bay, not a
+technician. Capacity only spaces arrivals apart: one public customer per 15-minute time, no daily cap.
 
 This module replaces the one AutoLeap function Pitt Stop still relied on day to day: the
 **"Schedule a Drop-Off!" / Google "Book online"** link (`https://myalp.io/bhhjcb`). It is not a rebuild
@@ -34,14 +37,17 @@ completed/invoiced revenue report. No parameters ⇒ `unknown` (never guessed).
 
 | Setting | Default |
 |---|---|
-| Online booking | OFF (needs capacity numbers first) |
+| Online booking | OFF until a manager turns it on |
 | Days / window | Mon–Fri, 7:15 AM → **11:00 AM cutoff** (inclusive), per weekday editable |
 | Spacing | every 15 min (16 times) |
 | Same-day | allowed, 60 min minimum notice (8:10 AM → first time 9:15 AM) |
 | Horizon | 30 days |
 | Holidays | 11 federal holidays closed on their **actual** date (no observed Friday/Monday); manager can re-open |
 | Closures | manager whole-day or single-time blocks |
-| Capacity | `slotCapacity` (drop-offs per time) + `dailyUnits` (each service has a weight; correction/coating = 2) + optional detail/mechanic daily limits — **owner sets the numbers; no invented cap** |
+| Public drop-offs per time | **1** (`slotCapacity`) — a booked time disappears; the next time stays open |
+| Daily appointment limit | **unlimited** (`dailyAppointmentLimit` = blank) |
+| Workload limits | **OFF** (`workloadLimitsEnabled`). Service weights (correction/coating = 2) are stored but never close a time or a day while off; `dailyUnits` / per-category limits apply only when a manager turns this on |
+| Manager override | managers can book any time, including an already-booked time (recorded as `capacity_override`) |
 | Online cancel | until 60 min before; reschedule is staff-assisted (call) |
 | Reminder | 24 h before, sent by the daily 5 PM cron; none for bookings already inside that window |
 
@@ -52,7 +58,8 @@ then a single `INSERT … SELECT … WHERE <capacity still available>` with its 
 in data-modifying CTEs. Racing customers serialize on the per-day lock; the loser gets "That time was just
 taken" and nothing is written. Reschedule does the same (both days locked, self excluded). Idempotency:
 `appointments.idempotency_key` unique (one key per form submission), `external_ref` unique for AutoLeap
-imports. Verified on Neon dev: 8 simultaneous requests for a 2-capacity time → exactly 2 booked.
+imports. Verified on Neon dev: 8 simultaneous requests for a 2-capacity time → exactly 2 booked; tests cover
+6 simultaneous requests for one launch-model time → exactly 1 booked.
 
 ## Customer messages
 
@@ -100,7 +107,7 @@ UI: `app/book/*` (public), `app/appointments/*` (staff). APIs: `app/api/book/*`,
 
 ## Cutover runbook
 
-1. Owner: set capacity numbers (and confirm defaults) on `/appointments/settings`; choose email provider (optional for launch — confirmation is on screen + calendar file).
+1. Owner: confirm the launch defaults on `/appointments/settings` (1 per time, every 15 min, no daily cap, workload limits off); choose email provider (optional for launch — confirmation is on screen + calendar file).
 2. Deploy (scoped worktree off `origin/main` → FF push), apply `0058_appointments.sql` to production, set `APPOINTMENT_TOKEN_SECRET`, `BOOKING_PUBLIC_BASE_URL`.
 3. DNS (GoDaddy): `book` CNAME → Vercel; add the domain to the Vercel project. Until then the page works at `https://pitt-stop-internal.vercel.app/book`.
 4. One controlled booking with a test customer → verify on `/appointments` → check in → Job on Work Board → cancel/soft-remove the test Job.
