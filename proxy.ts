@@ -96,6 +96,7 @@ export const config = {
   matcher: [
     { source: '/:path*', has: [{ type: 'host', value: 'text\\.pittstopdetailandautosales\\.com' }] },
     { source: '/:path*', has: [{ type: 'host', value: 'book\\.pittstopdetailandautosales\\.com' }] },
+    { source: '/:path*', has: [{ type: 'host', value: 'book\\.pittstopdetail\\.com' }] },
     '/admin/:path*',
     // Employee operational surface — pages + server-action POSTs + AI/mutation APIs. Gated by the shared
     // EMPLOYEE_PIN session (login surfaces exempted inside proxy()). Broadly-shared read APIs like

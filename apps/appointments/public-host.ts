@@ -4,7 +4,7 @@
  * The host needs a DNS record + Vercel domain before it is live; until then /book on the app's own
  * domain is used (it is public there too, outside the employee matcher).
  */
-export const BOOKING_PUBLIC_HOSTS = ['book.pittstopdetailandautosales.com']
+export const BOOKING_PUBLIC_HOSTS = ['book.pittstopdetailandautosales.com', 'book.pittstopdetail.com']
 
 export function isBookingPublicHost(host: string): boolean {
   return BOOKING_PUBLIC_HOSTS.includes(host.toLowerCase().split(':')[0])

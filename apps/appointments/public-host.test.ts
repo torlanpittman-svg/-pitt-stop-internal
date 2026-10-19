@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
-import { isBookingPublicHost, publicBookingRoute } from './public-host'
+import { BOOKING_PUBLIC_HOSTS, isBookingPublicHost, publicBookingRoute } from './public-host'
 import { classifySource, cleanAttribution, attributionConfidence, campaignIdFrom } from './attribution'
 
 vi.mock('@/apps/auth/employee-session', () => ({
@@ -16,16 +16,25 @@ describe('dedicated booking host', () => {
     expect(isBookingPublicHost('BOOK.pittstopdetailandautosales.com:443')).toBe(true)
     expect(isBookingPublicHost('book.pittstopdetailandautosales.com.attacker.test')).toBe(false)
     expect(isBookingPublicHost('pitt-stop-internal.vercel.app')).toBe(false)
+    expect(isBookingPublicHost('book.pittstopdetail.com')).toBe(true)
+    expect(isBookingPublicHost('book.pittstopdetail.com.attacker.test')).toBe(false)
+    expect(isBookingPublicHost('www.pittstopdetail.com')).toBe(false)
+    expect(isBookingPublicHost('pittstopdetail.com')).toBe(false)
   })
 
-  it('serves only booking pages + their APIs; everything internal is 404', async () => {
+  it('the proxy runs on every booking host (matcher covers each one)', () => {
+    const hostValues = config.matcher.flatMap((m) => (typeof m === 'string' ? [] : m.has?.map((h) => h.value) ?? []))
+    for (const host of BOOKING_PUBLIC_HOSTS) expect(hostValues.some((v) => new RegExp(`^${v}$`).test(host)), host).toBe(true)
+  })
+
+  it.each(BOOKING_PUBLIC_HOSTS)('%s serves only booking pages + their APIs; everything internal is 404', async (host) => {
     for (const path of ['/book', `/book/a/${TOKEN}`, '/api/book/availability', `/api/book/a/${TOKEN}/ics`, '/privacy', '/terms']) {
-      const r = await proxy(new NextRequest(`https://book.pittstopdetailandautosales.com${path}`))
+      const r = await proxy(new NextRequest(`https://${host}${path}`))
       expect(r.headers.get('x-middleware-next'), path).toBe('1')
     }
     for (const path of ['/appointments', '/appointments/settings', '/work-board', '/orders', '/customers', '/admin', '/auto-sales/login',
       '/api/workflow/orders', '/api/search', '/api/customers/search', '/sms-opt-in', '/book/a/short', `/api/book/a/${TOKEN}/cancel`]) {
-      const r = await proxy(new NextRequest(`https://book.pittstopdetailandautosales.com${path}`))
+      const r = await proxy(new NextRequest(`https://${host}${path}`))
       expect(r.status, path).toBe(404)
     }
     expect(publicBookingRoute('/api/book/appointments', 'POST')).toBe('allow')
@@ -33,9 +42,9 @@ describe('dedicated booking host', () => {
     expect(publicBookingRoute(`/api/book/a/${TOKEN}/cancel`, 'POST')).toBe('allow')
   })
 
-  it('redirects the bare host to the booking page', async () => {
-    const r = await proxy(new NextRequest('https://book.pittstopdetailandautosales.com/'))
-    expect(r.headers.get('location')).toBe('https://book.pittstopdetailandautosales.com/book')
+  it.each(BOOKING_PUBLIC_HOSTS)('%s redirects the bare host to the booking page', async (host) => {
+    const r = await proxy(new NextRequest(`https://${host}/`))
+    expect(r.headers.get('location')).toBe(`https://${host}/book`)
   })
 })
 
