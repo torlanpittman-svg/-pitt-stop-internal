@@ -13,8 +13,11 @@ for (const l of readFileSync('.env.local', 'utf8').split('\n')) {
 
 ;(async () => {
   const { neon } = await import('@neondatabase/serverless')
+  const { guardNeonClient } = await import('@/platform/prod-db-guard')
   const { CATALOG_ITEMS, TECH_INSTRUCTIONS, LEGACY_TERMINOLOGY } = await import('@/apps/quick-entry/seed-data')
-  const sql = neon(process.env.DATABASE_URL!)
+  // Guarded: seeding the PRODUCTION DB from a local run is blocked (it writes). Use a dev branch,
+  // or ALLOW_PROD_DB_WRITES=1 for a deliberate prod seed.
+  const sql = guardNeonClient(neon(process.env.DATABASE_URL!))
 
   let items = 0, tiers = 0, aliases = 0, tech = 0
   for (const it of CATALOG_ITEMS) {
