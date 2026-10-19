@@ -1,7 +1,7 @@
 # Appointments — the AutoLeap booking replacement
 
-Status (2026-10-19): built, tested, validated on the Neon development branch. Public booking ships **OFF**
-until a manager turns it on at `/appointments/settings`.
+Status (2026-10-19): **deployed to production** (see "Production state"). Public booking is **OFF** until a
+manager turns it on at `/appointments/settings`.
 
 **The appointment time is the customer's drop-off time only** — not when work starts, not a bay, not a
 technician. Capacity only spaces arrivals apart: one public customer per 15-minute time, no daily cap.
@@ -105,12 +105,38 @@ UI: `app/book/*` (public), `app/appointments/*` (staff). APIs: `app/api/book/*`,
 | Future appointments in AutoLeap | Owner said none on 10/15; new ones may arrive until cutover | staff form, source "Moved from AutoLeap" | MIGRATE DATA (manual reconcile at cutover) |
 | DVI, time clock, payroll, parts inventory, labor guide, dispatch/bays, CRM automations, loyalty, reviews, fleet, POS, financing, customer portal, reports | No evidence | — | NOT USED — DO NOT BUILD |
 
+## Production state (2026-10-19)
+
+- Deployed: origin/main `9b15943` (guard + capacity model + module), Vercel `dpl_3ukYQNTdv1UKURFtYbco9BBrB94u`.
+  Migration `0058` applied to production and re-run (no-op). Public booking **OFF** after the controlled test.
+- Private links use `IDENTITY_SECRET` (no `APPOINTMENT_TOKEN_SECRET` set). Do **not** add or rotate a token
+  secret later without accepting that every customer link already issued stops working.
+- `book.pittstopdetailandautosales.com` is attached to the Vercel project. It needs ONE GoDaddy record:
+  `CNAME  book  →  81bdb230ad447ccd.vercel-dns-017.com` (Vercel's recommended value for this project).
+  After it resolves and HTTPS works, set `BOOKING_PUBLIC_BASE_URL=https://book.pittstopdetailandautosales.com`
+  (only used in email links) and redeploy.
+- Controlled test records (all on 2026-10-20, customer "ZZ Pitt Stop …", example.com email): PS-F8MFNS
+  (checked in; its test Job SO-20261019-0005 soft-removed), PS-B3WTUR / PS-JC45FB / PS-QH9WPF / PS-DBY82N cancelled.
+
+## Website links (verified 2026-10-19 from the sitemap)
+
+All point to `https://myalp.io/bhhjcb` — **34 links on 15 pages**, not only home/pricing: home (3), pricing (5),
+shop (5), detailing (4), about, contact, exterior-detailing, interior-detailing, mechanic-services (1 each),
+ceramic-coating-college-station (2), and the 5 product pages ceramic-coating, full-detail, mini-detail,
+premium-detail, pitt-stop-gift-card (2 each). The site is WordPress (Avada-based theme + WooCommerce), so one
+database search-and-replace (e.g. Better Search Replace, dry run first, handles serialized theme options)
+replaces every occurrence. Re-scan the sitemap afterwards; the count of `myalp.io` must be 0.
+
 ## Cutover runbook
 
-1. Owner: confirm the launch defaults on `/appointments/settings` (1 per time, every 15 min, no daily cap, workload limits off); choose email provider (optional for launch — confirmation is on screen + calendar file).
-2. Deploy (scoped worktree off `origin/main` → FF push), apply `0058_appointments.sql` to production, set `APPOINTMENT_TOKEN_SECRET`, `BOOKING_PUBLIC_BASE_URL`.
-3. DNS (GoDaddy): `book` CNAME → Vercel; add the domain to the Vercel project. Until then the page works at `https://pitt-stop-internal.vercel.app/book`.
-4. One controlled booking with a test customer → verify on `/appointments` → check in → Job on Work Board → cancel/soft-remove the test Job.
-5. In AutoLeap: list any appointments booked since 10/15 and re-enter each with source **Moved from AutoLeap** (+ AutoLeap number).
-6. Replace the website buttons (home ×3, pricing ×5) and Google Business Profile booking link with the new URL (`?utm_source=website` / `?utm_source=google_business`); set it Preferred; remove the AutoLeap link.
-7. Shadow period: keep AutoLeap read-only; each day ask "did anyone need to open AutoLeap?" Export AutoLeap customer/RO reports before cancelling.
+1. Owner adds the GoDaddy CNAME above; verify `https://book.pittstopdetailandautosales.com/book` loads over
+   HTTPS and the host serves only booking routes (internal pages 404).
+2. Short controlled re-test on the booking domain (book → see it on `/appointments` → cancel).
+3. In AutoLeap: list every appointment dated today or later (booked since 10/15) and re-enter each at
+   `/appointments/new` with source **Moved from AutoLeap** + the AutoLeap number (a repeat entry is blocked).
+4. Turn online booking ON at `/appointments/settings`.
+5. Website: replace `https://myalp.io/bhhjcb` with `https://book.pittstopdetailandautosales.com/book?utm_source=website`
+   everywhere (see above). Google Business Profile → Bookings / "Book online" link →
+   `https://book.pittstopdetailandautosales.com/book?utm_source=gbp`; remove the AutoLeap link.
+6. Verification period (5–10 business days): AutoLeap stays available but unused; each day record whether
+   anyone had to open it and why. Export AutoLeap customer / appointment / RO reports before cancelling.
