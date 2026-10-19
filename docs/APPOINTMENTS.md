@@ -107,36 +107,112 @@ UI: `app/book/*` (public), `app/appointments/*` (staff). APIs: `app/api/book/*`,
 
 ## Production state (2026-10-19)
 
-- Deployed: origin/main `9b15943` (guard + capacity model + module), Vercel `dpl_3ukYQNTdv1UKURFtYbco9BBrB94u`.
-  Migration `0058` applied to production and re-run (no-op). Public booking **OFF** after the controlled test.
+- Deployed: origin/main `a910c15` (guard + capacity model + module + booking-host allowlist), Vercel
+  `dpl_7p95z7LCoktQzY4LMnyUbmQCf4xg`. Migration `0058` applied to production and re-run (no-op). Public booking **OFF**.
 - Private links use `IDENTITY_SECRET` (no `APPOINTMENT_TOKEN_SECRET` set). Do **not** add or rotate a token
   secret later without accepting that every customer link already issued stops working.
-- `book.pittstopdetailandautosales.com` is attached to the Vercel project. It needs ONE GoDaddy record:
-  `CNAME  book  →  81bdb230ad447ccd.vercel-dns-017.com` (Vercel's recommended value for this project).
-  After it resolves and HTTPS works, set `BOOKING_PUBLIC_BASE_URL=https://book.pittstopdetailandautosales.com`
-  (only used in email links) and redeploy.
-- Controlled test records (all on 2026-10-20, customer "ZZ Pitt Stop …", example.com email): PS-F8MFNS
-  (checked in; its test Job SO-20261019-0005 soft-removed), PS-B3WTUR / PS-JC45FB / PS-QH9WPF / PS-DBY82N cancelled.
+- **Final booking URL: `https://book.pittstopdetailandautosales.com/book`.** Attached to the Vercel project; needs ONE
+  GoDaddy record (blocked on GoDaddy account recovery): `CNAME  book  →  81bdb230ad447ccd.vercel-dns-017.com`
+  (Vercel's recommended value for this project). Host isolation verified on the edge (booking routes 200, `/` → `/book`,
+  `/appointments`, `/work-board`, `/admin`, `/api/workflow/orders`, `/auto-sales/login` → 404).
+  After HTTPS works, set `BOOKING_PUBLIC_BASE_URL=https://book.pittstopdetailandautosales.com` (email links only) and redeploy.
+- `book.pittstopdetail.com` was evaluated and **dropped** (2026-10-19): the `pittstopdetail.com` zone is on Vercel DNS in a
+  Vercel account this team does not control, and ownership is unconfirmed. The hostname is in the booking-only
+  allowlist (harmless) and attached to the project **unverified** (Vercel serves `DEPLOYMENT_NOT_FOUND` for it).
+  It is not part of the cutover; the owner may remove it at Vercel → pitt-stop-internal → Settings → Domains.
+- Controlled test records (customer "ZZ Pitt Stop …", example.com email): PS-F8MFNS (checked in; its test Job
+  SO-20261019-0005 soft-removed), PS-B3WTUR / PS-JC45FB / PS-QH9WPF / PS-DBY82N cancelled; smoke appointments cancelled.
 
-## Website links (verified 2026-10-19 from the sitemap)
+## Website links (re-verified 2026-10-19 from the sitemap, 100 pages scanned)
 
-All point to `https://myalp.io/bhhjcb` — **34 links on 15 pages**, not only home/pricing: home (3), pricing (5),
-shop (5), detailing (4), about, contact, exterior-detailing, interior-detailing, mechanic-services (1 each),
-ceramic-coating-college-station (2), and the 5 product pages ceramic-coating, full-detail, mini-detail,
-premium-detail, pitt-stop-gift-card (2 each). The site is WordPress (Avada-based theme + WooCommerce), so one
-database search-and-replace (e.g. Better Search Replace, dry run first, handles serialized theme options)
-replaces every occurrence. Re-scan the sitemap afterwards; the count of `myalp.io` must be 0.
+All point to `https://myalp.io/bhhjcb` — **34 links on 15 pages**: home (3), pricing (5), shop (5), detailing (4), about,
+contact, exterior-detailing, interior-detailing, mechanic-services (1 each), ceramic-coating-college-station (2), and the
+5 product pages ceramic-coating, full-detail, mini-detail, premium-detail, pitt-stop-gift-card (2 each). Raw page text
+has no other `myalp` occurrences. The site is WordPress (Avada-based theme + WooCommerce).
+
+**Replacement operation (do only after the final URL passes its HTTPS controlled test):**
+1. WordPress admin (must be an **Administrator**) → back up the database first (host backup or a backup plugin).
+2. Plugins → Add New → **Better Search Replace** → install + activate.
+3. Tools → Better Search Replace:
+   - Search for: `https://myalp.io/bhhjcb`
+   - Replace with: `https://book.pittstopdetailandautosales.com/book?utm_source=website`
+   - Tables: select **all** (`wp_posts`, `wp_postmeta`, `wp_options` hold the Avada builder content + theme options)
+   - Case-insensitive: off. Replace GUIDs: off.
+   - **Run as dry run: ON** → it must report the matches (expect ≥ 34 field matches across posts/meta/options).
+4. Run again with dry run OFF.
+5. Avada → Options → Performance → **Reset Avada Caches**, and purge any host/page cache.
+6. Re-scan the sitemap: `myalp.io` count must be **0**; spot-check home, pricing, shop and one product page buttons.
+7. Leave Better Search Replace installed until verification ends (fast rollback = the reverse search/replace).
+
+**Google Business Profile** (owner/manager of the profile): Google Search "Pitt Stop Detail" → Edit profile →
+Bookings (or "Book online"/Appointment links) → replace `https://myalp.io/bhhjcb` with
+`https://book.pittstopdetailandautosales.com/book?utm_source=gbp` → Save. If AutoLeap appears as a *booking provider*
+(Reserve with Google) rather than a link, remove/disconnect that provider so only the link remains. Edits can take up
+to ~10 minutes to a few days to show; check the live profile's Book button afterwards.
+
+## Customer email (Postmark) — owner setup
+
+Code is complete (outbox → `PostmarkEmailProvider`, `MessageStream: outbound`, plain-text). Notices are recorded
+`not_configured` until all of this is done; nothing is reported as sent before a provider accepts it.
+1. Create a Postmark account; create a Server (e.g. "Pitt Stop appointments"); request account approval (new accounts can
+   only send to their own domain until approved).
+2. Sender domain: `pittstopdetailandautosales.com` has **no MX, SPF, DKIM or DMARC** today and its DNS is at GoDaddy, so
+   Postmark's Domain verification needs GoDaddy: one DKIM TXT record + one Return-Path CNAME (`pm-bounces` →
+   `pm.mtasv.net`), values shown by Postmark. A single-address Sender Signature is not possible because the domain
+   receives no mail. → **email is blocked on GoDaddy recovery, like the booking host.**
+3. Vercel (Production) env: `APPOINTMENT_EMAIL_PROVIDER=postmark`, `POSTMARK_SERVER_TOKEN=<server API token>`,
+   `APPOINTMENT_EMAIL_FROM="Pitt Stop Detail & Auto Sales <appointments@pittstopdetailandautosales.com>"`, then redeploy.
+4. Send one test to an owner address via a staff-created appointment; then **Retry customer messages** on real ones.
+Email never blocks booking: the shop alert is the `/appointments` "New online bookings" list.
+
+Known limits (acceptable for launch): a failed send retries after 15 min but is only picked up by the next dispatch —
+the daily 5 PM cron, another change to that appointment, or staff **Retry customer messages** — and after 3 attempts it
+stays `failed`. Delivery status shows on each appointment's page, not on the `/appointments` list. A notice whose
+process dies mid-send stays `sending` (never re-sent → no duplicate email; staff can see it).
+
+**Attribution note:** `utm_source=website` is stored on the booking but classifies as `unknown` (Marketing has no
+website channel). `utm_source=gbp` classifies as `google_organic`. Website bookings can still be counted from the
+stored `utm_source`; adding a `website` source to Marketing is a small optional follow-up.
+
+## Cutover checklist
+
+| Item | Status |
+|---|---|
+| Production deploy + migration + write guard | READY |
+| Capacity settings (1 per 15 min, no daily cap, workload off, same-day 60 min) | READY (verified on prod settings page) |
+| Controlled production test (app domain) | PASS 22/22; internal smoke 13/13 on `a910c15` |
+| Future AutoLeap appointments | **READY — none exist** (owner confirmed 2026-10-19) |
+| Final booking host `book.pittstopdetailandautosales.com` | PENDING — GoDaddy CNAME (account recovery) |
+| Controlled re-test on the final host over HTTPS | PENDING — after CNAME |
+| Public booking ON | OFF until the final host passes |
+| Website links (34 / 15 pages) | Prepared (above); switch after the final-host test |
+| Google "Book online" | Prepared (above); switch after the final-host test |
+| Customer email | Not live (queued-only); does not block cutover; needs Postmark + GoDaddy DNS |
 
 ## Cutover runbook
 
-1. Owner adds the GoDaddy CNAME above; verify `https://book.pittstopdetailandautosales.com/book` loads over
-   HTTPS and the host serves only booking routes (internal pages 404).
-2. Short controlled re-test on the booking domain (book → see it on `/appointments` → cancel).
-3. In AutoLeap: list every appointment dated today or later (booked since 10/15) and re-enter each at
-   `/appointments/new` with source **Moved from AutoLeap** + the AutoLeap number (a repeat entry is blocked).
-4. Turn online booking ON at `/appointments/settings`.
-5. Website: replace `https://myalp.io/bhhjcb` with `https://book.pittstopdetailandautosales.com/book?utm_source=website`
-   everywhere (see above). Google Business Profile → Bookings / "Book online" link →
-   `https://book.pittstopdetailandautosales.com/book?utm_source=gbp`; remove the AutoLeap link.
-6. Verification period (5–10 business days): AutoLeap stays available but unused; each day record whether
-   anyone had to open it and why. Export AutoLeap customer / appointment / RO reports before cancelling.
+1. GoDaddy CNAME above → verify `https://book.pittstopdetailandautosales.com/book` over HTTPS and that internal pages 404.
+2. Short controlled re-test on that host (book → see it on `/appointments` → cancel).
+3. Turn online booking ON at `/appointments/settings`.
+4. Website search-replace + Google link (above).
+5. Verification period (5–10 business days): AutoLeap stays available but unused; each day record whether anyone had
+   to open it and why.
+
+## AutoLeap archive / export checklist (before cancelling — do NOT cancel during verification)
+
+Save everything into one dated folder (e.g. Google Drive "AutoLeap archive 2026-10"). AutoLeap is a raw archive only;
+QuickBooks stays the record for invoices and payments.
+1. **Customers** — Reports → Customer report → CSV (all customers + prospects; ~918 rows last time).
+2. **Vehicles** — no vehicle report exists; vehicles appear on RO/invoice exports. Note this gap; nothing else to do.
+3. **Repair orders / work orders** — RO/job report, full date range (account start → today), CSV.
+4. **Invoices + payments** — invoice/sales report, full date range, CSV (cross-check: last AutoLeap invoice #100886, 2026-09-25).
+5. **Estimates** (open + historical) — CSV if offered.
+6. **Appointments** — calendar/appointment report, full history, CSV (confirms none are upcoming).
+7. **Customer notes / inspections (DVI) / photos** — export or PDF any that matter; spot-check 3 recent customers.
+8. **Message history** (texts/emails sent by AutoLeap) — export if offered; otherwise screenshot the settings showing
+   automated reminders so you know what customers used to receive.
+9. **Settings to record** — labor rates, canned jobs/service list + prices, tax settings (reference only).
+10. **Integrations** — note the QuickBooks connection; **disconnect AutoLeap from QuickBooks only at cancellation**, after
+    confirming no sync is pending, so it cannot write to QB again.
+11. **Online booking link** `myalp.io/bhhjcb` — confirm 0 website references and Google switched before cancelling.
+12. **Billing** — note renewal date + cancellation terms; download past AutoLeap bills.
