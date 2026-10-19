@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { isMarketingPublicHost, publicMarketingRoute } from '@/apps/marketing/public-host'
+import { isBookingPublicHost, publicBookingRoute } from '@/apps/appointments/public-host'
 import { EMP_COOKIE, employeeAuthConfigured, verifyEmployeeToken } from '@/apps/auth/employee-session'
 
 /** Valid admin Basic-Auth? (password-only; trimmed). Admin always satisfies any gate below. */
@@ -23,7 +24,7 @@ function adminOk(request: NextRequest): boolean {
  * /production, etc. and carry no AI/write). /admin/* is NEVER here (it stays on ADMIN_PASSWORD).
  */
 function isEmployeeSurface(pathname: string): boolean {
-  const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in', '/orders', '/production', '/estimator', '/checks', '/expenses', '/customers', '/marketing']
+  const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in', '/orders', '/production', '/estimator', '/checks', '/expenses', '/customers', '/marketing', '/appointments']
   if (pages.some((p) => pathname === p || pathname.startsWith(p + '/'))) return true
   const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/', '/api/checks/', '/api/search', '/api/expenses/', '/api/customers/', '/api/marketing/']
   if (apis.some((p) => pathname.startsWith(p)) || pathname === '/api/dealer-checkin' || pathname === '/api/checks') return true
@@ -38,6 +39,13 @@ export async function proxy(request: NextRequest) {
     const decision = publicMarketingRoute(pathname, request.method)
     if (decision === 'allow') return NextResponse.next()
     if (decision === 'redirect') return NextResponse.redirect(new URL('/sms-opt-in', request.url))
+    return new NextResponse('Not found', { status: 404 })
+  }
+  // Customer booking host: only the public booking pages + their APIs (never the OS or its login).
+  if (isBookingPublicHost(request.nextUrl.hostname)) {
+    const decision = publicBookingRoute(pathname, request.method)
+    if (decision === 'allow') return NextResponse.next()
+    if (decision === 'redirect') return NextResponse.redirect(new URL('/book', request.url))
     return new NextResponse('Not found', { status: 404 })
   }
 
@@ -87,6 +95,7 @@ export const config = {
   // functions directly, never these HTTP routes).
   matcher: [
     { source: '/:path*', has: [{ type: 'host', value: 'text\\.pittstopdetailandautosales\\.com' }] },
+    { source: '/:path*', has: [{ type: 'host', value: 'book\\.pittstopdetailandautosales\\.com' }] },
     '/admin/:path*',
     // Employee operational surface — pages + server-action POSTs + AI/mutation APIs. Gated by the shared
     // EMPLOYEE_PIN session (login surfaces exempted inside proxy()). Broadly-shared read APIs like
@@ -112,6 +121,9 @@ export const config = {
     // Marketing Agent (manager-only; server-side managerActor() gate inside every page/action/route).
     // Note: '/unsubscribe' is intentionally NOT gated — it is a public, token-scoped opt-out link.
     '/marketing/:path*',
+    // Appointments (staff view of drop-off bookings). The PUBLIC booking page /book and /api/book/* are
+    // intentionally NOT gated — customers book without signing in.
+    '/appointments/:path*',
     '/api/marketing/:path*',
     '/api/dealer-checkin/:path*',
     '/api/quick-entry/:path*',

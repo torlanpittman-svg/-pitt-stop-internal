@@ -10,7 +10,7 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 type ModuleGroup = 'Operations' | 'Sales' | 'Money'
-type IconKey = 'quick' | 'dealer' | 'board' | 'auto' | 'receipt' | 'estimate' | 'check' | 'customers' | 'marketing'
+type IconKey = 'quick' | 'dealer' | 'board' | 'auto' | 'receipt' | 'estimate' | 'check' | 'customers' | 'marketing' | 'calendar'
 
 interface Module {
   href: string
@@ -27,6 +27,7 @@ interface Module {
 const MODULES: Module[] = [
   { href: '/quick-entry', label: 'Quick Entry', sub: 'Customer + vehicle + services → Work Board in under a minute.', group: 'Operations', icon: 'quick' },
   { href: '/dealer-check-in', label: 'Dealer Check-In', sub: 'Scan a tag → confirm → done. Invoice + Work Board, automatically.', group: 'Operations', icon: 'dealer' },
+  { href: '/appointments', label: 'Appointments', sub: 'Online and phone drop-offs — today, upcoming, check in to the Work Board.', group: 'Operations', icon: 'calendar' },
   { href: '/work-board', label: 'Work Board', sub: 'Live vehicle workflow — check in, track status, assign techs.', group: 'Operations', icon: 'board' },
   { href: '/customers', label: 'Customers', sub: 'Search a customer — contact, vehicles, and repair-order history.', group: 'Operations', icon: 'customers' },
   { href: '/auto-sales', label: 'Auto Sales Inventory', sub: 'Owned vehicles — scan a VIN, track costs, record the sale.', group: 'Sales', icon: 'auto' },
@@ -139,6 +140,8 @@ function ModuleIcon({ icon }: { icon: IconKey }): ReactNode {
       return <svg {...p}><rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 12h.01M18 12h.01" /><circle cx="12" cy="12" r="2" /></svg>
     case 'customers':
       return <svg {...p}><circle cx="9" cy="8" r="3.2" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0" /><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M18 20a5.5 5.5 0 0 0-3-4.9" /></svg>
+    case 'calendar':
+      return <svg {...p}><rect x="3" y="4" width="18" height="17" rx="2" /><path d="M3 9h18M8 2v4M16 2v4" /></svg>
     case 'marketing':
       return <svg {...p}><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1z" /><path d="M15 8a4 4 0 0 1 0 8" /></svg>
   }

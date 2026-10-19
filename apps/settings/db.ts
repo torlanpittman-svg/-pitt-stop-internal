@@ -149,6 +149,9 @@ export const SETTINGS: Record<string, SettingDef> = {
   marketing_optin_published: { key: 'marketing_optin_published', type: 'bool', def: false, env: 'MARKETING_OPTIN_PUBLISHED' },
   marketing_webhooks_verified: { key: 'marketing_webhooks_verified', type: 'bool', def: false, env: 'MARKETING_WEBHOOKS_VERIFIED' },
   marketing_terms_published:       { key: 'marketing_terms_published',       type: 'bool', def: false, env: 'MARKETING_TERMS_PUBLISHED' },
+  // Drop-off appointment booking rules (apps/appointments/policy.ts merges this onto safe defaults).
+  // Public booking stays OFF until a manager sets the capacity numbers on /appointments/settings.
+  booking_config:               { key: 'booking_config',               type: 'json',   def: '{}',  env: 'BOOKING_CONFIG' },
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {

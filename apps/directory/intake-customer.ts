@@ -55,7 +55,8 @@ export interface IntakeCustomerLink {
  */
 export async function findOrCreateIntakeCustomer(
   contact: IntakeContact,
-  vehicleId: string,
+  /** Vehicle to link; null when there is no vehicle row yet (an online booking links it at check-in). */
+  vehicleId: string | null,
   source = 'quick_entry',
 ): Promise<IntakeCustomerLink | null> {
   const name = (contact.name ?? '').trim()
@@ -93,7 +94,7 @@ export async function findOrCreateIntakeCustomer(
 
   // Link the vehicle (idempotent via customer_vehicles_uniq) so plate/VIN search resolves to the
   // customer and the profile lists this vehicle. A returning customer's re-check-in is a no-op.
-  await db
+  if (vehicleId) await db
     .insert(customerVehicles)
     .values({ customerId: id, vehicleId, source })
     .onConflictDoNothing({ target: [customerVehicles.customerId, customerVehicles.vehicleId] })

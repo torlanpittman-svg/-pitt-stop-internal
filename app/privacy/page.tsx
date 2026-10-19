@@ -1,5 +1,6 @@
 import { headers } from 'next/headers'
 import { isMarketingPublicHost } from '@/apps/marketing/public-host'
+import { isBookingPublicHost } from '@/apps/appointments/public-host'
 import { PublicSmsPolicy } from '@/app/components/PublicSmsPolicy'
 import { getMarketingConfig } from '@/apps/settings/db'
 import { a2pProfile } from '@/apps/marketing/compliance'
@@ -10,7 +11,8 @@ export const dynamic = 'force-dynamic'
 
 export default async function PrivacyPage() {
   const profile = a2pProfile(await getMarketingConfig())
-  if (isMarketingPublicHost((await headers()).get('host') || '')) return <PublicSmsPolicy profile={profile} kind="privacy" />
+  const host = (await headers()).get('host') || ''
+  if (isMarketingPublicHost(host) || isBookingPublicHost(host)) return <PublicSmsPolicy profile={profile} kind="privacy" />
   return (
     <main className="min-h-screen bg-gray-950 text-gray-200 px-6 py-12">
       <div className="max-w-2xl mx-auto prose-invert">
