@@ -32,6 +32,7 @@ export function classifySource(a: BookingAttribution): AttributionSource {
   if (a.fbclid && !src) return 'facebook_paid'
   if (/facebook|fb|instagram|meta|ig/.test(src)) return paid || a.fbclid ? 'facebook_paid' : 'facebook_organic'
   if (/google|gbp|gmb|maps/.test(src)) return 'google_organic'
+  if (src === 'website') return 'website' // the shop's own WordPress site (utm_source=website on its Book buttons)
   if (src === 'sms' || med === 'sms') return 'sms'
   if (src === 'email' || med === 'email' || src === 'mailerlite') return 'email'
   if (src === 'referral' || med === 'referral') return 'referral'

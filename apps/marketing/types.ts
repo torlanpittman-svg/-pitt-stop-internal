@@ -51,7 +51,7 @@ export type LeadStatus = (typeof LEAD_STATUSES)[number]
 // ── Attribution ──
 export const ATTRIBUTION_SOURCES = [
   'google_ads', 'google_organic', 'facebook_organic', 'facebook_paid',
-  'sms', 'email', 'referral', 'walk_in', 'reactivation', 'unknown',
+  'sms', 'email', 'referral', 'walk_in', 'reactivation', 'website', 'unknown',
 ] as const
 export type AttributionSource = (typeof ATTRIBUTION_SOURCES)[number]
 
@@ -59,7 +59,7 @@ export const ATTRIBUTION_CONFIDENCE = ['direct', 'assisted', 'unknown'] as const
 export type AttributionConfidence = (typeof ATTRIBUTION_CONFIDENCE)[number]
 
 // ── Channel buckets for reporting (where revenue/spend rolls up) ──
-export const REPORT_CHANNELS = ['google_ads', 'facebook', 'sms_email', 'reactivation', 'organic', 'referral', 'other'] as const
+export const REPORT_CHANNELS = ['google_ads', 'facebook', 'sms_email', 'reactivation', 'organic', 'website', 'referral', 'other'] as const
 export type ReportChannel = (typeof REPORT_CHANNELS)[number]
 
 /** Map a raw attribution source to a reporting channel bucket. */
@@ -72,6 +72,7 @@ export function reportChannelForSource(source: string): ReportChannel {
     case 'email': return 'sms_email'
     case 'reactivation': return 'reactivation'
     case 'google_organic': return 'organic'
+    case 'website': return 'website'
     case 'referral': return 'referral'
     default: return 'other'
   }
@@ -83,6 +84,7 @@ export const REPORT_CHANNEL_LABELS: Record<ReportChannel, string> = {
   sms_email: 'SMS / Email',
   reactivation: 'Customer Reactivation',
   organic: 'Google Organic',
+  website: 'Website',
   referral: 'Referral',
   other: 'Other / Unknown',
 }

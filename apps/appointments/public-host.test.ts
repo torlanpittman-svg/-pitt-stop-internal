@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { BOOKING_PUBLIC_HOSTS, isBookingPublicHost, publicBookingRoute } from './public-host'
 import { classifySource, cleanAttribution, attributionConfidence, campaignIdFrom } from './attribution'
+import { ATTRIBUTION_SOURCES, REPORT_CHANNEL_LABELS, reportChannelForSource } from '@/apps/marketing/types'
 
 vi.mock('@/apps/auth/employee-session', () => ({
   EMP_COOKIE: 'ps_emp', employeeAuthConfigured: () => true, verifyEmployeeToken: async () => false,
@@ -79,6 +80,20 @@ describe('booking attribution', () => {
     expect(classifySource({ utm_source: 'email', utm_campaign: 'fall' })).toBe('email')
     expect(classifySource({ utm_medium: 'sms' })).toBe('sms')
     expect(attributionConfidence({ gclid: 'x' })).toBe('direct')
+    expect(classifySource({ utm_source: 'website' })).toBe('website')
+    expect(classifySource({ utm_source: 'Website' })).toBe('website')
+    expect(attributionConfidence({ utm_source: 'website' })).toBe('direct')
+    expect(classifySource({ utm_source: 'website', gclid: 'x' })).toBe('google_ads') // a paid click still wins
+    expect(classifySource({ utm_source: 'websites' })).toBe('unknown')
+  })
+
+  it('website is a Marketing source with its own Website report channel; Google/GBP unchanged', () => {
+    expect(ATTRIBUTION_SOURCES).toContain('website')
+    expect(reportChannelForSource('website')).toBe('website')
+    expect(REPORT_CHANNEL_LABELS[reportChannelForSource('website')]).toBe('Website')
+    expect(reportChannelForSource('google_organic')).toBe('organic')
+    expect(reportChannelForSource('google_ads')).toBe('google_ads')
+    expect(reportChannelForSource('unknown')).toBe('other')
   })
 
   it('keeps only known, short, printable parameters', () => {

@@ -243,6 +243,14 @@ describe('attribution', () => {
     expect(await count('marketing_leads', `source = 'google_ads'`)).toBe(1)
     expect(await count('marketing_attribution', `source = 'google_ads' AND confidence = 'direct' AND click_id = 'abc123' AND utm_campaign = 'ceramic-fall'`)).toBe(1)
   })
+  it('a website Book button is attributed to Website and a GBP link to Google organic, raw UTMs kept', async () => {
+    const { appointment } = await createAppointment(input({ attribution: { utm_source: 'website' } }), pub())
+    expect(appointment.attribution).toMatchObject({ utm_source: 'website' })
+    expect(await count('marketing_leads', `source = 'website'`)).toBe(1)
+    expect(await count('marketing_attribution', `source = 'website' AND confidence = 'direct' AND utm_source = 'website'`)).toBe(1)
+    await createAppointment(input({ time: '09:00', email: 'g@example.com', phone: '9795550444', attribution: { utm_source: 'gbp' } }), pub())
+    expect(await count('marketing_attribution', `source = 'google_organic' AND confidence = 'direct' AND utm_source = 'gbp'`)).toBe(1)
+  })
 })
 
 describe('changes', () => {

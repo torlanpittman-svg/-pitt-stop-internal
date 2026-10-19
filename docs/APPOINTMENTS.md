@@ -170,9 +170,8 @@ the daily 5 PM cron, another change to that appointment, or staff **Retry custom
 stays `failed`. Delivery status shows on each appointment's page, not on the `/appointments` list. A notice whose
 process dies mid-send stays `sending` (never re-sent → no duplicate email; staff can see it).
 
-**Attribution note:** `utm_source=website` is stored on the booking but classifies as `unknown` (Marketing has no
-website channel). `utm_source=gbp` classifies as `google_organic`. Website bookings can still be counted from the
-stored `utm_source`; adding a `website` source to Marketing is a small optional follow-up.
+**Attribution:** `utm_source=website` → source `website`, reported as **Website** (Marketing leads + revenue report);
+`utm_source=gbp` → `google_organic`. Raw UTM values are always stored on the booking and the attribution row.
 
 ## Cutover checklist
 
