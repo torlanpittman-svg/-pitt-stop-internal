@@ -1487,10 +1487,11 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
         {services.length > 0 ? (
           <ul className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800 overflow-hidden">
             {services.map((s, i) => {
-              const inner = <div className="px-4 py-3.5 text-white text-base">{s}</div>
+              const inner = <div className="px-4 py-3.5 text-white text-base min-w-0 break-words">{s}</div>
               // Manager/admin on a retail Job → swipe-left to remove. Employees & dealer Jobs see the plain list.
+              // Opaque foreground so the red Remove underlay only shows while swiping, never at rest.
               return (isManager && !isDealerOrder(order))
-                ? <li key={i}><SwipeRow onRemove={() => removeService(s)}>{inner}</SwipeRow></li>
+                ? <li key={i}><SwipeRow onRemove={() => removeService(s)} contentClassName="bg-gray-900">{inner}</SwipeRow></li>
                 : <li key={i}>{inner}</li>
             })}
           </ul>
