@@ -44,7 +44,7 @@ function dollarsToCents(s: string): number | null {
  *  add / order / receive / return / cancel / bill) so the parent's collapsed summary stays current;
  *  `mutated` is true for changes (not the initial load). */
 export default function PartsSection({ orderId, hideTitle = false, onPartsChange }: {
-  orderId: string; hideTitle?: boolean; onPartsChange?: (parts: ReadonlyArray<{ status: string }>, mutated: boolean) => void
+  orderId: string; hideTitle?: boolean; onPartsChange?: (parts: ReadonlyArray<{ description: string; status: string }>, mutated: boolean) => void
 }) {
   const [parts, setParts] = useState<Part[]>([])
   const [manager, setManager] = useState(false)

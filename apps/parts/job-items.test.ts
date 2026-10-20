@@ -23,10 +23,10 @@ vi.mock('@/apps/settings/db', () => ({
 import { seedProductionCatalog, CLEAR_TABLES } from '@/apps/quick-entry/catalog-fixture.test-support'
 import { getOrCreateEstimate, addService, setServicePrice, getEstimateView, convertEstimate, setApproval, prepareEstimateView } from '@/apps/workflow/estimate-db'
 import { convertServiceToPart, addEstimatePart } from '@/apps/parts/estimate-parts'
-import { getOrderWithContext, transitionOrder } from '@/apps/workflow/db'
+import { getOrderWithContext, transitionOrder, listActiveOrders } from '@/apps/workflow/db'
 import { splitJobItems, loadJobItems } from './job-items'
-import { summarizeParts } from './status'
-import { listPartsForOrder, cancelPart, receivePart, markOrdered } from './db'
+import { summarizeParts, countJobParts } from './status'
+import { listPartsForOrder, cancelPart, receivePart, markOrdered, addPart } from './db'
 import { serviceOrders, vehicles, jobParts, jobLineItems, serviceOrderEvents } from '@/drizzle/schema'
 
 let db: PgliteDatabase<typeof schema>
@@ -185,5 +185,70 @@ describe('live Parts summary == a fresh page load (client update vs server loade
     expect(await check()).toEqual({ total: 2, waiting: 1 })
     await cancelPart(b.id, 'Manager')
     expect(await check()).toEqual({ total: 1, waiting: 0 })
+  })
+})
+
+/** The figure each view actually renders: Job page (server items, and the client's live recount from the
+ *  tracker list) and the Work Board card (listActiveOrders items). All three must agree. */
+async function displayed(orderId: string) {
+  const job = (await getOrderWithContext(orderId))!.items!
+  const card = (await listActiveOrders()).find((o) => o.id === orderId)!.items!
+  const live = countJobParts(job.partLabels, await listPartsForOrder(orderId))
+  expect(card.parts).toEqual(job.parts)
+  expect({ total: live.total, waiting: live.waiting }).toEqual(job.parts)
+  expect(live.activeLabels).toEqual(job.activePartLabels)
+  return { ...job.parts, services: job.services, activeLabels: job.activePartLabels }
+}
+
+describe('displayed Parts count — one rule for the Job page and the Work Board card', () => {
+  it('Codex repro: a converted legacy part that is then cancelled counts ZERO (and stays out of Services)', async () => {
+    const { orderId } = await order(['Interior detail', 'Cabin Air filter'], 'in_progress')
+    await prepareEstimateView(orderId, 'Manager')
+    const filter = (await getEstimateView(orderId)).services.find((x) => x.title === 'Cabin Air filter')!
+    await convertServiceToPart(orderId, filter.id, { supply: 'shop', confirmed: true }, 'Manager')
+    expect(await displayed(orderId)).toMatchObject({ total: 1, waiting: 1, activeLabels: ['Cabin Air filter'] })
+    const before = await getEstimateView(orderId)
+    const lines = await db.select().from(jobLineItems)
+    const [p] = await listPartsForOrder(orderId)
+    await cancelPart(p.id, 'Manager')
+    expect(await displayed(orderId)).toEqual({ total: 0, waiting: 0, services: ['Interior detail'], activeLabels: [] })
+    expect(await listPartsForOrder(orderId)).toHaveLength(1)                       // still in the tracker history
+    expect(await text(orderId)).toEqual(['Interior detail', 'Cabin Air filter'])    // Job text untouched
+    expect((await getEstimateView(orderId)).workTotalCents).toBe(before.workTotalCents) // prices untouched
+    expect(await db.select().from(jobLineItems)).toEqual(lines)                     // billing lines untouched
+  })
+
+  it('mixed tracked + untracked parts: untracked labels still count, tracked ones once', async () => {
+    const { orderId, estimateId } = await order(['Interior detail', 'Wiper blades', 'Front carpet'])
+    // "Wiper blades": an estimate line typed as a part, never tracked → a legitimate untracked part.
+    await db.execute(`INSERT INTO job_services(job_estimate_id, title, kind, source, sort_order) VALUES ('${estimateId}', 'Wiper blades', 'part', 'manual', 9)`)
+    // "Front carpet": tracked (Quick Entry-style job_parts row), plus a second tracked part not on the text list.
+    await addPart({ serviceOrderId: orderId, description: 'Front carpet' })
+    const clip = await addPart({ serviceOrderId: orderId, description: 'Clip' })
+    expect(await displayed(orderId)).toMatchObject({ total: 3, waiting: 2, services: ['Interior detail'], activeLabels: ['Wiper blades', 'Front carpet'] })
+    await cancelPart(clip.id, 'Manager')
+    expect(await displayed(orderId)).toMatchObject({ total: 2, waiting: 1 })
+  })
+
+  it('duplicate labels for the same part count once — with or without a tracked record', async () => {
+    const { orderId } = await order(['Cabin Air filter', ' cabin air filter ', 'Interior detail'])
+    await addPart({ serviceOrderId: orderId, description: 'Cabin Air filter' })
+    expect(await displayed(orderId)).toMatchObject({ total: 1, waiting: 1, activeLabels: ['Cabin Air filter'] })
+    expect(countJobParts(['Mat', 'mat ', 'Mat'], [])).toEqual({ total: 1, waiting: 0, activeLabels: ['Mat'] })
+  })
+
+  it('a re-added part after a cancelled one counts again (live record wins over the cancelled one)', async () => {
+    const { orderId } = await order(['Cabin Air filter'])
+    const first = await addPart({ serviceOrderId: orderId, description: 'Cabin Air filter' })
+    await cancelPart(first.id, 'Manager')
+    expect(await displayed(orderId)).toMatchObject({ total: 0, activeLabels: [] })
+    await addPart({ serviceOrderId: orderId, description: 'Cabin Air filter' })
+    expect(await displayed(orderId)).toMatchObject({ total: 1, waiting: 1, activeLabels: ['Cabin Air filter'] })
+  })
+
+  it('dealer Jobs use the same rule (no retail coupling)', async () => {
+    const [v] = await db.insert(vehicles).values({ make: 'Ford', model: 'F-150', year: '2020' }).returning()
+    const [o] = await db.insert(serviceOrders).values({ orderNumber: `JI-${++seq}`, vehicleId: v.id, source: 'dealer_checkin', serviceType: 'dealer_in', status: 'arrived', customerName: 'Dealer', services: ['Complete Detail'] }).returning()
+    expect(await displayed(o.id)).toMatchObject({ total: 0, waiting: 0, services: ['Complete Detail'] })
   })
 })

@@ -75,6 +75,39 @@ export function summarizeParts(parts: ReadonlyArray<{ status: string }>): { tota
   return { total: live.length, waiting: live.filter((p) => isPartWaiting(p.status)).length }
 }
 
+/** Same trim/lowercase key promoteTextServices / the Services-vs-Parts split dedupe on. */
+export const partKey = (s: string) => s.trim().toLowerCase()
+
+/**
+ * THE displayed Parts count for a Job (Job page collapsed header + Work Board card), one rule for both:
+ *   • every tracked part that is not cancelled counts once;
+ *   • a part label from the Job's list counts only when NO tracked part (any status) carries that name —
+ *     a legitimate untracked part (e.g. an estimate line typed as a part, never tracked). Duplicate
+ *     labels for the same name count once, and a label backed by a tracked part is never added twice;
+ *   • so a cancelled tracked part never counts, even though its legacy label / estimate line remain
+ *     (they stay in history and stay classified as a Part, never back in Services).
+ * `activeLabels` = the labels to list as current parts (cancelled-only names dropped), in order.
+ */
+export function countJobParts(
+  partLabels: readonly string[],
+  tracked: ReadonlyArray<{ description: string; status: string }>,
+): { total: number; waiting: number; activeLabels: string[] } {
+  const live = summarizeParts(tracked)
+  const trackedKeys = new Set(tracked.map((p) => partKey(p.description)))
+  const liveKeys = new Set(tracked.filter((p) => p.status !== 'cancelled').map((p) => partKey(p.description)))
+  const untracked = new Set<string>()
+  const seen = new Set<string>()
+  const activeLabels: string[] = []
+  for (const label of partLabels) {
+    const k = partKey(label)
+    if (!k || seen.has(k)) continue
+    seen.add(k)
+    if (!trackedKeys.has(k)) untracked.add(k)
+    if (!trackedKeys.has(k) || liveKeys.has(k)) activeLabels.push(label)
+  }
+  return { total: live.total + untracked.size, waiting: live.waiting, activeLabels }
+}
+
 /** Does an order have any outstanding parts? Drives the Work Board "waiting on parts" badge. */
 export function orderHasWaitingParts(parts: Array<{ status: string }>): boolean {
   return parts.some((p) => isPartWaiting(p.status))

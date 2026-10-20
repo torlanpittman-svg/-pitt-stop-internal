@@ -124,7 +124,7 @@ export default function VehicleCard({
   const isUrgent = order.isUrgent === true
   const stock = isDealer ? stockFromNotes(order.notes) : null
   const services = order.items?.services ?? order.services ?? []
-  const partCount = Math.max(order.items?.parts.total ?? 0, order.items?.partLabels.length ?? 0)
+  const partCount = order.items?.parts.total ?? 0   // countJobParts — same rule as the Job page
   const partsWaitingCount = order.items?.parts.waiting ?? 0
   // Swipe-to-remove is offered to manager/admin on any active card — RETAIL and DEALER alike
   // (an accidental check-in of either kind can be corrected). The confirm + tap are still required.

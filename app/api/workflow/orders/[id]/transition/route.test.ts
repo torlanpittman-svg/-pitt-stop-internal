@@ -20,7 +20,7 @@ const req = (body: unknown) => new Request('http://x/api/workflow/orders/o1/tran
 const call = (body: unknown) => POST(req(body), { params: Promise.resolve({ id: 'o1' }) })
 const job = (over: Record<string, unknown> = {}) => ({
   id: 'o1', status: 'in_progress', qcRequired: false, services: ['Interior detail', 'Cabin Air filter'],
-  items: { services: ['Interior detail'], partLabels: ['Cabin Air filter'], parts: { total: 1, waiting: 0 } }, ...over,
+  items: { services: ['Interior detail'], partLabels: ['Cabin Air filter'], activePartLabels: ['Cabin Air filter'], parts: { total: 1, waiting: 0 } }, ...over,
 })
 
 beforeEach(() => {
@@ -61,7 +61,7 @@ describe('POST transition → ready (Finish Job)', () => {
   })
 
   it('counts WORK only — a Job whose list is all parts cannot be finished as work', async () => {
-    getOrder.mockResolvedValue(job({ services: ['Cabin Air filter'], items: { services: [], partLabels: ['Cabin Air filter'], parts: { total: 1, waiting: 0 } } }))
+    getOrder.mockResolvedValue(job({ services: ['Cabin Air filter'], items: { services: [], partLabels: ['Cabin Air filter'], activePartLabels: ['Cabin Air filter'], parts: { total: 1, waiting: 0 } } }))
     const r = await call({ newStatus: 'ready', completion: { allWorkComplete: true } })
     expect((await r.json()).reason).toBe('no_services')
   })
