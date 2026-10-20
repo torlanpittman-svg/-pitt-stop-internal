@@ -16,6 +16,7 @@
  */
 import { NextResponse } from 'next/server'
 import { getOrderWithContext, logEvent } from '@/apps/workflow/db'
+import { PAYMENT_LOCKS_INVOICE } from '@/apps/quickbooks/retail-payment'
 import { getEstimateRow, getFullEstimate, setEstimateWaiver, recomputeEstimate, flagQbSyncNeededIfInvoiced } from '@/apps/workflow/estimate-db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { isDealerOrder } from '@/apps/workflow/fees'
@@ -82,6 +83,10 @@ async function applyOverride(
 ): Promise<NextResponse> {
   const est = await getEstimateRow(id)
   if (!est) return NextResponse.json({ error: 'This Job has no priced estimate yet.' }, { status: 400 })
+  // A payment is recorded on the linked QuickBooks invoice — its charges can no longer change here.
+  if (PAYMENT_LOCKS_INVOICE.includes(est.qbPaymentStatus)) {
+    return NextResponse.json({ error: 'A payment is recorded on this invoice — charges can’t be changed. Correct it in QuickBooks.' }, { status: 409 })
+  }
 
   // Old value for the audit trail.
   const oldValue = field === 'shop_supplies' ? est.waiveShopSupplies : field === 'payment' ? est.waiveCardFee : est.taxExempt
@@ -91,7 +96,11 @@ async function applyOverride(
     return NextResponse.json({ ok: true, draft: buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: actor.role }) })
   }
 
-  await setEstimateWaiver(est.id, field, removed)
+  // Atomic: refused if a payment was recorded / started after the check above (Record Payment's lock and
+  // this write exclude each other on the same row).
+  if (!(await setEstimateWaiver(est.id, field, removed))) {
+    return NextResponse.json({ error: 'A payment is being recorded or is recorded on this invoice — charges can’t be changed. Correct it in QuickBooks.' }, { status: 409 })
+  }
   await recomputeEstimate(est.id)
   // If a retail QB invoice is already linked, this charge change makes it stale → flag Sync.
   const qbSyncNeeded = await flagQbSyncNeededIfInvoiced(id, 'a charge changed')

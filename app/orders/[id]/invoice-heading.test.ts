@@ -19,6 +19,11 @@ describe('invoiceHeading — never implies a document was created or sent', () =
   it('sent', () => {
     expect(invoiceHeading(qb({ status: 'sent', linked: true, invoiceNumber: '42', sent: true }))).toEqual({ title: 'Invoice #42', status: 'Sent' })
   })
+  it('paid only when QuickBooks confirmed it — an unconfirmed payment is not "Paid"', () => {
+    expect(invoiceHeading(qb({ status: 'sent', linked: true, invoiceNumber: '42', sent: true, payment: { status: 'paid' } })).status).toBe('Paid')
+    expect(invoiceHeading(qb({ status: 'sent', linked: true, invoiceNumber: '42', sent: true, payment: { status: 'uncertain' } })).status).toBe('Sent')
+    expect(invoiceHeading(qb({ status: 'created', linked: true, invoiceNumber: '42', payment: { status: 'review' } })).status).toBe('Created in QuickBooks · not sent')
+  })
   it('stale / review states', () => {
     expect(invoiceHeading(qb({ status: 'created', linked: true, invoiceNumber: '7', syncNeeded: true })).status).toBe('Created in QuickBooks · sync needed')
     expect(invoiceHeading(qb({ status: 'sent', linked: true, invoiceNumber: '7', sent: true, syncNeeded: true })).status).toBe('Sent · sync needed')

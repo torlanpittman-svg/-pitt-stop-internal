@@ -78,6 +78,27 @@ logic), `retail-format.ts` (canonical descriptions + PSID), `retail-item-map.ts`
 - **"QuickBooks sync needed"**: retail QB UPDATE is NOT built. After edits to a QB-linked Job,
   `flagQbSyncNeededIfInvoiced()` writes `qbSyncError = "QuickBooks sync needed — <reason>"`
   (surfaced in Invoice Draft). Called from customer/estimate/services/vehicle edit routes.
+- **Record Payment / Email Paid Invoice** (2026-10-20, migration 0059, flags OFF) — see
+  `docs/retail-invoice-payment.md`. After Create: Send Invoice + Record Payment (manager/admin).
+  Records money already collected (Cash / Card Terminal / Check) as a QBO Payment applied to the
+  linked invoice — never charges a card. Paid only when QBO Balance = 0. Reconciles first
+  (paid online → adopted, no second payment); CAS lock on `job_estimates.qb_payment_status`;
+  QBO `requestid` + `PSPAY:` tag; ambiguous → `uncertain`, retried with the SAME attempt id.
+  Payment state, `qb_status` (create/send) and the paid-email state are separate columns. A
+  payment freezes the invoice (Sync + fee overrides refused — atomically, `invoice-locks.ts`); an
+  unconfirmed attempt pins its method/amount/request id until resolved. Paid writes are fenced on the
+  observed payment state; an unconfirmed paid email is only re-checked (DeliveryInfo newer than the
+  baseline captured at lock), never re-sent without an explicit "Send another copy". Unpaid Send is
+  refused once a payment exists. Cash / Check automatically remove the card-payment charge (owner
+  decision 2026-10-20; Card Terminal keeps the current setting): the sheet shows the pricing-engine
+  amount (`projectEstimateTotalCents`, no writes); Save — under the payment lock — waives the charge
+  (fenced on the attempt), syncs the SAME invoice via the owner-fenced Sync lock, verifies QBO total,
+  then pays; definite sync failure with the invoice unchanged → charge restored; otherwise the attempt
+  stays pinned and a retry re-syncs before paying. Create/Sync never itemize a
+  flat Work Price (`flatPricingIssue`). Email Paid Invoice re-sends the
+  SAME invoice via QBO send (explicit, separate duplicate guard). Files:
+  `apps/quickbooks/retail-payment{,-service,-write}.ts`, `app/orders/[id]/InvoicePaymentSection.tsx`,
+  routes `.../invoice/payment`, `.../invoice/send-paid`, `.../invoice/pdf`.
 
 ## 5. Dealer QuickBooks — ISOLATED, do not touch
 
@@ -118,6 +139,10 @@ Verified in production DB on 2026-08-18:
   owner go-live decision (see §11). Send is manager+admin, requires `retail_qb_enabled`.
 - `payment_charge_enabled = true`, `shop_supplies_enabled = true`
 - `COMPLETION_FLOW_ENABLED`, `ESTIMATE_LAYER_ENABLED`, `IDENTITY_ENABLED` are env-based (all ON in prod).
+- `retail_qb_payment_enabled = false` (default, not yet in prod — migration 0059 not applied) —
+  Record Payment. `retail_payment_mappings` (json, default `{}`) = owner-confirmed QBO
+  PaymentMethod + deposit account per method, pinned to the QBO realm id; an unmapped method is
+  not offered. Email Paid Invoice additionally needs `retail_qb_send_enabled`.
 - Create/Sync/Send are three INDEPENDENT kill-switches (`retail_qb_enabled` / `retail_qb_sync_enabled`
   / `retail_qb_send_enabled`).
 

@@ -44,6 +44,13 @@ export const SETTINGS: Record<string, SettingDef> = {
   // invoice). Default OFF. Requires retail_qb_enabled=true as a prerequisite. Independent
   // kill-switch from Create and Send — Sync never sends.
   retail_qb_sync_enabled:  { key: 'retail_qb_sync_enabled',  type: 'bool',   def: false,              env: 'RETAIL_QB_SYNC_ENABLED' },
+  // Retail Record Payment (counter payment applied to the linked QB invoice). Default OFF. Records money
+  // ALREADY collected (cash / card terminal / check) as a QuickBooks Payment — never charges a card.
+  retail_qb_payment_enabled: { key: 'retail_qb_payment_enabled', type: 'bool', def: false,            env: 'RETAIL_QB_PAYMENT_ENABLED' },
+  // Owner-confirmed QuickBooks mappings for Record Payment, per method (apps/quickbooks/retail-payment.ts):
+  // { "realmId": "…", "cash": { "paymentMethodId": "…", "depositAccountId": "…" }, "check": {…}, "card_terminal": {…} }.
+  // A method without both ids is not offered. Empty by default — nothing is guessed.
+  retail_payment_mappings:  { key: 'retail_payment_mappings',  type: 'json',   def: '{}',               env: 'RETAIL_PAYMENT_MAPPINGS' },
   // CFO Financial Command Center (Phase 1). Default OFF — /admin/finance ships dark. Read-only
   // toward QuickBooks; admin-only; no money movement.
   finance_enabled:         { key: 'finance_enabled',         type: 'bool',   def: false,              env: 'FINANCE_ENABLED' },
@@ -223,6 +230,16 @@ export async function completionInvoiceEnabled(): Promise<boolean> {
 export async function retailQbSyncEnabled(): Promise<boolean> {
   const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'retail_qb_sync_enabled'))
   return resolve(SETTINGS.retail_qb_sync_enabled, rows[0]?.value) as boolean
+}
+/** Retail Record Payment kill-switch. Default OFF. */
+export async function retailQbPaymentEnabled(): Promise<boolean> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'retail_qb_payment_enabled'))
+  return resolve(SETTINGS.retail_qb_payment_enabled, rows[0]?.value) as boolean
+}
+/** Raw Record Payment mapping config (parsed + validated by apps/quickbooks/retail-payment.ts). */
+export async function retailPaymentMappingsRaw(): Promise<unknown> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'retail_payment_mappings'))
+  return resolve(SETTINGS.retail_payment_mappings, rows[0]?.value)
 }
 /** CFO Financial Command Center kill-switch (Phase 1). Default OFF. */
 export async function financeEnabled(): Promise<boolean> {

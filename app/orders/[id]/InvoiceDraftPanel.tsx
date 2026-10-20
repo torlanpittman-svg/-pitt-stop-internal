@@ -7,6 +7,9 @@
  */
 import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
 import { createDraftSequencer, invoiceActionsLocked, interpretDraftResponse, draftActionReady } from './invoice-draft-sync'
+import { InvoicePaymentSection } from './InvoicePaymentSection'
+import { PAYMENT_LOCKS_INVOICE } from '@/apps/quickbooks/retail-payment'
+import type { InvoicePaymentState } from '@/apps/workflow/invoice-draft'
 
 export interface InvoiceDraftData {
   priced: boolean; isDealer: boolean
@@ -20,7 +23,7 @@ export interface InvoiceDraftData {
   serviceBreakdown: { title: string; cents: number }[]
   pricingIncomplete: boolean
   referenceCents: number | null
-  qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sent: boolean; resendRecommended: boolean; sentAt: string | null }
+  qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sent: boolean; resendRecommended: boolean; sentAt: string | null; payment: InvoicePaymentState }
 }
 export interface SendPreview { ok: boolean; block?: string; recipient?: string | null; invoiceNumber?: string | null; draftTotalCents?: number; qbTotalCents?: number; error?: string }
 /** A colliding QB customer offered to the manager when email/name resolution is ambiguous. */
@@ -51,6 +54,8 @@ export const SYNC_BLOCK_MSG: Record<string, string> = {
   syncing: 'A sync is already in progress.',
   dealer: 'Dealer invoices are handled by Dealer Check-In.',
   sync_failed: 'Could not sync the QuickBooks invoice.',
+  paid: 'A payment is recorded on this invoice — correct it in QuickBooks.',
+  pricing: 'The service prices don’t match the agreed Work Price — reconcile them in the Estimate first.',
 }
 
 function ChargeRow({ label, cents, waived, canEdit, busy, onToggle }: {
@@ -124,10 +129,12 @@ export function InvoiceTotals({ draft, subtotal, canEdit, busy, onToggle, tax, t
 }
 
 /** "Invoice Draft" until a QuickBooks invoice exists; then its number and true state (never implies a send). */
-export function invoiceHeading(qb: InvoiceDraftData['qb'] | null | undefined): { title: string; status: string | null } {
+export function invoiceHeading(qb: (Omit<InvoiceDraftData['qb'], 'payment'> & { payment?: Pick<InvoicePaymentState, 'status'> }) | null | undefined): { title: string; status: string | null } {
   if (!qb?.linked) return { title: 'Invoice Draft', status: null }
   const title = qb.invoiceNumber ? `Invoice #${qb.invoiceNumber}` : 'Invoice'
-  const status = qb.needsReview ? 'Needs review'
+  // Paid only once QuickBooks confirmed a zero balance (payment.status='paid').
+  const status = qb.payment?.status === 'paid' ? 'Paid'
+    : qb.needsReview ? 'Needs review'
     : qb.status === 'error' ? 'Sync failed'
     : qb.syncNeeded ? (qb.sent ? 'Sent · sync needed' : 'Created in QuickBooks · sync needed')
     : qb.sent ? 'Sent' : 'Created in QuickBooks · not sent'
@@ -181,6 +188,8 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
   const [sentTo, setSentTo] = useState<string | null>(null)
   const [resendMode, setResendMode] = useState(false)   // the pending confirm is a deliberate Resend
   const [syncEnabled, setSyncEnabled] = useState(false)
+  const [paymentEnabled, setPaymentEnabled] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [syncMsg, setSyncMsg] = useState<string | null>(null)
   const [confirmSentSync, setConfirmSentSync] = useState(false)   // two-tap confirm for a sent invoice
@@ -206,10 +215,10 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
     if (mode === 'refresh') { setRefreshing(true); setSendPreview(null); setResendMode(false); setConfirmSentSync(false); setSyncMsg(null); setCustCandidates(null) }
     try {
       const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
-      const d = await r.json().catch(() => null) as { draft?: InvoiceDraftData; error?: string; qbEnabled?: boolean; qbSendEnabled?: boolean; qbSyncEnabled?: boolean } | null
+      const d = await r.json().catch(() => null) as { draft?: InvoiceDraftData; error?: string; qbEnabled?: boolean; qbSendEnabled?: boolean; qbSyncEnabled?: boolean; qbPaymentEnabled?: boolean } | null
       if (!aliveRef.current || !seq.isCurrent(token)) return
       const res = interpretDraftResponse(r.ok, d)
-      if (res.draft) { setDraft(res.draft); setErr(null); setQbEnabled(!!d?.qbEnabled); setSendEnabled(!!d?.qbSendEnabled); setSyncEnabled(!!d?.qbSyncEnabled) }
+      if (res.draft) { setDraft(res.draft); setErr(null); setQbEnabled(!!d?.qbEnabled); setSendEnabled(!!d?.qbSendEnabled); setSyncEnabled(!!d?.qbSyncEnabled); setPaymentEnabled(!!d?.qbPaymentEnabled) }
       else { setDraft(null); setErr(res.error) }
     } catch {
       if (aliveRef.current && seq.isCurrent(token)) { setDraft(null); setErr('Could not load the invoice totals. Try again.') }
@@ -232,7 +241,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
     const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
     const d = await r.json()
     if (!seq.isCurrent(token)) return
-    if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled); setSyncEnabled(!!d.qbSyncEnabled) }
+    if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled); setSyncEnabled(!!d.qbSyncEnabled); setPaymentEnabled(!!d.qbPaymentEnabled) }
   }, [orderId, seq])
 
   // Sync (UPDATE) the linked invoice from the current draft. Two-tap confirm for a sent invoice
@@ -508,12 +517,16 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                 {draft.qb.linked ? (() => {
                   const q = draft.qb
                   const stale = q.needsReview || q.syncNeeded || q.status === 'error'
-                  const current = !q.syncNeeded && !q.needsReview && q.status !== 'error'  // Send/Resend allowed
+                  // A recorded / in-flight / unconfirmed payment freezes the invoice: no Sync, and the unpaid
+                  // Send/Resend give way to Email Paid Invoice (in the payment section below).
+                  const payLocked = PAYMENT_LOCKS_INVOICE.includes(q.payment.status)
+                  const current = !q.syncNeeded && !q.needsReview && q.status !== 'error' && !payLocked  // Send/Resend allowed
                   return (
                   <div className={`mt-4 rounded-xl border px-4 py-3 ${stale || q.resendRecommended ? 'border-amber-900/60 bg-amber-950/30' : 'border-green-900/60 bg-green-950/40'}`}>
                     <p className={`text-sm font-semibold ${stale || q.resendRecommended ? 'text-amber-300' : 'text-green-300'}`}>QuickBooks Invoice{q.invoiceNumber ? ` #${q.invoiceNumber}` : ''}</p>
                     <p className="text-gray-400 text-xs mt-0.5">
-                      {q.needsReview ? 'Needs review'
+                      {q.payment.status === 'paid' ? 'Paid'
+                        : q.needsReview ? 'Needs review'
                         : q.status === 'error' ? 'Sync failed'
                         : q.syncNeeded ? (q.sent ? 'Sent · Sync needed' : 'Sync needed')
                         : q.resendRecommended ? 'Updated after last email · Resend recommended'
@@ -523,7 +536,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                     {q.needsReview && q.error && <p className="text-amber-400/80 text-xs mt-1">{q.error}</p>}
 
                     {/* Sync (manager + admin) — offered when stale/failed, never on needs-review. */}
-                    {(q.syncNeeded || q.status === 'error') && !q.needsReview && syncEnabled && (
+                    {(q.syncNeeded || q.status === 'error') && !q.needsReview && syncEnabled && !payLocked && (
                       <button onClick={syncQb} disabled={locked}
                         className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
                         {syncing ? 'Syncing…' : q.status === 'error' ? 'Retry Sync' : 'Sync QuickBooks'}
@@ -545,6 +558,14 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                         {sending ? 'Checking…' : 'Resend Invoice'}
                       </button>
                     )}
+
+                    {/* Record Payment → Paid → Email / Print Paid Invoice (stays available after Send until
+                        QuickBooks confirms a zero balance). */}
+                    {(paymentEnabled || q.payment.status !== 'none') && (
+                      <InvoicePaymentSection orderId={orderId} qb={q} paymentEnabled={paymentEnabled && !q.needsReview} sendEnabled={sendEnabled}
+                        disabled={locked} onChanged={refetch} onToast={(m) => { setToast(m); setTimeout(() => setToast(null), 5000) }} />
+                    )}
+                    {toast && <p className="text-green-400 text-sm mt-2" role="status">{toast}</p>}
                   </div>
                   )
                 })() : (draft.pricingIncomplete || draft.referenceCents != null) ? (embedded ? (

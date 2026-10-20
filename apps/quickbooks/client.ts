@@ -20,6 +20,8 @@ interface QBFetchOptions {
   query?: Record<string, string>
   /** Extra request headers (e.g. the invoice send endpoint needs an explicit Content-Type). */
   headers?: Record<string, string>
+  /** Abort after this many ms (the caller must treat an abort as an AMBIGUOUS write outcome). */
+  timeoutMs?: number
 }
 
 /**
@@ -43,6 +45,7 @@ export async function qbApiRequest<T = unknown>(opts: QBFetchOptions): Promise<T
         ...(opts.headers ?? {}),
       },
       ...(opts.body ? { body: JSON.stringify(opts.body) } : {}),
+      ...(opts.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
     })
   }
 
@@ -58,6 +61,26 @@ export async function qbApiRequest<T = unknown>(opts: QBFetchOptions): Promise<T
     throw new QBApiError(res.status, `QuickBooks API ${opts.path} failed (${res.status}): ${text}`)
   }
   return (await res.json()) as T
+}
+
+/**
+ * Read-only binary fetch (e.g. GET /invoice/{id}/pdf → application/pdf). Same auth, host and
+ * one-401-retry behavior as qbApiRequest; returns the raw bytes.
+ */
+export async function qbApiRequestBinary(opts: { path: string; accept: string }): Promise<ArrayBuffer> {
+  const doCall = async (): Promise<Response> => {
+    const { accessToken, realmId, environment } = await getValidAccessToken()
+    const url = new URL(`${QB_API_BASE[environment]}/v3/company/${realmId}${opts.path}`)
+    url.searchParams.set('minorversion', QB_MINOR_VERSION)
+    return fetch(url.toString(), { headers: { Authorization: `Bearer ${accessToken}`, Accept: opts.accept } })
+  }
+  let res = await doCall()
+  if (res.status === 401) { logger.warn(APP, 'retry_after_401', { path: opts.path }); res = await doCall() }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new QBApiError(res.status, `QuickBooks API ${opts.path} failed (${res.status}): ${text}`)
+  }
+  return res.arrayBuffer()
 }
 
 /** Escape a value for safe use inside a QBO query string literal. */

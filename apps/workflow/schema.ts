@@ -203,6 +203,31 @@ export const jobEstimates = pgTable(
     qbSentAt:               timestamp('qb_sent_at', { withTimezone: true }),
     qbSyncError:            text('qb_sync_error'),
     qbLastRequestId:        varchar('qb_last_request_id', { length: 80 }),  // client idempotency correlation
+    // Retail Record Payment (migration 0059). SEPARATE from qb_status (invoice create/send) and from the
+    // paid-invoice email below, so an email failure can never make a paid invoice look unpaid.
+    // qb_payment_status: none|recording|paid|uncertain|error|review. `paid` is set ONLY after QuickBooks
+    // reports a zero balance. qb_payment_request_id = the attempt id (QBO requestid + PSPAY tag) reused on
+    // an uncertain retry so QuickBooks itself de-duplicates. History lives in service_order_events.
+    qbPaymentStatus:        varchar('qb_payment_status', { length: 20 }).notNull().default('none'),
+    qbPaymentId:            varchar('qb_payment_id', { length: 100 }),
+    qbPaymentMethod:        varchar('qb_payment_method', { length: 20 }),     // cash|card_terminal|check|online|other
+    qbPaymentAmountCents:   integer('qb_payment_amount_cents'),
+    qbPaymentRequestId:     varchar('qb_payment_request_id', { length: 80 }),
+    qbPaymentError:         text('qb_payment_error'),
+    qbPaymentStartedAt:     timestamp('qb_payment_started_at', { withTimezone: true }),
+    // Cash / Check: THIS attempt removed the card-payment charge (waive_card_fee) so the same invoice could be
+    // synced to the cash total before paying. Lets an interrupted attempt be resumed (re-sync, then pay) and a
+    // definitely-failed one undone. Reset when a new attempt starts.
+    qbPaymentCardFeeRemoved: boolean('qb_payment_card_fee_removed').notNull().default(false),
+    qbPaidAt:               timestamp('qb_paid_at', { withTimezone: true }),
+    qbPaidBy:               varchar('qb_paid_by', { length: 200 }),
+    // "Email Paid Invoice": none|sending|sent|uncertain|error (independent of qb_status='sent').
+    qbPaidEmailStatus:      varchar('qb_paid_email_status', { length: 20 }).notNull().default('none'),
+    qbPaidEmailTo:          varchar('qb_paid_email_to', { length: 320 }),
+    qbPaidEmailStartedAt:   timestamp('qb_paid_email_started_at', { withTimezone: true }),
+    qbPaidEmailSentAt:      timestamp('qb_paid_email_sent_at', { withTimezone: true }),
+    qbPaidEmailError:       text('qb_paid_email_error'),
+    qbPaidEmailPriorDeliveryAt: timestamp('qb_paid_email_prior_delivery_at', { withTimezone: true }),
     createdBy:              varchar('created_by', { length: 200 }),
     updatedBy:              varchar('updated_by', { length: 200 }),
     createdAt:              timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

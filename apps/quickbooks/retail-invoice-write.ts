@@ -114,7 +114,7 @@ export async function getRetailInvoice(invoiceId: string): Promise<RetailInvoice
 
 /** The full raw QB invoice (for Sync: PSID identity check + full-object read-modify-write). */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-export interface RawQBInvoice { Id: string; DocNumber?: string; SyncToken: string; TotalAmt?: number; EmailStatus?: string; PrivateNote?: string; CustomerRef?: { value?: string }; BillEmail?: { Address?: string }; Line?: any[]; [k: string]: any }
+export interface RawQBInvoice { Id: string; DocNumber?: string; SyncToken: string; TotalAmt?: number; Balance?: number; EmailStatus?: string; LinkedTxn?: Array<{ TxnId?: string; TxnType?: string }>; DeliveryInfo?: { DeliveryType?: string; DeliveryTime?: string }; PrivateNote?: string; CustomerRef?: { value?: string }; BillEmail?: { Address?: string }; Line?: any[]; [k: string]: any }
 export async function getRetailInvoiceRaw(invoiceId: string): Promise<RawQBInvoice | null> {
   const res = await queryQBO<{ Invoice?: RawQBInvoice[] }>(`SELECT * FROM Invoice WHERE Id = '${qboEscape(invoiceId)}'`)
   return res.Invoice?.[0] ?? null
@@ -159,12 +159,13 @@ export async function fillRetailInvoiceEmail(invoiceId: string, syncToken: strin
  * (empty body, application/octet-stream). Sends ONLY this invoice; never creates/clones/
  * alters it. QBO sets EmailStatus=EmailSent. Returns the refreshed status.
  */
-export async function sendRetailInvoiceInQB(invoiceId: string, sendTo?: string | null): Promise<{ invoiceId: string; invoiceNumber: string | null; emailStatus: string; syncToken: string; billEmail: string | null }> {
+export async function sendRetailInvoiceInQB(invoiceId: string, sendTo?: string | null, opts?: { timeoutMs?: number }): Promise<{ invoiceId: string; invoiceNumber: string | null; emailStatus: string; syncToken: string; billEmail: string | null }> {
   const res = await qbApiRequest<{ Invoice: { Id: string; DocNumber?: string; SyncToken: string; EmailStatus?: string; BillEmail?: { Address?: string } } }>({
     method: 'POST',
     path: `/invoice/${invoiceId}/send`,
     query: sendTo && sendTo.trim() ? { sendTo: sendTo.trim() } : undefined,
     headers: { 'Content-Type': 'application/octet-stream' },
+    timeoutMs: opts?.timeoutMs,
   })
   logger.info(APP, 'retail_invoice.sent', { invoiceId, emailStatus: res.Invoice.EmailStatus })
   return { invoiceId: res.Invoice.Id, invoiceNumber: res.Invoice.DocNumber ?? null, emailStatus: res.Invoice.EmailStatus ?? 'EmailSent', syncToken: res.Invoice.SyncToken, billEmail: res.Invoice.BillEmail?.Address ?? null }

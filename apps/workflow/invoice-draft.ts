@@ -33,14 +33,27 @@ export interface InvoiceDraft {
   // Retail QuickBooks link state (P-D3.1/3.2/3.3). status: none|creating|created|sent|error|syncing.
   // `linked` = a QB invoice exists (invoice-id-first UI). `syncNeeded`/`needsReview` derive from
   // the qb_sync_error convention so the UI never parses raw error text.
-  qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sent: boolean; resendRecommended: boolean; sentAt: string | null }
+  qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sent: boolean; resendRecommended: boolean; sentAt: string | null; payment: InvoicePaymentState }
+}
+
+// Retail Record Payment state — SEPARATE from the invoice create/send state above. `status`
+// none|recording|paid|uncertain|error|review: only 'paid' means QuickBooks confirmed a zero balance.
+// The paid-invoice email has its own status so an email failure never makes a paid invoice look unpaid.
+export interface InvoicePaymentState {
+  status: string
+  method: string | null
+  amountCents: number | null
+  paidAt: string | null
+  paymentId: string | null
+  error: string | null
+  email: { status: string; to: string | null; sentAt: string | null; error: string | null }
 }
 
 // Derive the retail QB link state for the read model. `linked` is invoice-id-first (a QB
 // invoice exists → the UI never offers Create). syncNeeded/needsReview come from the
 // qb_sync_error text convention set by flagQbSyncNeededIfInvoiced / the Sync service.
 function buildQbState(est: FullEstimate['estimate'] | null | undefined): InvoiceDraft['qb'] {
-  if (!est) return { status: 'none', linked: false, invoiceNumber: null, error: null, syncNeeded: false, needsReview: false, sent: false, resendRecommended: false, sentAt: null }
+  if (!est) return { status: 'none', linked: false, invoiceNumber: null, error: null, syncNeeded: false, needsReview: false, sent: false, resendRecommended: false, sentAt: null, payment: buildPaymentState(null) }
   const error = est.qbSyncError ?? null
   const needsReview = !!error && /^needs review/i.test(error)
   const resendRecommended = est.qbStatus === 'sent' && !!error && /resend recommended/i.test(error)
@@ -53,6 +66,20 @@ function buildQbState(est: FullEstimate['estimate'] | null | undefined): Invoice
     sent: est.qbStatus === 'sent',
     resendRecommended,
     sentAt: est.qbSentAt ? new Date(est.qbSentAt).toISOString() : null,
+    payment: buildPaymentState(est),
+  }
+}
+
+const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString() : null)
+function buildPaymentState(est: FullEstimate['estimate'] | null | undefined): InvoicePaymentState {
+  return {
+    status: est?.qbPaymentStatus ?? 'none',
+    method: est?.qbPaymentMethod ?? null,
+    amountCents: est?.qbPaymentAmountCents ?? null,
+    paidAt: iso(est?.qbPaidAt),
+    paymentId: est?.qbPaymentId ?? null,
+    error: est?.qbPaymentError ?? null,
+    email: { status: est?.qbPaidEmailStatus ?? 'none', to: est?.qbPaidEmailTo ?? null, sentAt: iso(est?.qbPaidEmailSentAt), error: est?.qbPaidEmailError ?? null },
   }
 }
 

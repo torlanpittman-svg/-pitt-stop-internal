@@ -19,6 +19,8 @@ import { interpretVinScan } from './vin-scan'
 import { useJobItems } from './JobItems'
 import { PartRow, ServiceRow, Row } from './estimate/ItemRows'
 import { InvoiceDraftModal, money, SEND_BLOCK_MSG, SYNC_BLOCK_MSG, type InvoiceDraftData, type QbCandidate } from './InvoiceDraftPanel'
+import { InvoicePaymentSection } from './InvoicePaymentSection'
+import { PAYMENT_LOCKS_INVOICE } from '@/apps/quickbooks/retail-payment'
 
 // ── Status display config ─────────────────────────────────────────────────────
 
@@ -613,6 +615,7 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   const [syncErr, setSyncErr] = useState<string | null>(null)
   const [confirmSentOpen, setConfirmSentOpen] = useState(false)  // sync an already-sent invoice
   const [sendEnabled, setSendEnabled] = useState(false)
+  const [paymentEnabled, setPaymentEnabled] = useState(false)
   const [sending, setSending] = useState(false)
   const [sendErr, setSendErr] = useState<string | null>(null)
   const [sendPreview, setSendPreview] = useState<{ recipient: string | null; totalCents: number; invoiceNumber: string | null; resend: boolean } | null>(null)
@@ -633,7 +636,7 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   const loadDraft = useCallback(async () => {
     const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
     const d = await r.json().catch(() => null)
-    if (d?.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSyncEnabled(!!d.qbSyncEnabled); setSendEnabled(!!d.qbSendEnabled) }
+    if (d?.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSyncEnabled(!!d.qbSyncEnabled); setSendEnabled(!!d.qbSendEnabled); setPaymentEnabled(!!d.qbPaymentEnabled) }
   }, [orderId])
 
   useEffect(() => {
@@ -643,7 +646,7 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
       fetch(`/api/workflow/orders/${orderId}/contact`, { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
     ]).then(([inv, con]) => {
       if (!ok) return
-      if (inv?.draft) { setDraft(inv.draft); setQbEnabled(!!inv.qbEnabled); setSyncEnabled(!!inv.qbSyncEnabled); setSendEnabled(!!inv.qbSendEnabled) }
+      if (inv?.draft) { setDraft(inv.draft); setQbEnabled(!!inv.qbEnabled); setSyncEnabled(!!inv.qbSyncEnabled); setSendEnabled(!!inv.qbSendEnabled); setPaymentEnabled(!!inv.qbPaymentEnabled) }
       if (con?.ok) setContact({ phone: con.phone ?? null, email: con.email ?? null })
     }).finally(() => { if (ok) setLoading(false) })
     return () => { ok = false }
@@ -759,8 +762,10 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   const syncNeeded = !!qb?.syncNeeded
   const resendRecommended = !!qb?.resendRecommended
   const syncFailed = linked && qb?.status === 'error'
+  // A recorded / in-flight / unconfirmed payment freezes the invoice (no Sync; Email Paid Invoice replaces Send).
+  const payLocked = !!qb && PAYMENT_LOCKS_INVOICE.includes(qb.payment.status)
   // "current" = linked, not stale, not in review/error → the state where Send is allowed.
-  const current = linked && !syncNeeded && !needsReview && !syncFailed
+  const current = linked && !syncNeeded && !needsReview && !syncFailed && !payLocked
   const canSend = current && !isSent && sendEnabled
   const canResend = current && isSent && sendEnabled
 
@@ -832,7 +837,8 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
                 /* A QB invoice exists → show its number + state; the only write is Sync. */
                 <>
                   {(() => {
-                    const box = needsReview ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: 'Needs review' }
+                    const box = qb?.payment.status === 'paid' ? { tone: 'border-green-900/60 bg-green-950/30', head: 'text-green-300', label: 'Paid' }
+                      : needsReview ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: 'Needs review' }
                       : syncFailed ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: 'Sync failed' }
                       : syncNeeded ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: isSent ? 'Sent · Sync needed' : 'Sync needed' }
                       : resendRecommended ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: 'Updated after last email · Resend recommended' }
@@ -852,7 +858,7 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
                     Review Invoice
                   </button>
                   {/* Sync offered only when stale/failed and not a review-blocked state. */}
-                  {(syncNeeded || syncFailed) && !needsReview && syncEnabled && (
+                  {(syncNeeded || syncFailed) && !needsReview && syncEnabled && !payLocked && (
                     <button onClick={() => syncInvoice(false)} disabled={syncing}
                       className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
                       {syncing ? 'Syncing…' : syncFailed ? 'Retry Sync' : 'Sync QuickBooks'}
@@ -874,6 +880,11 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
                     </button>
                   )}
                   {sendErr && <p className="text-amber-400 text-sm mt-2">{sendErr}</p>}
+                  {/* Record Payment → Paid → Email / Print Paid Invoice. */}
+                  {qb && (paymentEnabled || qb.payment.status !== 'none') && (
+                    <InvoicePaymentSection orderId={orderId} qb={qb} paymentEnabled={paymentEnabled && !needsReview} sendEnabled={sendEnabled}
+                      disabled={syncing || sending} onChanged={loadDraft} onToast={(m) => { setToast(m); setTimeout(() => setToast(null), 5000) }} />
+                  )}
                 </>
               ) : !priced || pricingUnfinalized ? (
                 /* Not linked + unpriced OR partial itemized pricing OR itemized total not yet

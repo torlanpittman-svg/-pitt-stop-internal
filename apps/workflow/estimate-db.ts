@@ -4,7 +4,7 @@
  * cached on job_estimates after every mutation.
  */
 import { getDb } from '@/platform/db'
-import { eq, ne, and, asc, inArray, sql } from 'drizzle-orm'
+import { eq, ne, and, asc, inArray, notInArray, sql } from 'drizzle-orm'
 import { jobEstimates, jobServices, jobLineItems, serviceOrders, serviceOrderEvents } from './schema'
 import {
   computeTotals, rollUpDecision, defaultTaxForType, defaultTaxBps, approvedTitlesToSync, convertSyncsServices, lineAmountCents,
@@ -18,6 +18,7 @@ import { serviceCatalog } from '@/apps/quick-entry/schema'
 import { jobParts } from '@/apps/parts/schema'
 import { eligibleCatalogChoice, catalogDescriptionSnapshot, canonicalDescription } from '@/apps/quick-entry/service-match-db'
 import { composeLineDescription, partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
+import { PAYMENT_LOCKS_INVOICE } from '@/apps/quickbooks/retail-payment'
 import { loadEstimateReview } from './estimate-review'
 import { odorServicesMentioned, ceramicCoatingDuration } from '@/apps/quick-entry/service-interpret'
 import { serviceChoiceReason, servicePartLike, type ChoiceReason, type ReadinessIssue } from './estimate-readiness'
@@ -118,6 +119,38 @@ async function loadEstimateContext(estimateId: string) {
   return row
 }
 
+type EstimateContext = NonNullable<Awaited<ReturnType<typeof loadEstimateContext>>>
+type EstimateLine = Awaited<ReturnType<typeof loadEstimateLines>>[number]
+
+/**
+ * THE fee + totals computation, pure over (context, lines, config): which generated fee lines should
+ * exist, and the totals once they do. reconcileFees writes `desired`; recomputeEstimate stores `totals`;
+ * projectEstimateTotalCents previews a waiver without writing. Existing generated fee lines are replaced
+ * by `desired` (exactly what reconcileFees leaves behind), every other line is kept as-is.
+ */
+function projectEstimate(ctx: EstimateContext | undefined, lines: EstimateLine[], baseCfg: Awaited<ReturnType<typeof getBusinessConfig>>) {
+  const isDealer = ctx ? isDealerOrder(ctx) : false
+  const cfg = effectiveFeeConfig(baseCfg, { isDealer, waiveShopSupplies: ctx?.waiveShopSupplies, waivePayment: ctx?.waiveCardFee })
+  const flat = ctx?.priceMode === 'explicit_pretax' && ctx.explicitTotalCents != null
+  const basis = flat
+    ? ctx!.explicitTotalCents!
+    : eligibleBasisCents(lines.map((l) => ({ priceCents: l.priceCents, qty: l.qty, generated: l.generated })))
+  const desired = computeFees(basis, cfg)
+  let totals
+  if (flat) {
+    // Dealer Jobs and admin tax-exempt overrides carry no tax; non-taxable categories
+    // (detailing) also resolve to $0 inside explicitPretaxTotals.
+    const effRate = isDealer || ctx!.taxExempt ? 0 : (ctx!.rate ?? defaultTaxBps())
+    totals = explicitPretaxTotals(ctx!.explicitTotalCents!, cfg, effRate, ctx!.taxCategory ?? 'detailing')
+  } else {
+    const kept = lines.filter((l) => !(l.generated && l.feeCode))
+      .map((l) => ({ priceCents: l.priceCents, qty: l.qty, taxable: l.taxable, taxCategory: l.taxCategory }))
+    const fees = desired.map((d) => ({ priceCents: d.priceCents, qty: 1, taxable: false, taxCategory: FEE_TAX_CATEGORY }))
+    totals = computeTotals([...kept, ...fees], ctx?.rate ?? defaultTaxBps(), ctx?.discount ?? 0)
+  }
+  return { desired, totals }
+}
+
 /**
  * Reconcile generated fee lines (shop supplies / payment charge) for an estimate.
  * Idempotent: exactly ONE line per fee_code. Uses the EFFECTIVE config — dealer Jobs get
@@ -129,15 +162,7 @@ export async function reconcileFees(estimateId: string): Promise<void> {
   const db = getDb()
   const ctx = await loadEstimateContext(estimateId)
   const lines = await loadEstimateLines(estimateId)
-  const baseCfg = await getBusinessConfig()
-  const cfg = effectiveFeeConfig(baseCfg, {
-    isDealer: ctx ? isDealerOrder(ctx) : false,
-    waiveShopSupplies: ctx?.waiveShopSupplies, waivePayment: ctx?.waiveCardFee,
-  })
-  const basis = ctx?.priceMode === 'explicit_pretax' && ctx.explicitTotalCents != null
-    ? ctx.explicitTotalCents
-    : eligibleBasisCents(lines.map((l) => ({ priceCents: l.priceCents, qty: l.qty, generated: l.generated })))
-  const desired = computeFees(basis, cfg)
+  const { desired } = projectEstimate(ctx, lines, await getBusinessConfig())
   const existingFees = lines
     .filter((l) => l.generated && l.feeCode)
     .map((l) => ({ id: l.id, feeCode: l.feeCode as FeeCode, priceCents: l.priceCents, name: l.name }))
@@ -165,33 +190,38 @@ export async function recomputeEstimate(estimateId: string): Promise<void> {
   await reconcileFees(estimateId)   // fee lines are upserted BEFORE totals are summed
   const db = getDb()
   const ctx = await loadEstimateContext(estimateId)
-
-  let t
-  if (ctx?.priceMode === 'explicit_pretax' && ctx.explicitTotalCents != null) {
-    const isDealer = isDealerOrder(ctx)
-    const cfg = effectiveFeeConfig(await getBusinessConfig(), { isDealer, waiveShopSupplies: ctx.waiveShopSupplies, waivePayment: ctx.waiveCardFee })
-    // Dealer Jobs and admin tax-exempt overrides carry no tax; non-taxable categories
-    // (detailing) also resolve to $0 inside explicitPretaxTotals.
-    const effRate = isDealer || ctx.taxExempt ? 0 : (ctx.rate ?? defaultTaxBps())
-    t = explicitPretaxTotals(ctx.explicitTotalCents, cfg, effRate, ctx.taxCategory ?? 'detailing')
-  } else {
-    const lines = await loadEstimateLines(estimateId)
-    t = computeTotals(lines.map((l) => ({ priceCents: l.priceCents, qty: l.qty, taxable: l.taxable, taxCategory: l.taxCategory })), ctx?.rate ?? defaultTaxBps(), ctx?.discount ?? 0)
-  }
-
+  const { totals: t } = projectEstimate(ctx, await loadEstimateLines(estimateId), await getBusinessConfig())
   await db.update(jobEstimates).set({
     taxableSubtotalCents: t.taxableSubtotalCents, nontaxableSubtotalCents: t.nontaxableSubtotalCents,
     taxCents: t.taxCents, totalCents: t.totalCents, needsTaxReview: t.needsTaxReview, updatedAt: new Date(),
   }).where(eq(jobEstimates.id, estimateId))
 }
 
+/**
+ * The total the estimate WOULD have with the given charge waiver(s) — the same engine as
+ * recomputeEstimate (projectEstimate), with NO writes. Record Payment uses it to show the Cash / Check
+ * amount (card-payment charge removed) before anything is saved. Null when the estimate is missing.
+ */
+export async function projectEstimateTotalCents(estimateId: string, overrides: { waiveCardFee?: boolean }): Promise<number | null> {
+  const ctx = await loadEstimateContext(estimateId)
+  if (!ctx) return null
+  const lines = await loadEstimateLines(estimateId)
+  const { totals } = projectEstimate({ ...ctx, ...(overrides.waiveCardFee != null ? { waiveCardFee: overrides.waiveCardFee } : {}) }, lines, await getBusinessConfig())
+  return totals.totalCents
+}
+
 /** Set one per-Job charge waiver (Invoice Draft controls). Caller enforces permissions.
  *  Recompute is done by the caller so the change flows through the single engine. */
-export async function setEstimateWaiver(estimateId: string, field: 'shop_supplies' | 'payment' | 'tax_exempt', value: boolean): Promise<void> {
+export async function setEstimateWaiver(estimateId: string, field: 'shop_supplies' | 'payment' | 'tax_exempt', value: boolean): Promise<boolean> {
   const patch = field === 'shop_supplies' ? { waiveShopSupplies: value }
     : field === 'payment' ? { waiveCardFee: value }
     : { taxExempt: value }
-  await getDb().update(jobEstimates).set({ ...patch, updatedAt: new Date() }).where(eq(jobEstimates.id, estimateId))
+  // Refused atomically (false) while a payment is recorded / being recorded / unconfirmed on the linked
+  // QuickBooks invoice — a charge change can never interleave with Record Payment.
+  const rows = await getDb().update(jobEstimates).set({ ...patch, updatedAt: new Date() })
+    .where(and(eq(jobEstimates.id, estimateId), notInArray(jobEstimates.qbPaymentStatus, [...PAYMENT_LOCKS_INVOICE])))
+    .returning({ id: jobEstimates.id })
+  return rows.length > 0
 }
 
 /** Store an internal note/instruction on the estimate (manager/commercial layer). */

@@ -14,14 +14,14 @@
  * and re-checked post-write. Dealer invoicing is untouched.
  */
 import crypto from 'node:crypto'
-import { and, eq, isNull, inArray, desc } from 'drizzle-orm'
+import { and, eq, isNull, inArray, notInArray, desc } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { jobEstimates, serviceOrders } from '@/apps/workflow/schema'
 import { customers } from '@/apps/directory/schema'
 import { quickEntryJobs } from '@/apps/quick-entry/schema'
 import { chooseInvoiceParty, type InvoiceParty } from './invoice-party'
 import { getOrderWithContext, logEvent, type OrderWithContext } from '@/apps/workflow/db'
-import { getEstimateRow, getFullEstimate, itemizeEstimate, type FullEstimate } from '@/apps/workflow/estimate-db'
+import { getEstimateRow, getFullEstimate, type FullEstimate, type EstimateRow } from '@/apps/workflow/estimate-db'
 import { buildInvoiceDraft, type InvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { loadEstimateReview } from '@/apps/workflow/estimate-review'
 import { SYNC_BLOCKING } from '@/apps/workflow/estimate-readiness'
@@ -32,8 +32,10 @@ import { buildRetailPayload, decideSendRecipient, RetailTotalMismatchError, type
 import { serviceDescription, extractPsid, composeLineDescription, partLineDescription } from './retail-format'
 import { loadRetailItemIndex } from './retail-item-map'
 import { resolveRetailCustomer, resolveRetailCustomerIdentity, findRetailCustomerCandidates, persistRetailCustomerChoice, AmbiguousCustomerError, type QbCustomerCandidate } from './retail-customer'
-import { resolveRetailItems, createRetailInvoiceInQB, findRetailInvoiceByPsid, getRetailInvoiceRaw, updateRetailInvoiceInQB, fillRetailInvoiceEmail, sendRetailInvoiceInQB } from './retail-invoice-write'
+import { resolveRetailItems, createRetailInvoiceInQB, findRetailInvoiceByPsid, getRetailInvoiceRaw, updateRetailInvoiceInQB, fillRetailInvoiceEmail, sendRetailInvoiceInQB, type RawQBInvoice } from './retail-invoice-write'
 import { QBApiError } from './errors'
+import { PAYMENT_LOCKS_INVOICE, isAmbiguousWriteError } from './retail-payment'
+import { acquireRetailSyncLock, type PaymentLockOwner } from './invoice-locks'
 import { logger } from '@/platform/logger'
 
 const APP = 'quickbooks:retail-invoice-service'
@@ -138,6 +140,32 @@ export async function buildRetailWorkPayload(params: {
   return { payload, fallbacks }
 }
 
+const usd = (cents: number) => `$${(cents / 100).toFixed(2)}`
+
+/**
+ * A flat (explicit_pretax) Work Price is the agreed amount and the invoice bills exactly it, through the
+ * same payload builder: per-service lines when every service already carries a price and those prices add
+ * up to the agreed amount, otherwise (no service priced) the existing single Labor line at the agreed
+ * amount. Any other state — service prices that add up to something else, or only some services priced —
+ * needs a person to reconcile it in the Estimate, so this returns the refusal BEFORE any lock, estimate
+ * change or QuickBooks call. Read-only: it never itemizes, splits or replaces the agreed amount.
+ * (Flat → itemized no longer preserves the total — see itemizeFromFlat — so it must never run here.)
+ */
+export function flatPricingIssue(full: FullEstimate | null): string | null {
+  const est = full?.estimate
+  if (!full || !est || est.priceMode !== 'explicit_pretax' || est.explicitTotalCents == null) return null
+  const agreed = est.explicitTotalCents
+  const services = full.services.filter((s) => s.source !== 'system')
+  const priced = services.filter((s) => s.lines.some((l) => !l.generated))
+  if (priced.length === 0) return null
+  const sum = priced.reduce((t, s) => t + s.lines.filter((l) => !l.generated).reduce((a, l) => a + lineAmountCents(l.priceCents, l.qty), 0), 0)
+  if (priced.length === services.length && sum === agreed) return null
+  if (priced.length < services.length) {
+    return `The agreed Work Price is ${usd(agreed)}, but only ${priced.length} of ${services.length} services have their own price (${usd(sum)} so far). Open the Estimate and price every service to add up to ${usd(agreed)} (Set individual prices) before invoicing.`
+  }
+  return `The agreed Work Price is ${usd(agreed)}, but the service prices add up to ${usd(sum)}. Open the Estimate and reconcile them (Set individual prices) before invoicing — the agreed amount is never replaced automatically.`
+}
+
 export async function createRetailQBInvoice(params: { orderId: string; actor: string | null; requestId?: string | null }): Promise<CreateRetailResult> {
   const { orderId, actor } = params
   const requestId = params.requestId ?? null
@@ -164,6 +192,8 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
   // Complete, but the itemized sum still differs from the agreed reference and the manager has not
   // accepted the new total yet — don't silently invoice a total that differs from what was agreed.
   if (draft.referenceCents != null) return { ok: false, status: 'refused', error: 'The itemized total differs from the agreed amount. Accept the itemized total in the Estimate before invoicing.' }
+  const flatIssue = flatPricingIssue(full)
+  if (flatIssue) return { ok: false, status: 'refused', error: flatIssue }
   // Parts labor review / unchosen odor or ambiguous-name services must be explicitly resolved
   // first (drafts still save freely; job completion is never gated by this).
   const review = await loadEstimateReview(orderId)
@@ -186,16 +216,10 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
   }
 
   try {
-    // Retail needs per-service prices for separate QB lines. If the Job is flat, itemize it
-    // now — REUSING the simplified-Estimate proportional allocation, which preserves the
-    // Work Total exactly (explicit_pretax → itemized). Already-itemized Jobs are unchanged.
-    let fullNow = full
-    let draftNow = draft
-    if (est0.priceMode === 'explicit_pretax') {
-      await itemizeEstimate(est0.id, actor)
-      fullNow = await getFullEstimate(orderId)
-      draftNow = buildInvoiceDraft({ order, full: fullNow, paymentLabel: cfg.paymentLabel, role: 'admin' })
-    }
+    // A flat Job is invoiced as-is (flatPricingIssue above guarantees its lines bill exactly the agreed
+    // amount). It is never itemized here: itemizing no longer preserves the Work Total.
+    const fullNow = full
+    const draftNow = draft
 
     // One line per actual service (mapped Product/Service or Labor fallback) + fee lines.
     // Shared with Sync so both build identical structure and enforce Σlines == draft total.
@@ -348,7 +372,7 @@ function contentHash(customerId: string, payload: { lines: unknown; totalCents: 
 export type SendBlock =
   | 'no_invoice' | 'not_priced' | 'dealer' | 'total_mismatch' | 'email_required' | 'email_conflict'
   | 'qb_read_failed' | 'invoice_missing' | 'identity_mismatch' | 'customer_mismatch'
-  | 'sync_needed' | 'needs_review' | 'sending' | 'send_failed'
+  | 'sync_needed' | 'needs_review' | 'sending' | 'send_failed' | 'paid'
 export interface RetailSendResolution {
   ok: boolean
   block?: SendBlock
@@ -366,13 +390,30 @@ export interface RetailSendResolution {
   error?: string
 }
 
+/** A positively verified linked retail invoice (shared by Send, Record Payment and Email Paid Invoice). */
+export interface VerifiedLinkedInvoice {
+  ok: true
+  est: EstimateRow
+  raw: RawQBInvoice
+  draft: InvoiceDraft
+  full: FullEstimate | null
+  contact: { name: string; email: string | null; phone: string | null }
+  common: { invoiceId: string | null; invoiceNumber: string | null; syncToken: string; qbTotalCents: number; draftTotalCents: number; emailStatus: string; alreadySent: boolean }
+}
+export type LinkedInvoiceCheck = VerifiedLinkedInvoice | (RetailSendResolution & { ok: false })
+
 /**
- * READ-ONLY pre-send resolution (Phase D hardened). Positively verifies the linked invoice
- * before we ever email: PSID + invoice-id identity, the customer still resolves to the SAME
- * QB customer, the Job is not in a needs_review or sync-needed state, and QB TotalAmt equals
- * the authoritative draft total — plus the recipient email. NO writes. Re-checked inside send.
+ * READ-ONLY verification of the linked invoice: PSID + invoice-id identity, the customer still
+ * resolves to the SAME QB customer, and — unless `paidInvoice` — the Job is priced, not in a
+ * needs_review / sync-needed state, and QB TotalAmt equals the authoritative draft total. NO writes.
+ * `paidInvoice` (Email Paid Invoice): QuickBooks' paid invoice is the truth being emailed, so only
+ * identity is re-checked there.
+ * `allowDrift` (Record Payment resuming an interrupted Cash / Check card-fee removal): the local charge was
+ * already removed and QuickBooks may or may not have been synced yet — identity, customer, pricing and review
+ * are still enforced, but "sync needed" and the total comparison are left to the caller, which syncs and
+ * re-verifies under its lock before any payment.
  */
-export async function resolveRetailSend(orderId: string): Promise<RetailSendResolution> {
+export async function verifyLinkedRetailInvoice(orderId: string, opts: { paidInvoice?: boolean; allowDrift?: boolean } = {}): Promise<LinkedInvoiceCheck> {
   const est = await getEstimateRow(orderId)
   if (!est || !est.qbInvoiceId) return { ok: false, block: 'no_invoice' }
   const order = await getOrderWithContext(orderId)
@@ -381,13 +422,14 @@ export async function resolveRetailSend(orderId: string): Promise<RetailSendReso
   const [full, cfg] = await Promise.all([getFullEstimate(orderId), getBusinessConfig()])
   const draft = buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: 'admin' })
   const idBase = { invoiceId: est.qbInvoiceId, invoiceNumber: est.qbInvoiceNumber }
-  if (!draft.priced) return { ok: false, block: 'not_priced', ...idBase }
-
-  // A Job in a needs_review / sync-needed state must be resolved BEFORE any email — never
-  // send a stale invoice (same-total edits are caught here, not only by total_mismatch).
-  const err = est.qbSyncError ?? ''
-  if (/^needs review/i.test(err)) return { ok: false, block: 'needs_review', needsReview: true, ...idBase }
-  if (/sync needed/i.test(err)) return { ok: false, block: 'sync_needed', ...idBase }
+  if (!opts.paidInvoice) {
+    if (!draft.priced) return { ok: false, block: 'not_priced', ...idBase }
+    // A Job in a needs_review / sync-needed state must be resolved first — never act on a stale
+    // invoice (same-total edits are caught here, not only by total_mismatch).
+    const err = est.qbSyncError ?? ''
+    if (/^needs review/i.test(err)) return { ok: false, block: 'needs_review', needsReview: true, ...idBase }
+    if (/sync needed/i.test(err) && !opts.allowDrift) return { ok: false, block: 'sync_needed', ...idBase }
+  }
 
   const raw = await getRetailInvoiceRaw(est.qbInvoiceId).catch(() => null)
   if (!raw) return { ok: false, block: 'invoice_missing', needsReview: true, ...idBase }
@@ -403,13 +445,23 @@ export async function resolveRetailSend(orderId: string): Promise<RetailSendReso
   const emailStatus = raw.EmailStatus ?? 'NotSet'
   const common = { ...idBase, syncToken: raw.SyncToken, qbTotalCents, draftTotalCents: draft.totalCents, emailStatus, alreadySent: est.qbStatus === 'sent' || emailStatus === 'EmailSent' }
   // Total integrity — QB must still equal the authoritative Pitt Stop total.
-  if (qbTotalCents !== draft.totalCents) return { ok: false, block: 'total_mismatch', ...common }
+  if (!opts.paidInvoice && !opts.allowDrift && qbTotalCents !== draft.totalCents) return { ok: false, block: 'total_mismatch', ...common }
+  return { ok: true, est, raw, draft, full, contact, common }
+}
 
+/**
+ * READ-ONLY pre-send resolution (Phase D hardened). Positively verifies the linked invoice
+ * before we ever email (verifyLinkedRetailInvoice) — plus the recipient email. NO writes.
+ * Re-checked inside send.
+ */
+export async function resolveRetailSend(orderId: string): Promise<RetailSendResolution> {
+  const v = await verifyLinkedRetailInvoice(orderId)
+  if (!v.ok) return v
   // Email resolution: invoice BillEmail → fill from PS email if blank → else block. Conflict
   // (invoice email present but differs from PS email) is surfaced, never silently overwritten.
-  const d = decideSendRecipient(raw.BillEmail?.Address ?? null, contact.email)
-  if (!d.ok) return { ok: false, block: d.block, recipient: d.recipient ?? null, ...common }
-  return { ok: true, recipient: d.recipient, needsFill: d.needsFill, ...common }
+  const d = decideSendRecipient(v.raw.BillEmail?.Address ?? null, v.contact.email)
+  if (!d.ok) return { ok: false, block: d.block, recipient: d.recipient ?? null, ...v.common }
+  return { ok: true, recipient: d.recipient, needsFill: d.needsFill, ...v.common }
 }
 
 /**
@@ -424,6 +476,12 @@ export async function sendRetailQBInvoice(params: { orderId: string; actor: stri
   const { orderId, actor } = params
   const resend = !!params.resend
   const db = getDb()
+  // Once a payment is recorded / in flight / unconfirmed, emailing is Email Paid Invoice's job (its delivery
+  // check relies on no other send moving Invoice.DeliveryInfo). Checked here AND in the lock below.
+  const estPay = await getEstimateRow(orderId)
+  if (estPay && PAYMENT_LOCKS_INVOICE.includes(estPay.qbPaymentStatus)) {
+    return { ok: false, block: 'paid', invoiceId: estPay.qbInvoiceId, invoiceNumber: estPay.qbInvoiceNumber, error: 'A payment is recorded on this invoice — use Email Paid Invoice instead.' }
+  }
   const r = await resolveRetailSend(orderId)
   if (!r.ok) return r   // blocked (no_invoice / sync_needed / needs_review / total_mismatch / email_* / …)
 
@@ -444,7 +502,7 @@ export async function sendRetailQBInvoice(params: { orderId: string; actor: stri
   const priorStatus = est0.qbStatus === 'sent' ? 'sent' : 'created'
   const locked = await db.update(jobEstimates)
     .set({ qbStatus: 'sending', updatedAt: new Date() })
-    .where(and(eq(jobEstimates.id, est0.id), inArray(jobEstimates.qbStatus, ['created', 'sent', 'error'])))
+    .where(and(eq(jobEstimates.id, est0.id), inArray(jobEstimates.qbStatus, ['created', 'sent', 'error']), notInArray(jobEstimates.qbPaymentStatus, [...PAYMENT_LOCKS_INVOICE])))
     .returning({ id: jobEstimates.id })
   if (locked.length === 0) return { ok: false, block: 'sending', invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber, error: 'A send is already in progress for this Job.' }
 
@@ -472,7 +530,7 @@ export async function sendRetailQBInvoice(params: { orderId: string; actor: stri
 // ── P-D3.3 retail SYNC (Phase C) — UPDATE the linked invoice in place ─────────
 export type SyncBlock =
   | 'no_invoice' | 'dealer' | 'not_priced' | 'invoice_missing' | 'identity_mismatch'
-  | 'customer_mismatch' | 'confirm_required' | 'syncing' | 'total_mismatch' | 'sync_failed' | 'estimate_review'
+  | 'customer_mismatch' | 'confirm_required' | 'syncing' | 'total_mismatch' | 'sync_failed' | 'estimate_review' | 'paid' | 'pricing'
 export interface RetailSyncResolution {
   ok: boolean
   block?: SyncBlock
@@ -485,6 +543,8 @@ export interface RetailSyncResolution {
   draftTotalCents?: number
   reviewReason?: string
   error?: string
+  /** The QuickBooks update failed in a way that may still have applied (timeout / network / 5xx). */
+  ambiguous?: boolean
 }
 
 class NeedsReviewError extends Error {
@@ -529,14 +589,26 @@ export async function resolveRetailSync(orderId: string): Promise<RetailSyncReso
  * second invoice, never sends, never repoints/renames/creates a QB customer. Idempotent: a
  * no-op when nothing changed; a stale SyncToken (409) re-fetches, re-verifies PSID, retries.
  */
-export async function syncRetailQBInvoice(params: { orderId: string; actor: string | null; confirmSent?: boolean }): Promise<RetailSyncResolution> {
+export async function syncRetailQBInvoice(params: { orderId: string; actor: string | null; confirmSent?: boolean; paymentLock?: PaymentLockOwner }): Promise<RetailSyncResolution> {
   const { orderId, actor } = params
   const db = getDb()
+
+  // A payment is recorded (or being recorded / not yet confirmed) against this invoice — never rewrite
+  // its lines in place; a paid invoice is corrected in QuickBooks by a person. The one exception is Record
+  // Payment itself (Cash / Check card-fee removal), syncing BEFORE it pays, under its own still-held lock.
+  const estPay = await getEstimateRow(orderId)
+  const ownsPaymentLock = !!params.paymentLock && estPay?.qbPaymentStatus === 'recording'
+    && estPay.qbPaymentRequestId === params.paymentLock.requestId && estPay.qbPaymentStartedAt?.getTime() === params.paymentLock.startedAt.getTime()
+  if (estPay && PAYMENT_LOCKS_INVOICE.includes(estPay.qbPaymentStatus) && !ownsPaymentLock) {
+    return { ok: false, block: 'paid', invoiceId: estPay.qbInvoiceId, invoiceNumber: estPay.qbInvoiceNumber, error: 'A payment is recorded on this invoice — it can no longer be synced from Pitt Stop. Correct it in QuickBooks.' }
+  }
 
   // Estimate review first (local, no QuickBooks call): an unresolved ceramic coating or parts-labor review
   // never reaches QuickBooks — not even a read.
   const syncIssues = (await loadEstimateReview(orderId)).readiness.issues.filter((i) => SYNC_BLOCKING.includes(i.code))
   if (syncIssues.length) return { ok: false, block: 'estimate_review', error: `Resolve in the Estimate before syncing: ${syncIssues.map((i) => i.message).join(' ')}` }
+  const flatIssue = flatPricingIssue(await getFullEstimate(orderId))
+  if (flatIssue) return { ok: false, block: 'pricing', error: flatIssue.replace('before invoicing', 'before syncing') }
   const pre = await resolveRetailSync(orderId)
   if (!pre.ok) {
     if (pre.needsReview) {
@@ -553,29 +625,22 @@ export async function syncRetailQBInvoice(params: { orderId: string; actor: stri
   const restore = wasSent ? 'sent' : 'created'
 
   // Lock: one syncer at a time; only from a settled state (blocks double-tap / concurrent).
-  const locked = await db.update(jobEstimates)
-    .set({ qbStatus: 'syncing', updatedAt: new Date() })
-    .where(and(eq(jobEstimates.id, est0.id), inArray(jobEstimates.qbStatus, ['created', 'sent', 'error'])))
-    .returning({ id: jobEstimates.id })
-  if (locked.length === 0) return { ok: false, block: 'syncing', invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, error: 'A sync is already in progress for this Job.' }
+  if (!(await acquireRetailSyncLock(est0.id, params.paymentLock))) return { ok: false, block: 'syncing', invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, error: 'A sync is already in progress for this Job.' }
 
   const markError = async (evt: 'qb_invoice_sync_failed' | 'qb_invoice_sync_review', msg: string, status: string) => {
     await db.update(jobEstimates).set({ qbStatus: status, qbSyncError: msg, updatedAt: new Date() }).where(eq(jobEstimates.id, est0.id))
     await logEvent({ serviceOrderId: orderId, eventType: evt, employeeName: actor, note: msg }).catch(() => {})
   }
 
+  // Set once the QuickBooks update request is issued: a failure before that point cannot have changed the invoice.
+  let updateIssued = false
   try {
     const order = await getOrderWithContext(orderId)
     if (!order) throw new Error('Job not found')
     const cfg = await getBusinessConfig()
-    let fullNow = await getFullEstimate(orderId)
-    let draftNow = buildInvoiceDraft({ order, full: fullNow, paymentLabel: cfg.paymentLabel, role: 'admin' })
-    // Flat Jobs → itemize (reuses Create's exact-penny allocation; preserves the Work Total).
-    if (est0.priceMode === 'explicit_pretax') {
-      await itemizeEstimate(est0.id, actor)
-      fullNow = await getFullEstimate(orderId)
-      draftNow = buildInvoiceDraft({ order, full: fullNow, paymentLabel: cfg.paymentLabel, role: 'admin' })
-    }
+    // Flat Jobs sync as-is (checked by flatPricingIssue before the lock) — never itemized here.
+    const fullNow = await getFullEstimate(orderId)
+    const draftNow = buildInvoiceDraft({ order, full: fullNow, paymentLabel: cfg.paymentLabel, role: 'admin' })
     const { payload } = await buildRetailWorkPayload({ estimateId: est0.id, order, full: fullNow, draft: draftNow })
     const contact = await jobContact(orderId, draftNow.customer ?? '')
 
@@ -592,6 +657,7 @@ export async function syncRetailQBInvoice(params: { orderId: string; actor: stri
       if (newHash === est0.qbContentHash && qbTotal === draftNow.totalCents) {
         return { noop: true as const, written: { invoiceId: raw.Id, invoiceNumber: raw.DocNumber ?? null, syncToken: raw.SyncToken, totalAmtCents: qbTotal, lineCount: 0 }, newHash }
       }
+      updateIssued = true
       const written = await updateRetailInvoiceInQB({ current: raw, lines: payload.lines, privateNote: payload.privateNote, customerMemo: payload.customerMemo, billEmail })
       return { noop: false as const, written, newHash }
     }
@@ -626,6 +692,6 @@ export async function syncRetailQBInvoice(params: { orderId: string; actor: stri
     const msg = err instanceof RetailTotalMismatchError ? err.message : safeErr(err)
     await markError('qb_invoice_sync_failed', msg, 'error')
     logger.error(APP, 'sync_failed', { orderId, error: msg })
-    return { ok: false, block: 'sync_failed', error: msg, invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber }
+    return { ok: false, block: 'sync_failed', error: msg, invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, ambiguous: updateIssued && isAmbiguousWriteError(err) }
   }
 }
