@@ -23,6 +23,7 @@
  */
 import { useCallback, useRef, useState, useEffect } from 'react'
 import { isAcceptedMimeType } from '@/platform/image'
+import CameraIcon from '@/app/components/ui/CameraIcon'
 
 interface PhotoInputProps {
   /** Called with the confirmed image. `original` is the full frame (specialized
@@ -57,6 +58,8 @@ interface PhotoInputProps {
   immediate?: boolean
   /** Label for the shared upload affordance in live / upload-only mode. */
   uploadLabel?: string
+  /** Camera-only as a small inline dark-theme button with the camera icon (e.g. Scan VIN beside a field label). */
+  compact?: boolean
 }
 
 export async function normalizeImage(file: File, maxDimension: number, quality: number): Promise<File> {
@@ -83,7 +86,7 @@ export default function PhotoInput({
   onCapture, onRemove, continueLabel = 'Use Photo', busy = false, className = '',
   normalize = true, maxDimension = 1600, quality = 0.85,
   renderCamera, live = false, uploadOnly = false, cameraOnly = false, cameraLabel = '📷 Take Photo', asLink = false,
-  immediate = false, uploadLabel = 'Upload existing photo instead',
+  immediate = false, uploadLabel = 'Upload existing photo instead', compact = false,
 }: PhotoInputProps) {
   const cameraRef = useRef<HTMLInputElement>(null)
   const libraryRef = useRef<HTMLInputElement>(null)
@@ -188,6 +191,21 @@ export default function PhotoInput({
           </div>
         </div>
       </div>
+    )
+  }
+
+  // ── Compact camera-only: one small inline button (icon + label), dark-theme ─
+  if (compact && cameraOnly && !preview) {
+    return (
+      <span className={`inline-flex flex-col items-end ${className}`}>
+        {hiddenInput(cameraRef, true, pickForPreview)}
+        <button type="button" disabled={busy || working} onClick={() => cameraRef.current?.click()}
+          className="inline-flex min-h-11 items-center gap-2 whitespace-nowrap rounded-xl border border-white/15 bg-white/5 px-3.5 text-sm font-semibold text-gray-100 hover:bg-white/10 active:bg-white/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-50">
+          <CameraIcon className="h-4 w-4 shrink-0" />
+          <span>{working ? 'Preparing…' : cameraLabel}</span>
+        </button>
+        {error && <span className="mt-1 text-amber-400 text-xs">{error}</span>}
+      </span>
     )
   }
 

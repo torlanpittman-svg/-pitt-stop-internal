@@ -5,7 +5,8 @@
  * and the unified Estimate & Invoice page all render the SAME component over the SAME endpoints —
  * no parallel pricing or QuickBooks logic).
  */
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
+import { createDraftSequencer, invoiceActionsLocked, interpretDraftResponse, draftActionReady } from './invoice-draft-sync'
 
 export interface InvoiceDraftData {
   priced: boolean; isDealer: boolean
@@ -56,22 +57,81 @@ function ChargeRow({ label, cents, waived, canEdit, busy, onToggle }: {
   label: string; cents: number; waived: boolean; canEdit: boolean; busy: boolean; onToggle: (removed: boolean) => void
 }) {
   return (
-    <div className="flex items-center justify-between py-2.5 border-b border-gray-800">
+    <div className="flex items-center justify-between gap-3 py-2.5 border-b border-gray-800">
       <div className="min-w-0">
-        <p className={`text-sm ${waived ? 'text-gray-600 line-through' : 'text-gray-300'}`}>{label}</p>
-        {waived && <p className="text-gray-600 text-xs">Removed — not billed</p>}
+        <p className={`text-sm ${waived ? 'text-gray-500 line-through' : 'text-gray-300'}`}>{label}</p>
+        {waived && <p className="text-gray-500 text-xs">Removed — not billed</p>}
       </div>
-      <div className="flex items-center gap-3 shrink-0">
-        <span className={`text-sm tabular-nums ${waived ? 'text-gray-600 line-through' : 'text-gray-200'}`}>{money(cents)}</span>
+      <div className="flex items-center gap-2.5 shrink-0">
+        {/* Small, subtle, translucent — beside the price, never louder than it. */}
         {canEdit && (
-          <button onClick={() => onToggle(!waived)} disabled={busy}
-            className={`text-xs font-semibold px-2.5 py-1 rounded-lg active:opacity-70 disabled:opacity-40 ${waived ? 'text-blue-400 border border-blue-900/60' : 'text-gray-400 border border-gray-700'}`}>
+          <button type="button" onClick={() => onToggle(!waived)} disabled={busy} aria-label={`${waived ? 'Restore' : 'Remove'} ${label}`}
+            className={`min-h-8 rounded-md border px-2 text-[11px] font-medium backdrop-blur-sm active:opacity-70 disabled:opacity-40 ${waived ? 'border-blue-400/25 bg-blue-400/10 text-blue-300 hover:bg-blue-400/15' : 'border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 hover:text-gray-200'}`}>
             {waived ? 'Restore' : 'Remove'}
           </button>
         )}
+        <span className={`text-sm tabular-nums ${waived ? 'text-gray-500' : 'text-gray-200'}`}>{waived ? '—' : money(cents)}</span>
       </div>
     </div>
   )
+}
+
+export type ChargeField = 'shop_supplies' | 'payment'
+
+/**
+ * The money summary shown ONCE under the item list: subtotal, the applicable charges (each with a
+ * Remove/Restore), tax, total. Pure presentation over the authoritative draft — every number comes
+ * from the server's fee engine (GET /invoice or the estimate summary); nothing is recalculated here.
+ * A charge row appears when it applies (amount > 0) or was removed (so it can be restored).
+ */
+export function InvoiceTotals({ draft, subtotal, canEdit, busy, onToggle, tax, totalLabel = 'Total' }: {
+  draft: Pick<InvoiceDraftData, 'workPriceCents' | 'shopSupplies' | 'paymentCharge' | 'tax' | 'totalCents'>
+  /** Custom subtotal row (e.g. an editable flat Work Total); default = the draft's work price. */
+  subtotal?: ReactNode
+  canEdit: boolean; busy: boolean; onToggle: (field: ChargeField, removed: boolean) => void
+  /** Custom tax row (Invoice Draft's admin exemption control); default = a plain line when tax applies. */
+  tax?: ReactNode
+  totalLabel?: string
+}) {
+  return (
+    <div>
+      {subtotal ?? (
+        <div className="flex items-center justify-between py-2.5 border-b border-gray-800">
+          <p className="text-sm text-gray-300">Subtotal</p>
+          <span className="text-sm tabular-nums text-gray-200">{money(draft.workPriceCents)}</span>
+        </div>
+      )}
+      {(draft.shopSupplies.cents > 0 || draft.shopSupplies.waived) && (
+        <ChargeRow label="Shop supplies" cents={draft.shopSupplies.cents} waived={draft.shopSupplies.waived}
+          canEdit={canEdit} busy={busy} onToggle={(removed) => onToggle('shop_supplies', removed)} />
+      )}
+      {(draft.paymentCharge.cents > 0 || draft.paymentCharge.waived) && (
+        <ChargeRow label={draft.paymentCharge.label} cents={draft.paymentCharge.cents} waived={draft.paymentCharge.waived}
+          canEdit={canEdit} busy={busy} onToggle={(removed) => onToggle('payment', removed)} />
+      )}
+      {tax ?? ((draft.tax.applicable || draft.tax.cents > 0) && (
+        <div className="flex items-center justify-between py-2.5 border-b border-gray-800">
+          <p className="text-sm text-gray-300">Sales tax{draft.tax.needsReview ? ' (pending review)' : ''}</p>
+          <span className="text-sm tabular-nums text-gray-200">{money(draft.tax.cents)}</span>
+        </div>
+      ))}
+      <div className="flex items-center justify-between pt-4">
+        <p className="text-white font-bold text-base">{totalLabel}</p>
+        <span className="text-white font-bold text-lg tabular-nums">{money(draft.totalCents)}</span>
+      </div>
+    </div>
+  )
+}
+
+/** "Invoice Draft" until a QuickBooks invoice exists; then its number and true state (never implies a send). */
+export function invoiceHeading(qb: InvoiceDraftData['qb'] | null | undefined): { title: string; status: string | null } {
+  if (!qb?.linked) return { title: 'Invoice Draft', status: null }
+  const title = qb.invoiceNumber ? `Invoice #${qb.invoiceNumber}` : 'Invoice'
+  const status = qb.needsReview ? 'Needs review'
+    : qb.status === 'error' ? 'Sync failed'
+    : qb.syncNeeded ? (qb.sent ? 'Sent · sync needed' : 'Created in QuickBooks · sync needed')
+    : qb.sent ? 'Sent' : 'Created in QuickBooks · not sent'
+  return { title, status }
 }
 
 /**
@@ -81,10 +141,34 @@ function ChargeRow({ label, cents, waived, canEdit, busy, onToggle }: {
  * estimate editor: the who/what header and the "fix it in the Estimate" links are dropped because
  * the estimate is right above.
  */
-export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: string; embedded?: boolean }) {
+export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', subtotal, refreshKey, onDraft, editorBusy = false, onBusyChange }: {
+  orderId: string; embedded?: boolean
+  /** 'totals' = under the combined Invoice item list: no header, no per-service breakdown and no pricing
+   *  warnings (the list above already shows them) — just subtotal (from `subtotal`), charges, tax, total
+   *  and the QuickBooks actions. */
+  mode?: 'full' | 'totals'
+  subtotal?: ReactNode
+  /** Changes after each confirmed item edit → re-read the authoritative draft in place (no remount). */
+  refreshKey?: string
+  onDraft?: (draft: InvoiceDraftData) => void
+  /** The item editor above is mid-save — the invoice actions must be inert so they can't act on a draft
+   *  that is about to change. */
+  editorBusy?: boolean
+  /** Report whether an invoice action (fee override / create / sync / send) is in flight, so the page can
+   *  disable item editing while it runs (mirrors EstimateActions). */
+  onBusyChange?: (busy: boolean) => void
+}) {
+  const totalsOnly = mode === 'totals'
+  const onDraftRef = useRef(onDraft)
+  useEffect(() => { onDraftRef.current = onDraft }, [onDraft])
+  // Only the most recently started read may write `draft`, so an older refresh can't clobber a newer
+  // fee override's draft when responses resolve out of order.
+  const seq = useRef(createDraftSequencer()).current
+  const didInit = useRef(false)
   const [draft, setDraft] = useState<InvoiceDraftData | null>(null)
   const [qbEnabled, setQbEnabled] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [creating, setCreating] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -104,21 +188,52 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
   const [custCandidates, setCustCandidates] = useState<QbCandidate[] | null>(null)
   const [savingCust, setSavingCust] = useState(false)
 
+  const aliveRef = useRef(true)
   useEffect(() => {
-    let ok = true
-    fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((d) => { if (ok) { if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled); setSyncEnabled(!!d.qbSyncEnabled) } else setErr(d.error ?? 'Could not load the invoice draft.') } })
-      .catch(() => { if (ok) setErr('Could not load the invoice draft.') })
-      .finally(() => { if (ok) setLoading(false) })
-    return () => { ok = false }
-  }, [orderId])
+    // React Strict Mode replays setup/cleanup in development; each setup must reactivate reads.
+    aliveRef.current = true
+    return () => { aliveRef.current = false; seq.begin() }
+  }, [seq])
+
+  // Read the authoritative draft. 'refresh' = the items changed underneath (re-read in place): show
+  // "Updating totals…", drop any open send/customer confirmation (its total/recipient is now stale), and
+  // FAIL CLOSED on ANY failure — a non-2xx, a missing/malformed draft, or a network error clears the
+  // draft so the old total is never presented as current/actionable; a Retry re-reads it. Only the latest
+  // read may apply (the sequencer), and the finally always settles the current read, so a superseded or
+  // in-flight request can't strand the panel in a loading/refreshing state across order/key changes.
+  const loadDraft = useCallback(async (mode: 'initial' | 'refresh') => {
+    const token = seq.begin()
+    if (mode === 'refresh') { setRefreshing(true); setSendPreview(null); setResendMode(false); setConfirmSentSync(false); setSyncMsg(null); setCustCandidates(null) }
+    try {
+      const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
+      const d = await r.json().catch(() => null) as { draft?: InvoiceDraftData; error?: string; qbEnabled?: boolean; qbSendEnabled?: boolean; qbSyncEnabled?: boolean } | null
+      if (!aliveRef.current || !seq.isCurrent(token)) return
+      const res = interpretDraftResponse(r.ok, d)
+      if (res.draft) { setDraft(res.draft); setErr(null); setQbEnabled(!!d?.qbEnabled); setSendEnabled(!!d?.qbSendEnabled); setSyncEnabled(!!d?.qbSyncEnabled) }
+      else { setDraft(null); setErr(res.error) }
+    } catch {
+      if (aliveRef.current && seq.isCurrent(token)) { setDraft(null); setErr('Could not load the invoice totals. Try again.') }
+    } finally {
+      if (aliveRef.current && seq.isCurrent(token)) { setLoading(false); setRefreshing(false) }
+    }
+  }, [orderId, seq])
+
+  useEffect(() => {
+    const first = !didInit.current
+    didInit.current = true
+    void loadDraft(first ? 'initial' : 'refresh')
+  }, [orderId, refreshKey, loadDraft])
+  useEffect(() => { if (draft) onDraftRef.current?.(draft) }, [draft])
+  // Let the page disable item editing while an invoice action is in flight (symmetric with editorBusy).
+  useEffect(() => { onBusyChange?.(busy || creating || sending || syncing || savingCust) }, [busy, creating, sending, syncing, savingCust, onBusyChange])
 
   const refetch = useCallback(async () => {
+    const token = seq.begin()
     const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
     const d = await r.json()
+    if (!seq.isCurrent(token)) return
     if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled); setSyncEnabled(!!d.qbSyncEnabled) }
-  }, [orderId])
+  }, [orderId, seq])
 
   // Sync (UPDATE) the linked invoice from the current draft. Two-tap confirm for a sent invoice
   // (first tap → confirm_required → inline warning; second tap → confirmSent). Never resends.
@@ -223,29 +338,56 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
 
   const override = useCallback(async (field: 'shop_supplies' | 'payment' | 'tax_exempt', removed: boolean, reason?: string) => {
     setBusy(true); setErr(null)
+    const token = seq.begin()
     try {
       const res = await fetch(`/api/workflow/orders/${orderId}/invoice/override`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ field, removed, reason }),
       })
       const data = await res.json()
+      if (!seq.isCurrent(token)) return   // a newer read/override won — don't apply this stale draft
       if (!res.ok) { setErr(data.error ?? 'That change was not allowed.'); return }
       setDraft(data.draft)
       setTaxReasonOpen(false); setTaxReason('')
-    } catch { setErr('Network error — please try again.') }
+    } catch { if (seq.isCurrent(token)) setErr('Network error — please try again.') }
     finally { setBusy(false) }
-  }, [orderId])
+  }, [orderId, seq])
 
   const isAdmin = draft?.role === 'admin'
+  // Every action (fee toggle, Create/Sync/Send/Resend, tax exemption) is inert while the draft is being
+  // re-read, the item editor is saving, or another action is already running — never acts on a stale draft.
+  const locked = invoiceActionsLocked({ refreshing, editorBusy, busy, creating, sending, syncing, savingCust })
+  // A confirmed/affirmative dialog action (Send, Choose customer) may run only against a current, loaded
+  // draft — never while it is loading/refreshing or after a failed refresh dropped it.
+  const currentDraftReady = draftActionReady({ draft: !!draft, loading, refreshing })
 
   return (
       <div>
         {loading && <p className="text-gray-500 text-sm py-8 text-center">Loading…</p>}
 
-        {!loading && draft && (
+        {/* Re-reading the totals after an item edit: show it plainly, never the subtotal-new / total-old mix. */}
+        {!loading && refreshing && (
+          <div>
+            {totalsOnly && subtotal}
+            <p className="text-gray-500 text-sm py-6 text-center" role="status" aria-live="polite">Updating totals…</p>
+          </div>
+        )}
+
+        {/* Fail closed: a failed totals refresh (non-2xx / missing draft / network) shows no stale total and
+            no actionable charge controls — only the error and a Retry that re-reads the authoritative draft. */}
+        {!loading && !refreshing && !draft && (
+          <div role="alert" className="rounded-xl border border-red-900/60 bg-red-950/30 px-4 py-3">
+            {totalsOnly && <div className="mb-2">{subtotal}</div>}
+            <p className="text-red-300 text-sm font-semibold">Totals unavailable</p>
+            <p className="text-red-300/80 text-xs mt-0.5">{err ?? 'Could not load the invoice totals.'}</p>
+            <button type="button" onClick={() => void loadDraft('refresh')} className="mt-3 min-h-11 rounded-lg bg-red-600 text-white font-semibold px-4 active:opacity-80">Retry</button>
+          </div>
+        )}
+
+        {!loading && !refreshing && draft && (
           <>
             {/* Header: who / what */}
-            {!embedded && <div className="mb-4">
+            {!embedded && !totalsOnly && <div className="mb-4">
               {draft.customer && <p className="text-white text-base font-semibold">{draft.customer}</p>}
               <p className="text-gray-400 text-sm">{draft.vehicle}</p>
               {draft.services.length > 0 && <p className="text-gray-500 text-xs mt-1">{draft.services.join(' · ')}</p>}
@@ -255,6 +397,11 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
               <p className="text-gray-400 text-sm bg-gray-800/60 rounded-xl px-4 py-4">
                 This is a Dealer Job — billed through Dealer Check-In / QuickBooks. No retail Shop Supplies, Payment Charge, or sales tax apply.
               </p>
+            ) : !draft.priced && totalsOnly ? (
+              <>
+                {subtotal}
+                <p className="text-gray-400 text-xs pt-3">Shop supplies, any card charge, tax and the total appear once the work is priced.</p>
+              </>
             ) : !draft.priced ? (
               <p className="text-gray-400 text-sm bg-gray-800/60 rounded-xl px-4 py-4">
                 No Work Price yet. Set a Work Price in Quick Entry (manager pricing) before an invoice draft can be prepared.
@@ -263,7 +410,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
               <>
                 {/* Incomplete itemized pricing → show the agreed amount as a reference and flag the
                     total below as partial. Creating an invoice is blocked until pricing is finished. */}
-                {draft.pricingIncomplete && (
+                {draft.pricingIncomplete && !totalsOnly && (
                   <div className="rounded-xl border border-amber-800/70 bg-amber-950/30 px-4 py-3 mb-1">
                     <p className="text-amber-300 text-sm font-semibold">Pricing incomplete</p>
                     {draft.referenceCents != null && (
@@ -277,7 +424,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
                 )}
                 {/* Complete, but the itemized total differs from the agreed amount and hasn't been
                     accepted yet → show the difference; the manager must accept it in the Estimate. */}
-                {!draft.pricingIncomplete && draft.referenceCents != null && (
+                {!draft.pricingIncomplete && draft.referenceCents != null && !totalsOnly && (
                   <div className="rounded-xl border border-amber-800/70 bg-amber-950/30 px-4 py-3 mb-1">
                     <p className="text-amber-300 text-sm font-semibold">Itemized work total differs from the agreed amount</p>
                     {/* Both are pre-tax WORK prices (shop supplies / card / tax are added separately). */}
@@ -290,43 +437,40 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
                     <p className="text-amber-200/60 text-xs mt-2">Accept the itemized total in the Estimate (or adjust a service price) before creating the invoice.</p>
                   </div>
                 )}
-                {/* Work — per-service breakdown (itemized) or a single Work total (flat) */}
-                {draft.serviceBreakdown.length > 0 ? (
-                  <>
-                    {draft.serviceBreakdown.map((s, i) => (
-                      <div key={i} className="flex items-center justify-between py-2 border-b border-gray-800">
-                        <p className="text-sm text-gray-300 truncate pr-3">{s.title}</p>
-                        <span className="text-sm tabular-nums text-gray-200">{money(s.cents)}</span>
+                {/* Work: per-service breakdown (itemized) or a single Work line (flat) — or, in totals mode,
+                    the caller's Subtotal row (the editable item list sits right above). Then the charges,
+                    tax and total via the shared InvoiceTotals. */}
+                <InvoiceTotals draft={draft} canEdit busy={locked} onToggle={(field, removed) => override(field, removed)}
+                  subtotal={totalsOnly ? subtotal : (
+                    <>
+                    {draft.serviceBreakdown.length > 0 ? (
+                      <>
+                        {draft.serviceBreakdown.map((s, i) => (
+                          <div key={i} className="flex items-center justify-between py-2 border-b border-gray-800">
+                            <p className="text-sm text-gray-300 truncate pr-3">{s.title}</p>
+                            <span className="text-sm tabular-nums text-gray-200">{money(s.cents)}</span>
+                          </div>
+                        ))}
+                        <div className="flex items-center justify-between py-1.5">
+                          <p className="text-xs text-gray-500">Work total</p>
+                          <span className="text-xs tabular-nums text-gray-400">{money(draft.workPriceCents)}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="py-2.5 border-b border-gray-800">
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm text-gray-300">Work</p>
+                          <span className="text-sm tabular-nums text-gray-200">{money(draft.workPriceCents)}</span>
+                        </div>
+                        {draft.qb.status !== 'created' && !embedded && (
+                          <button onClick={itemize} disabled={locked}
+                            className="mt-1.5 text-blue-400 text-xs font-semibold active:opacity-70 disabled:opacity-40">Set individual service prices →</button>
+                        )}
                       </div>
-                    ))}
-                    <div className="flex items-center justify-between py-1.5">
-                      <p className="text-xs text-gray-500">Work total</p>
-                      <span className="text-xs tabular-nums text-gray-400">{money(draft.workPriceCents)}</span>
-                    </div>
-                  </>
-                ) : (
-                  <div className="py-2.5 border-b border-gray-800">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm text-gray-300">Work</p>
-                      <span className="text-sm tabular-nums text-gray-200">{money(draft.workPriceCents)}</span>
-                    </div>
-                    {draft.qb.status !== 'created' && !embedded && (
-                      <button onClick={itemize} disabled={busy || creating}
-                        className="mt-1.5 text-blue-400 text-xs font-semibold active:opacity-70 disabled:opacity-40">Set individual service prices →</button>
                     )}
-                  </div>
-                )}
-
-                {/* Shop supplies — manager + admin */}
-                <ChargeRow label="Shop supplies" cents={draft.shopSupplies.cents} waived={draft.shopSupplies.waived}
-                  canEdit busy={busy} onToggle={(removed) => override('shop_supplies', removed)} />
-
-                {/* Payment charge — manager + admin */}
-                <ChargeRow label={draft.paymentCharge.label} cents={draft.paymentCharge.cents} waived={draft.paymentCharge.waived}
-                  canEdit busy={busy} onToggle={(removed) => override('payment', removed)} />
-
-                {/* Tax — only when it applies; exemption is admin-only + reason */}
-                {(draft.tax.applicable || draft.tax.exempt) && (
+                    </>
+                  )}
+                  tax={(draft.tax.applicable || draft.tax.exempt) ? (
                   <div className="py-2.5 border-b border-gray-800">
                     <div className="flex items-center justify-between">
                       <div>
@@ -338,9 +482,9 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
                       <div className="flex items-center gap-3">
                         <span className={`text-sm tabular-nums ${draft.tax.exempt ? 'text-gray-600 line-through' : 'text-gray-200'}`}>{money(draft.tax.cents)}</span>
                         {isAdmin && (draft.tax.exempt
-                          ? <button onClick={() => override('tax_exempt', false)} disabled={busy}
+                          ? <button onClick={() => override('tax_exempt', false)} disabled={locked}
                               className="text-xs font-semibold px-2.5 py-1 rounded-lg text-blue-400 border border-blue-900/60 active:opacity-70 disabled:opacity-40">Restore</button>
-                          : <button onClick={() => setTaxReasonOpen((v) => !v)} disabled={busy}
+                          : <button onClick={() => setTaxReasonOpen((v) => !v)} disabled={locked}
                               className="text-xs font-semibold px-2.5 py-1 rounded-lg text-gray-400 border border-gray-700 active:opacity-70 disabled:opacity-40">Exempt</button>
                         )}
                       </div>
@@ -351,20 +495,14 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
                         <textarea value={taxReason} onChange={(e) => setTaxReason(e.target.value)} rows={2}
                           placeholder="e.g. resale certificate on file / government entity"
                           className="w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-sm" />
-                        <button onClick={() => override('tax_exempt', true, taxReason)} disabled={busy || !taxReason.trim()}
+                        <button onClick={() => override('tax_exempt', true, taxReason)} disabled={locked || !taxReason.trim()}
                           className="mt-2 w-full h-11 rounded-xl bg-amber-600 active:bg-amber-700 text-white text-sm font-bold disabled:opacity-40">
                           {busy ? 'Saving…' : 'Confirm tax exempt'}
                         </button>
                       </div>
                     )}
                   </div>
-                )}
-
-                {/* Total */}
-                <div className="flex items-center justify-between pt-4">
-                  <p className="text-white font-bold text-base">Total</p>
-                  <span className="text-white font-bold text-lg tabular-nums">{money(draft.totalCents)}</span>
-                </div>
+                ) : false} />
 
                 {/* QuickBooks — INVOICE-ID-FIRST. Linked → Sync/Send/Resend (never Create). */}
                 {draft.qb.linked ? (() => {
@@ -386,7 +524,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
 
                     {/* Sync (manager + admin) — offered when stale/failed, never on needs-review. */}
                     {(q.syncNeeded || q.status === 'error') && !q.needsReview && syncEnabled && (
-                      <button onClick={syncQb} disabled={syncing || busy}
+                      <button onClick={syncQb} disabled={locked}
                         className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
                         {syncing ? 'Syncing…' : q.status === 'error' ? 'Retry Sync' : 'Sync QuickBooks'}
                       </button>
@@ -395,14 +533,14 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
 
                     {/* Send (manager + admin) — current + unsent only. */}
                     {current && !q.sent && sendEnabled && (
-                      <button onClick={() => openSend(false)} disabled={sending}
+                      <button onClick={() => openSend(false)} disabled={locked}
                         className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
                         {sending ? 'Checking…' : 'Send Invoice'}
                       </button>
                     )}
                     {/* Resend (manager + admin) — explicit, once already sent + current. */}
                     {current && q.sent && sendEnabled && (
-                      <button onClick={() => openSend(true)} disabled={sending}
+                      <button onClick={() => openSend(true)} disabled={locked}
                         className={`mt-3 w-full font-semibold text-sm py-2.5 rounded-2xl active:opacity-80 disabled:opacity-50 ${q.resendRecommended ? 'bg-amber-600 text-white' : 'border border-gray-700 text-gray-300'}`}>
                         {sending ? 'Checking…' : 'Resend Invoice'}
                       </button>
@@ -420,7 +558,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
                   </a>
                 )) : qbEnabled ? (
                   <div className="mt-4">
-                    <button onClick={createQb} disabled={creating || busy}
+                    <button onClick={createQb} disabled={locked}
                       className="w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
                       {creating ? 'Creating…' : draft.qb.status === 'error' ? 'Retry — Create QuickBooks Invoice' : 'Create QuickBooks Invoice'}
                     </button>
@@ -450,7 +588,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
               <p className="text-white text-2xl font-bold tabular-nums mb-5">{money(sendPreview.draftTotalCents ?? 0)}</p>
               <div className="flex gap-3">
                 <button onClick={() => setSendPreview(null)} disabled={sending} className="flex-1 py-3.5 rounded-2xl border border-gray-700 text-gray-300 font-semibold active:opacity-70 disabled:opacity-40">Cancel</button>
-                <button onClick={confirmSend} disabled={sending} className="flex-1 py-3.5 rounded-2xl bg-emerald-600 text-white font-bold active:opacity-80 disabled:opacity-50">{sending ? 'Sending…' : (resendMode ? 'Resend Invoice' : 'Send Invoice')}</button>
+                <button onClick={confirmSend} disabled={sending || !currentDraftReady} className="flex-1 py-3.5 rounded-2xl bg-emerald-600 text-white font-bold active:opacity-80 disabled:opacity-50">{sending ? 'Sending…' : (resendMode ? 'Resend Invoice' : 'Send Invoice')}</button>
               </div>
             </div>
           </div>
@@ -469,7 +607,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
               <p className="text-amber-300/80 text-xs mb-4">Not sure? Check the email, phone, and past invoices in QuickBooks before choosing.</p>
               <div className="space-y-2.5">
                 {custCandidates.map((c) => (
-                  <button key={c.id} onClick={() => chooseCustomer(c.id)} disabled={savingCust}
+                  <button key={c.id} onClick={() => chooseCustomer(c.id)} disabled={savingCust || !currentDraftReady}
                     className="w-full text-left rounded-2xl border border-gray-700 bg-gray-800/40 px-4 py-3 active:opacity-70 disabled:opacity-40">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-white font-semibold text-base">{c.displayName || '(no name)'}</span>
@@ -488,7 +626,9 @@ export function InvoiceDraftPanel({ orderId, embedded = false }: { orderId: stri
           </div>
         )}
 
-        {err && <p className="text-red-400 text-sm mt-4">{err}</p>}
+        {/* Action error (fee / create / sync / send) while a current draft is shown. A LOAD error is
+            surfaced by the fail-closed card above, so it isn't repeated here. */}
+        {err && draft && !refreshing && <p className="text-red-400 text-sm mt-4">{err}</p>}
       </div>
   )
 }

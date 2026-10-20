@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { money } from '@/app/lib/format'
+import { Chevron } from './estimate/ItemRows'
 
 interface Part {
   id: string
@@ -42,9 +43,12 @@ function dollarsToCents(s: string): number | null {
 
 /** `onPartsChange` receives every server-confirmed parts list (initial load, then after each successful
  *  add / order / receive / return / cancel / bill) so the parent's collapsed summary stays current;
- *  `mutated` is true for changes (not the initial load). */
-export default function PartsSection({ orderId, hideTitle = false, onPartsChange }: {
+ *  `mutated` is true for changes (not the initial load).
+ *  `onEditPart` (manager/admin, retail Job): tapping a part that is on the estimate (`editableIds`) opens
+ *  the shared part editor; `refreshKey` changes after such an edit so the tracker re-reads the same row. */
+export default function PartsSection({ orderId, hideTitle = false, onPartsChange, onEditPart, editableIds, refreshKey }: {
   orderId: string; hideTitle?: boolean; onPartsChange?: (parts: ReadonlyArray<{ description: string; status: string }>, mutated: boolean) => void
+  onEditPart?: (partId: string) => void; editableIds?: ReadonlySet<string>; refreshKey?: string
 }) {
   const [parts, setParts] = useState<Part[]>([])
   const [manager, setManager] = useState(false)
@@ -72,7 +76,7 @@ export default function PartsSection({ orderId, hideTitle = false, onPartsChange
       .catch(() => { if (ok) setErr('Network error loading parts.') })
       .finally(() => { if (ok) setLoading(false) })
     return () => { ok = false }
-  }, [orderId])
+  }, [orderId, refreshKey])
 
   const post = useCallback(async (body: Record<string, unknown>): Promise<boolean> => {
     setBusy(true); setErr(null)
@@ -121,9 +125,12 @@ export default function PartsSection({ orderId, hideTitle = false, onPartsChange
           {parts.map((p) => {
             const st = STATUS_STYLE[p.status] ?? { label: p.status, cls: 'bg-gray-800 text-gray-400' }
             const open = mode?.id === p.id
+            const editable = !!onEditPart && p.status !== 'cancelled' && !!editableIds?.has(p.id)
+            const Head = editable ? 'button' : 'div'
             return (
               <div key={p.id} className="rounded-2xl bg-gray-900 border border-gray-800 px-4 py-3">
-                <div className="flex items-start justify-between gap-2">
+                <Head {...(editable ? { type: 'button' as const, onClick: () => onEditPart!(p.id), 'aria-label': `Edit part ${p.description}` } : {})}
+                  className={`flex w-full items-start justify-between gap-2 text-left ${editable ? '-mx-2 -my-1 w-[calc(100%+1rem)] rounded-xl px-2 py-1 hover:bg-gray-800/60 active:bg-gray-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500' : ''}`}>
                   <div className="min-w-0">
                     <p className="text-white font-semibold leading-tight">{p.description}</p>
                     <p className="text-xs text-gray-500 mt-0.5 break-words">
@@ -161,8 +168,11 @@ export default function PartsSection({ orderId, hideTitle = false, onPartsChange
                       </p>
                     )}
                   </div>
-                  <span className={`flex-none text-[11px] font-semibold px-2 py-0.5 rounded-full ${st.cls}`}>{st.label}</span>
-                </div>
+                  <span className="flex flex-none items-center gap-1.5">
+                    <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${st.cls}`}>{st.label}</span>
+                    {editable && <Chevron />}
+                  </span>
+                </Head>
 
                 {/* Actions */}
                 {p.status !== 'cancelled' && (

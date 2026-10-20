@@ -8,24 +8,33 @@ import { useState, useRef } from 'react'
  * deletes). Used by the simplified Estimate page and Job-detail services — one
  * implementation. `contentClassName` lets the caller style the foreground (the Estimate
  * card look) or leave it bare when the child provides its own styling (Job-detail rows).
+ * A horizontal drag swallows the click that follows it, so swiping a tappable row (tap = edit)
+ * never also opens it.
  */
-export default function SwipeRow({ children, onRemove, busy = false, contentClassName = '' }: {
+export default function SwipeRow({ children, onRemove, busy = false, contentClassName = '', rounded = true }: {
   children: React.ReactNode
   onRemove: () => void
   busy?: boolean
   contentClassName?: string
+  /** false inside a divided list card (the card owns the rounding). */
+  rounded?: boolean
 }) {
   const [dx, setDx] = useState(0)
   const start = useRef<number | null>(null)
+  const dragged = useRef(false)   // this gesture moved sideways → it was a swipe, not a tap
   const open = dx <= -44
-  const onStart = (x: number) => { start.current = x }
-  const onMove = (x: number) => { if (start.current != null) setDx(Math.max(-96, Math.min(0, x - start.current))) }
+  const onStart = (x: number) => { start.current = x; dragged.current = false }
+  const onMove = (x: number) => {
+    if (start.current == null) return
+    if (Math.abs(x - start.current) > 8) dragged.current = true
+    setDx(Math.max(-96, Math.min(0, x - start.current)))
+  }
   const onEnd = () => { start.current = null; setDx((d) => (d <= -44 ? -88 : 0)) }
 
   return (
-    <div className="relative overflow-hidden rounded-2xl group">
-      {/* Red Remove revealed underneath on swipe */}
-      <div className="absolute inset-y-0 right-0 flex items-stretch">
+    <div className={`relative overflow-hidden group ${rounded ? 'rounded-2xl' : ''}`}>
+      {/* Red Remove revealed underneath on swipe — invisible at rest (no edge bleed, not focusable). */}
+      <div className={`absolute inset-y-0 right-0 flex items-stretch ${dx === 0 ? 'invisible' : ''}`}>
         <button onClick={onRemove} disabled={busy} aria-label="Remove"
           className="px-5 bg-red-600 text-white text-sm font-semibold active:bg-red-700 disabled:opacity-50">Remove</button>
       </div>
@@ -33,6 +42,7 @@ export default function SwipeRow({ children, onRemove, busy = false, contentClas
       <div
         className={`relative touch-pan-y ${contentClassName}`}
         style={{ transform: `translateX(${dx}px)`, transition: start.current == null ? 'transform .18s ease' : 'none' }}
+        onClickCapture={(e) => { if (dragged.current) { dragged.current = false; e.stopPropagation(); e.preventDefault() } }}
         onClick={() => { if (open) setDx(0) }}
         onTouchStart={(e) => onStart(e.touches[0].clientX)}
         onTouchMove={(e) => onMove(e.touches[0].clientX)}

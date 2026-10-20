@@ -431,6 +431,8 @@ export interface EstimateServiceView {
   entryText?: string | null
   /** Reads like a physical part saved as a service: 'part' (convert or confirm) or 'ambiguous' (clarify). */
   partLike?: 'part' | 'ambiguous' | null
+  /** Customer declined this line — it's kept on the estimate but is not work to perform on the Job. */
+  declined?: boolean
 }
 export interface EstimatePartView {
   id: string; serviceId: string | null; description: string; fitment: string | null; partNumber: string | null; supplier: string | null
@@ -487,6 +489,7 @@ export async function getEstimateView(orderId: string): Promise<EstimateView> {
       qbMapped: c ? (c.archivedAt == null && c.qbSyncEnabled && c.qbItemStatus === 'existing' && !!c.qbItemRef) : false,
       chooseReason, role: c?.serviceRole ?? null, entryText: s.entryText,
       partLike: rs ? servicePartLike(rs) : null,
+      declined: s.approvalState === 'declined',
     }
   })
   // Parts (special-order + customer-supplied) with their effective labor review.

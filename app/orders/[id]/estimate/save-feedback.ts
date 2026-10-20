@@ -14,6 +14,7 @@ export interface ServiceView {
   /** Why the service must be chosen (matchState 'choose'). */
   chooseReason?: 'odor' | 'package' | 'ceramic' | 'name' | null
   partLike?: 'part' | 'ambiguous' | null
+  declined?: boolean
 }
 export type LaborStatus = 'needs_review' | 'labor_added' | 'included' | 'part_only' | 'waived'
 export interface PartView {

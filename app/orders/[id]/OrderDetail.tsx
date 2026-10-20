@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useId } from 'react'
 import { useRouter } from 'next/navigation'
 import type { OrderWithContext, ServiceOrderEvent } from '@/apps/workflow/db'
 import { useIdentity } from '@/app/components/IdentityBar'
@@ -16,6 +16,8 @@ import DealerInvoicePanel from './DealerInvoicePanel'
 import OrderPhotos from '@/app/components/OrderPhotos'
 import PhotoInput from '@/app/components/PhotoInput'
 import { interpretVinScan } from './vin-scan'
+import { useJobItems } from './JobItems'
+import { PartRow, ServiceRow, Row } from './estimate/ItemRows'
 import { InvoiceDraftModal, money, SEND_BLOCK_MSG, SYNC_BLOCK_MSG, type InvoiceDraftData, type QbCandidate } from './InvoiceDraftPanel'
 
 // ── Status display config ─────────────────────────────────────────────────────
@@ -329,17 +331,24 @@ function ReopenModal({ busy, error, onConfirm, onCancel }: {
 // Module-level (stable identity) so typing never remounts the input — defining this
 // INSIDE the modal made React create a new component type each render, which unmounts
 // the <input> and drops focus/keyboard on every keystroke.
-function VehField({ label, value, onChange, numeric = false, upper = false }: {
+function VehField({ label, value, onChange, numeric = false, upper = false, action }: {
   label: string
   value: string
   onChange: (v: string) => void
   numeric?: boolean
   upper?: boolean
+  /** Optional control beside the label (wraps above the field on narrow screens). */
+  action?: React.ReactNode
 }) {
+  const id = useId()
   return (
     <div>
-      <label className="text-gray-500 text-xs uppercase tracking-widest">{label}</label>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+        <label htmlFor={id} className="text-gray-500 text-xs uppercase tracking-widest">{label}</label>
+        {action}
+      </div>
       <input
+        id={id}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         inputMode={numeric ? 'numeric' : undefined}
@@ -451,10 +460,10 @@ function VehicleEditModal({ orderId, onClose, onSaved }: {
                 never fills/overwrites it — the manager enters it manually. Dealer color comes
                 from the tag/scan and is not editable here. */}
             {!ctx.isDealer && <VehField label="Color" value={form.color} onChange={(v) => setForm((f) => ({ ...f, color: v }))} />}
-            <VehField label="VIN" value={form.vin} onChange={onVinChange} upper />
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-              <PhotoInput immediate cameraOnly cameraLabel="📷 Scan VIN" onCapture={(f) => { void onVinPhoto(f) }} busy={scanning || busy} />
-              <PhotoInput immediate uploadOnly asLink uploadLabel="Upload a VIN photo" onCapture={(f) => { void onVinPhoto(f) }} busy={scanning || busy} />
+            <div>
+              <VehField label="VIN" value={form.vin} onChange={onVinChange} upper
+                action={<PhotoInput immediate cameraOnly compact cameraLabel="Scan VIN" onCapture={(f) => { void onVinPhoto(f) }} busy={scanning || busy} />} />
+              <PhotoInput immediate uploadOnly asLink uploadLabel="Upload a VIN photo" className="mt-2" onCapture={(f) => { void onVinPhoto(f) }} busy={scanning || busy} />
             </div>
             {scanning && <p className="text-gray-500 text-xs">Reading VIN…</p>}
             {scanCandidate && (
@@ -562,124 +571,6 @@ function CustomerEditModal({ orderId, onClose, onSaved }: { orderId: string; onC
 // ── Third-party billing (manager) — "Different person/company paying?" ────────
 // Occasional: a company/payer who is NOT the vehicle owner covers this one job. Sets who the QB
 // invoice is billed to + sent to, for THIS order only. Never changes the vehicle owner or history.
-function BillingModal({ orderId, onClose, onSaved }: { orderId: string; onClose: () => void; onSaved: (msg: string) => void }) {
-  const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-  const [enabled, setEnabled] = useState(false)
-  const [billingCustomerId, setBillingCustomerId] = useState<string | null>(null)
-  const [billingName, setBillingName] = useState<string>('')
-  const [recipient, setRecipient] = useState('')
-  const [contactName, setContactName] = useState('')
-  const [q, setQ] = useState('')
-  const [results, setResults] = useState<Array<{ id: string; name: string; subtitle: string }>>([])
-
-  useEffect(() => {
-    fetch(`/api/workflow/orders/${orderId}/invoice/billing`, { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.ok && d.billing) {
-          setEnabled(!!d.billing.billingCustomerId)
-          setBillingCustomerId(d.billing.billingCustomerId)
-          setBillingName(d.billing.billingCustomerName ?? '')
-          setRecipient(d.billing.invoiceRecipientEmail ?? '')
-          setContactName(d.billing.jobContactName ?? '')
-        }
-      })
-      .catch(() => setErr('Could not load billing.'))
-      .finally(() => setLoading(false))
-  }, [orderId])
-
-  // Pick the payer from the EXISTING directory (never auto-creates a customer here).
-  useEffect(() => {
-    const query = q.trim()
-    if (query.length < 2) { setResults([]); return }
-    const t = setTimeout(async () => {
-      try {
-        const r = await fetch(`/api/customers/search?q=${encodeURIComponent(query)}`, { cache: 'no-store' })
-        const d = await r.json()
-        if (d.ok) setResults((d.results || []).map((x: { id: string; name: string; subtitle: string }) => ({ id: x.id, name: x.name, subtitle: x.subtitle })))
-      } catch { /* ignore */ }
-    }, 250)
-    return () => clearTimeout(t)
-  }, [q])
-
-  const save = async () => {
-    setBusy(true); setErr(null)
-    try {
-      const payload = enabled
-        ? { billingCustomerId, invoiceRecipientEmail: recipient, jobContactName: contactName }
-        : { billingCustomerId: null, invoiceRecipientEmail: null, jobContactName: null }
-      if (enabled && !billingCustomerId) { setErr('Select the company/person paying.'); setBusy(false); return }
-      const res = await fetch(`/api/workflow/orders/${orderId}/invoice/billing`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-      })
-      const d = await res.json()
-      if (!res.ok || !d.ok) { setErr(d.error ?? 'Could not save.'); return }
-      onSaved(enabled ? 'Billing updated' : 'Billing cleared')
-    } catch { setErr('Network error — try again.') } finally { setBusy(false) }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60">
-      <div className="bg-gray-900 rounded-t-3xl px-6 pt-6 pb-10 max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="text-white font-bold text-xl">Different person/company paying?</h2>
-          <button onClick={onClose} className="text-gray-500 text-sm">Cancel</button>
-        </div>
-        <p className="text-gray-500 text-xs mb-4">For this job only. The vehicle owner and their service history don’t change — only who the invoice is billed to and sent to.</p>
-        {loading ? (
-          <p className="text-gray-400">Loading…</p>
-        ) : (
-          <div className="space-y-4">
-            <label className="flex items-center gap-3">
-              <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="w-5 h-5" />
-              <span className="text-white text-base">Yes — bill a different customer</span>
-            </label>
-            {enabled && (
-              <>
-                <div>
-                  <p className="text-gray-400 text-sm mb-1">Billing customer {billingName && <span className="text-white font-semibold">· {billingName}</span>}</p>
-                  <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search customers…"
-                    className="w-full h-12 rounded-xl bg-gray-800 text-white px-4 outline-none" />
-                  {results.length > 0 && (
-                    <div className="mt-2 rounded-xl border border-gray-800 divide-y divide-gray-800 overflow-hidden">
-                      {results.map((r) => (
-                        <button key={r.id} onClick={() => { setBillingCustomerId(r.id); setBillingName(r.name); setQ(''); setResults([]) }}
-                          className="w-full text-left px-4 py-3 active:bg-gray-800">
-                          <span className="text-white text-sm font-semibold">{r.name}</span>
-                          <span className="text-gray-500 text-xs block">{r.subtitle}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  <p className="text-gray-600 text-xs mt-1">Payer must already be in Customers. Add them there first if needed.</p>
-                </div>
-                <div>
-                  <p className="text-gray-400 text-sm mb-1">Invoice recipient email</p>
-                  <input value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="who receives the invoice" inputMode="email"
-                    className="w-full h-12 rounded-xl bg-gray-800 text-white px-4 outline-none" />
-                </div>
-                <div>
-                  <p className="text-gray-400 text-sm mb-1">Contact / service advisor (optional)</p>
-                  <input value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="who brought the vehicle in"
-                    className="w-full h-12 rounded-xl bg-gray-800 text-white px-4 outline-none" />
-                </div>
-              </>
-            )}
-            {err && <p className="text-red-400 text-sm">{err}</p>}
-            <button onClick={save} disabled={busy}
-              className="w-full h-14 rounded-2xl bg-green-600 active:bg-green-700 text-white text-lg font-bold disabled:opacity-40">{busy ? 'Saving…' : 'Save'}</button>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-
-// Contact row for the Completion Summary — shows a value or "Missing" with an Add button
-// that opens the shared customer edit path (updates in place; never creates a duplicate).
 function ContactRow({ label, value, onAdd }: { label: string; value: string | null; onAdd: () => void }) {
   return (
     <div className="flex items-center justify-between py-2.5 border-b border-gray-800">
@@ -992,7 +883,7 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
                   <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 text-amber-300 px-4 py-3 text-sm">{pricingIncomplete ? 'Finish pricing every service before invoicing' : referenceUnreconciled ? 'Accept the itemized total (differs from agreed) before invoicing' : 'Invoice needs pricing'}</div>
                   <button onClick={() => router.push(`/orders/${orderId}/estimate`)}
                     className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80">
-                    Open Estimate &amp; Invoice
+                    View / Edit Invoice
                   </button>
                 </>
               ) : (
@@ -1189,7 +1080,6 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
   const [reopenMsg,   setReopenMsg]   = useState<string | null>(null)
   const [editingVehicle, setEditingVehicle] = useState(false)
   const [editingCustomer, setEditingCustomer] = useState(false)
-  const [editingBilling, setEditingBilling] = useState(false)
   const [vehToast,    setVehToast]    = useState<string | null>(null)
   const [showInvoice, setShowInvoice] = useState(false)   // Invoice Draft (manager/admin)
   const [showContact, setShowContact] = useState(false)   // customer contact popup (all staff)
@@ -1256,12 +1146,29 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
     }
   }, [order.id])
 
+  // Tap-to-edit Services / Parts (manager/admin, retail Job, estimate layer on): the same estimate
+  // records, editors and save path as the Invoice page. A confirmed change refetches the Job (services/
+  // parts split) and the server props (Total price). Employees and dealer Jobs keep the plain list.
+  const itemsEditable = isManager && !isDealerOrder(order) && identity.estimateEnabled && order.status !== 'cancelled'
+  const items = useJobItems({
+    orderId: order.id, enabled: itemsEditable, vehicleLabel: vehicleName, customerLabel: title,
+    onSaved: () => { void reload(); router.refresh() },
+  })
+  const itemsView = items.view?.exists ? items.view : null
+  const refreshItems = items.refresh
+  // The work to perform = the estimate's lines minus declined ones (same set as the Job's Services list).
+  const activeServiceRows = itemsView ? itemsView.services.filter((sv) => !sv.declined) : []
+  const mirrored = new Set(activeServiceRows.map((sv) => sv.title.trim().toLowerCase()))
+  const unmirrored = itemsView ? services.filter((name) => !mirrored.has(name.trim().toLowerCase())) : []
+  const editablePartIds = new Set((itemsView?.parts ?? []).map((p) => p.id))
+  const partsKey = JSON.stringify(itemsView?.parts ?? [])
+
   // Parts tracker changes update the collapsed summary immediately; a change also refetches the Job so
   // the Services/Parts split follows. The <details> stays mounted, so its open/closed state is kept.
   const onPartsChange = useCallback((parts: ReadonlyArray<{ description: string; status: string }>, mutated: boolean) => {
     setLiveParts(parts)
-    if (mutated) void reload()
-  }, [reload])
+    if (mutated) { void reload(); refreshItems() }
+  }, [reload, refreshItems])
 
   // Mark / remove URGENT (any authenticated employee). Visual + Work Board priority only — never
   // changes status, price, production, or QuickBooks. Optimistic; reverts on failure.
@@ -1301,8 +1208,9 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
       if (!res.ok || !data.ok) { setAddError(data.error ?? 'Could not add the service.'); return }
       setAddingService(false)
       await reload()                // full-context refetch (not the bare API row)
+      refreshItems()                // the estimate mirrored the new service — show it as an editable row
     } catch { setAddError('Network error — try again.') } finally { setAddBusy(false) }
-  }, [order.id, activeTech, reload])
+  }, [order.id, activeTech, reload, refreshItems])
 
   // Remove a service (manager/admin; swipe-left → Remove). Keeps services/estimate/pricing/
   // completion in sync server-side; retail-invoiced Jobs get flagged "QuickBooks sync needed".
@@ -1314,9 +1222,9 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
       })
       const d = await res.json()
       if (!res.ok || !d.ok) { setError(d.error ?? 'Could not remove the service.'); return }
-      await reload()
+      await reload(); refreshItems()
     } catch { setError('Network error — try again.') }
-  }, [order.id, reload])
+  }, [order.id, reload, refreshItems])
 
   const doTransition = useCallback(async (action: ActionConfig, employeeName: string | null) => {
     setPending(action.newStatus)
@@ -1430,7 +1338,6 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
               <div className="flex items-center gap-4 mt-1">
                 <button onClick={() => setEditingVehicle(true)} className="text-blue-400 text-sm font-semibold active:opacity-70">Edit Vehicle</button>
                 {!isDealerOrder(order) && <button onClick={() => setEditingCustomer(true)} className="text-blue-400 text-sm font-semibold active:opacity-70">Edit Customer</button>}
-                {!isDealerOrder(order) && <button onClick={() => setEditingBilling(true)} className="text-blue-400 text-sm font-semibold active:opacity-70">Billing</button>}
               </div>
             )}
           </div>
@@ -1484,7 +1391,21 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
           <button onClick={() => { setAddError(null); setAddingService(true) }}
             className="text-blue-400 text-sm font-semibold active:opacity-70">+ Add Service</button>
         </div>
-        {services.length > 0 ? (
+        {itemsView && (activeServiceRows.length + unmirrored.length) > 0 ? (
+          // Editable rows (same look as the Invoice page): tap → the shared editor; swipe → Remove.
+          <ul aria-label="Services" className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800 overflow-hidden">
+            {activeServiceRows.map((sv) => (
+              <ServiceRow key={sv.id} s={sv} flat={itemsView.flat} readOnly={false} busy={items.busy}
+                onOpen={() => items.openService(sv.id)} onRemove={() => items.removeService(sv.id)} />
+            ))}
+            {/* A Job service the estimate hasn't picked up yet: opening the Invoice page mirrors it. */}
+            {unmirrored.map((name, i) => (
+              <Row key={`u${i}`} id={`unmirrored:${i}`} label={`Edit ${name}`} title={name} sub="Open the invoice to price this line"
+                price={<span className="text-amber-300 text-sm font-semibold">Add price</span>}
+                onOpen={() => router.push(`/orders/${order.id}/estimate`)} onRemove={() => removeService(name)} />
+            ))}
+          </ul>
+        ) : services.length > 0 ? (
           <ul className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800 overflow-hidden">
             {services.map((s, i) => {
               const inner = <div className="px-4 py-3.5 text-white text-base min-w-0 break-words">{s}</div>
@@ -1514,8 +1435,15 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
           </summary>
           <div className="mt-2">
             {identity.partsVisible
-              ? <PartsSection orderId={order.id} hideTitle onPartsChange={onPartsChange} />
-              : (
+              ? <PartsSection orderId={order.id} hideTitle onPartsChange={onPartsChange}
+                  onEditPart={itemsView ? (id) => items.openPart(id) : undefined} editableIds={editablePartIds} refreshKey={partsKey} />
+              : itemsView && itemsView.parts && itemsView.parts.length > 0 ? (
+                <ul aria-label="Parts" className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800 overflow-hidden">
+                  {itemsView.parts.map((p) => (
+                    <PartRow key={p.id} p={p} readOnly={false} busy={items.busy} onOpen={() => items.openPart(p.id)} onRemove={() => items.removePart(p)()} />
+                  ))}
+                </ul>
+              ) : (
                 <ul className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800">
                   {activePartLabels.map((p, i) => <li key={i} className="px-4 py-3 text-gray-200 text-sm">{p}</li>)}
                 </ul>
@@ -1566,18 +1494,18 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
         <div className="px-6 mt-2 mb-8 border-t border-gray-900 pt-5">
           <h2 className="text-gray-600 text-xs font-semibold uppercase tracking-widest mb-3">Job Management</h2>
 
-          {/* Estimate & Invoice — ONE entry: edit services/prices and review the Invoice Draft (fees, tax,
+          {/* View / Edit Invoice — ONE entry: edit services/prices and review the Invoice Draft (fees, tax,
               total, explicit QuickBooks Create/Sync/Send) on one page. Opening it never creates or sends.
               Without the estimate layer it falls back to the Invoice Draft sheet. */}
           {identity.estimateEnabled ? (
             <a href={`/orders/${order.id}/estimate`}
               className="block w-full text-center text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80 mb-4">
-              Estimate &amp; Invoice
+              View / Edit Invoice
             </a>
           ) : (
             <button onClick={() => setShowInvoice(true)}
               className="w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80 mb-4">
-              Estimate &amp; Invoice
+              View / Edit Invoice
             </button>
           )}
 
@@ -1732,6 +1660,9 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
         />
       )}
 
+      {/* Item editor sheet + save status (tap-to-edit Services / Parts) */}
+      {items.ui}
+
       {/* Edit Vehicle (manager correction) */}
       {editingVehicle && (
         <VehicleEditModal
@@ -1750,14 +1681,6 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
         />
       )}
 
-      {/* Third-party billing (manager) — occasional different payer for this job only */}
-      {editingBilling && (
-        <BillingModal
-          orderId={order.id}
-          onClose={() => setEditingBilling(false)}
-          onSaved={async (msg) => { setEditingBilling(false); setVehToast(msg); await reload(); setTimeout(() => setVehToast(null), 6000) }}
-        />
-      )}
 
     </main>
   )

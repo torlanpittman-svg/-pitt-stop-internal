@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { normalizeImage } from './PhotoInput'
 import { MAX_PHOTO_BYTES, MAX_SOURCE_BYTES, type OrderPhoto } from '@/apps/order-photos/types'
+import CameraIcon from '@/app/components/ui/CameraIcon'
 
 const button = 'rounded-xl border border-gray-700 bg-gray-800 px-3 py-3 text-sm font-semibold text-white disabled:opacity-40'
 
@@ -85,10 +86,7 @@ export default function OrderPhotos({ orderId }: { orderId: string }) {
   return (
     <section aria-label="Vehicle photos">
       <button type="button" className={`${button} inline-flex items-center gap-2`} disabled={busy || !loaded} onClick={() => input.current?.click()}>
-        <svg aria-hidden="true" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-          <path d="M8 5l2-2h4l2 2h3a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z" />
-          <circle cx="12" cy="12" r="4" />
-        </svg>
+        <CameraIcon />
         Add photos
       </button>
       {/* Let the phone offer its native camera/library chooser in one tap. */}

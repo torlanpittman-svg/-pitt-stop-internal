@@ -5,7 +5,12 @@
  * Server-enforced permissions (NOT just hidden UI):
  *   • shop_supplies / payment  → manager or admin
  *   • tax_exempt               → admin only, and a reason is REQUIRED
- * Dealer Jobs carry no retail charges → overrides are rejected.
+ * Dealer Jobs carry no retail charges → overrides are rejected; so is a cancelled Job/estimate (read-only).
+ * Also used by the standalone Customer estimate (same Job estimate row, so the choice carries over to the
+ * Work Board and into the QuickBooks estimate/invoice). An open estimate holds the intake lock, like
+ * every other estimate edit, so a fee change can't interleave with a QuickBooks estimate send — and the
+ * order is re-read UNDER that lock, so a cancel/convert that wins the race is rejected (not applied to a
+ * stale read).
  * Every override writes a service_order_events audit row (actor, field, old→new, reason).
  * No QuickBooks writes.
  */
@@ -16,6 +21,7 @@ import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { getBusinessConfig } from '@/apps/settings/db'
+import { withIntakeLock } from '@/apps/estimates/db'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -48,6 +54,32 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (isDealerOrder(order)) {
     return NextResponse.json({ error: 'Dealer Jobs have no retail charges.' }, { status: 400 })
   }
+  if (order.status === 'cancelled') {
+    return NextResponse.json({ error: 'This Job was cancelled. It is kept for history and can’t be changed.' }, { status: 409 })
+  }
+  if (order.status === 'estimate') {
+    try {
+      return await withIntakeLock(id, async () => {
+        // Re-read UNDER the lock: a cancel or a Work Board conversion may have won the race between the
+        // status check above and acquiring the lock. Reject unless it's still an open estimate, and
+        // apply against the FRESH order so a stale read can't drive the charge change.
+        const fresh = await getOrderWithContext(id)
+        if (!fresh) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+        if (fresh.status !== 'estimate') {
+          return NextResponse.json({ error: 'This estimate was just updated elsewhere (moved to the Work Board or cancelled). Reload and try again.' }, { status: 409 })
+        }
+        return applyOverride(id, fresh, actor, field, removed, reason)
+      })
+    }
+    catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : 'Could not change that charge.' }, { status: 409 }) }
+  }
+  return applyOverride(id, order, actor, field, removed, reason)
+}
+
+async function applyOverride(
+  id: string, order: NonNullable<Awaited<ReturnType<typeof getOrderWithContext>>>,
+  actor: { name: string; role: string }, field: Field, removed: boolean, reason: string,
+): Promise<NextResponse> {
   const est = await getEstimateRow(id)
   if (!est) return NextResponse.json({ error: 'This Job has no priced estimate yet.' }, { status: 400 })
 

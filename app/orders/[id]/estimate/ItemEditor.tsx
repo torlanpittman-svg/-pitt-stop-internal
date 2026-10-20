@@ -227,9 +227,11 @@ function MatchSummary({ s }: { s: ServiceView }) {
 }
 
 // ── Part ─────────────────────────────────────────────────────────────────────────────────────────
-export function PartEditor({ part: p, parts, services, busy, post, onDirtyChange, onClose }: {
+export function PartEditor({ part: p, parts, services, busy, post, onDirtyChange, onClose, confirmRemove = false }: {
   part: PartView; parts: PartView[]; services: ServiceView[]; busy: boolean; post: Post
   onDirtyChange: (dirty: boolean) => void; onClose: (outcome: 'saved' | 'cancelled' | 'removed') => void
+  /** Opened from a swipe → Remove: show the removal question (and its labor choice) right away. */
+  confirmRemove?: boolean
 }) {
   const [d, setD] = useState(() => partDraftFrom(p))
   const server = partDraftFrom(p)
@@ -297,7 +299,7 @@ export function PartEditor({ part: p, parts, services, busy, post, onDirtyChange
         {p.laborStatus === 'needs_review' && <p className="text-amber-200/70 text-xs mt-2">Sending or invoicing waits until installation is confirmed. Each choice saves right away.</p>}
       </section>
 
-      <PartRemoveConfirm part={p} parts={parts} services={services} busy={busy} post={post} />
+      <PartRemoveConfirm part={p} parts={parts} services={services} busy={busy} post={post} startAsking={confirmRemove} />
     </div>
   )
 }
@@ -307,8 +309,10 @@ export function PartEditor({ part: p, parts, services, busy, post, onDirtyChange
  * labor and asks what happens to it — it is never silently deleted or silently left as a charge. Labor
  * that another part also relies on can only be kept. The server re-checks both rules.
  */
-export function PartRemoveConfirm({ part: p, parts, services, busy, post }: { part: PartView; parts: PartView[]; services: ServiceView[]; busy: boolean; post: Post }) {
-  const [asking, setAsking] = useState(false)
+export function PartRemoveConfirm({ part: p, parts, services, busy, post, startAsking = false }: { part: PartView; parts: PartView[]; services: ServiceView[]; busy: boolean; post: Post; startAsking?: boolean }) {
+  const [asking, setAsking] = useState(startAsking)
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (startAsking) box.current?.scrollIntoView({ block: 'center' }) }, [startAsking])
   const labor = p.laborServiceId ? services.find((s) => s.id === p.laborServiceId) : undefined
   const sharedWith = labor ? parts.filter((o) => o.id !== p.id && o.laborServiceId === labor.id) : []
   const remove = (withLabor: boolean) => { void post({ action: 'remove_part', partId: p.id, labor: withLabor && labor ? { action: 'remove', serviceId: labor.id } : { action: 'keep' } }) }
@@ -317,7 +321,7 @@ export function PartRemoveConfirm({ part: p, parts, services, busy, post }: { pa
   }
   const laborLabel = labor && <span className="font-semibold">“{labor.title}{labor.detail ? ` — ${labor.detail}` : ''}”{labor.priceCents != null ? ` · $${dollars(labor.priceCents)}` : ' · not priced'}</span>
   return (
-    <div role="group" aria-label={`Confirm removing ${p.description}`} className="mt-4 rounded-xl border border-red-900/70 bg-red-950/30 px-4 py-3 space-y-3">
+    <div ref={box} role="group" aria-label={`Confirm removing ${p.description}`} className="mt-4 rounded-xl border border-red-900/70 bg-red-950/30 px-4 py-3 space-y-3">
       <p className="text-red-100 text-sm">Remove “{p.description}” from this estimate? This saves right away.</p>
       {labor && sharedWith.length === 0 && (
         <p className="text-gray-200 text-sm">It has linked installation labor: {laborLabel}. Remove that labor too, or keep it on the estimate?</p>

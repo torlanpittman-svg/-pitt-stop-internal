@@ -2,18 +2,22 @@
 
 import { useState, useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
 import NavHeader from '@/app/components/NavHeader'
-import { InvoiceDraftPanel } from '../InvoiceDraftPanel'
+import { InvoiceDraftPanel, invoiceHeading, type InvoiceDraftData } from '../InvoiceDraftPanel'
 import EstimateActions from '@/app/estimates/EstimateActions'
 import OrderPhotos from '@/app/components/OrderPhotos'
-import { saveEstimateEdit, describeEdit, type EstimateEdit, type EstimateViewData, type PartView, type ServiceView } from './save-feedback'
+import { saveEstimateEdit, describeEdit, type EstimateEdit, type EstimateViewData, type PartView } from './save-feedback'
 import ServicePicker from './ServicePicker'
 import { ReviewNotices } from './PartsReview'
 import { PartEditor, ServiceEditor } from './ItemEditor'
+import { PartRow, ServiceRow, partSwipeRemove } from './ItemRows'
 
 /**
- * Estimate — "Simple list". One list of services and parts (tap a row to edit it), one Add item
- * button, review warnings only when something needs a decision, and the Work Total. Less frequent
- * actions live in the ⋯ menu. Shared by standalone estimates and job-linked estimates.
+ * Estimate / Invoice — "Simple list". One list of services and parts (tap a row to edit it, swipe left
+ * to remove), one Add item button, review warnings only when something needs a decision, then the
+ * money ONCE: subtotal, removable shop supplies / card charge, tax, total. Less frequent actions live
+ * in the ⋯ menu. Shared by standalone estimates (title "Estimate", estimate send / Move to Work Board
+ * below) and Work Board Jobs (title "Invoice Draft" until a QuickBooks invoice exists, then its number
+ * and state; QuickBooks Create/Sync/Send below the total, separate from editing).
  *
  * Saving: editors use explicit Save/Cancel; committed actions (remove, labor decisions, match
  * choices) save immediately. "Saved" appears only after the server confirms (save-feedback.ts); a
@@ -30,7 +34,7 @@ interface Header {
   quoteOnly?: boolean
 }
 type Pane = { kind: 'list' } | { kind: 'add' } | { kind: 'review' } | { kind: 'customer' } | { kind: 'cancel' }
-  | { kind: 'service'; id: string; rematch?: boolean } | { kind: 'part'; id: string }
+  | { kind: 'service'; id: string; rematch?: boolean } | { kind: 'part'; id: string; confirmRemove?: boolean }
 const LIST: Pane = { kind: 'list' }
 
 const dollars = (c: number) => (c / 100).toFixed(2)
@@ -85,48 +89,6 @@ function NameEditor({ label, initial, busy, onSave, onCancel }: {
   )
 }
 
-function Chevron() {
-  return <svg aria-hidden width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-gray-400"><path d="m9 18 6-6-6-6" /></svg>
-}
-
-/** One tappable line: name, a short sub-line, the price (or what's missing), and a chevron. */
-function Row({ id, label, title, badge, sub, price, attention, onOpen }: {
-  id: string; label: string; title: string; badge?: ReactNode; sub: ReactNode; price: ReactNode; attention?: string | null; onOpen?: () => void
-}) {
-  if (!onOpen) {   // read-only (cancelled estimate)
-    return (
-      <li className="flex min-h-16 items-center gap-3 px-4 py-3">
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-2 min-w-0">{badge}<span className="font-semibold text-white break-words min-w-0">{title}</span></span>
-          <span className="mt-0.5 block text-xs text-gray-400 break-words">{sub}</span>
-        </span>
-        <span className="shrink-0 text-right tabular-nums">{price}</span>
-      </li>
-    )
-  }
-  return (
-    <li>
-      <button type="button" data-row={id} onClick={onOpen} aria-label={label}
-        className="flex w-full min-h-16 items-center gap-3 px-4 py-3 text-left hover:bg-gray-800/60 active:bg-gray-800 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-500">
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-2 min-w-0">{badge}<span className="font-semibold text-white break-words min-w-0">{title}</span></span>
-          <span className="mt-0.5 block text-xs text-gray-400 break-words">{sub}</span>
-          {attention && <span className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-amber-300"><span aria-hidden>●</span>{attention}</span>}
-        </span>
-        <span className="shrink-0 text-right tabular-nums">{price}</span>
-        <Chevron />
-      </button>
-    </li>
-  )
-}
-
-function serviceAttention(s: ServiceView): string | null {
-  if (s.matchState === 'choose') return 'Choose the service'
-  if (s.matchState === 'unmatched' && s.partLike) return s.partLike === 'part' ? 'Looks like a part' : 'Part or labor?'
-  if (s.matchState === 'unmatched') return 'Not matched to a catalog service'
-  return null
-}
-
 export default function EstimateBuilder({ header, initialView }: { header: Header; initialView: View }) {
   const [view, setView] = useState<View>(initialView)
   const viewRef = useRef(view)
@@ -157,6 +119,9 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   const invoiceable = !header.standalone && !header.quoteOnly && !cancelled
   // Bumped after a customer rename so EstimateActions reloads (the send/convert revision changed).
   const [customerRev, setCustomerRev] = useState(0)
+  // The Job's QuickBooks invoice state (from the Invoice Draft) — drives the page title.
+  const [invoiceQb, setInvoiceQb] = useState<InvoiceDraftData['qb'] | null>(null)
+  const onDraft = useCallback((d: InvoiceDraftData) => setInvoiceQb(d.qb), [])
   const [pane, setPane] = useState<Pane>(LIST)
   const paneRef = useRef(pane)
   const [editorDirty, setEditorDirty] = useState(false)
@@ -343,7 +308,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
       <div className="mb-4 flex items-center justify-between gap-3">
         <button type="button" onClick={() => { if (editorDirty) setDiscardAsk(true); else onEditorClose('cancelled') }} disabled={editingBusy && editorPane}
           className="-ml-1 inline-flex min-h-11 items-center gap-1 px-1 text-sm font-semibold text-blue-400 active:opacity-70 disabled:opacity-40">
-          <span aria-hidden>←</span>Estimate
+          <span aria-hidden>←</span>{invoiceable ? 'Invoice' : 'Estimate'}
         </button>
         {saveBadge}
       </div>
@@ -367,7 +332,8 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
           startRematch={pane.rematch} onDirtyChange={setEditorDirty} onClose={onEditorClose} />
       )}
       {pane.kind === 'part' && panePart && (
-        <PartEditor key={panePart.id} part={panePart} parts={parts} services={services} busy={busy} post={post} onDirtyChange={setEditorDirty} onClose={onEditorClose} />
+        <PartEditor key={panePart.id} part={panePart} parts={parts} services={services} busy={busy} post={post} onDirtyChange={setEditorDirty} onClose={onEditorClose}
+          confirmRemove={pane.kind === 'part' && !!pane.confirmRemove} />
       )}
       {pane.kind === 'review' && (
         issues.length === 0
@@ -397,12 +363,6 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   )
 
   // ── List ───────────────────────────────────────────────────────────────────────────────────────
-  const partPrice = (p: PartView) => p.supply === 'customer' ? <span className="text-gray-400 text-sm">No charge</span>
-    : p.lineCents != null ? <span className="font-semibold text-white">${dollars(p.lineCents)}</span>
-    : cancelled ? <span className="text-gray-400 text-sm">Not priced</span> : <span className="text-amber-300 text-sm font-semibold">Add price</span>
-  const servicePrice = (s: ServiceView) => isFlat ? <span className="text-gray-400 text-xs">In flat total</span>
-    : s.priceCents != null ? <span className="font-semibold text-white">${dollars(s.priceCents)}</span>
-    : cancelled ? <span className="text-gray-400 text-sm">Not priced</span> : <span className="text-amber-300 text-sm font-semibold">Add price</span>
   const issueTarget = (code: string, ids: string[]): (() => void) => {
     if ((code === 'odor_choice' || code === 'ceramic_choice' || code === 'name_choice') && ids.length === 1) return () => openPane({ kind: 'service', id: ids[0], rematch: true }, `svc:${ids[0]}`)
     const needing = parts.filter((p) => p.laborStatus === 'needs_review')
@@ -410,10 +370,43 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
     return () => openPane({ kind: 'review' }, 'review')
   }
 
+  // Title: an estimate stays "Estimate"; a Work Board Job is an "Invoice Draft" until QuickBooks has the
+  // invoice, then "Invoice #…" with its real state — never implying a document was created or sent.
+  const heading = invoiceable ? invoiceHeading(invoiceQb) : { title: 'Estimate', status: null }
+  const viewKey = JSON.stringify(view)
+  const removePart = (p: PartView) => partSwipeRemove(p,
+    () => { void post({ action: 'remove_part', partId: p.id, labor: { action: 'keep' } }) },
+    () => openPane({ kind: 'part', id: p.id, confirmRemove: true }, `part:${p.id}`))
+
+  // Subtotal — the one Work Total (sum of line prices, or the flat price). Editable only while flat or
+  // unpriced, exactly as before; the charges, tax and total come from the billing engine below it.
+  const subtotalRow = (
+    <div className="py-2.5 border-b border-gray-800">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-white font-semibold">{view.incomplete ? 'Itemized so far' : 'Subtotal'}</p>
+          <p className="text-gray-400 text-xs">{isFlat ? 'Flat price' : view.incomplete ? 'Partial — some lines still need a price' : 'Sum of line prices'}</p>
+        </div>
+        {totalEditable && !cancelled ? (
+          <PriceInput cents={view.workTotalCents} busy={busy} onCommit={(c) => post({ action: 'set_work_total', cents: c })} />
+        ) : (
+          <span className={`text-lg font-bold tabular-nums ${view.incomplete ? 'text-amber-300' : 'text-white'}`}>${dollars(view.workTotalCents)}</span>
+        )}
+      </div>
+      {!cancelled && isFlat && services.length > 0 && (
+        <button onClick={() => post({ action: 'itemize' })} disabled={busy}
+          className="mt-1 min-h-11 px-1 -ml-1 text-blue-400 text-sm font-semibold active:opacity-70 disabled:opacity-40">Set individual prices →</button>
+      )}
+    </div>
+  )
+
   const list = (
     <>
       <div className="flex items-start justify-between gap-3">
-        <h1 className="text-2xl font-bold">{invoiceable ? 'Estimate & Invoice' : 'Estimate'}</h1>
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold">{heading.title}</h1>
+          {heading.status && <p className="text-sm text-gray-400">{heading.status}</p>}
+        </div>
         <div className="flex items-center gap-1">
           {saveBadge}
           <div className="relative" data-estimate-menu>
@@ -469,21 +462,18 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
       )}
 
       <div className="mb-2 flex items-baseline justify-between gap-3">
-        <h2 className="font-semibold text-gray-200">Work &amp; parts</h2>
-        {!cancelled && (services.length + parts.length) > 0 && <span className="text-xs text-gray-400">Tap a line to edit</span>}
+        <h2 className="font-semibold text-gray-200">Services &amp; parts</h2>
+        {!cancelled && (services.length + parts.length) > 0 && <span className="text-xs text-gray-400">Tap to edit · swipe to remove</span>}
       </div>
       <ul aria-label="Services and parts" className="overflow-hidden rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800">
         {services.map((s) => (
-          <Row key={s.id} id={`svc:${s.id}`} label={`Edit ${s.title}`} title={s.title}
-            sub={[s.detail, s.matchState === 'custom' ? 'Custom service' : s.catalogName && s.catalogName !== s.title ? s.catalogName : null].filter(Boolean).join(' · ') || 'Service'}
-            attention={cancelled ? null : serviceAttention(s)} price={servicePrice(s)} onOpen={cancelled ? undefined : () => openPane({ kind: 'service', id: s.id }, `svc:${s.id}`)} />
+          <ServiceRow key={s.id} s={s} flat={isFlat} readOnly={cancelled} busy={busy}
+            onOpen={() => openPane({ kind: 'service', id: s.id }, `svc:${s.id}`)}
+            onRemove={() => { void post({ action: 'remove_service', serviceId: s.id }) }} />
         ))}
         {parts.map((p) => (
-          <Row key={p.id} id={`part:${p.id}`} label={`Edit part ${p.description}`} title={p.description}
-            badge={<span className="shrink-0 rounded-md bg-sky-900/50 px-1.5 py-0.5 text-[11px] font-semibold text-sky-200">Part</span>}
-            sub={[p.supply === 'customer' ? 'Customer-supplied' : 'Special order', `Qty ${p.quantity}`, p.supply === 'shop' && p.sellPriceCents != null && p.quantity !== 1 ? `$${dollars(p.sellPriceCents)} each` : null].filter(Boolean).join(' · ')}
-            attention={p.laborStatus === 'needs_review' ? 'Installation labor not reviewed' : null} price={partPrice(p)}
-            onOpen={cancelled ? undefined : () => openPane({ kind: 'part', id: p.id }, `part:${p.id}`)} />
+          <PartRow key={p.id} p={p} readOnly={cancelled} busy={busy}
+            onOpen={() => openPane({ kind: 'part', id: p.id }, `part:${p.id}`)} onRemove={() => removePart(p)()} />
         ))}
         {services.length + parts.length === 0 && <li className="px-4 py-6 text-center text-sm text-gray-400">No items yet. Add the first service or part.</li>}
       </ul>
@@ -536,26 +526,12 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
         </div>
       )}
 
-      {/* Work Total */}
-      <div className="mt-4 rounded-2xl border border-gray-800 bg-gray-900 px-4 py-4">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-white font-bold text-lg">{view.incomplete ? 'Itemized so far' : 'Work total'}</p>
-            <p className="text-gray-400 text-xs">
-              {isFlat ? 'Flat price' : view.incomplete ? 'Partial — some lines still need a price' : 'Sum of line prices'} · before shop supplies, card charge, and tax
-            </p>
-          </div>
-          {totalEditable && !cancelled ? (
-            <PriceInput cents={view.workTotalCents} busy={busy} onCommit={(c) => post({ action: 'set_work_total', cents: c })} />
-          ) : (
-            <span className={`text-2xl font-bold tabular-nums ${view.incomplete ? 'text-amber-300' : 'text-white'}`}>${dollars(view.workTotalCents)}</span>
-          )}
-        </div>
-        {!cancelled && isFlat && services.length > 0 && (
-          <button onClick={() => post({ action: 'itemize' })} disabled={busy}
-            className="mt-2 min-h-11 px-1 -ml-1 text-blue-400 text-sm font-semibold active:opacity-70 disabled:opacity-40">Set individual prices →</button>
-        )}
-      </div>
+      {/* The money, once: subtotal → charges → tax → total. Work Board Job → Invoice Draft (QuickBooks
+          actions under the total); open estimate → Customer estimate (send / Move to Work Board);
+          cancelled → the Subtotal alone, read-only. Kept mounted below so totals survive opening an editor. */}
+      {!invoiceable && !standalone && (
+        <div className="mt-4 rounded-2xl border border-gray-800 bg-gray-900 px-4 py-2">{subtotalRow}</div>
+      )}
     </>
   )
 
@@ -564,18 +540,16 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
       <NavHeader back={header.standalone || header.quoteOnly ? { href: '/estimates', label: 'Estimates' } : { href: `/orders/${header.id}`, label: 'Job' }} />
       <div className="max-w-xl mx-auto px-4 py-5">
         {pane.kind === 'list' ? list : paneBody}
-        {/* Kept mounted (hidden in panes) so its loaded totals and confirmations survive opening an editor. */}
-        {/* Work Board Job → the Invoice Draft review lives right here, under the estimate (one flow).
-            Re-keyed on every server-confirmed estimate change so it re-reads the authoritative draft. */}
+        {/* Kept mounted (hidden in panes) so its loaded totals and confirmations survive opening an editor.
+            Each re-reads the authoritative draft in place after every server-confirmed item change. */}
         {invoiceable && (
-          <section hidden={pane.kind !== 'list'} aria-labelledby="invoice-draft-heading" className="mt-8 rounded-2xl border border-gray-800 bg-gray-900 px-4 py-5">
-            <h2 id="invoice-draft-heading" className="mb-3 text-lg font-bold text-white">Invoice</h2>
-            <InvoiceDraftPanel key={JSON.stringify(view)} orderId={header.id} embedded />
+          <section hidden={pane.kind !== 'list'} aria-label="Invoice totals" className="mt-4 rounded-2xl border border-gray-800 bg-gray-900 px-4 py-2 pb-5">
+            <InvoiceDraftPanel orderId={header.id} embedded mode="totals" subtotal={subtotalRow} refreshKey={viewKey} onDraft={onDraft} editorBusy={editingBusy} onBusyChange={setActionBusy} />
           </section>
         )}
         {standalone && (
           <div hidden={pane.kind !== 'list'}>
-            <EstimateActions key={`${customerRev}:${JSON.stringify(view)}`} id={header.id} editorBusy={editingBusy} onBusyChange={setActionBusy} />
+            <EstimateActions key={customerRev} id={header.id} editorBusy={editingBusy} onBusyChange={setActionBusy} subtotal={subtotalRow} refreshKey={viewKey} />
           </div>
         )}
       </div>
