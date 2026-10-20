@@ -123,6 +123,9 @@ export default function VehicleCard({
   const isDealer = kind === 'dealer'
   const isUrgent = order.isUrgent === true
   const stock = isDealer ? stockFromNotes(order.notes) : null
+  const services = order.items?.services ?? order.services ?? []
+  const partCount = Math.max(order.items?.parts.total ?? 0, order.items?.partLabels.length ?? 0)
+  const partsWaitingCount = order.items?.parts.waiting ?? 0
   // Swipe-to-remove is offered to manager/admin on any active card — RETAIL and DEALER alike
   // (an accidental check-in of either kind can be corrected). The confirm + tap are still required.
   const canRemove = removable
@@ -208,16 +211,24 @@ export default function VehicleCard({
         </span>
       </div>
 
-      {/* Selected services (Quick Entry). Compact chips; wraps on phone. No prices. */}
+      {/* Work services as compact chips (no prices) + ONE compact parts summary — parts are never shown
+          as service chips. Classified by real part records (apps/parts/job-items). The outstanding count
+          follows the same rollout gate as the WAITING ON PARTS badge. */}
       <div className="mt-2.5 flex flex-wrap gap-1.5">
-        {order.services && order.services.length > 0 ? (
-          order.services.map((s, i) => (
+        {services.length > 0 ? (
+          services.map((s, i) => (
             <span key={i} className="max-w-full truncate text-xs bg-gray-800 text-gray-300 px-2 py-0.5 rounded-md">
               {s}
             </span>
           ))
         ) : (
           <span className="text-xs text-gray-600 italic">No services listed.</span>
+        )}
+        {partCount > 0 && (
+          <span className="text-xs border border-gray-700 text-gray-400 px-2 py-0.5 rounded-md">
+            {partCount} part{partCount === 1 ? '' : 's'}
+            {showPartsBadge && partsWaitingCount > 0 && <span className="text-amber-300"> · {partsWaitingCount} waiting</span>}
+          </span>
         )}
       </div>
     </Link>

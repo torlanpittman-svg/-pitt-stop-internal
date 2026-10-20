@@ -160,6 +160,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         const p = (body.part ?? {}) as Record<string, unknown>
         await convertServiceToPart(id, String(body.serviceId), {
           fitment: p.fitment as string | null, partNumber: p.partNumber as string | null, supplier: p.supplier as string | null,
+          confirmed: body.confirmed === true,
         }, actor)
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }

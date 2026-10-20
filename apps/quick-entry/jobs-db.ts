@@ -161,6 +161,9 @@ export interface CreateJobInput {
   agreedServices?: Array<{ originalText: string; matchedFamily?: string | null; matchedDisplay?: string | null; suggestedCents?: number | null; sampleSize?: number | null; confirmedCents: number }>
   /** Internal note/instruction captured from NL intake → job_estimates.internalNotes. */
   internalNote?: string | null
+  /** Visible Job note (service_orders.notes) replacing the generated Quick Entry summary — e.g. what
+   *  the customer requested when booking, which is context for the work, not a billable service. */
+  jobNote?: string | null
   /** Operational urgency set at check-in (defaults Normal). Visual/sort only. */
   isUrgent?: boolean
 }
@@ -184,7 +187,7 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
   // Work Board card — each is exactly the estimate row title it becomes, so nothing is re-created twice.
   const labels = [...new Set(serviceLabels(lines.flatMap((l) => (usable(l) ? labelsFor(l, installName) : [l.name])).map((name) => ({ name }))))]
   const services = labels.join(', ')
-  const notes = `Quick Entry · ${input.customerName} · ${vehicleLabel}${services ? ` · ${services}` : ''}`.slice(0, 500)
+  const notes = (input.jobNote?.trim() || `Quick Entry · ${input.customerName} · ${vehicleLabel}${services ? ` · ${services}` : ''}`).slice(0, 500)
 
   // Promote the customer into the canonical directory and link the vehicle, so they are searchable
   // on /customers and this Job attaches to their profile/history. Best-effort: a directory hiccup

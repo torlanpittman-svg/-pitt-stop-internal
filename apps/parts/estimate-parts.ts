@@ -309,7 +309,12 @@ const rowsOf = (res: unknown): Record<string, unknown>[] => {
   return Array.isArray(r) ? (r as Record<string, unknown>[]) : []
 }
 
-export interface ConvertToPartInput { supply?: 'shop' | 'customer'; fitment?: string | null; partNumber?: string | null; supplier?: string | null }
+export interface ConvertToPartInput {
+  supply?: 'shop' | 'customer'; fitment?: string | null; partNumber?: string | null; supplier?: string | null
+  /** Staff explicitly confirmed "this line is a part" (classification correction for custom/imported
+   *  lines the wording check doesn't recognize, e.g. "Front left carpet — 5PL371X9AB"). */
+  confirmed?: boolean
+}
 
 /**
  * Convert a service line that is really a physical part into a special-order part — an explicit user
@@ -332,7 +337,8 @@ export async function convertServiceToPart(orderId: string, serviceId: string, i
     throw new Error('That line is already a part.')
   }
   if (svc.catalogId) throw new Error(`“${svc.title}” is matched to a catalog service. Change its match first if it is really a part.`)
-  if (!classifyPartWording(svc.title)) throw new Error(`“${svc.title}” describes work, not a part — it stays a service.`)
+  // Wording is only a safety net for an UNconfirmed conversion; an explicit staff confirmation decides.
+  if (!input.confirmed && !classifyPartWording(svc.title)) throw new Error(`“${svc.title}” describes work, not a part — it stays a service.`)
   if (input.supply === 'customer') throw new Error('A customer-supplied part has no parts charge. Keep this line as the installation labor and add the customer’s part separately.')
   const lines = (await db.select().from(jobLineItems).where(eq(jobLineItems.jobServiceId, svc.id))).filter((l) => !l.generated)
   if (lines.length > 1) throw new Error('This line has several prices. Clarify it (keep it as labor and add the part separately) instead of converting the whole line.')

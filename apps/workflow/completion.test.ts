@@ -1,37 +1,44 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { validateCompletion, completionEnabled, shopTimezone } from './completion'
+import { validateCompletion, completionRecord, completionEnabled, shopTimezone } from './completion'
 
-const full = (services: string[]) => ({ servicesAck: services, noRemaining: true, finalTouches: true, qcPassed: true })
+const confirmed = { allWorkComplete: true }
 
-describe('validateCompletion', () => {
-  it('rejects a Job with no services (must add/confirm work first)', () => {
-    expect(validateCompletion([], false, full([]))).toEqual({ ok: false, error: 'no_services' })
-    expect(validateCompletion(null, false, full([]))).toEqual({ ok: false, error: 'no_services' })
+describe('validateCompletion — one confirmation: "All work is complete and this vehicle is ready."', () => {
+  it('rejects a Job with no work listed (must add/confirm work first)', () => {
+    expect(validateCompletion([], false, confirmed)).toEqual({ ok: false, error: 'no_services' })
+    expect(validateCompletion(null, false, confirmed)).toEqual({ ok: false, error: 'no_services' })
+    expect(validateCompletion(['  '], false, confirmed)).toEqual({ ok: false, error: 'no_services' })
   })
-  it('requires a checklist payload', () => {
+  it('requires a confirmation payload', () => {
     expect(validateCompletion(['Wax'], false, undefined)).toEqual({ ok: false, error: 'checklist_required' })
+    expect(validateCompletion(['Wax'], false, null)).toEqual({ ok: false, error: 'checklist_required' })
   })
-  it('requires EVERY assigned service to be acknowledged', () => {
-    const r = validateCompletion(['Interior Detail', 'Wax'], false, { servicesAck: ['Interior Detail'], noRemaining: true, finalTouches: true })
-    expect(r.ok).toBe(false); expect(r.error).toBe('services_unacknowledged'); expect(r.missing).toEqual(['Wax'])
+  it('requires the single explicit confirmation — anything but true is refused', () => {
+    expect(validateCompletion(['Wax'], false, {})).toEqual({ ok: false, error: 'confirmation_required' })
+    expect(validateCompletion(['Wax'], false, { allWorkComplete: false })).toEqual({ ok: false, error: 'confirmation_required' })
+    expect(validateCompletion(['Wax'], false, { allWorkComplete: 'yes' as unknown as boolean })).toEqual({ ok: false, error: 'confirmation_required' })
   })
-  it('acknowledges services case-insensitively; custom "Other" text counts', () => {
-    expect(validateCompletion(['Wax', 'Headliner steam clean'], false,
-      { servicesAck: ['wax', 'Headliner steam clean'], noRemaining: true, finalTouches: true }).ok).toBe(true)
+  it('no longer needs (or accepts as a substitute) per-service acknowledgements or the old final-check boxes', () => {
+    expect(validateCompletion(['Interior Detail', 'Wax'], false, confirmed)).toEqual({ ok: true })
+    const legacy = { servicesAck: ['Interior Detail', 'Wax'], noRemaining: true, finalTouches: true } as never
+    expect(validateCompletion(['Interior Detail', 'Wax'], false, legacy)).toEqual({ ok: false, error: 'confirmation_required' })
   })
-  it('requires the general final checks', () => {
-    expect(validateCompletion(['Wax'], false, { servicesAck: ['Wax'], noRemaining: false, finalTouches: true }).error).toBe('general_checks')
-    expect(validateCompletion(['Wax'], false, { servicesAck: ['Wax'], noRemaining: true, finalTouches: false }).error).toBe('general_checks')
+  it('enforces QC only when qcRequired, and never treats the confirmation as a QC pass', () => {
+    expect(validateCompletion(['Wax'], false, { allWorkComplete: true, qcPassed: false }).ok).toBe(true)
+    expect(validateCompletion(['Wax'], true, confirmed)).toEqual({ ok: false, error: 'qc_required' })
+    expect(validateCompletion(['Wax'], true, { allWorkComplete: true, qcPassed: false })).toEqual({ ok: false, error: 'qc_required' })
+    expect(validateCompletion(['Wax'], true, { allWorkComplete: true, qcPassed: true })).toEqual({ ok: true })
+    expect(validateCompletion(['Wax'], true, { allWorkComplete: false, qcPassed: true })).toEqual({ ok: false, error: 'confirmation_required' })
   })
-  it('enforces QC only when qcRequired', () => {
-    // not required → QC unchecked is fine
-    expect(validateCompletion(['Wax'], false, { servicesAck: ['Wax'], noRemaining: true, finalTouches: true, qcPassed: false }).ok).toBe(true)
-    // required → QC must pass
-    expect(validateCompletion(['Wax'], true, { servicesAck: ['Wax'], noRemaining: true, finalTouches: true, qcPassed: false }).error).toBe('qc_required')
-    expect(validateCompletion(['Wax'], true, { servicesAck: ['Wax'], noRemaining: true, finalTouches: true, qcPassed: true }).ok).toBe(true)
-  })
-  it('passes when everything is acknowledged', () => {
-    expect(validateCompletion(['Interior Detail', 'Wax'], false, full(['Interior Detail', 'Wax']))).toEqual({ ok: true })
+})
+
+describe('completionRecord — what is stored on the Job (only real answers, never client extras)', () => {
+  it('records the confirmation, QC only when it was required, who and when', () => {
+    const at = new Date('2026-10-20T15:00:00Z')
+    expect(completionRecord(false, { allWorkComplete: true, qcPassed: true, servicesAck: ['x'] } as never, 'Tony', at))
+      .toEqual({ allWorkComplete: true, at: '2026-10-20T15:00:00.000Z', by: 'Tony' })
+    expect(completionRecord(true, { allWorkComplete: true, qcPassed: true }, 'Tony', at))
+      .toEqual({ allWorkComplete: true, qcPassed: true, at: '2026-10-20T15:00:00.000Z', by: 'Tony' })
   })
 })
 

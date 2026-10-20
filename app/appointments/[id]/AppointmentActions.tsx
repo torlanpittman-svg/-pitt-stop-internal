@@ -1,11 +1,11 @@
 'use client'
 
 import { useState, useTransition } from 'react'
-import { checkInAction, noShowAction, cancelAction, rescheduleAction, noteAction, requeueAction, type ActionResult } from '../actions'
+import { checkInAction, noShowAction, cancelAction, rescheduleAction, noteAction, type ActionResult } from '../actions'
 import SlotPicker from '../SlotPicker'
 
-export default function AppointmentActions({ id, status, hasJob, isManager, past, date, time, serviceKeys, notices }: {
-  id: string; status: string; hasJob: boolean; isManager: boolean; past: boolean; date: string; time: string; serviceKeys: string[]; notices: string[]
+export default function AppointmentActions({ id, status, hasJob, isManager, past, date, time, serviceKeys }: {
+  id: string; status: string; hasJob: boolean; isManager: boolean; past: boolean; date: string; time: string; serviceKeys: string[]
 }) {
   const [pending, start] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -43,10 +43,6 @@ export default function AppointmentActions({ id, status, hasJob, isManager, past
           </>
         )}
         <button type="button" onClick={() => setPanel(panel === 'note' ? 'none' : 'note')} className="min-h-12 rounded-xl border border-gray-700 px-4 text-gray-200">Add note</button>
-        {isManager && notices.length > 0 && (
-          <button type="button" disabled={pending} onClick={() => run(async () => { for (const n of notices) await requeueAction(n, id); return { ok: true } })}
-            className="min-h-12 rounded-xl border border-gray-700 px-4 text-gray-200">Retry customer messages</button>
-        )}
       </div>
       {confirmed && !isManager && <p className="mt-2 text-xs text-gray-500">To reschedule or cancel, ask a manager.</p>}
 

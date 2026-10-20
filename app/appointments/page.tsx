@@ -8,7 +8,7 @@ import { PageContainer, PageHeader } from '@/app/components/ui/PageHeader'
 import { Badge } from '@/app/components/ui/Badge'
 import { authorizedManager } from '@/apps/auth/employee-guard'
 import { getBookingConfig, listAppointments, type Appointment } from '@/apps/appointments/db'
-import { bookingReadiness, formatDateLabel, formatTimeLabel, localParts, publicBookingOpen } from '@/apps/appointments/policy'
+import { formatDateLabel, formatTimeLabel, localParts } from '@/apps/appointments/policy'
 import AcknowledgeButton from './AcknowledgeButton'
 import { STATUS_TONE, STATUS_LABEL, SOURCE_LABEL } from './labels'
 
@@ -27,7 +27,6 @@ export default async function AppointmentsPage({ searchParams }: { searchParams:
     listAppointments({ view: 'new', tz: cfg.timezone }),
   ])
   const today = localParts(new Date(), cfg.timezone).date
-  const readiness = bookingReadiness(cfg)
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -36,7 +35,6 @@ export default async function AppointmentsPage({ searchParams }: { searchParams:
         <PageHeader
           kicker="Drop-offs"
           title="Appointments"
-          subtitle={publicBookingOpen(cfg) ? 'Online booking is ON.' : `Online booking is OFF${readiness.ready ? '' : ` — needs: ${readiness.missing.join(', ')}`}.`}
           actions={<>
             <Link href="/appointments/new" className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-gray-950">+ New appointment</Link>
             {mgr && <Link href="/appointments/settings" className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-200">Settings</Link>}

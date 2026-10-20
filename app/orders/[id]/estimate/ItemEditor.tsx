@@ -156,6 +156,7 @@ export function ServiceEditor({ service: s, orderId, vehicleLabel, isFlat, busy,
           <More open={needsMatch || !!s.partLike} summary={<>Invoice wording &amp; service match{needsMatch && <span className="ml-2 rounded-full bg-amber-600/30 px-2 py-0.5 text-xs text-amber-200">Needs review</span>}</>}>
             <MatchSummary s={s} />
             {s.partLike && s.matchState === 'unmatched' && <PartLikeReview service={s} busy={busy} post={post} />}
+            {!s.partLike && (s.matchState === 'unmatched' || s.matchState === 'custom') && <MarkAsPart service={s} busy={busy} post={post} />}
             {rematch ? (
               <ServicePicker orderId={orderId} mode="rematch" service={s} busy={busy} isFlat={isFlat} vehicleLabel={vehicleLabel} onSave={post} onClose={closeMatch}
                 closeLabel={needsMatch ? 'Decide later' : 'Keep current match'} />
@@ -179,6 +180,25 @@ export function ServiceEditor({ service: s, orderId, vehicleLabel, isFlat, busy,
           <RemoveConfirm name={s.title} what="item" busy={busy} onRemove={() => { void post({ action: 'remove_service', serviceId: s.id }) }} />
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * Classification correction for a custom/imported line the wording check doesn't recognize as a part
+ * (e.g. "Front left carpet — 5PL371X9AB"). Explicit + confirmed; uses the same conversion as Convert to
+ * part: same row and price line (price, qty, tax unchanged), a tracked part with an installation check.
+ */
+function MarkAsPart({ service, busy, post }: { service: ServiceView; busy: boolean; post: (e: EstimateEdit) => Promise<boolean> }) {
+  const [ask, setAsk] = useState(false)
+  if (!ask) return <button type="button" onClick={() => setAsk(true)} disabled={busy} className="mt-2 min-h-11 px-1 text-blue-400 text-sm font-semibold">This line is a part…</button>
+  return (
+    <div className="mt-2 rounded-xl border border-gray-700 bg-gray-950/40 px-3 py-2.5">
+      <p className="text-gray-200 text-sm">Track “{service.title}” as a part? It moves to Parts with an installation check. Price, quantity and tax stay exactly as they are.</p>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <button type="button" disabled={busy} onClick={() => { void post({ action: 'convert_to_part', serviceId: service.id, confirmed: true }) }} className={`${BTN} bg-amber-600 text-white`}>Yes, it’s a part</button>
+        <button type="button" disabled={busy} onClick={() => setAsk(false)} className={`${BTN} border border-gray-700 text-gray-200`}>No, keep as service</button>
+      </div>
     </div>
   )
 }

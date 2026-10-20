@@ -1,18 +1,16 @@
 /**
- * Phase 2 completion — pure validation for the "Is this vehicle truly finished?"
- * gate. A Job may become Ready only when EVERY assigned service is acknowledged
- * complete AND the general final checks pass (QC only when qc_required). A Job with
- * no services listed cannot silently complete — the employee must add/confirm work.
+ * Completion — pure validation for Finish Job. One explicit confirmation, "All work is complete and
+ * this vehicle is ready." (owner decision 2026-10-20: the per-service checkboxes and the extra final-check
+ * boxes are gone). A Job with no work listed still cannot silently complete — the work must be on the
+ * Job first. When the Job requires QC, a SEPARATE explicit QC pass is still required; the confirmation is
+ * never treated as one. `services` = the Job's WORK services (parts excluded — see apps/parts/job-items).
  */
 export interface CompletionPayload {
-  servicesAck?: string[]   // service labels the employee affirms are complete
-  noRemaining?: boolean    // no remaining/added work unresolved
-  finalTouches?: boolean   // final touches complete
-  qcPassed?: boolean       // required only when qcRequired
+  allWorkComplete?: boolean   // the single confirmation
+  qcPassed?: boolean          // required only when qcRequired
 }
-export type CompletionError =
-  | 'no_services' | 'checklist_required' | 'services_unacknowledged' | 'general_checks' | 'qc_required'
-export interface CompletionResult { ok: boolean; error?: CompletionError; missing?: string[] }
+export type CompletionError = 'no_services' | 'checklist_required' | 'confirmation_required' | 'qc_required'
+export interface CompletionResult { ok: boolean; error?: CompletionError }
 
 export function validateCompletion(
   services: string[] | null | undefined,
@@ -22,12 +20,14 @@ export function validateCompletion(
   const svc = (services ?? []).map((s) => (s ?? '').trim()).filter(Boolean)
   if (svc.length === 0) return { ok: false, error: 'no_services' }  // must add/confirm work first
   if (!p) return { ok: false, error: 'checklist_required' }
-  const ack = new Set((p.servicesAck ?? []).map((s) => (s ?? '').trim().toLowerCase()))
-  const missing = svc.filter((s) => !ack.has(s.toLowerCase()))
-  if (missing.length > 0) return { ok: false, error: 'services_unacknowledged', missing }
-  if (!p.noRemaining || !p.finalTouches) return { ok: false, error: 'general_checks' }
-  if (qcRequired && !p.qcPassed) return { ok: false, error: 'qc_required' }
+  if (p.allWorkComplete !== true) return { ok: false, error: 'confirmation_required' }
+  if (qcRequired && p.qcPassed !== true) return { ok: false, error: 'qc_required' }
   return { ok: true }
+}
+
+/** The completion record stored on the Job — the validated answers only (no client-supplied extras). */
+export function completionRecord(qcRequired: boolean, p: CompletionPayload, by: string | null, at: Date = new Date()): Record<string, unknown> {
+  return { allWorkComplete: p.allWorkComplete === true, ...(qcRequired ? { qcPassed: p.qcPassed === true } : {}), at: at.toISOString(), by }
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────

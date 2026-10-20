@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
 import NavHeader from '@/app/components/NavHeader'
+import { InvoiceDraftPanel } from '../InvoiceDraftPanel'
 import EstimateActions from '@/app/estimates/EstimateActions'
 import OrderPhotos from '@/app/components/OrderPhotos'
 import { saveEstimateEdit, describeEdit, type EstimateEdit, type EstimateViewData, type PartView, type ServiceView } from './save-feedback'
@@ -152,6 +153,8 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   // Cancelled = read-only history. Set from the page, or once the server confirms "Cancel estimate".
   const [cancelled, setCancelled] = useState(!!header.cancelled)
   const standalone = !!header.standalone && !cancelled
+  // A Work Board Job (not a quote, not cancelled) is billed from this page too.
+  const invoiceable = !header.standalone && !header.quoteOnly && !cancelled
   // Bumped after a customer rename so EstimateActions reloads (the send/convert revision changed).
   const [customerRev, setCustomerRev] = useState(0)
   const [pane, setPane] = useState<Pane>(LIST)
@@ -410,7 +413,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   const list = (
     <>
       <div className="flex items-start justify-between gap-3">
-        <h1 className="text-2xl font-bold">Estimate</h1>
+        <h1 className="text-2xl font-bold">{invoiceable ? 'Estimate & Invoice' : 'Estimate'}</h1>
         <div className="flex items-center gap-1">
           {saveBadge}
           <div className="relative" data-estimate-menu>
@@ -562,6 +565,14 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
       <div className="max-w-xl mx-auto px-4 py-5">
         {pane.kind === 'list' ? list : paneBody}
         {/* Kept mounted (hidden in panes) so its loaded totals and confirmations survive opening an editor. */}
+        {/* Work Board Job → the Invoice Draft review lives right here, under the estimate (one flow).
+            Re-keyed on every server-confirmed estimate change so it re-reads the authoritative draft. */}
+        {invoiceable && (
+          <section hidden={pane.kind !== 'list'} aria-labelledby="invoice-draft-heading" className="mt-8 rounded-2xl border border-gray-800 bg-gray-900 px-4 py-5">
+            <h2 id="invoice-draft-heading" className="mb-3 text-lg font-bold text-white">Invoice</h2>
+            <InvoiceDraftPanel key={JSON.stringify(view)} orderId={header.id} embedded />
+          </section>
+        )}
         {standalone && (
           <div hidden={pane.kind !== 'list'}>
             <EstimateActions key={`${customerRev}:${JSON.stringify(view)}`} id={header.id} editorBusy={editingBusy} onBusyChange={setActionBusy} />

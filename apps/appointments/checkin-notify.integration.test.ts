@@ -38,13 +38,13 @@ CREATE TABLE app_settings (key varchar(80) PRIMARY KEY, value jsonb NOT NULL, ty
   description text, updated_by varchar(200), updated_at timestamptz NOT NULL DEFAULT now(), created_at timestamptz NOT NULL DEFAULT now());`
 
 const CFG: BookingConfig = { ...DEFAULT_BOOKING_CONFIG, enabled: true, slotCapacity: 3, dailyUnits: 20 }
-let catalogId = ''
 
 beforeAll(async () => {
   await pg.exec(SCHEMA)
   for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql']) await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
   await pg.query(`INSERT INTO app_settings (key, value, type) VALUES ('booking_config', $1::jsonb, 'json')`, [JSON.stringify(CFG)])
-  catalogId = ((await pg.query(`INSERT INTO service_catalog (slug, name, kind) VALUES ('complete_detail', 'Complete Detail', 'package') RETURNING id`)).rows[0] as { id: string }).id
+  // A live Complete Detail catalog item exists — check-in must still not bill it from the booking.
+  await pg.query(`INSERT INTO service_catalog (slug, name, kind) VALUES ('complete_detail', 'Complete Detail', 'package')`)
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
 })
 afterAll(() => pg.close())
@@ -85,10 +85,11 @@ describe('check-in → existing Work Board intake', () => {
     expect(arg.customerName).toBe('Jane Driver')
     expect(arg.customerEmail).toBe('jane.driver@example.com')
     expect(arg.vehicle).toMatchObject({ year: '2019', make: 'Ford', model: 'F-150' })
-    expect(arg.lines).toEqual([
-      expect.objectContaining({ catalogId, name: 'Complete Detail', kind: 'package' }), // canonical catalog identity kept
-      expect.objectContaining({ kind: 'custom', name: 'Odor / Ozone' }),              // staff picks the exact odor service
-    ])
+    // The booking is the customer's REQUEST, not billable work: no service lines, no generic Complete
+    // Detail charge, no invented package breakdown — staff itemize on the Estimate. The request is the Job note.
+    expect(arg.lines).toEqual([])
+    expect(arg.workPriceCents ?? null).toBeNull()
+    expect(arg.jobNote).toBe(`Customer requested: Complete Detail, Odor / Ozone (appointment ${a.reference}). Customer note: Dog hair in the back seat`)
     expect(arg.internalNote).toContain(`Appointment ${a.reference}`)
     expect(arg.internalNote).toContain('Dog hair')
     const after = await getAppointment(a.id)

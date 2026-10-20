@@ -39,7 +39,6 @@ function SearchIcon({ className = '' }: { className?: string }) {
 
 export default function GlobalSearch({ label = false }: { label?: boolean }) {
   const [open, setOpen] = useState(false)
-  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 
   // Cmd/Ctrl+K toggles the palette from anywhere (doesn't fire while typing in another field's shortcut).
   useEffect(() => {
@@ -59,11 +58,11 @@ export default function GlobalSearch({ label = false }: { label?: boolean }) {
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Search"
+        title="Search (⌘K / Ctrl K)"
         className="flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 text-gray-300 hover:text-white font-medium"
       >
         <SearchIcon />
         {label && <span>Search</span>}
-        <span className="hidden sm:inline text-[10px] text-gray-500 border border-gray-700 rounded px-1 py-0.5 leading-none">{isMac ? '⌘K' : 'Ctrl K'}</span>
       </button>
       {open && <SearchOverlay onClose={() => setOpen(false)} />}
     </>

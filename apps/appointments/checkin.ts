@@ -1,6 +1,7 @@
 /**
  * Check-in: the vehicle has physically arrived → create its Work Board Job through the EXISTING Quick
- * Entry job creator (canonical customer match, vehicle find-or-create, catalog services, draft estimate).
+ * Entry job creator (canonical customer match, vehicle find-or-create, draft estimate). The booked
+ * services are the customer's request (shown as the Job note), not billable lines.
  * No parallel intake. Dealer Check-In, pricing, fees and QuickBooks are untouched; the Job then follows
  * the normal retail lifecycle → Invoice Draft → existing QuickBooks Create/Send.
  *
@@ -12,36 +13,28 @@
  */
 import { and, desc, eq, gte, ilike, isNull, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
-import { createQuickEntryJob, type JobLineInput } from '@/apps/quick-entry/jobs-db'
-import { serviceCatalog } from '@/apps/quick-entry/schema'
+import { createQuickEntryJob } from '@/apps/quick-entry/jobs-db'
 import { serviceOrders, jobEstimates, vehicles } from '@/apps/workflow/schema'
 import { customerVehicles } from '@/apps/directory/schema'
 import { linkLeadOutcome } from '@/apps/marketing/attribution'
 import { appointments, appointmentEvents } from './schema'
-import { getAppointment, getBookingConfig, BookingError, type Appointment } from './db'
+import { getAppointment, BookingError, type Appointment } from './db'
 
 const CLAIM_MS = 2 * 60_000
 
 export const checkinMarker = (a: Pick<Appointment, 'reference'>) => `Appointment ${a.reference}`
 
-/** Services → Quick Entry lines. Mapped catalog services keep their canonical identity; the rest are text. */
-export async function linesForAppointment(a: Appointment): Promise<JobLineInput[]> {
-  const cfg = await getBookingConfig()
-  const keys = Array.isArray(a.serviceKeys) ? a.serviceKeys : []
-  const svc = keys.map((k) => cfg.services.find((s) => s.key === k)).filter((s): s is NonNullable<typeof s> => !!s)
-  const slugs = svc.map((s) => s.catalogSlug).filter((s): s is string => !!s)
-  const catalog = slugs.length
-    ? await getDb().select({ id: serviceCatalog.id, slug: serviceCatalog.slug, name: serviceCatalog.name, kind: serviceCatalog.kind })
-        .from(serviceCatalog).where(and(sql`${serviceCatalog.slug} IN (${sql.join(slugs.map((s) => sql`${s}`), sql`, `)})`, eq(serviceCatalog.active, true)))
-    : []
-  const lines: JobLineInput[] = svc.map((s) => {
-    const c = s.catalogSlug ? catalog.find((x) => x.slug === s.catalogSlug) : undefined
-    return c
-      ? { catalogId: c.id, kind: c.kind === 'addon' ? 'addon' : 'package', name: c.name, priceCents: 0, matchMethod: 'shortcut', entryText: s.label }
-      : { kind: 'custom', name: s.label, priceCents: 0 }
-  })
-  if (!lines.length && a.serviceLabels) lines.push({ kind: 'custom', name: a.serviceLabels.slice(0, 160), priceCents: 0 })
-  return lines
+/**
+ * What the customer asked for when booking ("Complete Detail", "Odor / Ozone") is a REQUEST, not the
+ * billable work: retail jobs are itemized by staff on the Estimate (Interior Detail, Exterior Wash,
+ * Wax, …). So check-in creates NO service lines and no price — the request is shown on the Job as its
+ * note instead. (Dealer Complete Detail is Dealer Check-In and never passes through here.)
+ */
+export function requestNoteForAppointment(a: Pick<Appointment, 'serviceLabels' | 'reference' | 'customerNotes'>): string {
+  return [
+    `Customer requested: ${a.serviceLabels.trim() || 'not specified'} (appointment ${a.reference}).`,
+    a.customerNotes ? `Customer note: ${a.customerNotes}` : null,
+  ].filter(Boolean).join(' ').slice(0, 500)
 }
 
 /** Reuse the customer's existing vehicle when exactly one linked vehicle matches year/make/model. */
@@ -120,7 +113,8 @@ export async function checkInAppointment(id: string, actor: string): Promise<{ s
     customerEmail: claimed.email,
     vehicle: { vin: claimed.vehicleVin, year: claimed.vehicleYear, make: claimed.vehicleMake, model: claimed.vehicleModel, color: claimed.vehicleColor },
     vehicleId: await matchCustomerVehicle(claimed),
-    lines: await linesForAppointment(claimed),
+    lines: [],                                   // itemized on the Estimate — never auto-billed from the booking
+    jobNote: requestNoteForAppointment(claimed),
     createdBy: actor,
     internalNote: note,
     audit: claimed.vehiclePlate ? { idMethod: 'manual', plate: claimed.vehiclePlate } : undefined,

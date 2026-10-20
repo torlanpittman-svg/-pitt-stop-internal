@@ -15,6 +15,7 @@ import { shopTimezone } from './completion'
 import { removalEligibility, scanSyncStatusAfterRemoval } from './removal'
 import { getScanByServiceOrderId, updateScan, logScanEvent } from '@/apps/dealer-checkin/db'
 import { ordersWithWaitingParts } from '@/apps/parts/db'
+import { loadJobItems, type JobItems } from '@/apps/parts/job-items'
 
 export type EmployeeRow             = typeof employees.$inferSelect
 export type LocationRow             = typeof locations.$inferSelect
@@ -29,6 +30,8 @@ export type OrderWithContext = ServiceOrderRow & {
   recentEvents: ServiceOrderEvent[]
   /** Additive Work Board signal: any outstanding (needed/ordered/partial) part. Never replaces status. */
   partsWaiting?: boolean
+  /** The Job's list split into work vs parts (by real part records, never by wording) + part counts. */
+  items?: JobItems
 }
 
 // ── Status transition rules ────────────────────────────────────────────────────
@@ -347,7 +350,7 @@ export async function listActiveOrders(): Promise<OrderWithContext[]> {
   }
 
   // Additive "waiting on parts" signal — does not change status/sort, just a card badge.
-  const waitingParts = await ordersWithWaitingParts(orderIds)
+  const [waitingParts, items] = await Promise.all([ordersWithWaitingParts(orderIds), loadJobItems(orders)])
 
   return orders.map(o => ({
     ...o,
@@ -355,6 +358,7 @@ export async function listActiveOrders(): Promise<OrderWithContext[]> {
     activeTechs:  activeTechMap[o.id] ?? [],
     recentEvents: eventMap[o.id]      ?? [],
     partsWaiting: waitingParts.has(o.id),
+    items:        items.get(o.id),
   }))
 }
 
@@ -384,12 +388,14 @@ export async function getOrderWithContext(id: string): Promise<OrderWithContext 
   ])
 
   if (!vehicleRows[0]) return null
+  const items = (await loadJobItems([order])).get(order.id)
 
   return {
     ...order,
     vehicle:      vehicleRows[0],
     activeTechs,
     recentEvents,
+    items,
   }
 }
 
@@ -410,6 +416,9 @@ export async function transitionOrder(params: {
   if (!rows[0]) return { ok: false, error: 'Order not found' }
 
   const order = rows[0]
+  // Finish Job double-tap / retry: already Ready → same answer, no second completion, no new events,
+  // completed_at untouched.
+  if (params.newStatus === 'ready' && order.status === 'ready') return { ok: true, order }
   if (!canTransition(order.status, params.newStatus)) {
     return { ok: false, error: `Cannot go from ${order.status} to ${params.newStatus}` }
   }
@@ -437,6 +446,20 @@ export async function transitionOrder(params: {
     updates.cancelledAt = now
   }
 
+  // Conditional on the status we validated against, so two concurrent submits can't both apply
+  // (e.g. two Finish Job taps → one completion). The loser re-reads and, if the Job already reached
+  // the requested status, gets the same idempotent answer.
+  const [updated] = await db
+    .update(serviceOrders)
+    .set(updates)
+    .where(and(eq(serviceOrders.id, params.orderId), eq(serviceOrders.status, order.status)))
+    .returning()
+  if (!updated) {
+    const [current] = await db.select().from(serviceOrders).where(eq(serviceOrders.id, params.orderId)).limit(1)
+    if (current && current.status === params.newStatus) return { ok: true, order: current }
+    return { ok: false, error: 'This Job just changed — refresh and try again.' }
+  }
+
   // Stop all active assignments when leaving in_progress
   const stopsWork = !['in_progress'].includes(params.newStatus)
   if (stopsWork) {
@@ -450,12 +473,6 @@ export async function transitionOrder(params: {
         )
       )
   }
-
-  const [updated] = await db
-    .update(serviceOrders)
-    .set(updates)
-    .where(eq(serviceOrders.id, params.orderId))
-    .returning()
 
   await logEvent({
     serviceOrderId: params.orderId,

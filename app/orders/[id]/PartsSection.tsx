@@ -40,7 +40,7 @@ function dollarsToCents(s: string): number | null {
   return Math.round(n * 100)
 }
 
-export default function PartsSection({ orderId }: { orderId: string }) {
+export default function PartsSection({ orderId, hideTitle = false }: { orderId: string; hideTitle?: boolean }) {
   const [parts, setParts] = useState<Part[]>([])
   const [manager, setManager] = useState(false)
   const [visible, setVisible] = useState(true)
@@ -87,10 +87,12 @@ export default function PartsSection({ orderId }: { orderId: string }) {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider">
-          Parts {waitingCount > 0 && <span className="text-amber-400 normal-case">· {waitingCount} waiting</span>}
-        </h2>
+      <div className={`flex items-center mb-2 ${hideTitle ? 'justify-end' : 'justify-between'}`}>
+        {!hideTitle && (
+          <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider">
+            Parts {waitingCount > 0 && <span className="text-amber-400 normal-case">· {waitingCount} waiting</span>}
+          </h2>
+        )}
         <button onClick={() => { setAdding((v) => !v); setMode(null) }} className="text-blue-400 text-sm font-semibold active:opacity-70">
           {adding ? 'Close' : '+ Add Part'}
         </button>

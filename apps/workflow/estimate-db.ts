@@ -524,6 +524,7 @@ export async function getEstimateView(orderId: string): Promise<EstimateView> {
 export async function prepareEstimateView(orderId: string, actor: string | null): Promise<EstimateView> {
   const est = await getOrCreateEstimate(orderId, actor)
   await promoteTextServices(est.id, orderId)
+  await syncEstimateServicesToJob(orderId)   // heals Jobs whose estimate-added services never reached the Job list
   await seedSuggestedPrices(est.id)
   await recomputeEstimate(est.id)
   return getEstimateView(orderId)
@@ -576,6 +577,42 @@ export async function promoteTextServices(estimateId: string, orderId: string, h
     n++
   }
   return n
+}
+
+/**
+ * The other direction of promoteTextServices: put every estimate service that is real work onto the
+ * Job's employee-facing Services list (service_orders.services), so a service is entered ONCE — on
+ * the Job or on the Estimate — and both show it. Append-only and idempotent: a title already on the
+ * Job (same trim/lowercase key promoteTextServices dedupes on) is never added again, so reopening
+ * can't duplicate a service or its charge. Prices, lines and QuickBooks are untouched (the Job list is
+ * text only). Skips the system fee row, parts (they live in Parts), declined work, and dealer Jobs
+ * (dealer isolation). Each append is one conditional UPDATE, so concurrent adds can't drop a title.
+ */
+export async function syncEstimateServicesToJob(orderId: string): Promise<string[]> {
+  const db = getDb()
+  const [order] = await db.select({ services: serviceOrders.services, source: serviceOrders.source, serviceType: serviceOrders.serviceType })
+    .from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
+  if (!order || isDealerOrder(order)) return []
+  const est = await getEstimateRow(orderId)
+  if (!est) return []
+  const key = (t: string) => t.trim().toLowerCase()
+  const have = new Set((order.services ?? []).map(key))
+  const missing: string[] = []
+  for (const s of await listUserServices(est.id)) {
+    if (s.kind === 'part' || s.approvalState === 'declined' || !s.title.trim() || have.has(key(s.title))) continue
+    have.add(key(s.title))
+    missing.push(s.title)
+  }
+  for (const title of missing) {
+    await db.execute(sql`
+      UPDATE service_orders SET updated_at = now(),
+        services = (CASE WHEN jsonb_typeof(services) = 'array' THEN services ELSE '[]'::jsonb END) || jsonb_build_array(${title}::text)
+      WHERE id = ${orderId}::uuid
+        AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(services) = 'array' THEN services ELSE '[]'::jsonb END) AS b(x)
+                        WHERE lower(trim(b.x)) = ${key(title)})
+    `)
+  }
+  return missing
 }
 
 /** If a retail QB invoice is linked to this Job, flag "QuickBooks sync needed" (surfaced in
@@ -688,6 +725,11 @@ export async function addService(estimateId: string, title: string, opts: AddSer
     matchedBy: matchMethod ? opts.actor ?? null : null, matchedAt: matchMethod ? new Date() : null,
     catalogDescription: await catalogDescriptionSnapshot(catalogId),
   }).returning()
+  // Enter once: a service added on the Estimate also appears on the Job's Services list.
+  if (row.kind !== 'part') {
+    const [est] = await getDb().select({ orderId: jobEstimates.serviceOrderId }).from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
+    if (est) await syncEstimateServicesToJob(est.orderId)
+  }
   return row
 }
 
@@ -980,7 +1022,9 @@ export async function setApproval(estimateId: string, orderId: string, serviceId
  *  estimate converted. Never creates a second Job / QB / AutoLeap record. */
 export async function convertEstimate(estimateId: string, orderId: string, actor: string | null): Promise<{ synced: string[] }> {
   const db = getDb()
-  const svcs = await db.select({ title: jobServices.title, approvalState: jobServices.approvalState }).from(jobServices).where(and(eq(jobServices.jobEstimateId, estimateId), ne(jobServices.source, 'system')))
+  // Parts are tracked under Parts (job_parts), never copied into the Job's Services list as work.
+  const svcs = await db.select({ title: jobServices.title, approvalState: jobServices.approvalState }).from(jobServices)
+    .where(and(eq(jobServices.jobEstimateId, estimateId), ne(jobServices.source, 'system'), ne(jobServices.kind, 'part')))
   let synced: string[] = []
   if (convertSyncsServices()) {
     const [order] = await db.select({ services: serviceOrders.services }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
