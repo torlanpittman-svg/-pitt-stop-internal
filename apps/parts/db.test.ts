@@ -19,6 +19,7 @@ import {
   addPart, markOrdered, receivePart, recordReturn, cancelPart,
   listPartsForOrder, ordersWithWaitingParts, billPart,
 } from './db'
+import { summarizeParts } from './status'
 
 const pg = new PGlite()
 afterAll(() => pg.close())
@@ -211,5 +212,34 @@ describe('ordersWithWaitingParts — Work Board indicator source', () => {
     const set = await ordersWithWaitingParts([ORDER, other])
     expect(set.has(ORDER)).toBe(true)
     expect(set.has(other)).toBe(false)
+  })
+})
+
+// The Job page's collapsed "Parts · N · M waiting" summary is recomputed on the client from the list each
+// parts API call returns (listPartsForOrder, cancelled rows included) — the same summarizeParts the
+// server loader uses, so the summary after each change equals what a fresh page load would show.
+describe('Parts summary follows each change (Job page collapsed header)', () => {
+  const summary = async () => summarizeParts(await listPartsForOrder(ORDER))
+  it('add first / add another / partial + full receipt / cancel', async () => {
+    expect(await summary()).toEqual({ total: 0, waiting: 0 })
+    const a = await addPart({ serviceOrderId: ORDER, description: 'Front carpet', quantity: 2 })
+    expect(await summary()).toEqual({ total: 1, waiting: 1 })
+    const b = await addPart({ serviceOrderId: ORDER, description: 'Cabin air filter' })
+    expect(await summary()).toEqual({ total: 2, waiting: 2 })
+    expect((await markOrdered(a.id, { supplier: 'Dealer', actor: 'Tony' })).ok).toBe(true)
+    expect(await summary()).toEqual({ total: 2, waiting: 2 })           // ordered is still outstanding
+    expect((await receivePart(a.id, 1)).ok).toBe(true)
+    expect(await summary()).toEqual({ total: 2, waiting: 2 })           // partially received: still waiting
+    expect((await receivePart(a.id, 1)).ok).toBe(true)
+    expect(await summary()).toEqual({ total: 2, waiting: 1 })           // fully received: no longer waiting
+    await cancelPart(b.id, 'Tony')
+    expect(await summary()).toEqual({ total: 1, waiting: 0 })           // cancelled leaves both counts
+    expect(await listPartsForOrder(ORDER)).toHaveLength(2)              // …but stays in the tracker list
+  })
+  it('cancelling a waiting part drops the total and the waiting count together', async () => {
+    const p = await addPart({ serviceOrderId: ORDER, description: 'Clip' })
+    expect(await summary()).toEqual({ total: 1, waiting: 1 })
+    await cancelPart(p.id, 'Tony')
+    expect(await summary()).toEqual({ total: 0, waiting: 0 })
   })
 })

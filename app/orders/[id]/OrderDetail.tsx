@@ -11,6 +11,7 @@ import { useVinDecode, type VinDecodeResult } from '@/app/hooks/useVinDecode'
 import { isDealerOrder, orderSourceKind } from '@/apps/workflow/fees'
 import type { MovePreview } from '@/apps/estimates/move-to-estimates'
 import PartsSection from './PartsSection'
+import { summarizeParts } from '@/apps/parts/status'
 import DealerInvoicePanel from './DealerInvoicePanel'
 import OrderPhotos from '@/app/components/OrderPhotos'
 import PhotoInput from '@/app/components/PhotoInput'
@@ -1170,6 +1171,8 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
   const router = useRouter()
 
   const [order,       setOrder]       = useState<OrderWithContext>(initialOrder)
+  // Live Parts summary from the expanded tracker's last server-confirmed list (null until it loads).
+  const [liveParts,   setLiveParts]   = useState<{ total: number; waiting: number } | null>(null)
   const [urgentBusy,  setUrgentBusy]  = useState(false)
   const [pending,     setPending]     = useState<string | null>(null)
   const [picking,     setPicking]     = useState<ActionConfig | null>(null)
@@ -1219,8 +1222,9 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
   // Work vs parts, from the server's record-based split (fallback: the raw list, e.g. a stale client row).
   const services    = order.items?.services ?? order.services ?? []
   const partLabels  = order.items?.partLabels ?? []
-  const partCount   = Math.max(order.items?.parts.total ?? 0, partLabels.length)
-  const partsWaitingCount = order.items?.parts.waiting ?? 0
+  const partsSummary = liveParts ?? order.items?.parts ?? { total: 0, waiting: 0 }
+  const partCount   = Math.max(partsSummary.total, partLabels.length)
+  const partsWaitingCount = partsSummary.waiting
 
   // Employee-facing simplifications:
   // • one status read: is the Job still active, or finished (Ready) / gone.
@@ -1248,6 +1252,13 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
       setOrder(data.order)
     }
   }, [order.id])
+
+  // Parts tracker changes update the collapsed summary immediately; a change also refetches the Job so
+  // the Services/Parts split follows. The <details> stays mounted, so its open/closed state is kept.
+  const onPartsChange = useCallback((parts: ReadonlyArray<{ status: string }>, mutated: boolean) => {
+    setLiveParts(summarizeParts(parts))
+    if (mutated) void reload()
+  }, [reload])
 
   // Mark / remove URGENT (any authenticated employee). Visual + Work Board priority only — never
   // changes status, price, production, or QuickBooks. Optimistic; reverts on failure.
@@ -1499,7 +1510,7 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
           </summary>
           <div className="mt-2">
             {identity.partsVisible
-              ? <PartsSection orderId={order.id} hideTitle />
+              ? <PartsSection orderId={order.id} hideTitle onPartsChange={onPartsChange} />
               : (
                 <ul className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800">
                   {partLabels.map((p, i) => <li key={i} className="px-4 py-3 text-gray-200 text-sm">{p}</li>)}

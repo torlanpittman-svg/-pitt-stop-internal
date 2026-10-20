@@ -121,9 +121,9 @@ export async function moveIntakeToBoard(id: string, actor: string) {
   const result = await getDb().execute(sql`
     WITH moved AS (
       UPDATE service_orders so SET status = 'arrived', arrived_at = now(), updated_at = now(),
-        services = (SELECT jsonb_agg(s.title ORDER BY s.sort_order, s.created_at)
+        services = COALESCE((SELECT jsonb_agg(s.title ORDER BY s.sort_order, s.created_at)
           FROM job_services s JOIN job_estimates e ON e.id = s.job_estimate_id
-          WHERE e.service_order_id = so.id AND s.source <> 'system'),
+          WHERE e.service_order_id = so.id AND s.source <> 'system' AND s.kind <> 'part'), '[]'::jsonb),   -- parts stay under Parts
         quoted_price_cents = e.total_cents, approved_price_cents = e.total_cents
       FROM job_estimates e
       WHERE so.id = ${id}::uuid AND so.status = 'estimate' AND e.service_order_id = so.id

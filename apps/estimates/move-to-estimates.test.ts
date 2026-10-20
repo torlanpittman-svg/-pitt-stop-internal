@@ -32,7 +32,7 @@ beforeAll(async () => {
       converted_at timestamptz, updated_at timestamptz, qb_invoice_id text, qb_invoice_number text,
       qb_status text DEFAULT 'none', qb_sync_token text, qb_sent_at timestamptz, total_cents int);
     CREATE TABLE job_services(id uuid DEFAULT gen_random_uuid(), job_estimate_id uuid, title text,
-      source text DEFAULT 'manual', sort_order int DEFAULT 0, approval_state text DEFAULT 'pending',
+      source text DEFAULT 'manual', kind text NOT NULL DEFAULT 'service', sort_order int DEFAULT 0, approval_state text DEFAULT 'pending',
       created_at timestamptz DEFAULT now(), updated_at timestamptz);
     CREATE TABLE estimate_intakes(order_id uuid PRIMARY KEY, locked_at timestamptz);
     CREATE TABLE quick_entry_jobs(service_order_id uuid, vehicle_id uuid, customer_name text, year text, make text,
@@ -134,6 +134,17 @@ it('completes the round trip: the SAME record returns to the Work Board via the 
   expect(row).toMatchObject({ status: 'arrived', approved_price_cents: 335677 })
   // Invoice link still intact after the full round trip.
   expect((await pg.query(`SELECT qb_invoice_number FROM job_estimates WHERE service_order_id=$1`, [id])).rows[0]).toMatchObject({ qb_invoice_number: '100897' })
+})
+
+it('approval → Work Board copies WORK into the Job Services list, never parts (Schnabel 2026-10-20)', async () => {
+  const { id } = await fixture()
+  await executeMoveToEstimates({ orderId: id, actor: 'Manager' })
+  const [{ id: estId }] = (await pg.query<{ id: string }>(`SELECT id FROM job_estimates WHERE service_order_id=$1`, [id])).rows
+  await pg.query(`INSERT INTO job_services(job_estimate_id, title, kind, sort_order) VALUES ($1,'Front left carpet','part',5)`, [estId])
+  await moveIntakeToBoard(id, 'Manager')
+  const [row] = (await pg.query<{ services: string[] }>(`SELECT services FROM service_orders WHERE id=$1`, [id])).rows
+  expect(row.services).not.toContain('Front left carpet')
+  expect(row.services.length).toBeGreaterThan(0)
 })
 
 it('moveBaseEligibility is a pure gate with specific reasons (invoice is not a gate)', () => {

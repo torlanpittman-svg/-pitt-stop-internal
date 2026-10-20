@@ -416,83 +416,81 @@ export async function transitionOrder(params: {
   if (!rows[0]) return { ok: false, error: 'Order not found' }
 
   const order = rows[0]
-  // Finish Job double-tap / retry: already Ready → same answer, no second completion, no new events,
-  // completed_at untouched.
-  if (params.newStatus === 'ready' && order.status === 'ready') return { ok: true, order }
+  // Finish Job double-tap / retry: already Ready → same answer, no second completion, completed_at and
+  // completed_by untouched. Also REPAIRS a completion that an older, non-atomic write left half-done
+  // (timer still running / no completion event) — idempotent, append-only, never re-stamps.
+  if (params.newStatus === 'ready' && order.status === 'ready') {
+    await repairCompletion(order)
+    return { ok: true, order }
+  }
   if (!canTransition(order.status, params.newStatus)) {
     return { ok: false, error: `Cannot go from ${order.status} to ${params.newStatus}` }
   }
 
-  const now = new Date()
-  const updates: Partial<typeof serviceOrders.$inferInsert> = {
-    status:    params.newStatus,
-    updatedAt: now,
-  }
+  const now = new Date().toISOString()
+  // True completion = Ready. Stamp completed_at ONCE (never overwrite via ordinary transitions or
+  // delivery). Only the manager Reopen flow may clear it.
+  const stamps = params.newStatus === 'ready' && !order.completedAt
+  const completedBy = params.completedBy ?? params.employeeName ?? null
+  const stopsWork = params.newStatus !== 'in_progress'   // stop active timers when leaving in_progress
 
-  if (params.newStatus === 'in_progress' && !order.startedAt) {
-    updates.startedAt = now
-  }
-  // True completion = Ready. Stamp completed_at ONCE (never overwrite via ordinary
-  // transitions or delivery). Only the manager Reopen flow may clear it.
-  if (params.newStatus === 'ready' && !order.completedAt) {
-    updates.completedAt = now
-    updates.completedBy = params.completedBy ?? params.employeeName ?? null
-    if (params.completionChecklist) updates.completionChecklist = params.completionChecklist
-  }
-  if (params.newStatus === 'delivered') {
-    updates.deliveredAt = now   // does NOT touch completed_at
-  }
-  if (params.newStatus === 'cancelled') {
-    updates.cancelledAt = now
-  }
-
-  // Conditional on the status we validated against, so two concurrent submits can't both apply
-  // (e.g. two Finish Job taps → one completion). The loser re-reads and, if the Job already reached
-  // the requested status, gets the same idempotent answer.
-  const [updated] = await db
-    .update(serviceOrders)
-    .set(updates)
-    .where(and(eq(serviceOrders.id, params.orderId), eq(serviceOrders.status, order.status)))
-    .returning()
-  if (!updated) {
-    const [current] = await db.select().from(serviceOrders).where(eq(serviceOrders.id, params.orderId)).limit(1)
+  // ONE statement (the neon-http driver has no interactive transactions; a statement is atomic): the
+  // status/completion update, the timer shutdown, and the audit events all apply or none do. The update
+  // is conditional on the status we validated against, so two concurrent submits can't both apply
+  // (e.g. two Finish Job taps → one completion); every other step only runs if that update matched.
+  const res = await db.execute(sql`
+    WITH upd AS (
+      UPDATE service_orders SET
+        status = ${params.newStatus}, updated_at = ${now}::timestamptz,
+        started_at = CASE WHEN ${params.newStatus === 'in_progress'}::boolean THEN COALESCE(started_at, ${now}::timestamptz) ELSE started_at END,
+        completed_at = CASE WHEN ${stamps}::boolean THEN COALESCE(completed_at, ${now}::timestamptz) ELSE completed_at END,
+        completed_by = CASE WHEN ${stamps}::boolean AND completed_at IS NULL THEN ${completedBy} ELSE completed_by END,
+        completion_checklist = CASE WHEN ${stamps && !!params.completionChecklist}::boolean AND completed_at IS NULL
+          THEN ${params.completionChecklist ? JSON.stringify(params.completionChecklist) : null}::jsonb ELSE completion_checklist END,
+        delivered_at = CASE WHEN ${params.newStatus === 'delivered'}::boolean THEN ${now}::timestamptz ELSE delivered_at END,
+        cancelled_at = CASE WHEN ${params.newStatus === 'cancelled'}::boolean THEN ${now}::timestamptz ELSE cancelled_at END
+      WHERE id = ${params.orderId}::uuid AND status = ${order.status}
+      RETURNING id
+    ), stop AS (
+      UPDATE service_order_assignments SET stopped_at = ${now}::timestamptz
+       WHERE ${stopsWork}::boolean AND service_order_id IN (SELECT id FROM upd) AND stopped_at IS NULL
+      RETURNING id
+    ), ev_status AS (
+      INSERT INTO service_order_events (service_order_id, event_type, employee_name, old_status, new_status, note)
+      SELECT id, 'status_changed', ${params.employeeName}, ${order.status}, ${params.newStatus}, ${params.note ?? null} FROM upd
+      RETURNING id
+    ), ev_completed AS (
+      -- Distinct completion event when we actually stamped completed_at (Ready, first time).
+      INSERT INTO service_order_events (service_order_id, event_type, employee_name, note)
+      SELECT id, 'completed', ${completedBy}, 'Marked Ready (completion confirmed)' FROM upd WHERE ${stamps}::boolean
+      RETURNING id
+    )
+    SELECT id FROM upd
+  `)
+  const applied = ((res as unknown as { rows?: unknown[] }).rows ?? (res as unknown as unknown[])).length > 0
+  const [current] = await db.select().from(serviceOrders).where(eq(serviceOrders.id, params.orderId)).limit(1)
+  if (!applied) {
+    // Lost a race: if the Job already reached the requested status, that is the same answer.
     if (current && current.status === params.newStatus) return { ok: true, order: current }
     return { ok: false, error: 'This Job just changed — refresh and try again.' }
   }
+  return { ok: true, order: current }
+}
 
-  // Stop all active assignments when leaving in_progress
-  const stopsWork = !['in_progress'].includes(params.newStatus)
-  if (stopsWork) {
-    await db
-      .update(serviceOrderAssignments)
-      .set({ stoppedAt: now })
-      .where(
-        and(
-          eq(serviceOrderAssignments.serviceOrderId, params.orderId),
-          isNull(serviceOrderAssignments.stoppedAt)
-        )
-      )
-  }
-
-  await logEvent({
-    serviceOrderId: params.orderId,
-    eventType:      'status_changed',
-    employeeName:   params.employeeName,
-    oldStatus:      order.status,
-    newStatus:      params.newStatus,
-    note:           params.note ?? null,
-  })
-  // Distinct completion event when we actually stamped completed_at (Ready, first time).
-  if (params.newStatus === 'ready' && updates.completedAt) {
-    await logEvent({
-      serviceOrderId: params.orderId,
-      eventType:      'completed',
-      employeeName:   params.completedBy ?? params.employeeName ?? null,
-      note:           'Marked Ready (completion confirmed)',
-    })
-  }
-
-  return { ok: true, order: updated }
+/** Already-Ready repair (see transitionOrder): stop timers still running, and if the Job has a completion
+ *  stamp but no completion event, append one marked as recovered. Never changes completed_at/by. */
+async function repairCompletion(order: ServiceOrderRow): Promise<void> {
+  if (!order.completedAt) return
+  await getDb().execute(sql`
+    WITH stop AS (
+      UPDATE service_order_assignments SET stopped_at = now()
+       WHERE service_order_id = ${order.id}::uuid AND stopped_at IS NULL
+      RETURNING id
+    )
+    INSERT INTO service_order_events (service_order_id, event_type, employee_name, note)
+    SELECT ${order.id}::uuid, 'completed', ${order.completedBy}, 'Marked Ready (completion history recovered on retry)'
+     WHERE NOT EXISTS (SELECT 1 FROM service_order_events WHERE service_order_id = ${order.id}::uuid AND event_type = 'completed')
+  `)
 }
 
 /**

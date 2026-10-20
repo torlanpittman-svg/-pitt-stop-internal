@@ -580,30 +580,48 @@ export async function promoteTextServices(estimateId: string, orderId: string, h
 }
 
 /**
- * The other direction of promoteTextServices: put every estimate service that is real work onto the
- * Job's employee-facing Services list (service_orders.services), so a service is entered ONCE — on
- * the Job or on the Estimate — and both show it. Append-only and idempotent: a title already on the
- * Job (same trim/lowercase key promoteTextServices dedupes on) is never added again, so reopening
- * can't duplicate a service or its charge. Prices, lines and QuickBooks are untouched (the Job list is
- * text only). Skips the system fee row, parts (they live in Parts), declined work, and dealer Jobs
- * (dealer isolation). Each append is one conditional UPDATE, so concurrent adds can't drop a title.
+ * The other direction of promoteTextServices: keep the Job's employee-facing Services list
+ * (service_orders.services) in step with the estimate's WORK, so a service is entered ONCE — on the
+ * Job or on the Estimate — and both show it.
+ *   • adds every estimate service that is real work and missing from the Job (same trim/lowercase key
+ *     promoteTextServices dedupes on), in estimate order — reopening can't duplicate a service/charge;
+ *   • removes an entry whose ONLY estimate rows are DECLINED (the customer said no → not work to
+ *     perform); reapproving puts it back (once). Entries with no estimate row at all (unrelated
+ *     operational text) are never touched.
+ * Prices, lines, catalog identity and QuickBooks are untouched (the Job list is text only). Skips the
+ * system fee row, parts (they live in Parts), and dealer Jobs (dealer isolation). Each write is one
+ * conditional statement, so concurrent edits can't drop or double a title.
  */
-export async function syncEstimateServicesToJob(orderId: string): Promise<string[]> {
+export async function syncEstimateServicesToJob(orderId: string): Promise<{ added: string[]; removed: string[] }> {
   const db = getDb()
+  const none = { added: [], removed: [] }
   const [order] = await db.select({ services: serviceOrders.services, source: serviceOrders.source, serviceType: serviceOrders.serviceType })
     .from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
-  if (!order || isDealerOrder(order)) return []
+  if (!order || isDealerOrder(order)) return none
   const est = await getEstimateRow(orderId)
-  if (!est) return []
+  if (!est) return none
   const key = (t: string) => t.trim().toLowerCase()
-  const have = new Set((order.services ?? []).map(key))
-  const missing: string[] = []
-  for (const s of await listUserServices(est.id)) {
-    if (s.kind === 'part' || s.approvalState === 'declined' || !s.title.trim() || have.has(key(s.title))) continue
-    have.add(key(s.title))
-    missing.push(s.title)
+  const work = (await listUserServices(est.id)).filter((s) => s.kind !== 'part' && s.title.trim())
+  const activeKeys = new Set(work.filter((s) => s.approvalState !== 'declined').map((s) => key(s.title)))
+  const declinedKeys = [...new Set(work.filter((s) => s.approvalState === 'declined').map((s) => key(s.title)))].filter((k) => !activeKeys.has(k))
+  const current = order.services ?? []
+  const removed = current.filter((t) => declinedKeys.includes(key(t)))
+  if (removed.length > 0) {
+    await db.execute(sql`
+      UPDATE service_orders SET updated_at = now(), services = COALESCE((
+        SELECT jsonb_agg(to_jsonb(a.x) ORDER BY a.ord) FROM jsonb_array_elements_text(services) WITH ORDINALITY AS a(x, ord)
+         WHERE lower(trim(a.x)) NOT IN (SELECT jsonb_array_elements_text(${JSON.stringify(declinedKeys)}::jsonb))), '[]'::jsonb)
+      WHERE id = ${orderId}::uuid AND jsonb_typeof(services) = 'array'
+    `)
   }
-  for (const title of missing) {
+  const have = new Set(current.filter((t) => !declinedKeys.includes(key(t))).map(key))
+  const added: string[] = []
+  for (const s of work) {
+    if (s.approvalState === 'declined' || have.has(key(s.title))) continue
+    have.add(key(s.title))
+    added.push(s.title)
+  }
+  for (const title of added) {
     await db.execute(sql`
       UPDATE service_orders SET updated_at = now(),
         services = (CASE WHEN jsonb_typeof(services) = 'array' THEN services ELSE '[]'::jsonb END) || jsonb_build_array(${title}::text)
@@ -612,7 +630,7 @@ export async function syncEstimateServicesToJob(orderId: string): Promise<string
                         WHERE lower(trim(b.x)) = ${key(title)})
     `)
   }
-  return missing
+  return { added, removed }
 }
 
 /** If a retail QB invoice is linked to this Job, flag "QuickBooks sync needed" (surfaced in
@@ -1008,6 +1026,8 @@ export async function setStatus(estimateId: string, orderId: string, status: Est
 export async function setApproval(estimateId: string, orderId: string, serviceId: string, state: ApprovalState, actor: string | null): Promise<EstimateStatus> {
   const db = getDb()
   await db.update(jobServices).set({ approvalState: state, updatedAt: new Date() }).where(eq(jobServices.id, serviceId))
+  // A decline takes the work off the Job / Work Board / Finish Job right away; reapproval restores it.
+  await syncEstimateServicesToJob(orderId)
   // System fee service is excluded from the approval roll-up (fees aren't approvable work).
   const svcs = await db.select({ s: jobServices.approvalState }).from(jobServices).where(and(eq(jobServices.jobEstimateId, estimateId), ne(jobServices.source, 'system')))
   const [cur] = await db.select({ status: jobEstimates.status }).from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)

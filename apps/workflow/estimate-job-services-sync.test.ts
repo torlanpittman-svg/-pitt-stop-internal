@@ -18,8 +18,10 @@ vi.mock('@/platform/db', () => ({ getDb: () => holder.db }))
 
 import {
   prepareEstimateView, getEstimateView, setServicePrice, getOrCreateEstimate, addService,
-  removeEstimateService, removeServiceFromJob, renameService, syncEstimateServicesToJob,
+  removeEstimateService, removeServiceFromJob, renameService, syncEstimateServicesToJob, setApproval,
 } from '@/apps/workflow/estimate-db'
+import { getOrderWithContext, listActiveOrders } from '@/apps/workflow/db'
+import { validateCompletion } from '@/apps/workflow/completion'
 import { serviceOrders, vehicles, jobServices } from '@/drizzle/schema'
 
 let db: PgliteDatabase<typeof schema>
@@ -117,14 +119,86 @@ describe('estimate services ↔ Job Services stay one list', () => {
     expect((await getEstimateView(orderId)).workTotalCents).toBe(35000)
   })
 
-  it('a declined service is not put on the Job as work', async () => {
-    const orderId = await order([])
-    const est = await itemizeMiller(orderId)
-    const extra = await addService(est.id, 'Headlight Restoration', { actor: 'Manager' })
-    await db.update(jobServices).set({ approvalState: 'declined' }).where(eq(jobServices.id, extra.id))
-    await db.update(serviceOrders).set({ services: ['Interior Detail', 'Exterior Wash', 'Wax', 'Leather Conditioner'] }).where(eq(serviceOrders.id, orderId))
-    await syncEstimateServicesToJob(orderId)
-    expect(await jobServicesText(orderId)).toEqual(['Interior Detail', 'Exterior Wash', 'Wax', 'Leather Conditioner'])
+  describe('approval changes (real setApproval flow — no hand-fixed data)', () => {
+    /** What every consumer reads: the Job page / Work Board split and the Finish Job gate input. */
+    const views = async (orderId: string) => {
+      const job = (await getOrderWithContext(orderId))!
+      const board = (await listActiveOrders()).find((o) => o.id === orderId)!
+      return { job: job.items!.services, board: board.items!.services, finishable: validateCompletion(job.items!.services, false, { allWorkComplete: true }).ok }
+    }
+
+    it('add → decline: the declined work leaves the Job, the Work Board and the Finish Job input immediately', async () => {
+      const orderId = await order([])
+      const est = await itemizeMiller(orderId)
+      const extra = await addService(est.id, 'Headlight Restoration', { actor: 'Manager' })
+      await setServicePrice(est.id, extra.id, 8000, 'Manager')
+      expect(await jobServicesText(orderId)).toEqual(['Interior Detail', 'Exterior Wash', 'Wax', 'Leather Conditioner', 'Headlight Restoration'])
+
+      await setApproval(est.id, orderId, extra.id, 'declined', 'Manager')   // no estimate reopen
+      const MILLER = ['Interior Detail', 'Exterior Wash', 'Wax', 'Leather Conditioner']
+      expect(await jobServicesText(orderId)).toEqual(MILLER)
+      expect(await views(orderId)).toEqual({ job: MILLER, board: MILLER, finishable: true })
+      // Price, catalog identity and the estimate row itself are kept (declined, not deleted).
+      const row = (await userRows()).find((r) => r.id === extra.id)!
+      expect(row).toMatchObject({ approvalState: 'declined', catalogId: extra.catalogId })
+      expect((await getEstimateView(orderId)).services.find((x) => x.id === extra.id)?.priceCents).toBe(8000)
+      // Reopening the estimate does not bring it back.
+      await prepareEstimateView(orderId, 'Manager')
+      expect(await jobServicesText(orderId)).toEqual(MILLER)
+    })
+
+    it('decline → reapprove: the work comes back exactly once', async () => {
+      const orderId = await order([])
+      const est = await itemizeMiller(orderId)
+      const wax = (await getEstimateView(orderId)).services.find((x) => x.title === 'Wax')!
+      await setApproval(est.id, orderId, wax.id, 'declined', 'Manager')
+      expect(await jobServicesText(orderId)).toEqual(['Interior Detail', 'Exterior Wash', 'Leather Conditioner'])
+      await setApproval(est.id, orderId, wax.id, 'approved', 'Manager')
+      await setApproval(est.id, orderId, wax.id, 'approved', 'Manager')   // double tap
+      await prepareEstimateView(orderId, 'Manager')
+      const back = ['Interior Detail', 'Exterior Wash', 'Leather Conditioner', 'Wax']
+      expect(await jobServicesText(orderId)).toEqual(back)
+      expect((await views(orderId)).job).toEqual(back)
+      expect((await userRows()).filter((r) => r.title === 'Wax')).toHaveLength(1)   // no duplicate estimate row/charge
+      expect((await getEstimateView(orderId)).workTotalCents).toBe(42500)
+    })
+
+    it('declining an intake service (promoted from the Job list) also takes it off the Job; unrelated Job text is untouched', async () => {
+      const orderId = await order(['Interior Detail', 'Pick up keys from front desk'])
+      const est = await getOrCreateEstimate(orderId, 'Manager')
+      await prepareEstimateView(orderId, 'Manager')
+      const interior = (await getEstimateView(orderId)).services.find((x) => x.title === 'Interior Detail')!
+      // 'Pick up keys…' was promoted too; detach it to model operational text with no estimate row.
+      const keys = (await getEstimateView(orderId)).services.find((x) => x.title.startsWith('Pick up'))!
+      await db.delete(jobServices).where(eq(jobServices.id, keys.id))
+      await setApproval(est.id, orderId, interior.id, 'declined', 'Manager')
+      expect(await jobServicesText(orderId)).toEqual(['Pick up keys from front desk'])
+    })
+
+    it('a declined duplicate never hides the same work that is still approved on another line', async () => {
+      const orderId = await order([])
+      const est = await itemizeMiller(orderId)
+      const dup = await addService(est.id, 'wax', { actor: 'Manager' })
+      await setApproval(est.id, orderId, dup.id, 'declined', 'Manager')
+      expect(await jobServicesText(orderId)).toEqual(['Interior Detail', 'Exterior Wash', 'Wax', 'Leather Conditioner'])
+    })
+
+    it('when every service is declined the Job has no work, so Finish Job refuses (no_services)', async () => {
+      const orderId = await order([])
+      const est = await itemizeMiller(orderId)
+      for (const x of (await getEstimateView(orderId)).services) await setApproval(est.id, orderId, x.id, 'declined', 'Manager')
+      expect(await jobServicesText(orderId)).toEqual([])
+      const job = (await getOrderWithContext(orderId))!
+      expect(validateCompletion(job.items!.services, false, { allWorkComplete: true })).toEqual({ ok: false, error: 'no_services' })
+    })
+
+    it('dealer Jobs are untouched by approval changes', async () => {
+      const orderId = await order(['Complete Detail'], { source: 'dealer_checkin', serviceType: 'dealer' })
+      const est = await getOrCreateEstimate(orderId, 'Manager')
+      const [row] = await db.insert(jobServices).values({ jobEstimateId: est.id, title: 'Complete Detail', source: 'manual' }).returning()
+      await setApproval(est.id, orderId, row.id, 'declined', 'Manager')
+      expect(await jobServicesText(orderId)).toEqual(['Complete Detail'])
+    })
   })
 
   it('parts are not added to the Services list (they live in Parts)', async () => {

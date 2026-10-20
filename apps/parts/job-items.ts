@@ -12,8 +12,8 @@ import { and, eq, inArray, ne } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { jobEstimates, jobServices } from '@/apps/workflow/schema'
 import { jobParts } from './schema'
+import { summarizeParts } from './status'
 
-const WAITING = new Set(['needed', 'ordered', 'partially_received'])
 export const itemKey = (s: string) => s.trim().toLowerCase()   // same key promoteTextServices dedupes on
 
 export interface JobItems {
@@ -51,16 +51,14 @@ export async function loadJobItems(orders: readonly { id: string; services: stri
       .where(and(inArray(jobEstimates.serviceOrderId, ids), eq(jobServices.kind, 'part'))),
   ])
   const keys = new Map<string, Set<string>>()
-  const counts = new Map<string, { total: number; waiting: number }>()
+  const byOrder = new Map<string, { status: string }[]>()
   for (const p of partRows) {
     ;(keys.get(p.orderId) ?? keys.set(p.orderId, new Set()).get(p.orderId)!).add(itemKey(p.description))
-    const c = counts.get(p.orderId) ?? { total: 0, waiting: 0 }
-    c.total++; if (WAITING.has(p.status)) c.waiting++
-    counts.set(p.orderId, c)
+    ;(byOrder.get(p.orderId) ?? byOrder.set(p.orderId, []).get(p.orderId)!).push(p)
   }
   for (const l of partLines) (keys.get(l.orderId) ?? keys.set(l.orderId, new Set()).get(l.orderId)!).add(itemKey(l.title))
   for (const o of orders) {
-    out.set(o.id, { ...splitJobItems(o.services, keys.get(o.id) ?? new Set()), parts: counts.get(o.id) ?? { total: 0, waiting: 0 } })
+    out.set(o.id, { ...splitJobItems(o.services, keys.get(o.id) ?? new Set()), parts: summarizeParts(byOrder.get(o.id) ?? []) })
   }
   return out
 }

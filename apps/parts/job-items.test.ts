@@ -25,6 +25,8 @@ import { getOrCreateEstimate, addService, setServicePrice, getEstimateView, conv
 import { convertServiceToPart, addEstimatePart } from '@/apps/parts/estimate-parts'
 import { getOrderWithContext, transitionOrder } from '@/apps/workflow/db'
 import { splitJobItems, loadJobItems } from './job-items'
+import { summarizeParts } from './status'
+import { listPartsForOrder, cancelPart, receivePart, markOrdered } from './db'
 import { serviceOrders, vehicles, jobParts, jobLineItems, serviceOrderEvents } from '@/drizzle/schema'
 
 let db: PgliteDatabase<typeof schema>
@@ -161,5 +163,27 @@ describe('Finish Job — duplicate submits complete once', () => {
     const lines = await db.select().from(jobLineItems)
     await transitionOrder({ orderId, newStatus: 'ready', employeeName: 'Tony', completedBy: 'Tony', completionChecklist: { allWorkComplete: true } })
     expect(await db.select().from(jobLineItems)).toEqual(lines)
+  })
+})
+
+describe('live Parts summary == a fresh page load (client update vs server loader)', () => {
+  it('after each tracker change, the client summary equals what reopening the Job shows', async () => {
+    const { orderId } = await order(['Interior detail'])
+    const check = async () => {
+      const live = summarizeParts(await listPartsForOrder(orderId))          // what PartsSection reports up
+      const fresh = (await getOrderWithContext(orderId))!.items!.parts      // what a reload / reopen shows
+      expect(live).toEqual(fresh)
+      return live
+    }
+    await addEstimatePart(orderId, { description: 'Front carpet', supply: 'shop' }, 'Manager')
+    expect(await check()).toEqual({ total: 1, waiting: 1 })
+    await addEstimatePart(orderId, { description: 'Cabin Air filter', supply: 'shop' }, 'Manager')
+    expect(await check()).toEqual({ total: 2, waiting: 2 })
+    const [a, b] = await listPartsForOrder(orderId)
+    expect((await markOrdered(a.id, { supplier: 'Dealer' })).ok).toBe(true)
+    expect((await receivePart(a.id, 1)).ok).toBe(true)
+    expect(await check()).toEqual({ total: 2, waiting: 1 })
+    await cancelPart(b.id, 'Manager')
+    expect(await check()).toEqual({ total: 1, waiting: 0 })
   })
 })

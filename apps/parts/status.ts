@@ -68,6 +68,13 @@ export function isPartWaiting(status: string): boolean {
   return status === 'needed' || status === 'ordered' || status === 'partially_received'
 }
 
+/** The Parts summary shown collapsed on the Job page / Work Board: live (not cancelled) parts and how many
+ *  are still outstanding. ONE definition for the server loader and the client's live update. */
+export function summarizeParts(parts: ReadonlyArray<{ status: string }>): { total: number; waiting: number } {
+  const live = parts.filter((p) => p.status !== 'cancelled')
+  return { total: live.length, waiting: live.filter((p) => isPartWaiting(p.status)).length }
+}
+
 /** Does an order have any outstanding parts? Drives the Work Board "waiting on parts" badge. */
 export function orderHasWaitingParts(parts: Array<{ status: string }>): boolean {
   return parts.some((p) => isPartWaiting(p.status))

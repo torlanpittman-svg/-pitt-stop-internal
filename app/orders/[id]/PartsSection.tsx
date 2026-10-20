@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { money } from '@/app/lib/format'
 
 interface Part {
@@ -40,7 +40,12 @@ function dollarsToCents(s: string): number | null {
   return Math.round(n * 100)
 }
 
-export default function PartsSection({ orderId, hideTitle = false }: { orderId: string; hideTitle?: boolean }) {
+/** `onPartsChange` receives every server-confirmed parts list (initial load, then after each successful
+ *  add / order / receive / return / cancel / bill) so the parent's collapsed summary stays current;
+ *  `mutated` is true for changes (not the initial load). */
+export default function PartsSection({ orderId, hideTitle = false, onPartsChange }: {
+  orderId: string; hideTitle?: boolean; onPartsChange?: (parts: ReadonlyArray<{ status: string }>, mutated: boolean) => void
+}) {
   const [parts, setParts] = useState<Part[]>([])
   const [manager, setManager] = useState(false)
   const [visible, setVisible] = useState(true)
@@ -49,6 +54,9 @@ export default function PartsSection({ orderId, hideTitle = false }: { orderId: 
   const [busy, setBusy] = useState(false)
   const [adding, setAdding] = useState(false)
   const [mode, setMode] = useState<{ id: string; kind: 'order' | 'receive' | 'return' } | null>(null)
+  // Latest callback without re-running the load effect when the parent re-renders.
+  const onChangeRef = useRef(onPartsChange)
+  useEffect(() => { onChangeRef.current = onPartsChange }, [onPartsChange])
 
   useEffect(() => {
     let ok = true
@@ -59,6 +67,7 @@ export default function PartsSection({ orderId, hideTitle = false }: { orderId: 
         if (!d.ok) { setErr(d.error || 'Could not load parts.'); return }
         if (d.visible === false) { setVisible(false); return }
         setParts(d.parts); setManager(!!d.manager); setErr(null)
+        onChangeRef.current?.(d.parts, false)
       })
       .catch(() => { if (ok) setErr('Network error loading parts.') })
       .finally(() => { if (ok) setLoading(false) })
@@ -74,6 +83,7 @@ export default function PartsSection({ orderId, hideTitle = false }: { orderId: 
       const d = await r.json()
       if (!r.ok || !d.ok) { setErr(d.error || 'Parts update failed.'); return false }
       setParts(d.parts); setManager(!!d.manager)
+      onChangeRef.current?.(d.parts, true)
       return true
     } catch { setErr('Network error — please try again.'); return false }
     finally { setBusy(false) }
