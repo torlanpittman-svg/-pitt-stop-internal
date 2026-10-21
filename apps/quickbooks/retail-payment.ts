@@ -39,10 +39,21 @@ export function paymentLocksInvoice(p: { status: string; balanceState?: string |
  * Rejects empty, zero, negative, non-numeric, and more than two decimal places (never rounded silently).
  */
 export function parseAmountInput(text: string): { ok: true; cents: number } | { ok: false; error: string } {
-  const s = text.trim().replace(/^\$/, '').replace(/,/g, '').trim()
-  if (!s) return { ok: false, error: 'Enter the amount received.' }
-  if (!/^\d+(\.\d*)?$|^\.\d+$/.test(s)) return { ok: false, error: 'Enter dollars and cents, e.g. 2000.00.' }
-  const [whole, frac = ''] = s.split('.')
+  const raw = text.trim().replace(/^\$/, '').trim()
+  if (!raw) return { ok: false, error: 'Enter the amount received.' }
+  const malformed = { ok: false as const, error: 'Enter dollars and cents, e.g. 2,000.00.' }
+  if ((raw.match(/\./g) ?? []).length > 1) return malformed
+  const dot = raw.indexOf('.')
+  const wholeRaw = dot === -1 ? raw : raw.slice(0, dot)
+  const frac = dot === -1 ? '' : raw.slice(dot + 1)
+  if (!/^\d*$/.test(frac)) return malformed   // no commas or stray characters in the cents
+  // The dollar part is bare digits, or comma-grouped strictly in threes ("2,000", "1,234,567") — validate the
+  // grouping BEFORE stripping commas, so "20,00" / ",000" / "1,2345" are rejected rather than silently read.
+  const whole = wholeRaw === '' ? ''
+    : wholeRaw.includes(',') ? (/^\d{1,3}(,\d{3})+$/.test(wholeRaw) ? wholeRaw.replace(/,/g, '') : null)
+    : (/^\d+$/.test(wholeRaw) ? wholeRaw : null)
+  if (whole === null) return malformed
+  if (whole === '' && frac === '') return malformed
   if (frac.length > 2) return { ok: false, error: 'Use at most two decimal places (cents).' }
   const cents = Number(whole || '0') * 100 + Number(frac.padEnd(2, '0') || '0')
   if (!Number.isSafeInteger(cents) || cents <= 0) return { ok: false, error: 'The amount must be more than $0.00.' }
@@ -206,13 +217,19 @@ export interface InvoiceBalanceSummary {
   /** Everything else that reduced the balance — credit memos, other credits/adjustments. Never counted as cash. */
   creditCents: number
   history: PaymentHistoryEntry[]
+  /** The invoice balance already reflects every Payment QuickBooks reports applied to it. False ⇒ a read is
+   *  lagging (a payment is visible but the balance hasn't absorbed it): a fresh installment must not be recorded
+   *  against it (a retry of a known attempt, matched by its tag, is unaffected). */
+  coherent: boolean
 }
 
 /**
  * The invoice's payment picture from QuickBooks' own numbers. Paid ⇔ Balance is exactly 0. Each Payment's
- * money vs. credit portion is kept apart (a credit memo applied through a Payment is not cash collected);
- * any reduction not explained by Payments is reported as credit/adjustment. `methodIds` maps the owner's
- * QuickBooks PaymentMethod ids back to Cash / Check / Card Terminal for payments entered directly in QuickBooks.
+ * money vs. credit portion is kept apart (a credit memo applied through a Payment is not cash collected).
+ * Reconciliation is evidence-based: a balance drop is attributed to the Payments we actually read, and to a
+ * credit ONLY where one is linked — an unexplained drop (a Payment the invoice lists but we couldn't read, or
+ * one not matched by any evidence) is REFUSED (ok:false), never silently reported as a credit. `methodIds` maps
+ * the owner's QuickBooks PaymentMethod ids back to Cash / Check / Card Terminal for payments entered in QuickBooks.
  */
 export function summarizeInvoicePayments(params: {
   invoice: { Id: string; TotalAmt?: number; Balance?: number; LinkedTxn?: Array<{ TxnId?: string; TxnType?: string }> }
@@ -227,14 +244,36 @@ export function summarizeInvoicePayments(params: {
   if (balanceCents < 0) return { ok: false, reason: 'QuickBooks reports a negative balance on this invoice.' }
   if (balanceCents > totalCents) return { ok: false, reason: 'QuickBooks balance exceeds the invoice total.' }
 
+  // Only an authoritative credit link counts as a credit. A CreditMemo is a credit; any OTHER non-Payment link
+  // (Estimate, TimeActivity, …) is NOT evidence of one and must never let an unexplained reduction be called credit.
+  const isCreditTxn = (t: string | undefined) => t === 'CreditMemo'
   const linked = new Set(linkedPaymentIds(invoice))
+  const linkedCredit = (invoice.LinkedTxn ?? []).some((t) => isCreditTxn(t.TxnType))
   const history: PaymentHistoryEntry[] = []
+  const appliedIds = new Set<string>()   // linked Payments we actually read AND that positively allocate here
+  let appliedSum = 0        // all read Payments' amounts applied to THIS invoice (coherence vs. the balance drop)
+  let receivedByPayments = 0, creditByPayments = 0
   for (const p of payments) {
     const applied = appliedToInvoiceCents(p, invoice.Id)
     if (applied <= 0) continue
-    let otherLines = 0   // lines spending a credit (CreditMemo, JournalEntry, …) inside the same Payment
-    for (const l of p.Line ?? []) if ((l.LinkedTxn ?? []).some((t) => t.TxnType && t.TxnType !== 'Invoice')) otherLines += cents(l.Amount)
-    const credit = Math.min(applied, otherLines)
+    appliedSum += applied
+    appliedIds.add(String(p.Id))
+    // Distinct invoices this one Payment pays, and the recognized CREDIT lines inside it (credit memos).
+    const invoices = new Set<string>()
+    let otherLines = 0
+    for (const l of p.Line ?? []) {
+      const txns = l.LinkedTxn ?? []
+      for (const t of txns) if (t.TxnType === 'Invoice' && t.TxnId) invoices.add(String(t.TxnId))
+      if (txns.some((t) => isCreditTxn(t.TxnType))) otherLines += cents(l.Amount)
+    }
+    // Cash vs. credit split for THIS invoice: clean when the Payment pays only this invoice (or has no credit).
+    // A Payment spreading credit across SEVERAL invoices has no determinable per-invoice split — don't invent one.
+    let credit: number
+    if (otherLines <= 0) credit = 0
+    else if (invoices.size <= 1) credit = Math.min(applied, otherLines)
+    else return { ok: false, reason: 'A QuickBooks payment applies a credit across more than one invoice — the amount received on this invoice can’t be determined here. Review it in QuickBooks.' }
+    receivedByPayments += applied - credit
+    creditByPayments += credit
     const tag = parsePaymentTag(p.PrivateNote)
     const ours = !!tag && tag.estimateId === estimateId
     const pm = p.PaymentMethodRef?.value != null ? params.methodIds?.[String(p.PaymentMethodRef.value)] : undefined
@@ -246,13 +285,30 @@ export function summarizeInvoicePayments(params: {
       source: ours ? 'pitt_stop' : 'external', attemptId: ours ? tag!.attemptId : null,
     })
   }
+  // Every Payment the invoice LISTS must have been read AND positively allocate to this invoice; otherwise the
+  // read is incomplete (a dropped balance behind it is not evidence of a credit). Fail closed, don't guess.
+  for (const id of linked) if (!appliedIds.has(id)) return { ok: false, reason: 'A payment listed on this invoice could not be read or does not apply to it — the balance can’t be reconciled right now. Try again, or review it in QuickBooks.' }
   history.sort((a, b) => (a.date ?? '').localeCompare(b.date ?? '') || Number(a.paymentId) - Number(b.paymentId))
   const reduced = totalCents - balanceCents
-  // Only Payments QuickBooks lists on the invoice count toward its numbers (a just-created one may not be listed yet).
-  const listed = history.filter((h) => linked.has(h.paymentId))
-  const receivedCents = Math.min(reduced, listed.reduce((s, h) => s + h.receivedCents, 0))
   const state: InvoiceBalanceState = balanceCents === 0 ? 'paid' : balanceCents === totalCents ? 'unpaid' : 'partial'
-  return { ok: true, summary: { state, totalCents, balanceCents, receivedCents, creditCents: reduced - receivedCents, history } }
+  // Reconcile the balance drop against the Payments we actually read, by EVIDENCE — never fill an unexplained
+  // gap by calling it "credit".
+  //   drop === payments applied → fully explained (received = payments' cash, credit = payments' credit memos);
+  //   drop  >  payments applied → extra reduction: a credit ONLY if the invoice links one, else unexplained
+  //                               (a missing/unread Payment) → refuse, don't guess;
+  //   drop  <  payments applied → a Payment is visible the balance hasn't absorbed (lagging read) → not coherent,
+  //                               report only what the balance reflects, never as credit.
+  const extra = reduced - appliedSum
+  let receivedCents: number, creditCents: number, coherent: boolean
+  if (extra === 0) {
+    receivedCents = receivedByPayments; creditCents = creditByPayments; coherent = true
+  } else if (extra > 0) {
+    if (!linkedCredit) return { ok: false, reason: 'The invoice balance is lower than its payments explain and no credit is linked — it can’t be reconciled right now. Review it in QuickBooks.' }
+    receivedCents = receivedByPayments; creditCents = creditByPayments + extra; coherent = true
+  } else {
+    receivedCents = Math.min(reduced, receivedByPayments); creditCents = Math.max(0, reduced - receivedCents); coherent = false
+  }
+  return { ok: true, summary: { state, totalCents, balanceCents, receivedCents, creditCents, history, coherent } }
 }
 
 /**

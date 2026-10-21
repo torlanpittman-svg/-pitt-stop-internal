@@ -48,6 +48,9 @@ export interface InvoicePaymentState {
   balanceCents: number | null
   receivedCents: number | null
   creditCents: number | null
+  /** When the aggregate above was last read from QuickBooks (null = never). These are cached figures, not live:
+   *  the UI shows them "as of" this time, never as a current total, and labels them not-refreshed after a failure. */
+  checkedAt: string | null
   method: string | null
   amountCents: number | null
   paidAt: string | null
@@ -86,6 +89,7 @@ function buildPaymentState(est: FullEstimate['estimate'] | null | undefined): In
     balanceCents: est?.qbPaymentBalanceCents ?? null,
     receivedCents: est?.qbPaymentReceivedCents ?? null,
     creditCents: est?.qbPaymentCreditCents ?? null,
+    checkedAt: iso(est?.qbPaymentCheckedAt),
     method: est?.qbPaymentMethod ?? null,
     amountCents: est?.qbPaymentAmountCents ?? null,
     paidAt: iso(est?.qbPaidAt),

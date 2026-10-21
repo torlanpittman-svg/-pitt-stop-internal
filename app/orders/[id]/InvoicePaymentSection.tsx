@@ -6,14 +6,33 @@
  * server-side (apps/quickbooks/retail-payment-service.ts); this only drives the endpoints and shows their result.
  * "Paid" and "Partially paid" are shown ONLY from the server's QuickBooks-confirmed state — never optimistically.
  */
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { PAID_METHOD_LABEL, parseAmountInput, type PaidMethod, type PaymentMethodKey } from '@/apps/quickbooks/retail-payment'
 import type { InvoiceDraftData } from './InvoiceDraftPanel'
+
+/** The amount/method entry to show after a server preview is applied to an open sheet.
+ *  - a pinned unconfirmed attempt always wins (it can only be retried as that method + amount);
+ *  - otherwise a deliberate recheck ("Check QuickBooks", or recovering a lost response) KEEPS what the person
+ *    typed, while opening the sheet fresh ("Record Payment" / "Record another payment") clears it.
+ *  Exported + unit-tested because there is no DOM test environment here (node-only vitest). */
+export function nextEntry(
+  prev: { method: PaymentMethodKey | null; amountText: string; amountEdited: boolean },
+  pv: { pendingMethod?: PaymentMethodKey | null; pendingAmountCents?: number | null },
+  keep: boolean,
+): { method: PaymentMethodKey | null; amountText: string; amountEdited: boolean } {
+  if (pv.pendingMethod) {
+    return pv.pendingAmountCents != null
+      ? { method: pv.pendingMethod, amountText: (pv.pendingAmountCents / 100).toFixed(2), amountEdited: true }
+      : { method: pv.pendingMethod, amountText: prev.amountText, amountEdited: prev.amountEdited }
+  }
+  return keep ? prev : { method: null, amountText: '', amountEdited: false }
+}
 
 const money = (c: number) => `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const methodLabel = (m: string | null | undefined) => (m && PAID_METHOD_LABEL[m as PaidMethod]) || 'Recorded in QuickBooks'
 const centsText = (c: number) => (c / 100).toFixed(2)
 const shortDate = (d: string | null) => (d ? new Date(d.length === 10 ? `${d}T12:00:00` : d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—')
+const asOf = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null)
 
 interface BalanceView {
   state: 'unpaid' | 'partial' | 'paid'
@@ -75,6 +94,8 @@ export function InvoicePaymentSection({ orderId, qb, paymentEnabled, sendEnabled
   // One id per confirmed payment (method + amount), reused by every retry of it until it is confirmed, so a
   // Save repeated after a lost response finds the payment already recorded instead of recording it twice.
   const confirmation = useRef<{ key: string; method: PaymentMethodKey; cents: number } | null>(null)
+  const sheetRef = useRef<HTMLDivElement>(null)
+  const amountRef = useRef<HTMLInputElement>(null)
 
   const callPayment = useCallback(async (body: object) => {
     const res = await fetch(`/api/workflow/orders/${orderId}/invoice/payment`, {
@@ -83,19 +104,24 @@ export function InvoicePaymentSection({ orderId, qb, paymentEnabled, sendEnabled
     return (await res.json().catch(() => ({ ok: false, status: 'error', error: 'Unexpected response.' }))) as Preview
   }, [orderId])
 
-  /** Apply a fresh server preview to the open sheet, keeping what the person typed unless the server pins it. */
-  const applyPreview = useCallback((d: Preview, keepAmount: boolean) => {
+  /** Apply a fresh server preview to the open sheet. `keep` = a deliberate recheck (preserve typed entry);
+   *  a pinned unconfirmed attempt always overrides. This mirrors the tested nextEntry() rule, but expressed as
+   *  set-or-leave so it never has to read the current entry during render (no ref write during render). */
+  const applyPreview = useCallback((d: Preview, keep: boolean) => {
     setPreview(d)
     if (d.pendingMethod) {
+      // Pinned unconfirmed attempt: force its method; set its amount when known, else leave what was typed.
       setMethod(d.pendingMethod)
       if (d.pendingAmountCents != null) { setAmountText(centsText(d.pendingAmountCents)); setAmountEdited(true) }
-    } else if (!keepAmount) {
-      setAmountEdited(false)
+    } else if (!keep) {
+      // A fresh open clears; a recheck (keep) leaves the typed method/amount untouched.
+      setMethod(null); setAmountText(''); setAmountEdited(false)
     }
   }, [])
 
-  // Opens the sheet: the server verifies the invoice and reads QuickBooks' payments first.
-  const openRecord = useCallback(async (mode: 'record' | 'history' = 'record') => {
+  // Opens the sheet: the server verifies the invoice and reads QuickBooks' payments first. `keep` keeps the
+  // typed amount/method (an explicit "Check QuickBooks" or lost-response recovery), vs. a fresh open which clears.
+  const openRecord = useCallback(async (mode: 'record' | 'history' = 'record', keep = false) => {
     if (inFlight.current) return
     inFlight.current = true; setChecking(true); setMsg(null); setSheetMsg(null); setResult(null)
     try {
@@ -106,8 +132,7 @@ export function InvoicePaymentSection({ orderId, qb, paymentEnabled, sendEnabled
         await onChanged(); return
       }
       if (!d.ok) { setMsg(d.error ?? 'Can’t record a payment right now.'); await onChanged(); return }
-      setMethod(null); setAmountText(''); setAmountEdited(false)
-      applyPreview(d, false)
+      applyPreview(d, keep)
       setStep(mode === 'history' ? 'history' : 'enter')
       if (d.reconciled) setSheetMsg(`QuickBooks confirmed an earlier ${d.methodLabel ?? ''} payment — the balance below includes it.`)
       if (d.reconciled || d.status !== p.status) await onChanged()
@@ -216,7 +241,19 @@ export function InvoicePaymentSection({ orderId, qb, paymentEnabled, sendEnabled
 
   const off = disabled || checking || saving || emailing
   const emailUnconfirmed = p.email.status === 'uncertain' || p.email.status === 'sending'
-  const closeSheet = () => { if (!saving) { setPreview(null); setResult(null); setSheetMsg(null) } }
+  const closeSheet = useCallback(() => { if (!inFlight.current) { setPreview(null); setResult(null); setSheetMsg(null) } }, [])
+  // Move focus into the sheet when it opens and let Escape close it (keyboard + screen-reader users).
+  useEffect(() => {
+    if (!preview) return
+    sheetRef.current?.focus()
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeSheet() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [preview, closeSheet])
+  // Focus the amount field once a method is chosen (unless the amount is pinned to an unconfirmed attempt).
+  useEffect(() => {
+    if (preview && step === 'enter' && method && preview.pendingAmountCents == null) amountRef.current?.focus()
+  }, [preview, step, method])
   const installments = (p.receivedCents ?? 0) > 0 && p.amountCents != null && p.totalCents != null && p.amountCents < p.totalCents
 
   return (
@@ -228,7 +265,7 @@ export function InvoicePaymentSection({ orderId, qb, paymentEnabled, sendEnabled
             {(p.totalCents ?? p.amountCents) != null && <span className="text-green-200 font-semibold tabular-nums">{money((p.totalCents ?? p.amountCents)!)}</span>}
           </div>
           <p className="text-gray-300 text-sm mt-0.5">{installments ? `Final payment ${methodLabel(p.method)} ${money(p.amountCents!)}` : methodLabel(p.method)}{p.paidAt ? ` · ${new Date(p.paidAt).toLocaleString()}` : ''}</p>
-          <p className="text-gray-500 text-xs mt-0.5">QuickBooks shows a $0.00 balance.</p>
+          <p className="text-gray-500 text-xs mt-0.5">QuickBooks showed a $0.00 balance{p.checkedAt ? ` as of ${asOf(p.checkedAt)}` : ''}.</p>
           {p.email.status === 'sent' && <p className="text-gray-400 text-xs mt-2">Paid invoice sent by QuickBooks{p.email.to ? ` to ${p.email.to}` : ''}{p.email.sentAt ? ` · ${new Date(p.email.sentAt).toLocaleString()}` : ''}</p>}
           {(p.email.status === 'error' || p.email.status === 'uncertain') && <p className="text-amber-400 text-xs mt-2">{p.email.status === 'uncertain' ? 'Paid invoice email not confirmed by QuickBooks — it may still have been sent' : 'Paid invoice email failed'} — the payment is still recorded.</p>}
           <button type="button" onClick={() => openRecord('history')} disabled={off} className="mt-2 text-xs font-semibold text-green-300/90 underline underline-offset-2 disabled:opacity-50">
@@ -246,7 +283,8 @@ export function InvoicePaymentSection({ orderId, qb, paymentEnabled, sendEnabled
               <p className="text-gray-300 text-sm mt-0.5 tabular-nums">
                 {money(p.receivedCents ?? 0)} received{(p.creditCents ?? 0) > 0 ? ` · ${money(p.creditCents!)} credits` : ''}{p.totalCents != null ? ` of ${money(p.totalCents)}` : ''}
               </p>
-              <p className="text-gray-500 text-xs mt-0.5">From QuickBooks{p.status === 'recorded' && p.method ? ` · last: ${methodLabel(p.method)}${p.amountCents != null ? ` ${money(p.amountCents)}` : ''}` : ''}</p>
+              <p className="text-gray-500 text-xs mt-0.5">From QuickBooks{p.checkedAt ? ` · as of ${asOf(p.checkedAt)}` : ''}{p.status === 'recorded' && p.method ? ` · last: ${methodLabel(p.method)}${p.amountCents != null ? ` ${money(p.amountCents)}` : ''}` : ''}</p>
+              {msg && <p className="text-amber-400 text-xs mt-1">Last confirmed figures shown — the latest QuickBooks check didn’t complete. Open Record Payment to refresh.</p>}
             </div>
           )}
           {(unconfirmed || p.status === 'error') && (
@@ -303,13 +341,13 @@ export function InvoicePaymentSection({ orderId, qb, paymentEnabled, sendEnabled
       {/* Record Payment sheet: numbers → method → amount received → confirm → QuickBooks-confirmed result. */}
       {preview && (
         <div className="fixed inset-0 z-[60] flex flex-col justify-end bg-black/70" onClick={closeSheet}>
-          <div className="bg-gray-900 rounded-t-3xl px-4 sm:px-6 pt-5 pb-8 max-h-[92dvh] overflow-y-auto overscroll-contain" role="dialog" aria-modal="true" aria-label={step === 'history' ? 'Payment history' : 'Record Payment'} onClick={(e) => e.stopPropagation()}>
+          <div ref={sheetRef} tabIndex={-1} className="bg-gray-900 rounded-t-3xl px-4 sm:px-6 pt-5 pb-8 max-h-[92dvh] overflow-y-auto overscroll-contain outline-none" role="dialog" aria-modal="true" aria-label={step === 'history' ? 'Payment history' : 'Record Payment'} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <h3 className="text-white font-bold text-lg">{step === 'history' ? 'Payment history' : step === 'done' ? (result?.status === 'paid' ? 'Paid' : 'Payment recorded') : 'Record Payment'}</h3>
                 <p className="text-gray-400 text-xs">Invoice{preview.invoiceNumber ? ` #${preview.invoiceNumber}` : ''} · records money already collected — no card is charged.</p>
               </div>
-              <button type="button" onClick={closeSheet} disabled={saving} aria-label="Close" className="shrink-0 h-9 w-9 rounded-full border border-gray-700 text-gray-400 text-lg leading-none active:opacity-70 disabled:opacity-40">×</button>
+              <button type="button" onClick={closeSheet} disabled={saving} aria-label="Close" className="shrink-0 h-11 w-11 rounded-full border border-gray-700 text-gray-400 text-xl leading-none active:opacity-70 disabled:opacity-40">×</button>
             </div>
 
             {step === 'done' && result ? (
@@ -363,13 +401,13 @@ export function InvoicePaymentSection({ orderId, qb, paymentEnabled, sendEnabled
                         <label htmlFor={`amt-${orderId}`} className="text-gray-300 text-sm font-semibold">Amount received</label>
                         <div className={`mt-1.5 flex items-center rounded-xl border bg-gray-800/70 px-3 ${amountError ? 'border-amber-600' : 'border-gray-600 focus-within:border-indigo-400'}`}>
                           <span className="text-gray-400 text-2xl font-bold">$</span>
-                          <input id={`amt-${orderId}`} type="text" inputMode="decimal" autoComplete="off" enterKeyHint="done"
+                          <input ref={amountRef} id={`amt-${orderId}`} type="text" inputMode="decimal" autoComplete="off" enterKeyHint="done"
                             value={shownAmount} readOnly={pinned != null} disabled={saving}
                             onChange={(e) => { setAmountEdited(true); setAmountText(e.target.value) }}
                             aria-invalid={!!amountError} aria-describedby={`amt-help-${orderId}`}
                             className="min-w-0 flex-1 bg-transparent py-3 pl-1 text-white text-2xl font-bold tabular-nums outline-none read-only:text-gray-300" />
                           {pinned == null && cents !== full && (
-                            <button type="button" onClick={() => { setAmountEdited(false); setAmountText('') }} className="shrink-0 rounded-lg border border-gray-600 px-2.5 py-1.5 text-xs font-semibold text-gray-200 active:opacity-70">
+                            <button type="button" onClick={() => { setAmountEdited(false); setAmountText('') }} className="shrink-0 min-h-11 rounded-lg border border-gray-600 px-3 py-2 text-xs font-semibold text-gray-200 active:opacity-70">
                               Full {money(full)}
                             </button>
                           )}
@@ -388,7 +426,7 @@ export function InvoicePaymentSection({ orderId, qb, paymentEnabled, sendEnabled
                     <div className="flex gap-3 mt-5">
                       <button type="button" onClick={closeSheet} disabled={saving} className="flex-1 py-3.5 rounded-2xl border border-gray-700 text-gray-300 font-semibold active:opacity-70 disabled:opacity-40">Cancel</button>
                       {preview.status === 'uncertain' || sheetMsg?.startsWith('Network') ? (
-                        <button type="button" onClick={() => openRecord('record')} disabled={off} className="flex-1 py-3.5 rounded-2xl border border-indigo-500 text-indigo-200 font-semibold active:opacity-70 disabled:opacity-40">{checking ? 'Checking…' : 'Check QuickBooks'}</button>
+                        <button type="button" onClick={() => openRecord('record', true)} disabled={off} className="flex-1 py-3.5 rounded-2xl border border-indigo-500 text-indigo-200 font-semibold active:opacity-70 disabled:opacity-40">{checking ? 'Checking…' : 'Check QuickBooks'}</button>
                       ) : null}
                       <button type="button" onClick={() => setStep('confirm')} disabled={saving || !canReview} className="flex-1 py-3.5 rounded-2xl bg-emerald-600 text-white font-bold active:opacity-80 disabled:opacity-50">
                         Review

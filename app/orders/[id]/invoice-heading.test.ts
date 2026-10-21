@@ -1,5 +1,25 @@
 import { describe, it, expect } from 'vitest'
 import { invoiceHeading } from './InvoiceDraftPanel'
+import { nextEntry } from './InvoicePaymentSection'
+
+describe('Record Payment recovery: what the sheet keeps after a server preview', () => {
+  const typed = { method: 'cash' as const, amountText: '50.00', amountEdited: true }
+  it('a deliberate recheck keeps the typed amount + method (lost response / "Check QuickBooks")', () => {
+    expect(nextEntry(typed, {}, true)).toEqual(typed)
+  })
+  it('opening fresh clears the entry ("Record Payment" / "Record another payment")', () => {
+    expect(nextEntry(typed, {}, false)).toEqual({ method: null, amountText: '', amountEdited: false })
+  })
+  it('a pinned unconfirmed attempt always overrides, whatever was typed', () => {
+    expect(nextEntry(typed, { pendingMethod: 'check', pendingAmountCents: 41100 }, true))
+      .toEqual({ method: 'check', amountText: '411.00', amountEdited: true })
+    expect(nextEntry(typed, { pendingMethod: 'check', pendingAmountCents: 41100 }, false))
+      .toEqual({ method: 'check', amountText: '411.00', amountEdited: true })
+  })
+  it('a pinned method with no pinned amount keeps the typed amount (recheck)', () => {
+    expect(nextEntry(typed, { pendingMethod: 'cash' }, true)).toEqual({ method: 'cash', amountText: '50.00', amountEdited: true })
+  })
+})
 
 const qb = (over: Partial<Parameters<typeof invoiceHeading>[0] & object> = {}) => ({
   status: 'none', linked: false, invoiceNumber: null, error: null, syncNeeded: false, needsReview: false,

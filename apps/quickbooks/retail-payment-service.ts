@@ -300,6 +300,13 @@ async function verifyAndReconcile(orderId: string, actor: string | null, opts: {
     if (!(await markConfirmed(est, c, s, actor, 'recorded', fence))) return { ok: false, result: await currentPaymentResult(orderId) }
     confirmed = confirmedResult(est, c, s, { reconciled: true })
     if (s.state === 'paid') return { ok: false, result: confirmed }
+  } else if (open && s.state === 'paid') {
+    // A dangling unconfirmed attempt whose OWN payment is not in QuickBooks, while the balance is now zero
+    // (paid by something else): we can neither confirm nor clear it from the balance — it may have recorded a
+    // payment not visible yet, or the zero balance is unrelated and our attempt could still be a duplicate.
+    // Keep the attempt unresolved (aggregate cached separately); never emit a paid receipt for it.
+    await cacheBalance(est.id, s, fence)
+    return { ok: true, v: light, summary: s, read, confirmed: null }
   } else if (s.state === 'paid') {
     // Adopt a zero balance (paid online / in QuickBooks / an earlier lost response) — never pay again.
     const c = latestApplied(s)
@@ -448,11 +455,14 @@ export async function recordRetailPayment(params: {
   }
   // An earlier unconfirmed attempt turned out to be in QuickBooks: it is now confirmed — nothing new is written.
   if (r.confirmed) return r.confirmed
-  if (seenBalance != null && seenBalance !== balance) {
+
+  const pending = unresolvedAttempt((await getEstimateRow(orderId))!)
+  // A changed balance means renewed confirmation — BUT a dangling unconfirmed attempt is resolved by its own
+  // branch below (which never records a second, different payment), so it takes priority over balance_changed.
+  if (!pending && seenBalance != null && seenBalance !== balance) {
     return { ok: false, status: 'refused', block: 'balance_changed', amountCents: balance, balance: view(s), ...ids, error: `QuickBooks now shows ${money(balance)} open (you confirmed ${money(seenBalance)}). This payment was not recorded — check the payment history, then the amount, and confirm again.` }
   }
 
-  const pending = unresolvedAttempt((await getEstimateRow(orderId))!)
   let target: number           // the amount to record
   let removeFee = false
   if (drift) {
@@ -468,6 +478,13 @@ export async function recordRetailPayment(params: {
     }
     target = pending.amountCents
   } else {
+    // A brand-new installment needs a COHERENT snapshot: QuickBooks' balance must already reflect every payment
+    // it reports applied to this invoice. A lagging balance (a recent payment visible as a Payment but not yet
+    // in the invoice Balance/LinkedTxn) is stale — recording against it could double up. (A retry of the SAME
+    // confirmation, handled above by its tag, is still allowed — it trusts the payment record, not the balance.)
+    if (!s.coherent) {
+      return { ok: false, status: 'refused', block: 'invoice_busy', ...ids, balance: view(s), error: 'QuickBooks is still catching up on a recent payment to this invoice. Wait a moment, then open Record Payment again — nothing was recorded.' }
+    }
     if (s.state === 'unpaid' && balance !== v.common.draftTotalCents) {
       return { ok: false, status: 'refused', block: 'total_mismatch', error: BLOCK_MSG.total_mismatch }
     }
@@ -620,6 +637,15 @@ export async function recordRetailPayment(params: {
       }
       if (us.state !== 'paid' && (expected == null ? us.state === 'unpaid' : us.balanceCents === expected)) return null
       if (us.state === 'paid') {
+        // A zero balance NOT reached by our own payment: adopt it only when this is a FRESH attempt (we have
+        // written nothing, so there is no payment of ours to double up). When resuming an unconfirmed attempt,
+        // our earlier payment might also exist — never confirm from the balance; a person reviews a duplicate.
+        if (resumeAttempt) {
+          const msg = `QuickBooks shows this invoice paid, but the earlier ${label} payment of ${money(target)} was never confirmed — review it in QuickBooks for a possible duplicate before recording anything else.`
+          if (!(await setState({ qbPaymentStatus: 'review', qbPaymentError: msg, ...balancePatch(us) }))) return currentPaymentResult(orderId)
+          await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_review', employeeName: actor, note: msg }).catch(() => {})
+          return { ok: false, status: 'review', error: msg, balance: view(us) }
+        }
         const c = latestApplied(us)
         if (!(await markConfirmed(v.est, c, us, actor, 'reconciled', lockFence))) return currentPaymentResult(orderId)
         return confirmedResult(v.est, c, us, { reconciled: true, alreadyPaid: true })
@@ -754,11 +780,10 @@ export async function recordRetailPayment(params: {
       if (!(await markConfirmed(v.est, c, check.summary, actor, 'recorded', uncertainFence))) return currentPaymentResult(orderId)
       return confirmedResult(v.est, c, check.summary)
     }
-    if (check?.summary?.state === 'paid' && !mine) {
-      const c = latestApplied(check.summary)
-      if (!(await markConfirmed(v.est, c, check.summary, actor, 'reconciled', uncertainFence))) return currentPaymentResult(orderId)
-      return confirmedResult(v.est, c, check.summary, { reconciled: true, alreadyPaid: true })
-    }
+    // A zero balance NOT carrying our attempt's payment is NOT proof this attempt landed — our write may have
+    // created a payment that isn't applied/visible yet, so a zero balance could hide a duplicate. Stay uncertain;
+    // a later Check (by attempt id) confirms it, or a person reconciles it in QuickBooks.
+    if (check?.summary) await cacheBalance(v.est.id, check.summary, uncertainFence)
     return { ok: false, status: 'uncertain', method, methodLabel: label, amountCents: target, error: `QuickBooks did not confirm the ${label} payment of ${money(target)}. Nothing is shown as recorded. Tap Check again — retrying it as ${label} for ${money(target)} is safe and will not record a second payment.` }
   }
 }

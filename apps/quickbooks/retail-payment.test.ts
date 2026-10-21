@@ -122,10 +122,18 @@ describe('"Amount received" input → integer cents (never rounded silently)', (
     expect(parseAmountInput('411.5')).toEqual({ ok: true, cents: 41150 })
     expect(parseAmountInput('.05')).toEqual({ ok: true, cents: 5 })
     expect(parseAmountInput('2000.')).toEqual({ ok: true, cents: 200000 })
+    expect(parseAmountInput('1,234,567.89')).toEqual({ ok: true, cents: 123456789 })
   })
   it('rejects empty, zero, negative, malformed and excess precision', () => {
     for (const t of ['', '  ', '0', '0.00', '-5', '1.234', '2,000.001', 'abc', '1e3', '12.3.4', '$', '+5', '99999999999999999'])
       expect(parseAmountInput(t).ok, t).toBe(false)
+  })
+  it('validates comma grouping before stripping it — malformed grouping is rejected, not silently read', () => {
+    expect(parseAmountInput('20,00')).toMatchObject({ ok: false })   // NOT $2,000
+    for (const t of [',000', '1,2345', '2,00', '1,23', '2,000,00', '1,000,', '2,0.00', '1.0,0'])
+      expect(parseAmountInput(t).ok, t).toBe(false)
+    expect(parseAmountInput('2,000')).toEqual({ ok: true, cents: 200000 })
+    expect(parseAmountInput('2,000.5')).toEqual({ ok: true, cents: 200050 })
   })
   it('server side: only positive safe integers are cents', () => {
     expect(validCents(41100)).toBe(41100)
@@ -162,6 +170,58 @@ describe('invoice payment summary — money received vs credits, history per pay
     expect(summarizeInvoicePayments({ invoice: { Id: '900', TotalAmt: 10 }, payments: [], estimateId: EST }).ok).toBe(false)
     expect(summarizeInvoicePayments({ invoice: inv(10, -1, []), payments: [], estimateId: EST }).ok).toBe(false)
     expect(summarizeInvoicePayments({ invoice: inv(10, 11, []), payments: [], estimateId: EST }).ok).toBe(false)
+  })
+  it('a credit spread by one Payment across several invoices is not split — the read is refused, not guessed', () => {
+    // Payment pays I1 (this invoice, 900) 100 and I2 (another, 901) 100, funded by a 50 credit memo. The
+    // cash-vs-credit share for THIS invoice is indeterminable → ok:false (never 50/50 double-counted).
+    const mixed = pay('6', 150, '', { Line: [
+      { Amount: 100, LinkedTxn: [{ TxnId: '900', TxnType: 'Invoice' }] },
+      { Amount: 100, LinkedTxn: [{ TxnId: '901', TxnType: 'Invoice' }] },
+      { Amount: 50, LinkedTxn: [{ TxnId: '7', TxnType: 'CreditMemo' }] },
+    ] })
+    expect(summarizeInvoicePayments({ invoice: inv(2411, 2211, ['6']), payments: [mixed], estimateId: EST }).ok).toBe(false)
+  })
+  it('a single-invoice payment with a credit memo still splits cash vs. credit cleanly', () => {
+    const one = pay('8', 100, '', { Line: [
+      { Amount: 150, LinkedTxn: [{ TxnId: '900', TxnType: 'Invoice' }] },
+      { Amount: 50, LinkedTxn: [{ TxnId: '7', TxnType: 'CreditMemo' }] },
+    ] })
+    expect(summarizeInvoicePayments({ invoice: inv(2411, 2261, ['8']), payments: [one], estimateId: EST }))
+      .toMatchObject({ ok: true, summary: { history: [{ appliedCents: 15000, receivedCents: 10000, creditCents: 5000 }] } })
+  })
+  it('coherent reflects whether the balance has absorbed every applied Payment', () => {
+    // Balance already down by the applied 2000 → coherent.
+    expect(summarizeInvoicePayments({ invoice: inv(2411, 411, ['1']), payments: [pay('1', 2000, paymentTag(EST, ATTEMPT, 'cash'))], estimateId: EST }))
+      .toMatchObject({ ok: true, summary: { coherent: true, receivedCents: 200000, creditCents: 0 } })
+    // A payment is visible (by its tag) but the invoice Balance/LinkedTxn haven't caught up → NOT coherent.
+    expect(summarizeInvoicePayments({ invoice: inv(2411, 2411, []), payments: [pay('1', 2000, paymentTag(EST, ATTEMPT, 'cash'))], estimateId: EST }))
+      .toMatchObject({ ok: true, summary: { coherent: false } })
+  })
+  it('a dropped balance behind a Payment we could not read is NOT credit — it fails closed', () => {
+    // The invoice lists Payment P1 but we have no data for it (missing read). Must not become creditCents:200000.
+    expect(summarizeInvoicePayments({ invoice: inv(2411, 411, ['P1']), payments: [], estimateId: EST }).ok).toBe(false)
+  })
+  it('a balance drop with NO linked payment and NO linked credit is unexplained → refused, never guessed as credit', () => {
+    expect(summarizeInvoicePayments({ invoice: inv(2411, 1411, []), payments: [], estimateId: EST }).ok).toBe(false)
+  })
+  it('a reduction the invoice itself links to a credit memo IS reported as credit', () => {
+    const invWithCredit = { Id: '900', TotalAmt: 2411, Balance: 1411, LinkedTxn: [{ TxnId: 'CM1', TxnType: 'CreditMemo' }] }
+    expect(summarizeInvoicePayments({ invoice: invWithCredit, payments: [], estimateId: EST }))
+      .toMatchObject({ ok: true, summary: { receivedCents: 0, creditCents: 100000, coherent: true } })
+  })
+  it('a non-credit link (Estimate/TimeActivity/…) is NOT evidence of a credit — the reduction is refused', () => {
+    const invWithEstimate = { Id: '900', TotalAmt: 2411, Balance: 1411, LinkedTxn: [{ TxnId: 'EST1', TxnType: 'Estimate' }] }
+    expect(summarizeInvoicePayments({ invoice: invWithEstimate, payments: [], estimateId: EST }).ok).toBe(false)
+  })
+  it('a Payment the invoice lists but with no positive allocation to it is incomplete, not credit', () => {
+    // Invoice links Payment P2, but P2 (present) applies only to a DIFFERENT invoice → cannot reconcile.
+    const elsewhere: QbPayment = { Id: 'P2', TotalAmt: 1000, PrivateNote: '', Line: [{ Amount: 1000, LinkedTxn: [{ TxnId: '901', TxnType: 'Invoice' }] }] }
+    expect(summarizeInvoicePayments({ invoice: inv(2411, 2311, ['P2']), payments: [elsewhere], estimateId: EST }).ok).toBe(false)
+  })
+  it('a visible payment the balance already reflects (not yet in LinkedTxn) counts as received, not credit', () => {
+    // Balance dropped by 2000 and the tagged Payment is visible but not listed — must be received, never credit.
+    expect(summarizeInvoicePayments({ invoice: inv(2411, 411, []), payments: [pay('1', 2000, paymentTag(EST, ATTEMPT, 'cash'))], estimateId: EST }))
+      .toMatchObject({ ok: true, summary: { receivedCents: 200000, creditCents: 0, coherent: true } })
   })
 })
 

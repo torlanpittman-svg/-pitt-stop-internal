@@ -12,7 +12,7 @@ import { pushSchema } from 'drizzle-kit/api'
 import { eq } from 'drizzle-orm'
 import * as schema from '@/drizzle/schema'
 import { QBApiError } from './errors'
-import type { QbPayment } from './retail-payment'
+import { paymentTag, type QbPayment } from './retail-payment'
 
 const holder: { db: PgliteDatabase<typeof schema> | null } = { db: null }
 vi.mock('@/platform/db', () => ({ getDb: () => holder.db }))
@@ -1055,8 +1055,14 @@ describe('Installments — partial payments and later payments on the same invoi
     expect(QB.createArgs).toHaveLength(1)
   })
 
-  it('a balance reduction no payment explains is a credit/adjustment, never money received', async () => {
+  it('a balance reduction no payment explains and no credit is linked is refused, never silently called credit', async () => {
+    QB.invoice.Balance = 2311   // $100 off with nothing (no payment, no linked credit) to explain it
+    expect(await preview()).toMatchObject({ ok: false, block: 'invalid_balance' })
+  })
+
+  it('a balance reduction the invoice links to a credit memo is reported as a credit, not money received', async () => {
     QB.invoice.Balance = 2311
+    QB.invoice.LinkedTxn = [{ TxnId: 'CM1', TxnType: 'CreditMemo' }]
     expect((await preview()).balance).toMatchObject({ state: 'partial', receivedCents: 0, creditCents: 10000, history: [] })
   })
 
@@ -1084,6 +1090,37 @@ describe('Installments — partial payments and later payments on the same invoi
   it('dealer jobs are refused (Dealer Check-In owns them)', async () => {
     QB.verifyBlock = 'dealer'
     expect(await pay('cash', 1000, TOTAL)).toMatchObject({ ok: false, block: 'dealer' })
+    expect(QB.createCalls).toBe(0)
+  })
+
+  it('an unconfirmed attempt is kept, not erased, when an outside payment closes the balance (no false Paid)', async () => {
+    QB.createMode = 'timeout_before'   // our write never reached QuickBooks → uncertain, nothing created
+    expect(await pay('cash', 50000, TOTAL)).toMatchObject({ status: 'uncertain' })
+    expect(QB.payments.filter((p) => (p.PrivateNote ?? '').includes('PSPAY')).length).toBe(0)
+    applyPayment(TOTAL, 'paid in full by the customer online')   // someone else zeroes the balance
+    const pv = await preview()
+    // The aggregate may read paid, but the dangling attempt is retained as uncertain — never a Paid receipt.
+    expect(pv).toMatchObject({ status: 'uncertain' })
+    expect(pv.alreadyPaid).toBeFalsy()
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'uncertain', qbPaymentBalanceState: 'paid' })
+  })
+
+  it('an external full payment landing while we resume an unconfirmed attempt → review (possible duplicate), never Paid', async () => {
+    QB.createMode = 'timeout_before'
+    expect(await pay('cash', 50000, TOTAL)).toMatchObject({ status: 'uncertain' })
+    QB.beforeLock = async () => { applyPayment(TOTAL, 'paid in full elsewhere') }   // lands just before our lock
+    expect(await pay('cash', 50000, TOTAL)).toMatchObject({ ok: false, status: 'review' })
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'review' })
+    expect(QB.payments.filter((p) => (p.PrivateNote ?? '').includes('PSPAY')).length).toBe(0)   // no second payment
+  })
+
+  it('a lagging invoice read (a payment visible by tag, balance not yet updated) refuses a NEW installment', async () => {
+    // A payment is queryable but the invoice Balance/LinkedTxn have not caught up — recording a fresh
+    // installment against the stale balance could double up. (A retry of a KNOWN attempt, matched by its tag,
+    // is unaffected — that path is covered above.)
+    applyPayment(50000, paymentTag(estId, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'cash'))
+    QB.invoice.Balance = TOTAL / 100; QB.invoice.LinkedTxn = []   // the invoice read lags behind the payment
+    expect(await pay('cash', 60000, TOTAL)).toMatchObject({ ok: false, block: 'invoice_busy' })
     expect(QB.createCalls).toBe(0)
   })
 

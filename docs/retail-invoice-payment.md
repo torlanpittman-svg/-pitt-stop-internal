@@ -250,6 +250,44 @@ $411 left**; later record $411 (any method) on the SAME invoice → **Paid** onc
 - Known, not changed: `review` has no in-app clear (resolved in QuickBooks, then by an admin); the cached aggregate
   can be refreshed out of order by two concurrent readers (display/lock cache only — Sync now also checks live).
 
+### Codex independent review round (2026-10-21)
+- **Dangling attempt vs. an outside payment.** An unconfirmed attempt is no longer erased when a *different*
+  payment/credit closes the balance: `verifyAndReconcile` keeps the attempt as `uncertain` and caches the paid
+  aggregate separately (status split), never emitting a Paid receipt for it. Resuming such an attempt when the
+  invoice was paid elsewhere → `review` (possible duplicate). The post-ambiguous-error path no longer confirms
+  from a zero balance without the attempt's own applied payment.
+- **Stale invoice/payment snapshot.** `summarizeInvoicePayments` now reports `coherent`; a brand-new installment
+  is refused (`invoice_busy`, "QuickBooks is still catching up") when a Payment is visible but the invoice
+  Balance/LinkedTxn lag. A retry of a KNOWN confirmation (matched by its tag) is unaffected.
+- **Mixed-invoice credit allocation.** When one Payment spreads a credit across several invoices, the cash-vs-credit
+  split for this invoice is indeterminable → the read is refused (`invalid_balance`), never a guessed 50/50 split.
+  A single-invoice payment with a credit memo still splits cleanly.
+- **Comma grouping.** `parseAmountInput` validates thousands grouping before stripping commas: `2,000.00` ok,
+  `20,00` / `,000` / `1,2345` rejected (previously `20,00` was read as `$2,000`).
+- **Phone recovery (`nextEntry`, exported + unit-tested; no DOM test env here).** "Check QuickBooks" / lost-response
+  recovery now KEEP the typed amount + method; a fresh open clears them; a pinned attempt always overrides.
+  `balance_changed` loads a fresh server preview (full amounts per method) instead of hand-building them. Added
+  dialog focus + Escape, amount-field autofocus, and 44px close/"Full"-chip touch targets.
+
+### Codex review round 2 (2026-10-21)
+- **A missing/unexplained balance drop is never guessed as credit.** `summarizeInvoicePayments` reconciles by
+  evidence: a Payment the invoice lists but we couldn't read → `ok:false` (incomplete read); a drop larger than
+  the read Payments explain is credit ONLY if the invoice links a credit memo, else `ok:false`; a Payment visible
+  but not yet absorbed by the balance → not coherent, never credit; a visible Payment the balance already reflects
+  (not yet in LinkedTxn) counts as **received**, not credit.
+- **UI cached figures are labelled, not claimed as live.** The partial/paid cards show the aggregate "as of
+  &lt;checked-at&gt;" (new `checkedAt` on the payment state), and when the latest refresh didn't complete the card
+  says the last-confirmed figures are shown and to re-open Record Payment to refresh.
+- **Credit recognition restricted to `CreditMemo`** (round-2 follow-up): any other non-Payment invoice link
+  (Estimate, TimeActivity, …) is not evidence of a credit; a listed Payment that isn't readable or doesn't
+  positively allocate to this invoice is an incomplete read → refused.
+
+**Verification status for the Codex rounds (2026-10-21):** an independent phone test passed (record $2,000 then
+$411, amount+method preserved on a network failure, same-confirmationId retry, distinct later installment, no
+overflow). A full suite of 183 files / 2,186 tests + `tsc` passed **before** the round-2 summarize/UI edits above —
+that is prior-round evidence, **not** a post-change result. The suite/tsc/lint/build must be re-run by Codex on the
+current code; no green claim is made here for the round-2 changes.
+
 ## Open owner decisions (nothing guessed)
 1. Verify the proposed production mappings (Cash 1 / Check 2 / Credit Card 3 → Undeposited Funds 52) against
    the production QuickBooks company before activation.
@@ -276,3 +314,12 @@ $411 left**; later record $411 (any method) on the SAME invoice → **Paid** onc
 1. Apply `drizzle/migrations/manual/0059_retail_invoice_payment.sql` (additive, idempotent; now also adds
    `qb_paid_email_prior_delivery_at` and `qb_payment_card_fee_removed`).
 2. Deploy. 3. Set `retail_payment_mappings` (confirmed values). 4. Set `retail_qb_payment_enabled=true`.
+
+
+## Final independent release verification — 2026-10-21
+
+Codex independently verified the final source after all three correction rounds with the same Claude session `d70aa1f7-f2f0-4ae3-ad5a-d96c6c7e3b52`. Full suite: **183 files, 2,193 tests passed**; TypeScript check passed; ESLint passed for the payment helper/service, InvoicePaymentSection, and invoice-draft; production webpack build passed. Source hashes were compared against the tested clean snapshot. Three additional independent service regressions passed (lost-response duplicate, unresolved attempt plus external payoff, lagging invoice balance blocking another installment).
+
+A local 390×844 browser test of the actual payment component passed: $2,000 followed by $411, retained method/amount after network failure, stable confirmation key on retry and new key for next installment, cached-balance timestamp and failed-refresh warning, Paid at zero, and no horizontal overflow. All payment responses were fictional/local mocks. No real accounting writes, sends, production migration, push, or deployment occurred.
+
+Release candidate includes e877be2 **plus the follow-up correction commit**; do not release e877be2 alone. Remote main was rechecked at bb2aa2830a7d78331fb21054d03715a9e4c08086. Migration 0061 remains unapplied. Before release, reverify deployment/DB target and obtain owner approval for applying the migration and deploying. QuickBooks reported subscription RESTRICTED; real payment-write capability remains unverified. Unexplained/incomplete credit evidence fails closed; unusual credit allocation and post-payment invoice corrections may require QuickBooks.
