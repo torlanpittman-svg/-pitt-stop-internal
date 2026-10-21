@@ -8,7 +8,7 @@
 import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
 import { createDraftSequencer, invoiceActionsLocked, interpretDraftResponse, draftActionReady } from './invoice-draft-sync'
 import { InvoicePaymentSection } from './InvoicePaymentSection'
-import { PAYMENT_LOCKS_INVOICE } from '@/apps/quickbooks/retail-payment'
+import { paymentLocksInvoice } from '@/apps/quickbooks/retail-payment'
 import type { InvoicePaymentState } from '@/apps/workflow/invoice-draft'
 
 export interface InvoiceDraftData {
@@ -129,11 +129,12 @@ export function InvoiceTotals({ draft, subtotal, canEdit, busy, onToggle, tax, t
 }
 
 /** "Invoice Draft" until a QuickBooks invoice exists; then its number and true state (never implies a send). */
-export function invoiceHeading(qb: (Omit<InvoiceDraftData['qb'], 'payment'> & { payment?: Pick<InvoicePaymentState, 'status'> }) | null | undefined): { title: string; status: string | null } {
+export function invoiceHeading(qb: (Omit<InvoiceDraftData['qb'], 'payment'> & { payment?: Pick<InvoicePaymentState, 'status'> & Partial<Pick<InvoicePaymentState, 'balanceState'>> }) | null | undefined): { title: string; status: string | null } {
   if (!qb?.linked) return { title: 'Invoice Draft', status: null }
   const title = qb.invoiceNumber ? `Invoice #${qb.invoiceNumber}` : 'Invoice'
-  // Paid only once QuickBooks confirmed a zero balance (payment.status='paid').
+  // Paid only once QuickBooks confirmed a zero balance (payment.status='paid'); partial = money applied, balance open.
   const status = qb.payment?.status === 'paid' ? 'Paid'
+    : qb.payment?.balanceState === 'partial' ? 'Partially paid'
     : qb.needsReview ? 'Needs review'
     : qb.status === 'error' ? 'Sync failed'
     : qb.syncNeeded ? (qb.sent ? 'Sent · sync needed' : 'Created in QuickBooks · sync needed')
@@ -519,13 +520,14 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                   const stale = q.needsReview || q.syncNeeded || q.status === 'error'
                   // A recorded / in-flight / unconfirmed payment freezes the invoice: no Sync, and the unpaid
                   // Send/Resend give way to Email Paid Invoice (in the payment section below).
-                  const payLocked = PAYMENT_LOCKS_INVOICE.includes(q.payment.status)
+                  const payLocked = paymentLocksInvoice(q.payment)
                   const current = !q.syncNeeded && !q.needsReview && q.status !== 'error' && !payLocked  // Send/Resend allowed
                   return (
                   <div className={`mt-4 rounded-xl border px-4 py-3 ${stale || q.resendRecommended ? 'border-amber-900/60 bg-amber-950/30' : 'border-green-900/60 bg-green-950/40'}`}>
                     <p className={`text-sm font-semibold ${stale || q.resendRecommended ? 'text-amber-300' : 'text-green-300'}`}>QuickBooks Invoice{q.invoiceNumber ? ` #${q.invoiceNumber}` : ''}</p>
                     <p className="text-gray-400 text-xs mt-0.5">
                       {q.payment.status === 'paid' ? 'Paid'
+                        : q.payment.balanceState === 'partial' ? 'Partially paid'
                         : q.needsReview ? 'Needs review'
                         : q.status === 'error' ? 'Sync failed'
                         : q.syncNeeded ? (q.sent ? 'Sent · Sync needed' : 'Sync needed')

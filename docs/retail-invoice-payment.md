@@ -1,20 +1,24 @@
 # Retail invoice payment — Record Payment / Email Paid Invoice
 
-Status (2026-10-20): built + sandbox-validated on branch `feat/retail-invoice-payment` (incl. automatic
-Cash / Check card-charge removal).
-**Not deployed. Migration 0059 not applied to production. Flags off.**
+Status (verified 2026-10-21): full-payment Record Payment is LIVE — c20ee66 in production (Vercel
+`dpl_Ds7wqWzh…` on bb2aa28), migration 0059 applied, `retail_qb_payment_enabled=true`, mappings Cash 1 / Check 2
+/ Credit Card 3 → Undeposited Funds 52 (realm 123146329198289). No production payment had been recorded yet.
+**Installments (partial payments, branch `feat/partial-payments`): built + tested, NOT deployed; needs migration
+0061.** See "Installments" below.
 
 ## Flow
 1. **Create QuickBooks Invoice** (existing) → the invoice card shows **Send Invoice** and **Record Payment**.
 2. **Send Invoice** (existing, unpaid) leaves Record Payment available until QuickBooks shows a $0.00 balance.
 3. **Record Payment**: opening it verifies the invoice against the Invoice Draft and checks QuickBooks for
    existing payments (paid online → adopted, nothing written). Choose **Cash / Card Terminal / Check** →
-   confirm the amount → **Save Payment**. No tips, no partial payments. **Cash / Check** show the amount with
+   enter the **Amount received** (defaults to the remaining balance; a smaller amount is a partial payment) →
+   **Review** → **Save**. No tips / overpayments. **Cash / Check** paying an unpaid invoice in full show the amount with
    the card-payment charge removed (pricing engine projection — selecting changes nothing); **Card Terminal**
    keeps the current charge setting, including an intentional waiver. See "Cash / Check" below.
-4. Server writes ONE QuickBooks `Payment` (Accounting API — records money already collected, never charges
-   a card) linked to the invoice, with the mapped PaymentMethod + deposit account, then re-reads the invoice:
-   **Paid** only when QuickBooks Balance = 0.
+4. Server writes ONE QuickBooks `Payment` per installment (Accounting API — records money already collected,
+   never charges a card) linked to the invoice, with the mapped PaymentMethod + deposit account, then re-reads the
+   invoice: the installment is confirmed by ITS OWN payment applied to the invoice; **Paid** only when QuickBooks
+   Balance = 0, otherwise **Partially paid** with the remaining balance. Later installments repeat 3–4.
 5. **Email Paid Invoice** (explicit, never automatic) re-sends the SAME invoice through QuickBooks' invoice
    send. No Sales Receipt / new invoice / new sale. **Print Paid Invoice** opens QuickBooks' own PDF.
 
@@ -26,12 +30,12 @@ Cash / Check card-charge removal).
 | Timeout / 5xx / lost response | `uncertain` (never shown Paid); reconcile by invoice LinkedTxn + `PSPAY:<estimateId>:<attempt>` tag; retry reuses the SAME attempt id as QBO `requestid` (QBO returns the original payment — verified in sandbox) |
 | Unconfirmed attempt + retry with a different method / amount | The unresolved attempt (`uncertain`, or a stale `recording`) pins its request id, method and amount: any other method or amount is refused (`attempt_unresolved`) after reconciling, until QuickBooks shows it paid or a definite rejection resolves it. The lock CAS for a resume requires the same request id + method. The sheet locks the method buttons to `pendingMethod` |
 | Interrupted request (`recording` stuck) | Lock older than 90 s treated as an unconfirmed attempt (same pinned identity) |
-| Payment vs Sync / charge changes | `apps/quickbooks/invoice-locks.ts`: Sync's CAS requires `qb_payment_status ∉ {recording, paid, uncertain, review}`; the payment CAS requires `qb_status ∉ {creating, syncing}`; `setEstimateWaiver` (fee/tax override) is one conditional UPDATE under the same payment condition. Same row → Postgres orders them; neither can slip between the other's check and lock |
+| Payment vs Sync / charge changes | `apps/quickbooks/invoice-locks.ts`: Sync's CAS requires `invoiceFreeOfPayments()` = `qb_payment_status ∉ {recording, recorded, paid, uncertain, review}` AND `qb_payment_balance_state ∉ {partial, paid}`; the payment CAS requires `qb_status ∉ {creating, syncing}`; `setEstimateWaiver` (fee/tax override) is one conditional UPDATE under the same payment condition. Same row → Postgres orders them; neither can slip between the other's check and lock |
 | Change committed just before the payment lock | Invoice + draft re-verified UNDER the lock (draft total, QBO total, settled pricing); any drift → lock released, nothing written |
 | Stale worker finishing late | Every payment state write is fenced on (attempt id, lock time, `recording`); a worker that was taken over writes nothing |
 | Stale "paid" snapshot (worker or reconciliation) | `markPaid` only replaces the exact payment state observed before the QuickBooks snapshot (status + attempt id + lock time). A newer review / attempt survives; the caller reports the CURRENT state; the `_recorded` / `_reconciled` event is written only when the transition happened. A fresh reconciliation still adopts payments recorded outside Pitt Stop. The email path's `review` flag only replaces `paid` with the same payment id |
 | Invoice not current | Shared `verifyLinkedRetailInvoice` (identity, customer, QBO total = draft) + draft must be settled (no incomplete pricing / unaccepted agreed-vs-itemized difference) + confirmed amount = live balance |
-| Partial payment already in QuickBooks | Refused — finish in QuickBooks |
+| Partial payment already in QuickBooks | Shown (payments vs credits kept apart); the remaining balance can be recorded — see Installments |
 | Paid invoice edited | Sync and fee overrides refused while a payment is recorded / in flight / unconfirmed |
 | Email failure | Separate `qb_paid_email_*` columns; payment untouched |
 | Paid email outcome unknown (timeout / lost response / interrupted worker) | `uncertain`. A normal tap only CHECKS: confirmed when `DeliveryInfo.DeliveryTime` is strictly later than the delivery recorded at lock time (`qb_paid_email_prior_delivery_at`). Not seeing it yet is not proof of failure → nothing is sent; the UI offers **Check email status** (`checkOnly`, never sends) and an explicit **Send another copy** (`resend`, warns it may duplicate) |
@@ -195,17 +199,80 @@ shows the invoice paid with a $0 balance.**
 Dev flags restored to their prior values (`retail_qb_enabled=true`, `retail_qb_payment_enabled=false`,
 `retail_qb_send_enabled=false`, mappings unchanged). Scratch credentials deleted.
 
+## Installments — partial payments and later payments (2026-10-21, branch `feat/partial-payments`)
+Business flow: Record $2,000 of a $2,411 invoice on the Clover terminal → **Partially paid · $2,000 received ·
+$411 left**; later record $411 (any method) on the SAME invoice → **Paid** once QuickBooks shows $0.00.
+
+- **One QuickBooks Payment per installment**, each with its own attempt id (QBO `requestid` + `PSPAY` tag). The
+  invoice lines are never reduced, no replacement invoice, no local ledger: per-payment history (date, method,
+  amount, money vs credit) is read from QuickBooks every time the sheet opens.
+- **State split (migration 0061):** `qb_payment_status` = the LATEST ATTEMPT (adds `recorded` = installment
+  confirmed, balance open). `qb_payment_balance_state` (unpaid|partial|paid) + total/balance/received/credit cents
+  cache QuickBooks' AGGREGATE from the last read (summary card + invoice lock only). A later failed attempt
+  (`error`) never makes a partially paid invoice editable or look unpaid.
+- **Confirmation by attempt, never by balance:** an unconfirmed installment is confirmed only when QuickBooks
+  shows the Payment carrying its attempt id applied to this invoice for the confirmed amount. Another payment of
+  the same amount (online, in QuickBooks, or an earlier Pitt Stop installment) never confirms it.
+- **Renewed confirmation:** the client sends `{ amountCents, balanceCents }`; if QuickBooks' balance differs from
+  the one confirmed (checked before the lock AND re-read under it), nothing is written (`balance_changed`).
+  Server validation: positive integer cents ≤ open balance (`invalid_amount` / `over_balance`).
+- **Unresolved attempt blocks new installments** until confirmed or definitely rejected; retry only with the same
+  id, method AND amount (the resume CAS now also pins the amount).
+- **Credits vs cash:** a credit memo spent inside a Payment, and any reduction no Payment explains, are reported as
+  "Credits & adjustments", never as money received.
+- **Card-payment charge (unchanged for full payments):** Cash/Check paying an UNPAID invoice in full = the existing
+  automatic removal + sync. Any partial amount, and every later installment, leaves the invoice and its charge
+  exactly as confirmed (no proportional math). Cash/Check for more than the charge-removed full amount on an
+  unpaid invoice is refused, so cash is never accidentally charged the card fee.
+- **Locked after the first installment:** Sync and charge overrides are refused once any payment/credit is
+  applied (as for paid invoices) — corrections to a partially paid invoice are made in QuickBooks.
+- Email Paid Invoice / Print Paid Invoice unchanged (paid only). A partially paid invoice offers **Print invoice
+  (shows payments)** (QuickBooks' own PDF); nothing is ever emailed automatically.
+- Older clients (`confirmedAmountCents` only) keep the full-payment contract.
+
+### Review fixes (adversarial review, 2026-10-21)
+- **Lost response + re-confirm = no duplicate.** The phone sends a `confirmationId` (UUID, one per method + amount,
+  reused by every retry until confirmed). The attempt id is that key (or `<key>-r<hex>` after a definite failure,
+  since QuickBooks may replay a requestid's response); a retried Save first looks for a QuickBooks Payment tagged
+  with the key and returns it as recorded — even when the balance it saw is now lower.
+- **Estimate edits after a partial payment no longer strand the balance.** Once money is applied the invoice is
+  frozen, so later installments are verified for identity + customer only and recorded against QuickBooks' invoice
+  as it stands; a zero balance is adopted before any draft check. (Pitt Stop's estimate may then differ from
+  QuickBooks — corrections to a partially paid invoice are made in QuickBooks.)
+- **Never confirmed by a zero balance:** if our Payment was created but isn't applied while other payments zeroed
+  the invoice → `review` (possible double payment / unapplied payment).
+- **Full vs partial intent:** the phone sends `intent`; "in full" whose server-side amount moved, or "partial" that
+  would now remove the card charge → `amount_changed`, nothing recorded.
+- **Paid, then reopened in QuickBooks** (payment deleted/refunded) → `review`, never shown as Paid.
+- The payment write is fenced right before the QuickBooks call (a worker whose lock was taken over writes nothing).
+- Sync refuses (needs review) when the LIVE QuickBooks invoice already has money applied that Pitt Stop hasn't read.
+  Code-read + typecheck only — the Sync test harness can't reach that point without a payload stub.
+- Known, not changed: `review` has no in-app clear (resolved in QuickBooks, then by an admin); the cached aggregate
+  can be refreshed out of order by two concurrent readers (display/lock cache only — Sync now also checks live).
+
 ## Open owner decisions (nothing guessed)
 1. Verify the proposed production mappings (Cash 1 / Check 2 / Credit Card 3 → Undeposited Funds 52) against
    the production QuickBooks company before activation.
 2. ~~Confirm receipt of the sandbox test email~~ — confirmed by the owner 2026-10-20 (paid, $0 balance).
+3. **Card-payment charge on mixed-method installments** (before releasing installments): today a partial payment
+   keeps the full card charge on the invoice even if part (or the rest) is later paid by Cash/Check. Options:
+   keep as is; or allow a manager to remove the charge BEFORE the first installment (existing override); or a
+   defined rule for removing it later. No proportional/debit rule is implemented.
+4. Whether a partially paid invoice may be Synced from Pitt Stop when services change (currently refused —
+   correct it in QuickBooks), and whether staff need an emailed balance statement (currently print only).
 
 ## Separate follow-ups (not in this patch; no historical records modified)
 - $0 production invoice #100893 (and any other flat Jobs invoiced since 2026-10-01) — owner review.
 - Standalone estimate send (`apps/estimates/quickbooks.ts`) still itemizes a flat estimate before sending a
   QuickBooks Estimate — same pricing pattern as the fixed Create/Sync.
 
-## Go-live checklist (needs explicit approval)
+## Go-live checklist — installments (needs explicit approval)
+1. Apply `drizzle/migrations/manual/0061_retail_payment_installments.sql` to production (additive, nullable,
+   idempotent) BEFORE the deploy. 2. FF-deploy the scoped commit. 3. Verify via the Vercel API + a read-only
+   preview. Rollback = previous deployment (the 0061 columns are ignored by older code); kill-switch
+   `retail_qb_payment_enabled=false`.
+
+## Go-live checklist — original full payment (done 2026-10-20)
 1. Apply `drizzle/migrations/manual/0059_retail_invoice_payment.sql` (additive, idempotent; now also adds
    `qb_paid_email_prior_delivery_at` and `qb_payment_card_fee_removed`).
 2. Deploy. 3. Set `retail_payment_mappings` (confirmed values). 4. Set `retail_qb_payment_enabled=true`.

@@ -205,8 +205,8 @@ export const jobEstimates = pgTable(
     qbLastRequestId:        varchar('qb_last_request_id', { length: 80 }),  // client idempotency correlation
     // Retail Record Payment (migration 0059). SEPARATE from qb_status (invoice create/send) and from the
     // paid-invoice email below, so an email failure can never make a paid invoice look unpaid.
-    // qb_payment_status: none|recording|paid|uncertain|error|review. `paid` is set ONLY after QuickBooks
-    // reports a zero balance. qb_payment_request_id = the attempt id (QBO requestid + PSPAY tag) reused on
+    // qb_payment_status: none|recording|recorded|paid|uncertain|error|review. `paid` is set ONLY after QuickBooks
+    // reports a zero balance; `recorded` = the latest installment is confirmed and a balance remains. qb_payment_request_id = the attempt id (QBO requestid + PSPAY tag) reused on
     // an uncertain retry so QuickBooks itself de-duplicates. History lives in service_order_events.
     qbPaymentStatus:        varchar('qb_payment_status', { length: 20 }).notNull().default('none'),
     qbPaymentId:            varchar('qb_payment_id', { length: 100 }),
@@ -221,6 +221,16 @@ export const jobEstimates = pgTable(
     qbPaymentCardFeeRemoved: boolean('qb_payment_card_fee_removed').notNull().default(false),
     qbPaidAt:               timestamp('qb_paid_at', { withTimezone: true }),
     qbPaidBy:               varchar('qb_paid_by', { length: 200 }),
+    // Installments (migration 0061). qb_payment_status above is the LATEST ATTEMPT (adds 'recorded' = that
+    // installment is confirmed and a balance remains); these cache the invoice's QuickBooks-confirmed AGGREGATE
+    // from the last read: unpaid|partial|paid (null = never read). Display + invoice lock only — QuickBooks
+    // stays the money authority and per-payment history is read from it (audit in service_order_events).
+    qbPaymentBalanceState:  varchar('qb_payment_balance_state', { length: 20 }),
+    qbPaymentTotalCents:    integer('qb_payment_total_cents'),
+    qbPaymentBalanceCents:  integer('qb_payment_balance_cents'),
+    qbPaymentReceivedCents: integer('qb_payment_received_cents'),
+    qbPaymentCreditCents:   integer('qb_payment_credit_cents'),
+    qbPaymentCheckedAt:     timestamp('qb_payment_checked_at', { withTimezone: true }),
     // "Email Paid Invoice": none|sending|sent|uncertain|error (independent of qb_status='sent').
     qbPaidEmailStatus:      varchar('qb_paid_email_status', { length: 20 }).notNull().default('none'),
     qbPaidEmailTo:          varchar('qb_paid_email_to', { length: 320 }),

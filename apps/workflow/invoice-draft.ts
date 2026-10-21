@@ -37,10 +37,17 @@ export interface InvoiceDraft {
 }
 
 // Retail Record Payment state — SEPARATE from the invoice create/send state above. `status`
-// none|recording|paid|uncertain|error|review: only 'paid' means QuickBooks confirmed a zero balance.
+// none|recording|recorded|paid|uncertain|error|review: only 'paid' means QuickBooks confirmed a zero balance.
 // The paid-invoice email has its own status so an email failure never makes a paid invoice look unpaid.
 export interface InvoicePaymentState {
+  /** Latest attempt: none|recording|recorded|paid|uncertain|error|review. */
   status: string
+  /** QuickBooks-confirmed aggregate from the last read (null = not read yet): unpaid|partial|paid. */
+  balanceState: string | null
+  totalCents: number | null
+  balanceCents: number | null
+  receivedCents: number | null
+  creditCents: number | null
   method: string | null
   amountCents: number | null
   paidAt: string | null
@@ -74,6 +81,11 @@ const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOStrin
 function buildPaymentState(est: FullEstimate['estimate'] | null | undefined): InvoicePaymentState {
   return {
     status: est?.qbPaymentStatus ?? 'none',
+    balanceState: est?.qbPaymentBalanceState ?? null,
+    totalCents: est?.qbPaymentTotalCents ?? null,
+    balanceCents: est?.qbPaymentBalanceCents ?? null,
+    receivedCents: est?.qbPaymentReceivedCents ?? null,
+    creditCents: est?.qbPaymentCreditCents ?? null,
     method: est?.qbPaymentMethod ?? null,
     amountCents: est?.qbPaymentAmountCents ?? null,
     paidAt: iso(est?.qbPaidAt),

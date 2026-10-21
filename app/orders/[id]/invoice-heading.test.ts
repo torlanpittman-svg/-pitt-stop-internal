@@ -22,6 +22,9 @@ describe('invoiceHeading — never implies a document was created or sent', () =
   it('paid only when QuickBooks confirmed it — an unconfirmed payment is not "Paid"', () => {
     expect(invoiceHeading(qb({ status: 'sent', linked: true, invoiceNumber: '42', sent: true, payment: { status: 'paid' } })).status).toBe('Paid')
     expect(invoiceHeading(qb({ status: 'sent', linked: true, invoiceNumber: '42', sent: true, payment: { status: 'uncertain' } })).status).toBe('Sent')
+    // Partially paid only from the QuickBooks-confirmed aggregate — never "Paid" while a balance remains.
+    expect(invoiceHeading(qb({ status: 'sent', linked: true, invoiceNumber: '42', sent: true, payment: { status: 'recorded', balanceState: 'partial' } })).status).toBe('Partially paid')
+    expect(invoiceHeading(qb({ status: 'sent', linked: true, invoiceNumber: '42', sent: true, payment: { status: 'error', balanceState: 'partial' } })).status).toBe('Partially paid')
     expect(invoiceHeading(qb({ status: 'created', linked: true, invoiceNumber: '42', payment: { status: 'review' } })).status).toBe('Created in QuickBooks · not sent')
   })
   it('stale / review states', () => {

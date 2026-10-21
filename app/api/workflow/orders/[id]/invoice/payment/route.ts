@@ -8,10 +8,15 @@
  *                                                                + the methods that may be recorded. No QB write.
  *                                                                Cash / Check amounts come back with the card
  *                                                                charge removed (pricing engine; nothing changed).
- * body { action: 'record', method, confirmedAmountCents }      → record the payment once (idempotent; see
- *                                                                apps/quickbooks/retail-payment-service.ts).
- *                                                                Cash / Check: removes the card charge, syncs the
- *                                                                SAME invoice and verifies it before paying.
+ * body { action: 'record', method, amountCents, balanceCents, confirmationId, intent } → record ONE installment of money received
+ *                                                                (integer cents, > 0, ≤ the open balance) against
+ *                                                                the open balance the person confirmed; idempotent
+ *                                                                (see apps/quickbooks/retail-payment-service.ts).
+ *                                                                Cash / Check paying an unpaid invoice IN FULL:
+ *                                                                removes the card charge, syncs the SAME invoice
+ *                                                                and verifies it before paying. Partial amounts
+ *                                                                never change the invoice.
+ * body { action: 'record', method, confirmedAmountCents }      → older clients: full payment only (unchanged).
  */
 import { NextResponse } from 'next/server'
 import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
@@ -30,9 +35,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!(await retailQbPaymentEnabled())) {
     return NextResponse.json({ ok: false, error: 'Recording payments is turned off.' }, { status: 503 })
   }
-  const body = await req.json().catch(() => ({})) as { action?: string; method?: unknown; confirmedAmountCents?: unknown }
+  const body = await req.json().catch(() => ({})) as { action?: string; method?: unknown; amountCents?: unknown; balanceCents?: unknown; confirmedAmountCents?: unknown; confirmationId?: unknown; intent?: unknown }
   if (body.action === 'record') {
-    const result = await recordRetailPayment({ orderId: id, actor: actor.name, method: body.method, confirmedAmountCents: body.confirmedAmountCents })
+    const result = await recordRetailPayment({
+      orderId: id, actor: actor.name, method: body.method,
+      ...('amountCents' in body ? { amountCents: body.amountCents, balanceCents: body.balanceCents, confirmationId: body.confirmationId, intent: body.intent } : { confirmedAmountCents: body.confirmedAmountCents }),
+    })
     const httpStatus = result.ok ? 200
       : result.status === 'recording' || result.block === 'invoice_busy' ? 409
       : result.status === 'uncertain' || result.status === 'review' ? 202

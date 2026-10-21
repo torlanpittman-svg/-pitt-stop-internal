@@ -4,7 +4,7 @@
  * cached on job_estimates after every mutation.
  */
 import { getDb } from '@/platform/db'
-import { eq, ne, and, asc, inArray, notInArray, sql } from 'drizzle-orm'
+import { eq, ne, and, asc, inArray, sql } from 'drizzle-orm'
 import { jobEstimates, jobServices, jobLineItems, serviceOrders, serviceOrderEvents } from './schema'
 import {
   computeTotals, rollUpDecision, defaultTaxForType, defaultTaxBps, approvedTitlesToSync, convertSyncsServices, lineAmountCents,
@@ -18,7 +18,7 @@ import { serviceCatalog } from '@/apps/quick-entry/schema'
 import { jobParts } from '@/apps/parts/schema'
 import { eligibleCatalogChoice, catalogDescriptionSnapshot, canonicalDescription } from '@/apps/quick-entry/service-match-db'
 import { composeLineDescription, partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
-import { PAYMENT_LOCKS_INVOICE } from '@/apps/quickbooks/retail-payment'
+import { invoiceFreeOfPayments } from '@/apps/quickbooks/invoice-locks'
 import { loadEstimateReview } from './estimate-review'
 import { odorServicesMentioned, ceramicCoatingDuration } from '@/apps/quick-entry/service-interpret'
 import { serviceChoiceReason, servicePartLike, type ChoiceReason, type ReadinessIssue } from './estimate-readiness'
@@ -219,7 +219,7 @@ export async function setEstimateWaiver(estimateId: string, field: 'shop_supplie
   // Refused atomically (false) while a payment is recorded / being recorded / unconfirmed on the linked
   // QuickBooks invoice — a charge change can never interleave with Record Payment.
   const rows = await getDb().update(jobEstimates).set({ ...patch, updatedAt: new Date() })
-    .where(and(eq(jobEstimates.id, estimateId), notInArray(jobEstimates.qbPaymentStatus, [...PAYMENT_LOCKS_INVOICE])))
+    .where(and(eq(jobEstimates.id, estimateId), invoiceFreeOfPayments()))
     .returning({ id: jobEstimates.id })
   return rows.length > 0
 }

@@ -154,15 +154,17 @@ vi.mock('@/apps/quickbooks/retail-invoice-service', async () => {
   const { eq: eqq } = await import('drizzle-orm')
   return {
     flatPricingIssue: () => null,   // covered for real in retail-flat-price.test.ts
-    verifyLinkedRetailInvoice: async (orderId: string, opts: { allowDrift?: boolean } = {}) => {
+    verifyLinkedRetailInvoice: async (orderId: string, opts: { allowDrift?: boolean; paidInvoice?: boolean } = {}) => {
       const est = await getEstimateRow(orderId)
       if (QB.verifyBlock) return { ok: false, block: QB.verifyBlock, invoiceId: est?.qbInvoiceId, invoiceNumber: est?.qbInvoiceNumber }
       const raw = visibleInvoice()
       const waived = !!est!.waiveCardFee
       const draftTotal = draftTotalFor(waived)
       // The invoice must be current with the (possibly just-changed) draft — as the real verification does.
-      if (!opts.allowDrift && /sync needed/i.test(est!.qbSyncError ?? '')) return { ok: false, block: 'sync_needed', invoiceId: est?.qbInvoiceId, invoiceNumber: est?.qbInvoiceNumber }
-      if (!opts.allowDrift && Math.round(raw.TotalAmt * 100) !== draftTotal) return { ok: false, block: 'sync_needed', invoiceId: est?.qbInvoiceId, invoiceNumber: est?.qbInvoiceNumber }
+      // paidInvoice (identity only) and allowDrift skip the draft checks, as the real verification does.
+      const strict = !opts.allowDrift && !opts.paidInvoice
+      if (strict && /sync needed/i.test(est!.qbSyncError ?? '')) return { ok: false, block: 'sync_needed', invoiceId: est?.qbInvoiceId, invoiceNumber: est?.qbInvoiceNumber }
+      if (strict && Math.round(raw.TotalAmt * 100) !== draftTotal) return { ok: false, block: 'sync_needed', invoiceId: est?.qbInvoiceId, invoiceNumber: est?.qbInvoiceNumber }
       return {
         ok: true, est, raw, full: null,
         draft: { totalCents: draftTotal, paymentCharge: { cents: waived ? 0 : QB.cardFee, waived, label: 'Card Payment' }, pricingIncomplete: QB.draftIncomplete, referenceCents: QB.draftReference },
@@ -336,10 +338,13 @@ describe('Record Payment', () => {
     expect(QB.createCalls).toBe(0)
   })
 
-  it('partially paid in QuickBooks → refused (no partial top-up here)', async () => {
+  it('older full-payment client on an invoice partly paid in QuickBooks → records exactly the remaining balance', async () => {
     applyPayment(10000, 'manual')
-    expect(await record('cash', 11218)).toMatchObject({ ok: false, block: 'partial_payment' })
+    expect(await record('cash', 20000)).toMatchObject({ ok: false, block: 'amount_changed', amountCents: 11218 })
     expect(QB.createCalls).toBe(0)
+    expect(await record('cash', 11218)).toMatchObject({ ok: true, status: 'paid', amountCents: 11218 })
+    expect(QB.payments).toHaveLength(2)
+    expect(QB.invoice.Balance).toBe(0)
   })
 
   it('invoice not current with the Invoice Draft → refused before any QuickBooks write', async () => {
@@ -435,7 +440,7 @@ describe('an unconfirmed payment keeps its identity until it is resolved', () =>
 
   it('delayed QuickBooks visibility: lost response, payment not visible yet, retry with a changed method → no second payment; the original surfaces as Paid', async () => {
     QB.createMode = 'timeout_after'
-    QB.hideNextFor = 4   // QuickBooks created it, but reads don't show it for a while
+    QB.hideNextFor = 8   // QuickBooks created it, but reads don't show it for a while
     expect(await record('cash')).toMatchObject({ status: 'uncertain' })
     const attempt = (await est()).qbPaymentRequestId
     expect(await record('card_terminal')).toMatchObject({ ok: false, block: 'attempt_unresolved' })
@@ -831,5 +836,325 @@ describe('Cash / Check remove the card-payment charge before paying', () => {
     const [o] = await db.select().from(serviceOrders).where(eq(serviceOrders.id, orderId))
     expect(o.status).toBe('ready')
     expect(o.completedAt?.toISOString()).toBe(COMPLETED_AT.toISOString())
+  })
+})
+
+describe('Installments — partial payments and later payments on the same invoice', () => {
+  const TOTAL = 241100   // the $2,411 acceptance scenario (fictional sandbox data)
+  beforeEach(() => {
+    QB.draftTotal = TOTAL
+    QB.invoice.TotalAmt = TOTAL / 100; QB.invoice.Balance = TOTAL / 100
+  })
+  const pay = (method: string, amountCents: unknown, balanceCents: unknown) => recordRetailPayment({ orderId, actor: 'Torlan', method, amountCents, balanceCents })
+  const preview = () => previewRetailPayment({ orderId, actor: 'Torlan' })
+  const KEY = '0c4f2a1e-7b3d-4c5e-9f60-1a2b3c4d5e6f'
+  const payK = (method: string, amountCents: number, balanceCents: number, confirmationId: string, intent?: 'full' | 'partial') =>
+    recordRetailPayment({ orderId, actor: 'Torlan', method, amountCents, balanceCents, confirmationId, intent })
+
+  it('lost response, then the SAME confirmation saved again (QuickBooks balance already lower) → the recorded payment, no duplicate', async () => {
+    expect(await payK('cash', 50000, TOTAL, KEY)).toMatchObject({ status: 'recorded' })   // the phone never sees this answer
+    const again = await payK('cash', 50000, TOTAL, KEY)
+    expect(again).toMatchObject({ ok: true, status: 'recorded', reconciled: true, amountCents: 50000, balance: { balanceCents: 191100 } })
+    expect(QB.payments).toHaveLength(1)
+    expect(QB.createCalls).toBe(1)
+  })
+
+  it('a definite QuickBooks rejection, then the same confirmation retried → a fresh request id derived from it; still found by it later', async () => {
+    QB.createMode = 'reject'
+    expect(await payK('cash', 50000, TOTAL, KEY)).toMatchObject({ ok: false, status: 'error' })
+    QB.createMode = 'ok'
+    expect(await payK('cash', 50000, TOTAL, KEY)).toMatchObject({ ok: true, status: 'recorded' })
+    expect(QB.createArgs.map((a) => a.requestId)).toEqual([KEY, expect.stringMatching(new RegExp(`^${KEY}-r[0-9a-f]{12}$`))])
+    expect(await payK('cash', 50000, TOTAL, KEY)).toMatchObject({ ok: true, status: 'recorded', reconciled: true })
+    expect(QB.payments).toHaveLength(1)
+  })
+
+  it('an estimate edit after a partial payment never strands the balance: the rest is recorded against QuickBooks as it stands', async () => {
+    await pay('card_terminal', 200000, TOTAL)
+    QB.draftTotal = TOTAL + 5000   // a service added in Pitt Stop after the payment: the frozen invoice can't be synced
+    await db.update(jobEstimates).set({ qbSyncError: 'QuickBooks sync needed — estimate changed' }).where(eq(jobEstimates.id, estId))
+    expect(await preview()).toMatchObject({ ok: true, status: 'partial', amountCents: 41100 })
+    expect(await pay('cash', 41100, 41100)).toMatchObject({ ok: true, status: 'paid' })
+    expect(QB.invoice.TotalAmt).toBe(2411)
+    expect(QB.syncCalls).toBe(0)
+  })
+
+  it('an estimate edit after a partial payment, then the rest paid outside Pitt Stop → the zero balance is adopted as Paid', async () => {
+    await pay('card_terminal', 200000, TOTAL)
+    QB.draftTotal = TOTAL + 5000
+    await db.update(jobEstimates).set({ qbSyncError: 'QuickBooks sync needed — estimate changed' }).where(eq(jobEstimates.id, estId))
+    applyPayment(41100, 'paid online by the customer')
+    expect(await preview()).toMatchObject({ ok: true, status: 'paid', alreadyPaid: true })
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'paid', qbPaymentBalanceState: 'paid' })
+    expect(QB.createCalls).toBe(1)
+  })
+
+  it('created, but not applied while other payments zeroed the invoice → review, never confirmed by the balance', async () => {
+    QB.onCreate = async () => { applyPayment(TOTAL, 'paid online by the customer'); QB.hideNextFor = 100 }
+    expect(await pay('card_terminal', 200000, TOTAL)).toMatchObject({ ok: false, status: 'review' })
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'review', qbPaidAt: null })
+  })
+
+  it('Paid, then the payment deleted in QuickBooks → review (never shown as Paid while money is owed); no new payment', async () => {
+    expect(await pay('cash', TOTAL, TOTAL)).toMatchObject({ status: 'paid' })
+    QB.payments = []; QB.invoice.Balance = TOTAL / 100; QB.invoice.LinkedTxn = []
+    expect(await preview()).toMatchObject({ ok: false, status: 'review' })
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'review' })
+    expect(await pay('cash', TOTAL, TOTAL)).toMatchObject({ ok: false })
+    expect(QB.createCalls).toBe(1)
+  })
+
+
+  it('$2,411: $2,000 on the card terminal → Partially paid, $411 left; later $411 → Paid only at a zero balance', async () => {
+    expect(await preview()).toMatchObject({ ok: true, status: 'unpaid', amountCents: TOTAL, balance: { state: 'unpaid', totalCents: TOTAL, balanceCents: TOTAL, receivedCents: 0, creditCents: 0, history: [] } })
+
+    const r1 = await pay('card_terminal', 200000, TOTAL)
+    expect(r1).toMatchObject({ ok: true, status: 'recorded', method: 'card_terminal', amountCents: 200000, balance: { state: 'partial', balanceCents: 41100, receivedCents: 200000 } })
+    expect(QB.invoice).toMatchObject({ Id: '900', TotalAmt: 2411, Balance: 411 })   // same invoice, never rewritten
+    expect(QB.syncCalls).toBe(0)
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'recorded', qbPaymentBalanceState: 'partial', qbPaymentTotalCents: TOTAL, qbPaymentBalanceCents: 41100, qbPaymentReceivedCents: 200000, qbPaidAt: null })
+    // Never "paid", never emailed: Email Paid Invoice is refused while a balance remains.
+    expect(await sendPaidRetailInvoice({ orderId, actor: 'Torlan' })).toMatchObject({ ok: false, block: 'not_paid' })
+
+    const pv = await preview()
+    expect(pv).toMatchObject({ status: 'partial', amountCents: 41100, methodAmounts: { cash: 41100, check: 41100, card_terminal: 41100 } })
+    expect(pv.balance?.history).toEqual([expect.objectContaining({ appliedCents: 200000, method: 'card_terminal', methodLabel: 'Card Terminal', source: 'pitt_stop' })])
+
+    const r2 = await pay('card_terminal', 41100, 41100)
+    expect(r2).toMatchObject({ ok: true, status: 'paid', amountCents: 41100, balance: { state: 'paid', balanceCents: 0, receivedCents: TOTAL } })
+    expect(QB.payments.map((p) => Math.round((p.TotalAmt ?? 0) * 100))).toEqual([200000, 41100])
+    expect(new Set(QB.createArgs.map((a) => a.requestId)).size).toBe(2)
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'paid', qbPaymentBalanceState: 'paid', qbPaymentBalanceCents: 0, qbPaidBy: 'Torlan' })
+    expect((await events()).filter((e) => e === 'invoice_payment_recorded')).toHaveLength(2)   // history kept, not overwritten
+    expect(QB.sends).toHaveLength(0)
+  })
+
+  it('identical installments recorded on purpose → two QuickBooks payments, each with its own attempt', async () => {
+    expect(await pay('cash', 50000, TOTAL)).toMatchObject({ status: 'recorded', balance: { balanceCents: 191100 } })
+    expect(await pay('cash', 50000, 191100)).toMatchObject({ status: 'recorded', balance: { balanceCents: 141100, receivedCents: 100000 } })
+    expect(QB.payments).toHaveLength(2)
+    expect(new Set(QB.createArgs.map((a) => a.requestId)).size).toBe(2)
+    expect((await preview()).balance?.history.map((h) => h.appliedCents)).toEqual([50000, 50000])
+  })
+
+  it('the same tap sent again with the balance it saw is a repeat, not a new installment → refused', async () => {
+    await pay('cash', 50000, TOTAL)
+    expect(await pay('cash', 50000, TOTAL)).toMatchObject({ ok: false, block: 'balance_changed', amountCents: 191100 })
+    expect(QB.payments).toHaveLength(1)
+  })
+
+  it('double tap and two devices at once → exactly one payment', async () => {
+    const rs = await Promise.all([pay('card_terminal', 200000, TOTAL), pay('card_terminal', 200000, TOTAL), pay('cash', 200000, TOTAL)])
+    expect(QB.payments).toHaveLength(1)
+    expect(rs.filter((r) => r.status === 'recorded')).toHaveLength(1)
+    expect(QB.invoice.Balance).toBe(411)
+  })
+
+  it('lost response after QuickBooks wrote the installment → confirmed by its own payment; not Paid; no duplicate', async () => {
+    QB.createMode = 'timeout_after'
+    expect(await pay('card_terminal', 200000, TOTAL)).toMatchObject({ ok: true, status: 'recorded', amountCents: 200000, balance: { balanceCents: 41100 } })
+    expect(QB.payments).toHaveLength(1)
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'recorded', qbPaymentBalanceState: 'partial' })
+  })
+
+  it('timeout before QuickBooks wrote → unconfirmed; only the same method + amount may retry, with the same attempt id', async () => {
+    QB.createMode = 'timeout_before'
+    expect(await pay('card_terminal', 200000, TOTAL)).toMatchObject({ ok: false, status: 'uncertain' })
+    const attempt = (await est()).qbPaymentRequestId
+    expect(await preview()).toMatchObject({ status: 'uncertain', pendingMethod: 'card_terminal', pendingAmountCents: 200000 })
+    expect(await pay('card_terminal', 100000, TOTAL)).toMatchObject({ ok: false, block: 'attempt_unresolved', amountCents: 200000 })
+    expect(await pay('cash', 200000, TOTAL)).toMatchObject({ ok: false, block: 'attempt_unresolved' })
+    expect(QB.createCalls).toBe(1)
+    expect(await pay('card_terminal', 200000, TOTAL)).toMatchObject({ ok: true, status: 'recorded' })
+    expect(QB.createArgs.map((a) => a.requestId)).toEqual([attempt, attempt])
+    expect(QB.payments).toHaveLength(1)
+  })
+
+  it('an unconfirmed installment is never "confirmed" by a different payment of the same amount', async () => {
+    QB.hideNextFor = 1000; QB.createMode = 'timeout_after'   // QuickBooks wrote it, reads don't show it yet
+    expect(await pay('card_terminal', 100000, TOTAL)).toMatchObject({ ok: false, status: 'uncertain' })
+    applyPayment(100000, 'Paid via QuickBooks Payments: Payment ID 1', { TxnSource: 'EInvoice' })   // someone else's $1,000
+    const pv = await preview()
+    expect(pv).toMatchObject({ status: 'uncertain', pendingAmountCents: 100000, amountCents: 141100 })
+    expect(pv.balance?.history).toEqual([expect.objectContaining({ appliedCents: 100000, method: 'online', source: 'external' })])
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'uncertain' })
+    // Retrying while QuickBooks still hides it: requestid returns the original — still no second payment.
+    expect(await pay('card_terminal', 100000, 141100)).toMatchObject({ ok: false, status: 'uncertain' })
+    expect(QB.payments).toHaveLength(2)
+    // Once QuickBooks shows it, it is confirmed by its own attempt id.
+    QB.hidden.clear()
+    expect(await preview()).toMatchObject({ reconciled: true, status: 'partial', amountCents: 41100 })
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'recorded', qbPaymentBalanceCents: 41100, qbPaymentReceivedCents: 200000 })
+    expect(QB.payments).toHaveLength(2)
+  })
+
+  it('an earlier Pitt Stop installment of the same amount never confirms a later unconfirmed one', async () => {
+    await pay('cash', 50000, TOTAL)
+    QB.createMode = 'timeout_before'
+    expect(await pay('cash', 50000, 191100)).toMatchObject({ ok: false, status: 'uncertain' })
+    expect(await preview()).toMatchObject({ status: 'uncertain', pendingAmountCents: 50000, amountCents: 191100 })
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'uncertain' })
+    expect(await pay('cash', 50000, 191100)).toMatchObject({ ok: true, status: 'recorded', balance: { balanceCents: 141100 } })
+    expect(QB.payments).toHaveLength(2)
+  })
+
+  it('balance changed after the amount was confirmed (paid online meanwhile) → nothing written; renewed confirmation', async () => {
+    await preview()
+    applyPayment(10000, 'Paid via QuickBooks Payments', { TxnSource: 'EInvoice' })
+    expect(await pay('card_terminal', 200000, TOTAL)).toMatchObject({ ok: false, block: 'balance_changed', amountCents: 231100 })
+    expect(QB.createCalls).toBe(0)
+    expect(await pay('card_terminal', 200000, 231100)).toMatchObject({ ok: true, status: 'recorded', balance: { balanceCents: 31100 } })
+  })
+
+  it('a payment lands between the checks and the lock → re-read under the lock; nothing written', async () => {
+    QB.beforeLock = async () => { applyPayment(10000, 'manual') }
+    expect(await pay('card_terminal', 200000, TOTAL)).toMatchObject({ ok: false, block: 'balance_changed' })
+    expect(QB.createCalls).toBe(0)
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'none' })
+  })
+
+  it('stale worker: an interrupted installment that DID reach QuickBooks is confirmed by its attempt id, never paid twice', async () => {
+    const attempt = '11111111-2222-4333-8444-555555555555'
+    applyPayment(200000, `PSPAY:${estId}:${attempt}:card_terminal · Pitt Stop counter payment (Card Terminal) by Torlan`)
+    await db.update(jobEstimates).set({ qbPaymentStatus: 'recording', qbPaymentRequestId: attempt, qbPaymentMethod: 'card_terminal', qbPaymentAmountCents: 200000, qbPaymentStartedAt: new Date(Date.now() - 5 * 60_000) }).where(eq(jobEstimates.id, estId))
+    expect(await pay('card_terminal', 200000, TOTAL)).toMatchObject({ ok: true, status: 'recorded', reconciled: true, paymentId: QB.payments[0].Id })
+    expect(QB.createCalls).toBe(0)
+  })
+
+  it('a live attempt on another device blocks a new installment until it finishes', async () => {
+    await db.update(jobEstimates).set({ qbPaymentStatus: 'recording', qbPaymentRequestId: '99999999-2222-4333-8444-555555555555', qbPaymentMethod: 'cash', qbPaymentAmountCents: 5000, qbPaymentStartedAt: new Date() }).where(eq(jobEstimates.id, estId))
+    expect(await pay('card_terminal', 1000, TOTAL)).toMatchObject({ ok: false, status: 'recording' })
+    expect(QB.createCalls).toBe(0)
+  })
+
+  it('zero, negative, fractional, malformed, missing-balance and over-balance amounts are refused before any write', async () => {
+    for (const a of [0, -100, 12.5, '2000', NaN, null, Infinity, 2 ** 60]) expect(await pay('cash', a, TOTAL)).toMatchObject({ ok: false, block: 'invalid_amount' })
+    expect(await pay('cash', 1000, undefined)).toMatchObject({ ok: false, block: 'invalid_amount' })
+    expect(await pay('cash', 1000, 0)).toMatchObject({ ok: false, block: 'invalid_amount' })
+    expect(await pay('card_terminal', TOTAL + 1, TOTAL)).toMatchObject({ ok: false, block: 'over_balance', amountCents: TOTAL })
+    await pay('card_terminal', 200000, TOTAL)
+    expect(await pay('card_terminal', 41101, 41100)).toMatchObject({ ok: false, block: 'over_balance', amountCents: 41100 })
+    expect(QB.createCalls).toBe(1)
+  })
+
+  it('payments and credits entered in QuickBooks: counted once, credits kept apart from money received', async () => {
+    applyPayment(50000, 'counter check entered in QuickBooks', { PaymentMethodRef: { value: '2' } })
+    // A credit memo applied through a zero-amount Payment: reduces the balance, but it is not money received.
+    applyPayment(10000, '', { TotalAmt: 0, Line: [
+      { Amount: 100, LinkedTxn: [{ TxnId: '900', TxnType: 'Invoice' }] },
+      { Amount: 100, LinkedTxn: [{ TxnId: '77', TxnType: 'CreditMemo' }] },
+    ] })
+    const pv = await preview()
+    expect(pv).toMatchObject({ status: 'partial', amountCents: 181100, balance: { receivedCents: 50000, creditCents: 10000 } })
+    expect(pv.balance?.history).toEqual([
+      expect.objectContaining({ appliedCents: 50000, receivedCents: 50000, method: 'check', methodLabel: 'Check', source: 'external' }),
+      expect.objectContaining({ appliedCents: 10000, receivedCents: 0, creditCents: 10000, source: 'external' }),
+    ])
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'none', qbPaymentBalanceState: 'partial', qbPaymentReceivedCents: 50000, qbPaymentCreditCents: 10000 })
+    expect(await pay('card_terminal', 181100, 181100)).toMatchObject({ status: 'paid', balance: { receivedCents: 231100, creditCents: 10000 } })
+    expect(QB.createArgs).toHaveLength(1)
+  })
+
+  it('a balance reduction no payment explains is a credit/adjustment, never money received', async () => {
+    QB.invoice.Balance = 2311
+    expect((await preview()).balance).toMatchObject({ state: 'partial', receivedCents: 0, creditCents: 10000, history: [] })
+  })
+
+  it('after an installment, a later failed attempt never re-opens the invoice for Sync or charge changes', async () => {
+    await pay('card_terminal', 200000, TOTAL)
+    QB.createMode = 'reject'
+    expect(await pay('cash', 1000, 41100)).toMatchObject({ ok: false, status: 'error' })
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'error', qbPaymentBalanceState: 'partial' })
+    expect(await acquireRetailSyncLock(estId)).toBe(false)
+    expect(await setEstimateWaiver(estId, 'payment', true)).toBe(false)
+    QB.createMode = 'ok'
+    expect(await pay('cash', 41100, 41100)).toMatchObject({ status: 'paid' })
+  })
+
+  it('an invoice paid before installments existed (nothing cached) stays Paid and frozen; history still readable', async () => {
+    applyPayment(TOTAL, `PSPAY:${estId}:legacy-attempt-0001:cash · Pitt Stop counter payment (Cash) by Torlan`)
+    await db.update(jobEstimates).set({ qbPaymentStatus: 'paid', qbPaymentId: QB.payments[0].Id, qbPaymentMethod: 'cash', qbPaymentAmountCents: TOTAL, qbPaidAt: new Date() }).where(eq(jobEstimates.id, estId))
+    expect((await est()).qbPaymentBalanceState).toBeNull()
+    expect(await acquireRetailSyncLock(estId)).toBe(false)
+    expect(await pay('cash', 100, TOTAL)).toMatchObject({ ok: true, status: 'paid', alreadyPaid: true })
+    expect(QB.createCalls).toBe(0)
+    expect(await preview()).toMatchObject({ status: 'paid', balance: { state: 'paid', history: [expect.objectContaining({ appliedCents: TOTAL, method: 'cash' })] } })
+  })
+
+  it('dealer jobs are refused (Dealer Check-In owns them)', async () => {
+    QB.verifyBlock = 'dealer'
+    expect(await pay('cash', 1000, TOTAL)).toMatchObject({ ok: false, block: 'dealer' })
+    expect(QB.createCalls).toBe(0)
+  })
+
+  it('paid through installments → an Email Paid Invoice failure leaves every payment intact; nothing is sent automatically', async () => {
+    await pay('card_terminal', 200000, TOTAL); await pay('cash', 41100, 41100)
+    QB.sendMode = 'reject'
+    expect(await sendPaidRetailInvoice({ orderId, actor: 'Torlan' })).toMatchObject({ ok: false, status: 'error' })
+    expect(await est()).toMatchObject({ qbPaymentStatus: 'paid', qbPaymentBalanceState: 'paid' })
+    expect(QB.payments).toHaveLength(2)
+    expect(QB.sends).toHaveLength(0)
+  })
+
+  it('never touches the job status or its original completion date', async () => {
+    await pay('card_terminal', 200000, TOTAL); await pay('check', 41100, 41100)
+    const [o] = await db.select().from(serviceOrders).where(eq(serviceOrders.id, orderId))
+    expect(o.status).toBe('ready')
+    expect(o.completedAt?.toISOString()).toBe(COMPLETED_AT.toISOString())
+  })
+
+  describe('with a card-payment charge on the invoice', () => {
+    const FEE = 7023
+    const CASH = TOTAL - FEE
+    beforeEach(() => { QB.cardFee = FEE })
+
+    it('Cash part, then Card Terminal for the rest: the invoice and its card charge never change', async () => {
+      expect(await preview()).toMatchObject({ methodAmounts: { cash: CASH, card_terminal: TOTAL }, cardFeeRemovalCents: FEE })
+      expect(await pay('cash', 100000, TOTAL)).toMatchObject({ status: 'recorded', balance: { balanceCents: 141100 } })
+      expect(QB.syncCalls).toBe(0)
+      expect(await est()).toMatchObject({ waiveCardFee: false, qbPaymentCardFeeRemoved: false })
+      expect(await preview()).toMatchObject({ status: 'partial', cardChargeCents: FEE, cardFeeRemovalCents: 0, methodAmounts: { cash: 141100, check: 141100, card_terminal: 141100 } })
+      expect(await pay('card_terminal', 141100, 141100)).toMatchObject({ status: 'paid' })
+      expect(QB.invoice.TotalAmt).toBe(2411)
+      expect(QB.syncCalls).toBe(0)
+    })
+
+    it('Cash for the card-inclusive balance is refused — paid in full by Cash is the charge-removed amount', async () => {
+      expect(await pay('cash', TOTAL, TOTAL)).toMatchObject({ ok: false, block: 'over_balance', amountCents: CASH })
+      expect(QB.createCalls + QB.syncCalls).toBe(0)
+    })
+
+    it('Cash in full on an unpaid invoice keeps the existing rule: charge removed, same invoice synced, paid', async () => {
+      expect(await pay('cash', CASH, TOTAL)).toMatchObject({ ok: true, status: 'paid', amountCents: CASH })
+      expect(QB.writes).toEqual(['sync', 'payment'])
+      expect(await est()).toMatchObject({ waiveCardFee: true, qbPaymentStatus: 'paid', qbPaymentBalanceState: 'paid' })
+    })
+
+    it('Cash/Check for the final installment after a card payment: the charge stays (no proportional removal)', async () => {
+      await pay('card_terminal', 200000, TOTAL)
+      expect(await pay('check', 41100, 41100)).toMatchObject({ status: 'paid' })
+      expect(QB.syncCalls).toBe(0)
+      expect(await est()).toMatchObject({ waiveCardFee: false })
+    })
+
+    it('"in full by Cash" confirmed, but the Cash total moved before Save → refused, never recorded as a partial', async () => {
+      QB.cardFee = FEE + 1   // e.g. a fee-setting change between the preview and Save
+      expect(await payK('cash', CASH, TOTAL, KEY, 'full')).toMatchObject({ ok: false, block: 'amount_changed', amountCents: CASH - 1 })
+      expect(QB.createCalls + QB.syncCalls).toBe(0)
+      expect(await est()).toMatchObject({ waiveCardFee: false, qbPaymentStatus: 'none' })
+    })
+
+    it('a confirmed partial that now equals the Cash total → refused, never silently paid in full with the charge removed', async () => {
+      expect(await payK('cash', CASH, TOTAL, KEY, 'partial')).toMatchObject({ ok: false, block: 'amount_changed' })
+      expect(QB.createCalls + QB.syncCalls).toBe(0)
+      expect(await est()).toMatchObject({ waiveCardFee: false })
+    })
+
+    it('a worker whose lock was taken over while it worked never writes the payment', async () => {
+      QB.onSync = async () => { await db.update(jobEstimates).set({ qbPaymentStartedAt: new Date(Date.now() + 60_000) }).where(eq(jobEstimates.id, estId)) }
+      await pay('cash', CASH, TOTAL)
+      expect(QB.createCalls).toBe(0)
+      expect(QB.payments).toHaveLength(0)
+    })
   })
 })

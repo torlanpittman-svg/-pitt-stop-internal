@@ -20,7 +20,7 @@ import { useJobItems } from './JobItems'
 import { PartRow, ServiceRow, Row } from './estimate/ItemRows'
 import { InvoiceDraftModal, money, SEND_BLOCK_MSG, SYNC_BLOCK_MSG, type InvoiceDraftData, type QbCandidate } from './InvoiceDraftPanel'
 import { InvoicePaymentSection } from './InvoicePaymentSection'
-import { PAYMENT_LOCKS_INVOICE } from '@/apps/quickbooks/retail-payment'
+import { paymentLocksInvoice } from '@/apps/quickbooks/retail-payment'
 
 // ── Status display config ─────────────────────────────────────────────────────
 
@@ -763,7 +763,7 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   const resendRecommended = !!qb?.resendRecommended
   const syncFailed = linked && qb?.status === 'error'
   // A recorded / in-flight / unconfirmed payment freezes the invoice (no Sync; Email Paid Invoice replaces Send).
-  const payLocked = !!qb && PAYMENT_LOCKS_INVOICE.includes(qb.payment.status)
+  const payLocked = !!qb && paymentLocksInvoice(qb.payment)
   // "current" = linked, not stale, not in review/error → the state where Send is allowed.
   const current = linked && !syncNeeded && !needsReview && !syncFailed && !payLocked
   const canSend = current && !isSent && sendEnabled
@@ -838,6 +838,7 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
                 <>
                   {(() => {
                     const box = qb?.payment.status === 'paid' ? { tone: 'border-green-900/60 bg-green-950/30', head: 'text-green-300', label: 'Paid' }
+                      : qb?.payment.balanceState === 'partial' ? { tone: 'border-sky-900/60 bg-sky-950/30', head: 'text-sky-300', label: 'Partially paid' }
                       : needsReview ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: 'Needs review' }
                       : syncFailed ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: 'Sync failed' }
                       : syncNeeded ? { tone: 'border-amber-900/60 bg-amber-950/30', head: 'text-amber-300', label: isSent ? 'Sent · Sync needed' : 'Sync needed' }

@@ -6,13 +6,20 @@
  * loser's WHERE is re-evaluated against the winner's committed row. Neither can slip in between the
  * other's check and its lock. (neon-http has no transactions; a single conditional UPDATE is atomic.)
  */
-import { and, eq, inArray, notInArray } from 'drizzle-orm'
+import { and, eq, inArray, isNull, notInArray, or } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { jobEstimates } from '@/apps/workflow/schema'
-import { PAYMENT_LOCKS_INVOICE } from './retail-payment'
+import { BALANCE_LOCKS_INVOICE, PAYMENT_LOCKS_INVOICE } from './retail-payment'
 
 /** qb_status values during which the linked invoice's content may be changing (Record Payment waits). */
 export const INVOICE_CHANGING_STATUSES = ['creating', 'syncing']
+
+/** SQL twin of paymentLocksInvoice(): no attempt holds the invoice AND no payment/credit is applied to it
+ *  (a failed later installment never re-opens a partially paid invoice for Sync / charge changes). */
+export const invoiceFreeOfPayments = () => and(
+  notInArray(jobEstimates.qbPaymentStatus, [...PAYMENT_LOCKS_INVOICE]),
+  or(isNull(jobEstimates.qbPaymentBalanceState), notInArray(jobEstimates.qbPaymentBalanceState, [...BALANCE_LOCKS_INVOICE])),
+)
 
 /** The Record Payment attempt that holds the payment lock (qb_payment_status='recording'). */
 export interface PaymentLockOwner { requestId: string; startedAt: Date }
@@ -25,7 +32,7 @@ export interface PaymentLockOwner { requestId: string; startedAt: Date }
 export async function acquireRetailSyncLock(estimateId: string, owner?: PaymentLockOwner): Promise<boolean> {
   const paymentSide = owner
     ? and(eq(jobEstimates.qbPaymentStatus, 'recording'), eq(jobEstimates.qbPaymentRequestId, owner.requestId), eq(jobEstimates.qbPaymentStartedAt, owner.startedAt))
-    : notInArray(jobEstimates.qbPaymentStatus, [...PAYMENT_LOCKS_INVOICE])
+    : invoiceFreeOfPayments()
   const locked = await getDb().update(jobEstimates)
     .set({ qbStatus: 'syncing', updatedAt: new Date() })
     .where(and(

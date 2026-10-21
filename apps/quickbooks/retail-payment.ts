@@ -19,8 +19,40 @@ export const PAID_METHOD_LABEL: Record<PaidMethod, string> = {
 export const isPaymentMethodKey = (v: unknown): v is PaymentMethodKey =>
   typeof v === 'string' && (PAYMENT_METHODS as readonly string[]).includes(v)
 
-/** Payment states in which the linked invoice must not be rewritten (Sync / fee changes). */
-export const PAYMENT_LOCKS_INVOICE: readonly string[] = ['recording', 'paid', 'uncertain', 'review']
+/** Payment ATTEMPT states in which the linked invoice must not be rewritten (Sync / fee changes).
+ *  'recorded' = the latest installment is confirmed in QuickBooks and a balance remains. */
+export const PAYMENT_LOCKS_INVOICE: readonly string[] = ['recording', 'paid', 'uncertain', 'review', 'recorded']
+
+/** QuickBooks-confirmed aggregate state of the invoice (job_estimates.qb_payment_balance_state). Separate from
+ *  the attempt state above: a later attempt failing never makes a partially paid invoice look unpaid. */
+export type InvoiceBalanceState = 'unpaid' | 'partial' | 'paid'
+/** Once any payment or credit is applied, the agreed total is never rewritten from Pitt Stop. */
+export const BALANCE_LOCKS_INVOICE: readonly string[] = ['partial', 'paid']
+
+/** Is the linked invoice frozen by payment state (attempt in progress/recorded, or money already applied)? */
+export function paymentLocksInvoice(p: { status: string; balanceState?: string | null }): boolean {
+  return PAYMENT_LOCKS_INVOICE.includes(p.status) || (!!p.balanceState && BALANCE_LOCKS_INVOICE.includes(p.balanceState))
+}
+
+/**
+ * "Amount received" as typed on the phone → integer cents. Accepts "2000", "2,000", "$2,000.5", "411.00".
+ * Rejects empty, zero, negative, non-numeric, and more than two decimal places (never rounded silently).
+ */
+export function parseAmountInput(text: string): { ok: true; cents: number } | { ok: false; error: string } {
+  const s = text.trim().replace(/^\$/, '').replace(/,/g, '').trim()
+  if (!s) return { ok: false, error: 'Enter the amount received.' }
+  if (!/^\d+(\.\d*)?$|^\.\d+$/.test(s)) return { ok: false, error: 'Enter dollars and cents, e.g. 2000.00.' }
+  const [whole, frac = ''] = s.split('.')
+  if (frac.length > 2) return { ok: false, error: 'Use at most two decimal places (cents).' }
+  const cents = Number(whole || '0') * 100 + Number(frac.padEnd(2, '0') || '0')
+  if (!Number.isSafeInteger(cents) || cents <= 0) return { ok: false, error: 'The amount must be more than $0.00.' }
+  return { ok: true, cents }
+}
+
+/** Server-side: a positive whole number of cents, or null (malformed / zero / negative / fractional). */
+export function validCents(v: unknown): number | null {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : null
+}
 
 /** A 'recording' lock older than this is treated as an interrupted attempt (reconcile, then retry). */
 export const RECORDING_STALE_MS = 90_000
@@ -86,7 +118,7 @@ export function parsePaymentTag(note: string | null | undefined): { estimateId: 
 // ── Reading QuickBooks payment state ─────────────────────────────────────────────────────────
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export interface QbPayment {
-  Id: string; TotalAmt?: number; PrivateNote?: string; TxnSource?: string
+  Id: string; TotalAmt?: number; PrivateNote?: string; TxnSource?: string; TxnDate?: string
   PaymentMethodRef?: { value?: string }; CreditCardPayment?: unknown
   Line?: Array<{ Amount?: number; LinkedTxn?: Array<{ TxnId?: string; TxnType?: string }> }>
   MetaData?: { CreateTime?: string }
@@ -149,6 +181,120 @@ export function classifyInvoicePayment(params: {
   const top = applied.sort((a, b) => b.amount - a.amount)[0]
   // Zero balance with no readable payment (e.g. a credit memo applied) — still paid per QuickBooks.
   return { state: 'paid', totalCents, paymentId: top ? String(top.p.Id) : null, method: top ? externalMethod(top.p) : 'other', source: 'external', attemptId: null, amountCents: top?.amount ?? totalCents }
+}
+
+// ── Installments: per-payment history and per-attempt confirmation ──────────────────────────
+export interface PaymentHistoryEntry {
+  paymentId: string
+  /** QuickBooks TxnDate (or create time). */
+  date: string | null
+  /** Applied to THIS invoice. */
+  appliedCents: number
+  /** Money received (applied minus any credit memo / other credit used by the same Payment). */
+  receivedCents: number
+  creditCents: number
+  method: PaidMethod
+  source: 'pitt_stop' | 'external'
+  attemptId: string | null
+}
+export interface InvoiceBalanceSummary {
+  state: InvoiceBalanceState
+  totalCents: number
+  balanceCents: number
+  /** Money received by Payments, as listed on the invoice. */
+  receivedCents: number
+  /** Everything else that reduced the balance — credit memos, other credits/adjustments. Never counted as cash. */
+  creditCents: number
+  history: PaymentHistoryEntry[]
+}
+
+/**
+ * The invoice's payment picture from QuickBooks' own numbers. Paid ⇔ Balance is exactly 0. Each Payment's
+ * money vs. credit portion is kept apart (a credit memo applied through a Payment is not cash collected);
+ * any reduction not explained by Payments is reported as credit/adjustment. `methodIds` maps the owner's
+ * QuickBooks PaymentMethod ids back to Cash / Check / Card Terminal for payments entered directly in QuickBooks.
+ */
+export function summarizeInvoicePayments(params: {
+  invoice: { Id: string; TotalAmt?: number; Balance?: number; LinkedTxn?: Array<{ TxnId?: string; TxnType?: string }> }
+  payments: QbPayment[]
+  estimateId: string
+  methodIds?: Record<string, PaymentMethodKey>
+}): { ok: true; summary: InvoiceBalanceSummary } | { ok: false; reason: string } {
+  const { invoice, payments, estimateId } = params
+  if (invoice.Balance === undefined || invoice.Balance === null) return { ok: false, reason: 'QuickBooks did not report a balance for this invoice.' }
+  const totalCents = cents(invoice.TotalAmt), balanceCents = cents(invoice.Balance)
+  if (totalCents <= 0) return { ok: false, reason: 'This invoice has no amount due in QuickBooks.' }
+  if (balanceCents < 0) return { ok: false, reason: 'QuickBooks reports a negative balance on this invoice.' }
+  if (balanceCents > totalCents) return { ok: false, reason: 'QuickBooks balance exceeds the invoice total.' }
+
+  const linked = new Set(linkedPaymentIds(invoice))
+  const history: PaymentHistoryEntry[] = []
+  for (const p of payments) {
+    const applied = appliedToInvoiceCents(p, invoice.Id)
+    if (applied <= 0) continue
+    let otherLines = 0   // lines spending a credit (CreditMemo, JournalEntry, …) inside the same Payment
+    for (const l of p.Line ?? []) if ((l.LinkedTxn ?? []).some((t) => t.TxnType && t.TxnType !== 'Invoice')) otherLines += cents(l.Amount)
+    const credit = Math.min(applied, otherLines)
+    const tag = parsePaymentTag(p.PrivateNote)
+    const ours = !!tag && tag.estimateId === estimateId
+    const pm = p.PaymentMethodRef?.value != null ? params.methodIds?.[String(p.PaymentMethodRef.value)] : undefined
+    const ext = externalMethod(p)
+    history.push({
+      paymentId: String(p.Id), date: p.TxnDate ?? p.MetaData?.CreateTime ?? null,
+      appliedCents: applied, receivedCents: applied - credit, creditCents: credit,
+      method: ours ? tag!.method : ext === 'other' && pm ? pm : ext,
+      source: ours ? 'pitt_stop' : 'external', attemptId: ours ? tag!.attemptId : null,
+    })
+  }
+  history.sort((a, b) => (a.date ?? '').localeCompare(b.date ?? '') || Number(a.paymentId) - Number(b.paymentId))
+  const reduced = totalCents - balanceCents
+  // Only Payments QuickBooks lists on the invoice count toward its numbers (a just-created one may not be listed yet).
+  const listed = history.filter((h) => linked.has(h.paymentId))
+  const receivedCents = Math.min(reduced, listed.reduce((s, h) => s + h.receivedCents, 0))
+  const state: InvoiceBalanceState = balanceCents === 0 ? 'paid' : balanceCents === totalCents ? 'unpaid' : 'partial'
+  return { ok: true, summary: { state, totalCents, balanceCents, receivedCents, creditCents: reduced - receivedCents, history } }
+}
+
+/**
+ * The QuickBooks Payment created by ONE Pitt Stop attempt (PSPAY tag with this estimate + attempt id) and
+ * applied to this invoice. This — not a balance reduction, which another payment could cause — is what
+ * confirms an installment.
+ */
+export function findAttemptPayment(payments: QbPayment[], params: { invoiceId: string; estimateId: string; attemptId: string }): { paymentId: string; appliedCents: number; method: PaymentMethodKey } | null {
+  for (const p of payments) {
+    const tag = parsePaymentTag(p.PrivateNote)
+    if (!tag || tag.estimateId !== params.estimateId || tag.attemptId !== params.attemptId) continue
+    const applied = appliedToInvoiceCents(p, params.invoiceId)
+    if (applied > 0) return { paymentId: String(p.Id), appliedCents: applied, method: tag.method }
+  }
+  return null
+}
+
+/** A phone-generated confirmation key (one per Review → Save): a lower-case UUID. Anything else is ignored. */
+const CONFIRMATION_KEY_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+export const isConfirmationKey = (v: unknown): v is string => typeof v === 'string' && CONFIRMATION_KEY_RE.test(v)
+
+/** The attempt id for a NEW attempt of one confirmation: the key itself, or — when the key's own attempt
+ *  already failed definitively (QuickBooks may replay a requestid's original response) — `<key>-r<hex>`. Both
+ *  stay findable by the key (findConfirmationPayment). */
+export function attemptIdForConfirmation(key: string, lastAttemptId: string | null | undefined, rand: () => string): string {
+  return lastAttemptId === key || lastAttemptId?.startsWith(`${key}-`) ? `${key}-r${rand().replace(/-/g, '').slice(0, 12)}` : key
+}
+
+/**
+ * The QuickBooks Payment already recorded for ONE confirmation the person made (any attempt id derived from
+ * its key) and applied to this invoice — a retried Save after a lost response finds it instead of recording
+ * the same money twice.
+ */
+export function findConfirmationPayment(payments: QbPayment[], params: { invoiceId: string; estimateId: string; key: string }): { paymentId: string; appliedCents: number; method: PaymentMethodKey } | null {
+  for (const p of payments) {
+    const tag = parsePaymentTag(p.PrivateNote)
+    if (!tag || tag.estimateId !== params.estimateId) continue
+    if (tag.attemptId !== params.key && !tag.attemptId.startsWith(`${params.key}-`)) continue
+    const applied = appliedToInvoiceCents(p, params.invoiceId)
+    if (applied > 0) return { paymentId: String(p.Id), appliedCents: applied, method: tag.method }
+  }
+  return null
 }
 
 /**

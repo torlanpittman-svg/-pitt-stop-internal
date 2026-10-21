@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   parsePaymentMappings, availableMethods, paymentTag, parsePaymentTag, classifyInvoicePayment, isAmbiguousWriteError,
-  lockIsStale, deliveredSince, linkedPaymentIds, externalMethod, type QbPayment,
+  lockIsStale, deliveredSince, linkedPaymentIds, externalMethod, parseAmountInput, validCents, summarizeInvoicePayments,
+  findAttemptPayment, paymentLocksInvoice, type QbPayment,
+  attemptIdForConfirmation, findConfirmationPayment, isConfirmationKey,
 } from './retail-payment'
 import { QBApiError, QBNotConnectedError } from './errors'
 
@@ -110,4 +112,102 @@ describe('locks and delivery', () => {
     expect(deliveredSince({ DeliveryInfo: { DeliveryTime: '2026-10-20T12:00:00Z' } }, { since, prior: '2026-10-20T12:00:00Z' })).toBe(false)
   })
 
+})
+
+describe('"Amount received" input → integer cents (never rounded silently)', () => {
+  it('accepts plain, comma, dollar-sign and short-decimal forms', () => {
+    expect(parseAmountInput('2000')).toEqual({ ok: true, cents: 200000 })
+    expect(parseAmountInput(' $2,000.00 ')).toEqual({ ok: true, cents: 200000 })
+    expect(parseAmountInput('411')).toEqual({ ok: true, cents: 41100 })
+    expect(parseAmountInput('411.5')).toEqual({ ok: true, cents: 41150 })
+    expect(parseAmountInput('.05')).toEqual({ ok: true, cents: 5 })
+    expect(parseAmountInput('2000.')).toEqual({ ok: true, cents: 200000 })
+  })
+  it('rejects empty, zero, negative, malformed and excess precision', () => {
+    for (const t of ['', '  ', '0', '0.00', '-5', '1.234', '2,000.001', 'abc', '1e3', '12.3.4', '$', '+5', '99999999999999999'])
+      expect(parseAmountInput(t).ok, t).toBe(false)
+  })
+  it('server side: only positive safe integers are cents', () => {
+    expect(validCents(41100)).toBe(41100)
+    for (const v of [0, -1, 1.5, '100', NaN, Infinity, null, undefined, 2 ** 60]) expect(validCents(v)).toBeNull()
+  })
+})
+
+describe('invoice payment summary — money received vs credits, history per payment', () => {
+  const inv = (total: number, balance: number, linked: string[]) => ({ Id: '900', TotalAmt: total, Balance: balance, LinkedTxn: linked.map((id) => ({ TxnId: id, TxnType: 'Payment' })) })
+  const pay = (id: string, amt: number, note = '', extra: Partial<QbPayment> = {}): QbPayment =>
+    ({ Id: id, TotalAmt: amt, PrivateNote: note, Line: [{ Amount: amt, LinkedTxn: [{ TxnId: '900', TxnType: 'Invoice' }] }], ...extra })
+
+  it('unpaid / partial / paid follow QuickBooks Balance exactly', () => {
+    expect(summarizeInvoicePayments({ invoice: inv(2411, 2411, []), payments: [], estimateId: EST })).toMatchObject({ ok: true, summary: { state: 'unpaid', receivedCents: 0 } })
+    const p = summarizeInvoicePayments({ invoice: inv(2411, 411, ['1']), payments: [pay('1', 2000, paymentTag(EST, ATTEMPT, 'card_terminal'), { TxnDate: '2026-10-21' })], estimateId: EST })
+    expect(p).toMatchObject({ ok: true, summary: { state: 'partial', totalCents: 241100, balanceCents: 41100, receivedCents: 200000, creditCents: 0,
+      history: [{ paymentId: '1', date: '2026-10-21', appliedCents: 200000, method: 'card_terminal', source: 'pitt_stop', attemptId: ATTEMPT }] } })
+    expect(summarizeInvoicePayments({ invoice: inv(2411, 0, ['1', '2']), payments: [pay('1', 2000), pay('2', 411)], estimateId: EST })).toMatchObject({ ok: true, summary: { state: 'paid', receivedCents: 241100 } })
+  })
+  it('a credit memo spent inside a Payment is a credit, not money received', () => {
+    const credit = pay('3', 0, '', { Line: [{ Amount: 100, LinkedTxn: [{ TxnId: '900', TxnType: 'Invoice' }] }, { Amount: 100, LinkedTxn: [{ TxnId: '7', TxnType: 'CreditMemo' }] }] })
+    const r = summarizeInvoicePayments({ invoice: inv(2411, 2311, ['3']), payments: [credit], estimateId: EST })
+    expect(r).toMatchObject({ ok: true, summary: { receivedCents: 0, creditCents: 10000, history: [{ appliedCents: 10000, receivedCents: 0, creditCents: 10000 }] } })
+  })
+  it('a payment not yet listed on the invoice is shown in history but not counted toward its numbers', () => {
+    const r = summarizeInvoicePayments({ invoice: inv(2411, 2411, []), payments: [pay('9', 500, paymentTag(EST, ATTEMPT, 'cash'))], estimateId: EST })
+    expect(r).toMatchObject({ ok: true, summary: { state: 'unpaid', receivedCents: 0, creditCents: 0, history: [{ paymentId: '9' }] } })
+  })
+  it('QuickBooks method ids map back to the owner methods for payments entered in QuickBooks', () => {
+    const r = summarizeInvoicePayments({ invoice: inv(2411, 2000, ['4']), payments: [pay('4', 411, 'entered in QBO', { PaymentMethodRef: { value: '2' } })], estimateId: EST, methodIds: { '2': 'check' } })
+    expect(r).toMatchObject({ ok: true, summary: { history: [{ method: 'check', source: 'external' }] } })
+  })
+  it('missing / negative / excess balances are invalid, never guessed', () => {
+    expect(summarizeInvoicePayments({ invoice: { Id: '900', TotalAmt: 10 }, payments: [], estimateId: EST }).ok).toBe(false)
+    expect(summarizeInvoicePayments({ invoice: inv(10, -1, []), payments: [], estimateId: EST }).ok).toBe(false)
+    expect(summarizeInvoicePayments({ invoice: inv(10, 11, []), payments: [], estimateId: EST }).ok).toBe(false)
+  })
+})
+
+describe('an installment is confirmed only by its own QuickBooks payment', () => {
+  const tagged = (id: string, est: string, attempt: string, amt = 500): QbPayment =>
+    ({ Id: id, TotalAmt: amt, PrivateNote: paymentTag(est, attempt, 'cash'), Line: [{ Amount: amt, LinkedTxn: [{ TxnId: '900', TxnType: 'Invoice' }] }] })
+  it('matches estimate + attempt + applied to this invoice — nothing else', () => {
+    const other = 'ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee'
+    expect(findAttemptPayment([tagged('1', EST, other), tagged('2', EST, ATTEMPT)], { invoiceId: '900', estimateId: EST, attemptId: ATTEMPT })).toEqual({ paymentId: '2', appliedCents: 50000, method: 'cash' })
+    expect(findAttemptPayment([tagged('1', EST, other)], { invoiceId: '900', estimateId: EST, attemptId: ATTEMPT })).toBeNull()
+    expect(findAttemptPayment([tagged('1', EST, ATTEMPT)], { invoiceId: '901', estimateId: EST, attemptId: ATTEMPT })).toBeNull()
+    expect(findAttemptPayment([{ Id: '5', TotalAmt: 5, PrivateNote: 'manual', Line: [{ Amount: 5, LinkedTxn: [{ TxnId: '900', TxnType: 'Invoice' }] }] }], { invoiceId: '900', estimateId: EST, attemptId: ATTEMPT })).toBeNull()
+  })
+})
+
+describe('one confirmation on the phone → found again on retry, whatever attempt recorded it', () => {
+  const KEY = '0c4f2a1e-7b3d-4c5e-9f60-1a2b3c4d5e6f'
+  const tagged = (id: string, attempt: string): QbPayment =>
+    ({ Id: id, TotalAmt: 500, PrivateNote: paymentTag(EST, attempt, 'cash'), Line: [{ Amount: 500, LinkedTxn: [{ TxnId: '900', TxnType: 'Invoice' }] }] })
+  it('accepts only a lower-case UUID key', () => {
+    expect(isConfirmationKey(KEY)).toBe(true)
+    for (const bad of [KEY.toUpperCase(), `${KEY}-r1`, '', 'x', 42, null, undefined]) expect(isConfirmationKey(bad)).toBe(false)
+  })
+  it('first attempt uses the key; after the key was already used, a derived id (QuickBooks may replay a requestid)', () => {
+    const rand = () => 'abcdef12-3456-7890-abcd-ef1234567890'
+    expect(attemptIdForConfirmation(KEY, null, rand)).toBe(KEY)
+    expect(attemptIdForConfirmation(KEY, 'some-other-attempt-id', rand)).toBe(KEY)
+    expect(attemptIdForConfirmation(KEY, KEY, rand)).toBe(`${KEY}-rabcdef123456`)
+    expect(attemptIdForConfirmation(KEY, `${KEY}-rabcdef123456`, rand)).toBe(`${KEY}-rabcdef123456`)
+    expect(paymentTag(EST, `${KEY}-rabcdef123456`, 'cash').length).toBeLessThan(200)
+  })
+  it('matches the key or an id derived from it — applied to this invoice, this estimate only', () => {
+    expect(findConfirmationPayment([tagged('1', KEY)], { invoiceId: '900', estimateId: EST, key: KEY })).toMatchObject({ paymentId: '1' })
+    expect(findConfirmationPayment([tagged('2', `${KEY}-rabcdef123456`)], { invoiceId: '900', estimateId: EST, key: KEY })).toMatchObject({ paymentId: '2' })
+    expect(findConfirmationPayment([tagged('3', ATTEMPT)], { invoiceId: '900', estimateId: EST, key: KEY })).toBeNull()
+    expect(findConfirmationPayment([tagged('4', `${KEY}x`)], { invoiceId: '900', estimateId: EST, key: KEY })).toBeNull()
+    expect(findConfirmationPayment([tagged('1', KEY)], { invoiceId: '901', estimateId: EST, key: KEY })).toBeNull()
+  })
+})
+
+describe('invoice lock: attempt state OR money applied', () => {
+  it('locks while an attempt holds it, and once any payment/credit is applied — even after a later failed attempt', () => {
+    expect(paymentLocksInvoice({ status: 'none' })).toBe(false)
+    expect(paymentLocksInvoice({ status: 'none', balanceState: 'unpaid' })).toBe(false)
+    for (const status of ['recording', 'recorded', 'paid', 'uncertain', 'review']) expect(paymentLocksInvoice({ status })).toBe(true)
+    expect(paymentLocksInvoice({ status: 'error', balanceState: 'partial' })).toBe(true)
+    expect(paymentLocksInvoice({ status: 'none', balanceState: 'paid' })).toBe(true)
+  })
 })

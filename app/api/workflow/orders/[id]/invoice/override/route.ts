@@ -16,7 +16,7 @@
  */
 import { NextResponse } from 'next/server'
 import { getOrderWithContext, logEvent } from '@/apps/workflow/db'
-import { PAYMENT_LOCKS_INVOICE } from '@/apps/quickbooks/retail-payment'
+import { paymentLocksInvoice } from '@/apps/quickbooks/retail-payment'
 import { getEstimateRow, getFullEstimate, setEstimateWaiver, recomputeEstimate, flagQbSyncNeededIfInvoiced } from '@/apps/workflow/estimate-db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { isDealerOrder } from '@/apps/workflow/fees'
@@ -84,7 +84,7 @@ async function applyOverride(
   const est = await getEstimateRow(id)
   if (!est) return NextResponse.json({ error: 'This Job has no priced estimate yet.' }, { status: 400 })
   // A payment is recorded on the linked QuickBooks invoice — its charges can no longer change here.
-  if (PAYMENT_LOCKS_INVOICE.includes(est.qbPaymentStatus)) {
+  if (paymentLocksInvoice({ status: est.qbPaymentStatus, balanceState: est.qbPaymentBalanceState })) {
     return NextResponse.json({ error: 'A payment is recorded on this invoice — charges can’t be changed. Correct it in QuickBooks.' }, { status: 409 })
   }
 

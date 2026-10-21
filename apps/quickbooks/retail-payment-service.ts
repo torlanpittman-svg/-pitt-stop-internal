@@ -1,28 +1,38 @@
 /**
  * Retail Record Payment + Email Paid Invoice — orchestration (manager/admin, route-enforced).
  *
- * Record Payment applies ONE QuickBooks Payment for the invoice's full open balance, with the chosen
- * method (cash / card terminal / check) and its owner-mapped deposit account. It records money already
- * collected and never charges a card. "Paid" is shown only after QuickBooks reports a zero balance.
+ * Record Payment applies ONE QuickBooks Payment per installment actually collected — the full open balance or
+ * a smaller amount — to the job's EXISTING invoice, with the chosen method (cash / card terminal / check) and
+ * its owner-mapped deposit account. A later installment (any method) is another Payment on the SAME invoice.
+ * It records money already collected and never charges a card. "Paid" is shown only after QuickBooks reports a
+ * zero balance; a confirmed installment that leaves a balance is "Partially paid".
  *
- * Duplicate-proof under double-taps, concurrent requests, retries and ambiguous timeouts:
- *   1. reconcile FIRST — read the invoice + its payments; a zero balance (paid online, recorded in
- *      QuickBooks, or by an earlier attempt whose response was lost) is ADOPTED, never paid again;
- *   2. compare-and-set qb_payment_status → 'recording' (one winner; a stale lock is an interrupted attempt);
- *   3. the attempt id is sent as QBO `requestid` and tagged in PrivateNote (PSPAY:…); an UNCERTAIN attempt
- *      is retried with the SAME attempt id, method and amount, so QuickBooks itself returns the original
- *      payment. Until it is resolved (QuickBooks shows it paid, or a definite rejection), a different
- *      method or a fresh attempt is refused — the original may still be landing in QuickBooks;
- *   4. definite failures → 'error' (safe to retry); ambiguous failures → 'uncertain' (reconciled before
- *      any further write);
- *   5. the payment lock and the invoice-changing locks (Sync, charge changes — see invoice-locks.ts) exclude
- *      each other in their compare-and-set statements; the invoice + draft are re-verified UNDER the lock;
- *      and every state write is fenced by (attempt id, lock time), so a stale worker never overwrites a
- *      newer attempt's state.
+ * Duplicate-proof under double-taps, concurrent devices, retries and ambiguous timeouts:
+ *   1. reconcile FIRST — read the invoice + its payments. A zero balance (paid online, recorded in QuickBooks,
+ *      or by an earlier attempt) is ADOPTED, never paid again. An earlier unconfirmed attempt is confirmed only
+ *      by ITS OWN QuickBooks Payment (PSPAY tag carrying its attempt id, applied to this invoice) — never by a
+ *      balance reduction, which another payment or a credit could have caused;
+ *   2. the open balance the person confirmed must still be QuickBooks' balance — otherwise nothing is written
+ *      and the new balance comes back for renewed confirmation;
+ *   3. compare-and-set qb_payment_status → 'recording' (one winner; a stale lock is an interrupted attempt);
+ *   4. every installment gets its own attempt id, sent as QBO `requestid` and tagged in PrivateNote. An
+ *      UNCERTAIN attempt is retried only with the SAME id, method and amount, so QuickBooks itself returns the
+ *      original payment; until it is resolved no other installment can start;
+ *   5. definite failures → 'error' (safe to retry); ambiguous failures → 'uncertain' (reconciled first);
+ *   6. the payment lock and the invoice-changing locks (Sync, charge changes — see invoice-locks.ts) exclude
+ *      each other; once any payment or credit is applied the invoice stays frozen (qb_payment_balance_state);
+ *      the invoice + draft are re-verified UNDER the lock; every state write is fenced by (attempt id, lock
+ *      time), so a stale worker never overwrites a newer attempt's state.
  *
- * Payment state, invoice create/send state (qb_status) and the paid-invoice email state are separate
- * columns: an email failure never touches the payment. Job status / completedAt are never touched.
- * History is append-only in service_order_events. Dealer jobs are refused (Dealer Check-In owns them).
+ * The latest ATTEMPT (qb_payment_status) and the invoice's AGGREGATE (qb_payment_balance_state + amounts,
+ * cached from QuickBooks reads) are separate columns; the paid-invoice email has its own. Per-payment history
+ * is read from QuickBooks; the audit is append-only in service_order_events. Job status / completedAt are
+ * never touched. Dealer jobs are refused (Dealer Check-In owns them).
+ *
+ * Card-payment charge: the existing full-payment rule is unchanged — Cash / Check paying an UNPAID invoice in
+ * full removes the un-waived charge (pricing engine) before paying. A partial or later installment never
+ * changes the invoice: the confirmed total, charge included, stays as is (mixed-method fee policy is an open
+ * owner decision — see docs/retail-invoice-payment.md).
  */
 import crypto from 'node:crypto'
 import { and, eq, inArray, isNull, notInArray, or, lt, sql } from 'drizzle-orm'
@@ -38,9 +48,11 @@ import { decideSendRecipient } from './retail-invoice'
 import { connectedRealmId, loadInvoicePayments, verifyPaymentMapping, createRetailPaymentInQB } from './retail-payment-write'
 import { INVOICE_CHANGING_STATUSES } from './invoice-locks'
 import {
-  availableMethods, classifyInvoicePayment, isAmbiguousWriteError, isPaymentMethodKey, lockIsStale, linkedPaymentIds,
-  parsePaymentMappings, paymentTag, deliveredSince, PAID_METHOD_LABEL, PAYMENT_WRITE_TIMEOUT_MS, RECORDING_STALE_MS, SENDING_STALE_MS,
-  type InvoicePaymentState, type MethodAvailability, type PaidMethod, type PaymentMethodKey,
+  attemptIdForConfirmation, availableMethods, findAttemptPayment, findConfirmationPayment, isAmbiguousWriteError, isConfirmationKey, isPaymentMethodKey, lockIsStale, linkedPaymentIds,
+  parsePaymentMappings, paymentTag, deliveredSince, summarizeInvoicePayments, validCents,
+  PAID_METHOD_LABEL, PAYMENT_WRITE_TIMEOUT_MS, RECORDING_STALE_MS, SENDING_STALE_MS,
+  type InvoiceBalanceState, type InvoiceBalanceSummary, type MethodAvailability, type PaidMethod, type PaymentHistoryEntry,
+  type PaymentMethodKey, type QbPayment,
 } from './retail-payment'
 
 const APP = 'quickbooks:retail-payment-service'
@@ -50,14 +62,25 @@ const newAttemptId = () => crypto.randomUUID()
 
 export type PaymentBlock =
   | 'no_invoice' | 'dealer' | 'not_priced' | 'needs_review' | 'sync_needed' | 'invoice_missing' | 'identity_mismatch'
-  | 'customer_mismatch' | 'total_mismatch' | 'invalid_method' | 'not_configured' | 'mapping_invalid' | 'partial_payment'
-  | 'invalid_balance' | 'amount_changed' | 'recording' | 'qb_read_failed' | 'record_failed' | 'pricing_unresolved'
-  | 'attempt_unresolved' | 'invoice_busy'
+  | 'customer_mismatch' | 'total_mismatch' | 'invalid_method' | 'invalid_amount' | 'over_balance' | 'balance_changed'
+  | 'not_configured' | 'mapping_invalid' | 'invalid_balance' | 'amount_changed' | 'recording' | 'qb_read_failed'
+  | 'record_failed' | 'pricing_unresolved' | 'attempt_unresolved' | 'invoice_busy'
+
+/** The invoice as QuickBooks reports it, for the phone sheet (history newest last). */
+export interface PaymentBalanceView {
+  state: InvoiceBalanceState
+  totalCents: number
+  balanceCents: number
+  receivedCents: number
+  creditCents: number
+  history: Array<PaymentHistoryEntry & { methodLabel: string }>
+}
 
 export interface PaymentResult {
   ok: boolean
-  /** paid = QuickBooks confirmed zero balance. uncertain/review = NOT confirmed (never shown as Paid). */
-  status: 'paid' | 'unpaid' | 'recording' | 'uncertain' | 'review' | 'error' | 'refused'
+  /** paid = QuickBooks confirmed zero balance. recorded = THIS installment confirmed, a balance remains.
+   *  partial (preview) = payments applied, balance open. uncertain/review = NOT confirmed (never shown as Paid). */
+  status: 'paid' | 'recorded' | 'partial' | 'unpaid' | 'recording' | 'uncertain' | 'review' | 'error' | 'refused'
   block?: PaymentBlock
   error?: string
   invoiceId?: string | null
@@ -66,22 +89,26 @@ export interface PaymentResult {
   method?: PaidMethod | null
   methodLabel?: string | null
   paymentId?: string | null
-  /** Paid before this request (paid online / recorded in QuickBooks / earlier attempt) → adopted, nothing written. */
+  /** Confirmed from QuickBooks before/without this request writing (paid elsewhere, or an earlier attempt that
+   *  QuickBooks did record) → adopted, nothing new written. */
   reconciled?: boolean
   alreadyPaid?: boolean
+  /** QuickBooks' invoice numbers + payment history after this request. */
+  balance?: PaymentBalanceView
 }
 
 export interface PaymentPreview extends PaymentResult {
   methods?: MethodAvailability[]
-  /** An earlier attempt QuickBooks hasn't confirmed: it can only be checked / retried as this method. */
+  /** An earlier attempt QuickBooks hasn't confirmed: it can only be checked / retried as this method + amount. */
   pendingMethod?: PaymentMethodKey | null
+  pendingAmountCents?: number | null
   /** The invoice still carries a card-payment charge (relevant when the customer pays cash/check). */
   cardChargeCents?: number
   cardChargeLabel?: string
-  /** The amount Save will record for each method — Cash / Check with the card charge removed (pricing
-   *  engine projection; nothing is changed until Save). */
+  /** The FULL-payment amount per method — Cash / Check with the card charge removed when the invoice is unpaid
+   *  (pricing engine projection; nothing is changed until Save). The sheet's default "Amount received". */
   methodAmounts?: Record<PaymentMethodKey, number>
-  /** How much Cash / Check saves (the un-waived card charge, incl. any effect on tax); 0 = nothing removed. */
+  /** How much Cash / Check in full saves (the un-waived card charge, incl. any effect on tax); 0 = nothing removed. */
   cardFeeRemovalCents?: number
   /** The pinned unconfirmed attempt already removed the card charge (Cash / Check). */
   cardFeeRemoved?: boolean
@@ -103,18 +130,47 @@ async function loadMethods(): Promise<{ methods: MethodAvailability[]; cfg: Retu
   return { cfg, methods: availableMethods(cfg, await connectedRealmId()) }
 }
 
-/** Read QuickBooks' current payment state for the linked invoice (fresh invoice + its payments). */
-async function readPaymentState(est: EstimateRow, raw?: RawQBInvoice | null): Promise<{ raw: RawQBInvoice; state: InvoicePaymentState } | null> {
+/** Owner-mapped QuickBooks PaymentMethod id → Cash / Check / Card Terminal (labels payments entered in QuickBooks).
+ *  Only when the mapping is pinned to the connected company. */
+async function methodIdsForLabels(): Promise<Record<string, PaymentMethodKey>> {
+  const { cfg, methods } = await loadMethods().catch(() => ({ cfg: null, methods: [] as MethodAvailability[] }))
+  const out: Record<string, PaymentMethodKey> = {}
+  for (const m of methods) { const map = cfg?.methods[m.key]; if (m.available && map) out[map.paymentMethodId] = m.key }
+  return out
+}
+
+interface PaymentRead { raw: RawQBInvoice; payments: QbPayment[]; summary: InvoiceBalanceSummary | null; invalid: string | null }
+
+/** Read QuickBooks' current payment picture for the linked invoice (fresh invoice + its payments). */
+async function readPaymentState(est: EstimateRow, raw?: RawQBInvoice | null): Promise<PaymentRead | null> {
   const inv = raw ?? await getRetailInvoiceRaw(est.qbInvoiceId!)
   if (!inv) return null
   const payments = await loadInvoicePayments({ linkedIds: linkedPaymentIds(inv), customerId: inv.CustomerRef?.value ?? null, estimateId: est.id })
-  return { raw: inv, state: classifyInvoicePayment({ invoice: inv, payments, estimateId: est.id }) }
+  const s = summarizeInvoicePayments({ invoice: inv, payments, estimateId: est.id, methodIds: await methodIdsForLabels() })
+  return { raw: inv, payments, summary: s.ok ? s.summary : null, invalid: s.ok ? null : s.reason }
+}
+
+const view = (s: InvoiceBalanceSummary): PaymentBalanceView => ({
+  state: s.state, totalCents: s.totalCents, balanceCents: s.balanceCents, receivedCents: s.receivedCents, creditCents: s.creditCents,
+  history: s.history.map((h) => ({ ...h, methodLabel: PAID_METHOD_LABEL[h.method] })),
+})
+/** The cached aggregate written with every QuickBooks-confirmed read. */
+const balancePatch = (s: InvoiceBalanceSummary) => ({
+  qbPaymentBalanceState: s.state, qbPaymentTotalCents: s.totalCents, qbPaymentBalanceCents: s.balanceCents,
+  qbPaymentReceivedCents: s.receivedCents, qbPaymentCreditCents: s.creditCents, qbPaymentCheckedAt: new Date(),
+})
+
+/** The payment shown for a zero balance reached outside this attempt: the latest one applied (paid online, in
+ *  QuickBooks, or a credit). No readable payment (e.g. a credit memo applied directly) — still paid per QuickBooks. */
+function latestApplied(s: InvoiceBalanceSummary): Confirmation {
+  const h = s.history[s.history.length - 1]
+  return h ? { paymentId: h.paymentId, method: h.method, amountCents: h.appliedCents } : { paymentId: null, method: 'other', amountCents: s.totalCents }
 }
 
 /**
- * Which payment state a "paid" write may replace: the exact state the caller observed before taking its
- * QuickBooks snapshot (status + attempt id + lock time). Anything newer — a takeover, a review flag, another
- * attempt — makes the write a no-op, so an old snapshot can never overwrite newer payment state.
+ * Which payment state a write may replace: the exact state the caller observed before taking its QuickBooks
+ * snapshot (status + attempt id + lock time). Anything newer — a takeover, a review flag, another attempt —
+ * makes the write a no-op, so an old snapshot can never overwrite newer payment state.
  */
 interface PaymentFence { statuses: string[]; requestId: string | null; startedAt: Date | null }
 const observedFence = (est: EstimateRow): PaymentFence => ({ statuses: [est.qbPaymentStatus], requestId: est.qbPaymentRequestId ?? null, startedAt: est.qbPaymentStartedAt ?? null })
@@ -124,45 +180,61 @@ const fenceWhere = (estId: string, f: PaymentFence) => and(
   f.startedAt == null ? isNull(jobEstimates.qbPaymentStartedAt) : eq(jobEstimates.qbPaymentStartedAt, f.startedAt),
 )
 
+interface Confirmation { paymentId: string | null; method: PaidMethod; amountCents: number }
+
 /**
- * Persist a QuickBooks-confirmed zero balance (adopted or just recorded) — only over the state the caller
- * observed (see PaymentFence). Returns whether the job is now paid by THIS payment; the audit event is
- * written only for a transition that actually happened (an already-recorded identical payment is a silent no-op).
+ * Persist a QuickBooks-confirmed payment — an installment just recorded (or found after a lost response), or a
+ * zero balance adopted — only over the state the caller observed (see PaymentFence). Zero balance → 'paid';
+ * otherwise 'recorded' (this installment confirmed, balance open). Returns whether the state is now this
+ * confirmation; the audit event is written only for a transition that actually happened.
  */
-async function markPaid(est: EstimateRow, s: Extract<InvoicePaymentState, { state: 'paid' }>, actor: string | null, how: 'recorded' | 'reconciled', fence: PaymentFence): Promise<boolean> {
+async function markConfirmed(est: EstimateRow, c: Confirmation, s: InvoiceBalanceSummary, actor: string | null, how: 'recorded' | 'reconciled', fence: PaymentFence): Promise<boolean> {
+  const paid = s.state === 'paid'
+  const status = paid ? 'paid' : 'recorded'
   const fresh = await getEstimateRow(est.serviceOrderId)
-  if (fresh?.qbPaymentStatus === 'paid' && fresh.qbPaymentId === s.paymentId) return true
+  if (fresh?.qbPaymentStatus === status && fresh.qbPaymentId === c.paymentId) return true
   const done = await getDb().update(jobEstimates).set({
-    qbPaymentStatus: 'paid', qbPaymentId: s.paymentId, qbPaymentMethod: s.method, qbPaymentAmountCents: s.amountCents,
-    qbPaymentError: null, qbPaidAt: fresh?.qbPaidAt ?? new Date(), qbPaidBy: how === 'recorded' ? actor : (fresh?.qbPaidBy ?? null), updatedAt: new Date(),
+    qbPaymentStatus: status, qbPaymentId: c.paymentId, qbPaymentMethod: c.method, qbPaymentAmountCents: c.amountCents, qbPaymentError: null,
+    ...(paid ? { qbPaidAt: fresh?.qbPaidAt ?? new Date(), qbPaidBy: how === 'recorded' ? actor : (fresh?.qbPaidBy ?? null) } : {}),
+    ...balancePatch(s), updatedAt: new Date(),
   }).where(fenceWhere(est.id, fence)).returning({ id: jobEstimates.id })
   if (done.length === 0) {
-    logger.warn(APP, 'paid_write_superseded', { orderId: est.serviceOrderId, paymentId: s.paymentId, how })
+    logger.warn(APP, 'confirmed_write_superseded', { orderId: est.serviceOrderId, paymentId: c.paymentId, how })
     return false
   }
-  const label = PAID_METHOD_LABEL[s.method]
+  const what = how === 'recorded' ? (paid ? 'paid in full' : 'installment recorded') : (paid ? 'already paid in QuickBooks' : 'payment found in QuickBooks')
   await logEvent({
     serviceOrderId: est.serviceOrderId,
     eventType: how === 'recorded' ? 'invoice_payment_recorded' : 'invoice_payment_reconciled',
     employeeName: actor,
-    note: `#${est.qbInvoiceNumber} (${est.qbInvoiceId}) ${how === 'recorded' ? 'paid' : 'already paid in QuickBooks'} · ${label} · ${money(s.amountCents)}${s.paymentId ? ` · QB payment ${s.paymentId}` : ''} · balance $0.00`,
+    note: `#${est.qbInvoiceNumber} (${est.qbInvoiceId}) ${what} · ${PAID_METHOD_LABEL[c.method]} · ${money(c.amountCents)}${c.paymentId ? ` · QB payment ${c.paymentId}` : ''} · balance ${money(s.balanceCents)} of ${money(s.totalCents)}`,
   }).catch(() => {})
   return true
+}
+
+/** Refresh the cached aggregate from a QuickBooks read — fenced like any state write (best effort). */
+async function cacheBalance(estId: string, s: InvoiceBalanceSummary, fence: PaymentFence): Promise<void> {
+  await getDb().update(jobEstimates).set({ ...balancePatch(s), updatedAt: new Date() }).where(fenceWhere(estId, fence)).catch(() => {})
 }
 
 /** What the job's payment state is NOW — reported when this request's write was superseded by newer state. */
 async function currentPaymentResult(orderId: string): Promise<PaymentResult> {
   const e = await getEstimateRow(orderId)
   const base = { invoiceId: e?.qbInvoiceId ?? null, invoiceNumber: e?.qbInvoiceNumber ?? null }
-  if (e?.qbPaymentStatus === 'paid') return { ok: true, status: 'paid', alreadyPaid: true, ...base, amountCents: e.qbPaymentAmountCents ?? undefined, method: e.qbPaymentMethod as PaidMethod, methodLabel: PAID_METHOD_LABEL[e.qbPaymentMethod as PaidMethod] ?? null, paymentId: e.qbPaymentId }
+  const last = { amountCents: e?.qbPaymentAmountCents ?? undefined, method: e?.qbPaymentMethod as PaidMethod, methodLabel: PAID_METHOD_LABEL[e?.qbPaymentMethod as PaidMethod] ?? null, paymentId: e?.qbPaymentId }
+  if (e?.qbPaymentStatus === 'paid') return { ok: true, status: 'paid', alreadyPaid: true, ...base, ...last }
+  if (e?.qbPaymentStatus === 'recorded') return { ok: true, status: 'recorded', ...base, ...last }
   if (e?.qbPaymentStatus === 'review') return { ok: false, status: 'review', ...base, error: e.qbPaymentError ?? 'This payment needs review in QuickBooks.' }
   if (e?.qbPaymentStatus === 'uncertain') return { ok: false, status: 'uncertain', ...base, error: e.qbPaymentError ?? 'QuickBooks has not confirmed the payment yet. Tap Check again.' }
   if (e?.qbPaymentStatus === 'recording') return { ok: false, status: 'recording', block: 'recording', ...base, error: 'A payment is being recorded for this invoice.' }
   return { ok: false, status: 'refused', block: 'amount_changed', ...base, error: 'The payment state changed while checking. Open Record Payment again.' }
 }
 
-function paidResult(est: EstimateRow, s: Extract<InvoicePaymentState, { state: 'paid' }>, extra: Partial<PaymentResult> = {}): PaymentResult {
-  return { ok: true, status: 'paid', invoiceId: est.qbInvoiceId, invoiceNumber: est.qbInvoiceNumber, amountCents: s.amountCents, method: s.method, methodLabel: PAID_METHOD_LABEL[s.method], paymentId: s.paymentId, ...extra }
+function confirmedResult(est: EstimateRow, c: Confirmation, s: InvoiceBalanceSummary, extra: Partial<PaymentResult> = {}): PaymentResult {
+  return {
+    ok: true, status: s.state === 'paid' ? 'paid' : 'recorded', invoiceId: est.qbInvoiceId, invoiceNumber: est.qbInvoiceNumber,
+    amountCents: c.amountCents, method: c.method, methodLabel: PAID_METHOD_LABEL[c.method], paymentId: c.paymentId, balance: view(s), ...extra,
+  }
 }
 
 const BLOCK_MSG: Partial<Record<PaymentBlock, string>> = {
@@ -178,43 +250,85 @@ const BLOCK_MSG: Partial<Record<PaymentBlock, string>> = {
 }
 
 /**
- * Verify the invoice is current with the authoritative Invoice Draft, then read QuickBooks' payment
- * state. Any QuickBooks-confirmed zero balance is adopted locally right here (no payment written).
+ * Verify the linked invoice, read QuickBooks' payment state, then:
+ *   - an earlier unconfirmed attempt that QuickBooks DID record (found by its own attempt id) is confirmed;
+ *   - a zero balance is adopted (no payment written) — before any draft check, so an invoice paid in full
+ *     elsewhere is never stuck behind a local edit;
+ *   - a job marked Paid whose QuickBooks balance has reopened (payment deleted / refunded) goes to review —
+ *     never shown as Paid while money is owed;
+ *   - while NO money is applied, the invoice must still match the authoritative Invoice Draft (priced, synced,
+ *     same total). Once any payment or credit is applied the invoice is frozen (Sync refuses), so later
+ *     installments are recorded against QuickBooks' invoice exactly as it stands — identity + customer only.
+ * `confirmed` = an earlier attempt was just confirmed here and a balance remains (nothing new was written).
  */
 async function verifyAndReconcile(orderId: string, actor: string | null, opts: { allowDrift?: boolean } = {}): Promise<
   | { ok: false; result: PaymentResult }
-  | { ok: true; v: VerifiedLinkedInvoice; state: Extract<InvoicePaymentState, { state: 'unpaid' }> }
+  | { ok: true; v: VerifiedLinkedInvoice; summary: InvoiceBalanceSummary; read: PaymentRead; confirmed: PaymentResult | null }
 > {
   const est0 = await getEstimateRow(orderId)
-  const v = await verifyLinkedRetailInvoice(orderId, opts.allowDrift ? { allowDrift: true } : {})
-  if (!v.ok) {
-    // A job already confirmed paid stays paid even if the draft has since drifted — report it, don't hide it.
+  const refused = (block: PaymentBlock, ids?: { invoiceId?: string | null; invoiceNumber?: string | null }): { ok: false; result: PaymentResult } =>
+    ({ ok: false, result: { ok: false, status: 'refused', block, error: BLOCK_MSG[block] ?? 'This invoice can’t take a payment right now.', invoiceId: ids?.invoiceId ?? null, invoiceNumber: ids?.invoiceNumber ?? null } })
+  // Identity + customer first (the invoice being paid is this job's, for this customer).
+  const light = await verifyLinkedRetailInvoice(orderId, { paidInvoice: true })
+  if (!light.ok) {
+    // A job already confirmed paid stays paid if QuickBooks can't be re-verified right now — report it, don't hide it.
     if (est0?.qbPaymentStatus === 'paid') return { ok: false, result: { ok: true, status: 'paid', alreadyPaid: true, invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, amountCents: est0.qbPaymentAmountCents ?? undefined, method: est0.qbPaymentMethod as PaidMethod, methodLabel: est0.qbPaymentMethod ? PAID_METHOD_LABEL[est0.qbPaymentMethod as PaidMethod] ?? null : null, paymentId: est0.qbPaymentId } }
-    const block = (v.block ?? 'qb_read_failed') as PaymentBlock
-    return { ok: false, result: { ok: false, status: 'refused', block, error: BLOCK_MSG[block] ?? 'This invoice can’t take a payment right now.', invoiceId: v.invoiceId ?? null, invoiceNumber: v.invoiceNumber ?? null } }
-  }
-  // The Invoice Draft itself must be settled: an unfinished breakdown or an itemized total that still
-  // differs from the agreed amount is not an amount to collect, even if QuickBooks matches it.
-  if (v.draft.pricingIncomplete || v.draft.referenceCents != null || flatPricingIssue(v.full)) {
-    return { ok: false, result: { ok: false, status: 'refused', block: 'pricing_unresolved', invoiceId: v.est.qbInvoiceId, invoiceNumber: v.est.qbInvoiceNumber, error: v.draft.pricingIncomplete ? 'Finish pricing every service before recording a payment.' : 'The itemized total differs from the agreed amount. Resolve it in the Estimate (and sync the invoice) before recording a payment.' } }
+    return refused((light.block ?? 'qb_read_failed') as PaymentBlock, light)
   }
   let read
-  try { read = await readPaymentState(v.est, v.raw) }
+  try { read = await readPaymentState(light.est, light.raw) }
   catch (e) { return { ok: false, result: { ok: false, status: 'refused', block: 'qb_read_failed', error: `Could not check QuickBooks payments: ${safeErr(e)}` } } }
-  if (!read) return { ok: false, result: { ok: false, status: 'refused', block: 'invoice_missing', error: BLOCK_MSG.invoice_missing } }
-  const s = read.state
-  if (s.state === 'paid') {
-    // Adopt a zero balance (paid online / in QuickBooks / an earlier lost response) — but only over the state
-    // observed before this snapshot was read; a newer review / attempt survives and is reported instead.
-    if (!(await markPaid(v.est, s, actor, 'reconciled', observedFence(v.est)))) return { ok: false, result: await currentPaymentResult(orderId) }
-    return { ok: false, result: paidResult(v.est, s, { reconciled: v.est.qbPaymentStatus !== 'paid', alreadyPaid: true }) }
+  if (!read) return refused('invoice_missing')
+  const s = read.summary
+  if (!s) return { ok: false, result: { ok: false, status: 'refused', block: 'invalid_balance', error: read.invalid ?? 'QuickBooks returned an unreadable balance.' } }
+  const est = light.est
+  // Writes below replace only the state observed before this snapshot was read; a newer review / attempt survives.
+  const fence = observedFence(est)
+
+  // An earlier unconfirmed attempt: confirmed ONLY by its own QuickBooks Payment — never by the balance.
+  const open = unresolvedAttempt(est)
+  const mine = open ? findAttemptPayment(read.payments, { invoiceId: String(read.raw.Id), estimateId: est.id, attemptId: open.attemptId }) : null
+  let confirmed: PaymentResult | null = null
+  if (open && mine) {
+    if (open.amountCents != null && mine.appliedCents !== open.amountCents) {
+      const msg = `QuickBooks payment ${mine.paymentId} for this attempt shows ${money(mine.appliedCents)} applied, not the ${money(open.amountCents)} confirmed — review it in QuickBooks.`
+      const flagged = await getDb().update(jobEstimates).set({ qbPaymentStatus: 'review', qbPaymentId: mine.paymentId, qbPaymentError: msg, ...balancePatch(s), updatedAt: new Date() }).where(fenceWhere(est.id, fence)).returning({ id: jobEstimates.id })
+      if (flagged.length) await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_review', employeeName: actor, note: msg }).catch(() => {})
+      return { ok: false, result: { ok: false, status: 'review', error: msg, invoiceId: est.qbInvoiceId, invoiceNumber: est.qbInvoiceNumber, balance: view(s) } }
+    }
+    const c: Confirmation = { paymentId: mine.paymentId, method: mine.method, amountCents: mine.appliedCents }
+    if (!(await markConfirmed(est, c, s, actor, 'recorded', fence))) return { ok: false, result: await currentPaymentResult(orderId) }
+    confirmed = confirmedResult(est, c, s, { reconciled: true })
+    if (s.state === 'paid') return { ok: false, result: confirmed }
+  } else if (s.state === 'paid') {
+    // Adopt a zero balance (paid online / in QuickBooks / an earlier lost response) — never pay again.
+    const c = latestApplied(s)
+    if (!(await markConfirmed(est, c, s, actor, 'reconciled', fence))) return { ok: false, result: await currentPaymentResult(orderId) }
+    return { ok: false, result: confirmedResult(est, c, s, { reconciled: est.qbPaymentStatus !== 'paid', alreadyPaid: true }) }
+  } else if (est.qbPaymentStatus === 'paid') {
+    // Marked Paid, but QuickBooks shows money owed again (a payment deleted or refunded there): review — never Paid.
+    const msg = `This invoice was marked paid, but QuickBooks now shows ${money(s.balanceCents)} open — review the payments in QuickBooks.`
+    const flagged = await getDb().update(jobEstimates).set({ qbPaymentStatus: 'review', qbPaymentError: msg, ...balancePatch(s), updatedAt: new Date() }).where(fenceWhere(est.id, fence)).returning({ id: jobEstimates.id })
+    if (flagged.length) await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_review', employeeName: actor, note: msg }).catch(() => {})
+    return { ok: false, result: { ok: false, status: 'review', error: msg, invoiceId: est.qbInvoiceId, invoiceNumber: est.qbInvoiceNumber, balance: view(s) } }
   }
-  if (s.state === 'partial') return { ok: false, result: { ok: false, status: 'refused', block: 'partial_payment', invoiceId: v.est.qbInvoiceId, invoiceNumber: v.est.qbInvoiceNumber, amountCents: s.balanceCents, error: `QuickBooks already shows ${money(s.paidCents)} paid on this invoice (${money(s.balanceCents)} still open). Partial payments aren’t handled here — finish it in QuickBooks.` } }
-  if (s.state === 'invalid') return { ok: false, result: { ok: false, status: 'refused', block: 'invalid_balance', error: s.reason } }
-  return { ok: true, v, state: s }
+
+  let v: VerifiedLinkedInvoice = light
+  if (s.state === 'unpaid') {
+    // Nothing applied yet: the invoice must still be the authoritative Invoice Draft's, and the draft settled —
+    // an unfinished breakdown or an itemized total that differs from the agreed amount is not an amount to collect.
+    const full = await verifyLinkedRetailInvoice(orderId, opts.allowDrift ? { allowDrift: true } : {})
+    if (!full.ok) return refused((full.block ?? 'qb_read_failed') as PaymentBlock, full)
+    if (full.draft.pricingIncomplete || full.draft.referenceCents != null || flatPricingIssue(full.full)) {
+      return { ok: false, result: { ok: false, status: 'refused', block: 'pricing_unresolved', invoiceId: full.est.qbInvoiceId, invoiceNumber: full.est.qbInvoiceNumber, error: full.draft.pricingIncomplete ? 'Finish pricing every service before recording a payment.' : 'The itemized total differs from the agreed amount. Resolve it in the Estimate (and sync the invoice) before recording a payment.' } }
+    }
+    v = full
+  }
+  if (!confirmed) await cacheBalance(est.id, s, fence)
+  return { ok: true, v, summary: s, read, confirmed }
 }
 
-/** Methods paid without a card: the card-payment charge is removed from the invoice before paying. */
+/** Methods paid without a card: paying an unpaid invoice IN FULL removes the card-payment charge first. */
 const REMOVES_CARD_FEE: readonly PaymentMethodKey[] = ['cash', 'check']
 /** Written (with the waiver) while the fee-removed invoice is not yet synced — the Invoice Draft shows it. */
 const FEE_SYNC_MSG = 'QuickBooks sync needed — card-payment charge removed for a cash/check payment.'
@@ -232,10 +346,11 @@ async function cashTotalCents(v: VerifiedLinkedInvoice): Promise<number | null> 
 const resumesFeeRemoval = (est: EstimateRow) => !!unresolvedAttempt(est) && est.qbPaymentCardFeeRemoved
 
 /**
- * READ path behind "Record Payment" (runs when the sheet opens, and as "Check again"): verifies the
- * invoice, reconciles any payment already in QuickBooks, and returns the open balance, the amount per
- * method (Cash / Check: card charge removed, computed by the pricing engine) and the methods that may be
- * recorded. Writes only local reconciliation state — never a QuickBooks write, never a charge change.
+ * READ path behind "Record Payment" (runs when the sheet opens, and as "Check again"): verifies the invoice,
+ * reconciles payments already in QuickBooks, and returns the invoice total, payments/credits, open balance,
+ * payment history, the full-payment amount per method (Cash / Check on an unpaid invoice: card charge removed,
+ * computed by the pricing engine) and the methods that may be recorded. Writes only local reconciliation
+ * state — never a QuickBooks write, never a charge change.
  */
 export async function previewRetailPayment(params: { orderId: string; actor: string | null }): Promise<PaymentPreview> {
   const { orderId, actor } = params
@@ -244,13 +359,13 @@ export async function previewRetailPayment(params: { orderId: string; actor: str
   const r = await verifyAndReconcile(orderId, actor, { allowDrift: resumesFeeRemoval(est) })
   if (!r.ok) return r.result
   const { methods } = await loadMethods()
-  // An earlier attempt that was not confirmed, and QuickBooks still shows the full balance open.
   const fresh = await getEstimateRow(orderId)
   const pending = fresh?.qbPaymentStatus === 'recording' && !lockIsStale(fresh.qbPaymentStartedAt, Date.now(), RECORDING_STALE_MS)
   const unresolved = fresh ? unresolvedAttempt(fresh) : null
-  const status: PaymentResult['status'] = pending ? 'recording' : unresolved ? 'uncertain' : fresh?.qbPaymentStatus === 'review' ? 'review' : 'unpaid'
+  const s = r.summary
+  const status: PaymentResult['status'] = pending ? 'recording' : unresolved ? 'uncertain' : fresh?.qbPaymentStatus === 'review' ? 'review' : s.state === 'partial' ? 'partial' : 'unpaid'
   const charge = r.v.draft.paymentCharge
-  const balance = r.state.balanceCents
+  const balance = s.balanceCents
   let methodAmounts: Record<PaymentMethodKey, number>
   let cardFeeRemovalCents = 0
   if (fresh && resumesFeeRemoval(fresh)) {
@@ -258,36 +373,57 @@ export async function previewRetailPayment(params: { orderId: string; actor: str
     const pinned = unresolved?.amountCents ?? r.v.draft.totalCents
     methodAmounts = { cash: pinned, check: pinned, card_terminal: pinned }
   } else {
-    const cash = await cashTotalCents(r.v)
+    // Card-charge removal belongs to paying an UNPAID invoice in full; after any installment the invoice stays as is.
+    const cash = s.state === 'unpaid' ? await cashTotalCents(r.v) : null
     if (cash != null) cardFeeRemovalCents = balance - cash
     methodAmounts = { cash: cash ?? balance, check: cash ?? balance, card_terminal: balance }
   }
   return {
     ok: true, status, invoiceId: est.qbInvoiceId, invoiceNumber: est.qbInvoiceNumber, amountCents: balance, methods,
-    pendingMethod: unresolved?.method ?? null,
-    error: fresh?.qbPaymentError ?? undefined,
+    pendingMethod: unresolved?.method ?? null, pendingAmountCents: unresolved?.amountCents ?? null,
+    error: r.confirmed ? undefined : fresh?.qbPaymentError ?? undefined,
     cardChargeCents: !charge.waived && charge.cents > 0 ? charge.cents : 0, cardChargeLabel: charge.label,
     methodAmounts, cardFeeRemovalCents, cardFeeRemoved: !!fresh?.qbPaymentCardFeeRemoved && !!unresolved,
+    balance: view(s),
+    ...(r.confirmed ? { reconciled: true, paymentId: r.confirmed.paymentId, method: r.confirmed.method, methodLabel: r.confirmed.methodLabel } : {}),
   }
 }
 
 /**
- * Record the counter payment. `confirmedAmountCents` is the amount the manager saw and confirmed for the
- * chosen method; if it differs now, nothing is written and the new amount is returned for re-confirmation.
+ * Record one installment of money already collected.
  *
- * Cash / Check with an un-waived card-payment charge: under the payment lock, (a) re-check QuickBooks
- * (already paid → adopted, charges untouched), (b) remove the charge through the pricing engine, (c) sync
- * the SAME invoice, (d) verify QuickBooks now equals the confirmed total, then (e) pay that balance with the
- * attempt id. If the invoice update definitely did not happen, the charge is restored and nothing is
- * recorded; if it may have happened, the attempt stays pinned (method + amount + id) and a retry re-syncs
- * (a no-op if it landed) before paying — never a payment against an unverified amount.
+ * Installment clients send `amountCents` (the "Amount received" the person confirmed) and `balanceCents` (the
+ * open balance they saw). If QuickBooks' balance differs now, nothing is written and the new balance comes back
+ * for renewed confirmation. Zero / negative / fractional / over-balance amounts are refused. Older clients send
+ * only `confirmedAmountCents`, which keeps its original meaning: the full-payment amount for that method.
+ *
+ * Cash / Check paying an UNPAID invoice in full, with an un-waived card-payment charge: under the payment lock,
+ * (a) re-check QuickBooks, (b) remove the charge through the pricing engine, (c) sync the SAME invoice, (d) verify
+ * QuickBooks now equals the confirmed total, then (e) pay it with the attempt id. If the invoice update definitely
+ * did not happen, the charge is restored and nothing is recorded; if it may have happened, the attempt stays
+ * pinned (method + amount + id) and a retry re-syncs (a no-op if it landed) before paying. Any smaller amount, and
+ * any later installment, records the Payment against the invoice exactly as it stands.
  */
-export async function recordRetailPayment(params: { orderId: string; actor: string | null; method: unknown; confirmedAmountCents: unknown }): Promise<PaymentResult> {
+export async function recordRetailPayment(params: {
+  orderId: string; actor: string | null; method: unknown
+  amountCents?: unknown; balanceCents?: unknown; confirmedAmountCents?: unknown
+  /** One id per Review → Save on the phone, reused by every retry of that confirmation. */
+  confirmationId?: unknown
+  /** What the person confirmed: pay the invoice in full ('full') or record a smaller installment ('partial'). */
+  intent?: unknown
+}): Promise<PaymentResult> {
   const { orderId, actor } = params
   const db = getDb()
   if (!isPaymentMethodKey(params.method)) return { ok: false, status: 'refused', block: 'invalid_method', error: 'Choose Cash, Card Terminal or Check.' }
   const method: PaymentMethodKey = params.method
-  const confirmed = typeof params.confirmedAmountCents === 'number' && Number.isInteger(params.confirmedAmountCents) ? params.confirmedAmountCents : NaN
+  const label = PAID_METHOD_LABEL[method]
+  const legacy = params.amountCents === undefined
+  const amount = validCents(legacy ? params.confirmedAmountCents : params.amountCents)
+  const seenBalance = legacy ? null : validCents(params.balanceCents)
+  if (amount == null) return { ok: false, status: 'refused', block: 'invalid_amount', error: 'Enter the amount received — more than $0.00, in dollars and cents.' }
+  if (!legacy && seenBalance == null) return { ok: false, status: 'refused', block: 'invalid_amount', error: 'The open balance was not confirmed. Open Record Payment again.' }
+  const confirmKey = isConfirmationKey(params.confirmationId) ? params.confirmationId : null
+  const intent = params.intent === 'full' || params.intent === 'partial' ? params.intent : null
 
   const est0 = await getEstimateRow(orderId)
   if (!est0?.qbInvoiceId) return { ok: false, status: 'refused', block: 'no_invoice', error: BLOCK_MSG.no_invoice }
@@ -301,69 +437,111 @@ export async function recordRetailPayment(params: { orderId: string; actor: stri
   const drift = resumesFeeRemoval(est0)
   const r = await verifyAndReconcile(orderId, actor, { allowDrift: drift })
   if (!r.ok) return r.result
-  const { v, state } = r
-  let target: number           // the amount to record = the invoice total once any adjustment is synced
-  let removeFee = false
-  if (drift) {
-    target = v.common.draftTotalCents
-  } else {
-    if (state.balanceCents !== v.common.draftTotalCents) {
-      return { ok: false, status: 'refused', block: 'total_mismatch', error: BLOCK_MSG.total_mismatch }
-    }
-    const cash = REMOVES_CARD_FEE.includes(method) ? await cashTotalCents(v) : null
-    removeFee = cash != null
-    target = cash ?? state.balanceCents
+  const { v, summary: s } = r
+  const balance = s.balanceCents
+  const ids = { invoiceId: v.est.qbInvoiceId, invoiceNumber: v.est.qbInvoiceNumber }
+  // This SAME confirmation already recorded (a retried Save after a lost response): report that payment —
+  // never record the same money twice. Found by the QuickBooks payment's own tag, not by the balance.
+  if (confirmKey) {
+    const prior = findConfirmationPayment(r.read.payments, { invoiceId: String(r.read.raw.Id), estimateId: v.est.id, key: confirmKey })
+    if (prior) return confirmedResult(v.est, { paymentId: prior.paymentId, method: prior.method, amountCents: prior.appliedCents }, s, { reconciled: true })
   }
-  // An unconfirmed earlier attempt (QuickBooks still shows the balance open — it may yet appear): only that
-  // attempt may be retried, as the same method and amount. Never a second, different payment — and choosing
-  // another method can't route around it (the card charge is not re-added or removed for a different method).
-  const pendingAttempt = unresolvedAttempt((await getEstimateRow(orderId))!)
-  if (pendingAttempt && (pendingAttempt.method !== method || (pendingAttempt.amountCents != null && pendingAttempt.amountCents !== target))) {
-    const label = PAID_METHOD_LABEL[pendingAttempt.method]
-    return {
-      ok: false, status: 'uncertain', block: 'attempt_unresolved', method: pendingAttempt.method, methodLabel: label,
-      amountCents: pendingAttempt.amountCents ?? target, invoiceId: v.est.qbInvoiceId, invoiceNumber: v.est.qbInvoiceNumber,
-      error: pendingAttempt.method !== method
-        ? `An earlier ${label} payment of ${money(pendingAttempt.amountCents ?? target)} was not confirmed by QuickBooks yet. Check again, or retry it as ${label} — a different method can’t be recorded until it is resolved.`
-        : `An earlier ${label} payment of ${money(pendingAttempt.amountCents!)} was not confirmed, and the amount due is now ${money(target)}. Review the invoice in QuickBooks.`,
-    }
+  // An earlier unconfirmed attempt turned out to be in QuickBooks: it is now confirmed — nothing new is written.
+  if (r.confirmed) return r.confirmed
+  if (seenBalance != null && seenBalance !== balance) {
+    return { ok: false, status: 'refused', block: 'balance_changed', amountCents: balance, balance: view(s), ...ids, error: `QuickBooks now shows ${money(balance)} open (you confirmed ${money(seenBalance)}). This payment was not recorded — check the payment history, then the amount, and confirm again.` }
   }
 
-  if (confirmed !== target) {
-    return { ok: false, status: 'refused', block: 'amount_changed', amountCents: target, invoiceId: v.est.qbInvoiceId, invoiceNumber: v.est.qbInvoiceNumber, error: `The amount due${removeFee ? ` (${PAID_METHOD_LABEL[method]}, card charge removed)` : ''} is now ${money(target)}. Confirm the new amount.` }
+  const pending = unresolvedAttempt((await getEstimateRow(orderId))!)
+  let target: number           // the amount to record
+  let removeFee = false
+  if (drift) {
+    if (s.state !== 'unpaid') {
+      return { ok: false, status: 'uncertain', block: 'attempt_unresolved', ...ids, balance: view(s), error: `An earlier ${label} payment was not confirmed, and QuickBooks now shows other payments on this invoice. Review it in QuickBooks.` }
+    }
+    target = v.common.draftTotalCents
+  } else if (pending) {
+    // An unconfirmed earlier installment: only it may be retried — same method, same amount.
+    if (pending.amountCents == null || pending.amountCents > balance) {
+      return { ok: false, status: 'uncertain', block: 'attempt_unresolved', method: pending.method, methodLabel: PAID_METHOD_LABEL[pending.method], amountCents: pending.amountCents ?? undefined, ...ids, balance: view(s),
+        error: `An earlier ${PAID_METHOD_LABEL[pending.method]} payment${pending.amountCents != null ? ` of ${money(pending.amountCents)}` : ''} was not confirmed, and only ${money(balance)} is open now. Review the invoice in QuickBooks.` }
+    }
+    target = pending.amountCents
+  } else {
+    if (s.state === 'unpaid' && balance !== v.common.draftTotalCents) {
+      return { ok: false, status: 'refused', block: 'total_mismatch', error: BLOCK_MSG.total_mismatch }
+    }
+    const cash = REMOVES_CARD_FEE.includes(method) && s.state === 'unpaid' ? await cashTotalCents(v) : null
+    const full = cash ?? balance
+    // The person confirmed "in full" or "partial" — the server never silently turns one into the other
+    // (e.g. a pricing-config change moving the Cash total by a cent between preview and Save).
+    if ((intent === 'full' && amount !== full) || (intent === 'partial' && amount === full && cash != null)) {
+      return { ok: false, status: 'refused', block: 'amount_changed', amountCents: full, balance: view(s), ...ids,
+        error: `Paid in full by ${label} is now ${money(full)}${cash != null ? ` (the ${v.draft.paymentCharge.label ?? 'card'} charge comes off)` : ''}. Nothing was recorded — check the amount and confirm again.` }
+    }
+    if (legacy || amount === full) {
+      target = full; removeFee = cash != null
+    } else if (amount > full) {
+      return { ok: false, status: 'refused', block: 'over_balance', amountCents: full, balance: view(s), ...ids,
+        error: cash != null
+          ? `Paid in full by ${label} is ${money(cash)} (the ${v.draft.paymentCharge.label ?? 'card'} charge comes off). Enter ${money(cash)}, or less for a partial payment.`
+          : `${money(amount)} is more than the ${money(balance)} still open. Overpayments and tips aren’t recorded here.` }
+    } else {
+      target = amount   // a partial installment: the invoice — and any card charge on it — stays exactly as confirmed
+    }
+  }
+  // An unconfirmed earlier attempt (QuickBooks doesn't show it — it may yet appear): only that attempt may be
+  // retried, as the same method and amount. Never a second, different payment.
+  if (pending && (pending.method !== method || (pending.amountCents != null && pending.amountCents !== target))) {
+    const pl = PAID_METHOD_LABEL[pending.method]
+    return {
+      ok: false, status: 'uncertain', block: 'attempt_unresolved', method: pending.method, methodLabel: pl,
+      amountCents: pending.amountCents ?? target, ...ids,
+      error: pending.method !== method
+        ? `An earlier ${pl} payment of ${money(pending.amountCents ?? target)} was not confirmed by QuickBooks yet. Check again, or retry it as ${pl} — a different method can’t be recorded until it is resolved.`
+        : `An earlier ${pl} payment of ${money(pending.amountCents!)} was not confirmed, and the amount due is now ${money(target)}. Review the invoice in QuickBooks.`,
+    }
+  }
+  if (amount !== target) {
+    if (pending && !legacy) {
+      return { ok: false, status: 'uncertain', block: 'attempt_unresolved', method: pending.method, methodLabel: label, amountCents: target, ...ids,
+        error: `An earlier ${label} payment of ${money(target)} was not confirmed by QuickBooks yet. Check again, or retry it for ${money(target)} — a different amount can’t be recorded until it is resolved.` }
+    }
+    return { ok: false, status: 'refused', block: 'amount_changed', amountCents: target, ...ids, error: `The amount due${removeFee ? ` (${label}, card charge removed)` : ''} is now ${money(target)}. Confirm the new amount.` }
   }
 
   const { cfg, methods } = await loadMethods()
   const avail = methods.find((m) => m.key === method)
   const mapping = cfg.methods[method]
   if (!avail?.available || !mapping) {
-    return { ok: false, status: 'refused', block: 'not_configured', error: avail?.reason === 'realm_mismatch' ? 'Payment setup belongs to a different QuickBooks company. An admin must confirm the payment mappings.' : `${PAID_METHOD_LABEL[method]} isn’t set up for QuickBooks yet. An admin must map it first.` }
+    return { ok: false, status: 'refused', block: 'not_configured', error: avail?.reason === 'realm_mismatch' ? 'Payment setup belongs to a different QuickBooks company. An admin must confirm the payment mappings.' : `${label} isn’t set up for QuickBooks yet. An admin must map it first.` }
   }
   const mappingErr = await verifyPaymentMapping(mapping).catch((e) => `Could not verify the payment setup in QuickBooks: ${safeErr(e)}`)
   if (mappingErr) return { ok: false, status: 'refused', block: 'mapping_invalid', error: mappingErr }
 
   // (2) Lock. An unconfirmed (uncertain / stale) attempt is retried with the SAME attempt id so QuickBooks'
   // requestid de-duplication returns the original payment if it was in fact created. The compare-and-set
-  // pins that identity (request id + method) and requires no invoice-changing operation in progress
-  // (Sync / create — whose own locks require no payment in progress: see invoice-locks.ts).
+  // pins that identity (request id + method + amount) and requires no invoice-changing operation in progress
+  // (Sync / create — whose own locks require no payment in progress: see invoice-locks.ts). A new installment
+  // may start after a confirmed one ('recorded') or a definite failure.
   const est1 = (await getEstimateRow(orderId))!
   const resume = unresolvedAttempt(est1)
   const resumeAttempt = !!resume
-  if (resume && !!est1.qbPaymentCardFeeRemoved !== drift) {
+  if ((resume?.attemptId ?? null) !== (pending?.attemptId ?? null) || (resume && !!est1.qbPaymentCardFeeRemoved !== drift)) {
     return { ok: false, status: 'refused', block: 'amount_changed', error: 'The payment state changed while checking. Open Record Payment again.' }
   }
-  const attemptId = resume ? resume.attemptId : newAttemptId()
+  const attemptId = resume ? resume.attemptId : confirmKey ? attemptIdForConfirmation(confirmKey, est1.qbPaymentRequestId, newAttemptId) : newAttemptId()
   const lockAt = new Date()
   const staleBefore = new Date(lockAt.getTime() - RECORDING_STALE_MS)
   const idle = notInArray(jobEstimates.qbStatus, INVOICE_CHANGING_STATUSES)
   const from = resume
-    ? and(eq(jobEstimates.qbPaymentRequestId, resume.attemptId), eq(jobEstimates.qbPaymentMethod, method), or(
+    ? and(eq(jobEstimates.qbPaymentRequestId, resume.attemptId), eq(jobEstimates.qbPaymentMethod, method), eq(jobEstimates.qbPaymentAmountCents, target), or(
         eq(jobEstimates.qbPaymentStatus, 'uncertain'),
         and(eq(jobEstimates.qbPaymentStatus, 'recording'), or(lt(jobEstimates.qbPaymentStartedAt, staleBefore), sql`${jobEstimates.qbPaymentStartedAt} IS NULL`)),
       ))
-    : inArray(jobEstimates.qbPaymentStatus, ['none', 'error'])
+    : inArray(jobEstimates.qbPaymentStatus, ['none', 'error', 'recorded'])
   const locked = await db.update(jobEstimates)
-    .set({ qbPaymentStatus: 'recording', qbPaymentRequestId: attemptId, qbPaymentMethod: method, qbPaymentAmountCents: target, qbPaymentStartedAt: lockAt, qbPaymentError: null, ...(resume ? {} : { qbPaymentCardFeeRemoved: false }), updatedAt: new Date() })
+    .set({ qbPaymentStatus: 'recording', qbPaymentRequestId: attemptId, qbPaymentMethod: method, qbPaymentAmountCents: target, qbPaymentStartedAt: lockAt, qbPaymentError: null, ...(resume ? {} : { qbPaymentCardFeeRemoved: false, qbPaymentId: null }), updatedAt: new Date() })
     .where(and(eq(jobEstimates.id, est1.id), idle, from))
     .returning({ id: jobEstimates.id })
   if (locked.length === 0) {
@@ -373,7 +551,8 @@ export async function recordRetailPayment(params: { orderId: string; actor: stri
     if (fresh?.qbPaymentStatus === 'review') return { ok: false, status: 'review', error: fresh.qbPaymentError ?? 'This payment needs review in QuickBooks.' }
     return { ok: false, status: 'recording', block: 'recording', error: 'A payment is already being recorded for this invoice.' }
   }
-  await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_attempt', employeeName: actor, note: `#${v.est.qbInvoiceNumber} (${v.est.qbInvoiceId}) ${PAID_METHOD_LABEL[method]} ${money(target)} · attempt ${attemptId}${removeFee ? ` · card charge removed (was ${money(state.balanceCents)})` : ''}${resumeAttempt ? ' · resumed after unconfirmed attempt' : ''}` }).catch(() => {})
+  const partialNote = removeFee || target === balance ? '' : ` · installment (open ${money(balance)} → ${money(balance - target)})`
+  await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_attempt', employeeName: actor, note: `#${v.est.qbInvoiceNumber} (${v.est.qbInvoiceId}) ${label} ${money(target)} · attempt ${attemptId}${partialNote}${removeFee ? ` · card charge removed (was ${money(balance)})` : ''}${resumeAttempt ? ' · resumed after unconfirmed attempt' : ''}` }).catch(() => {})
 
   // Fenced: only THIS worker's lock (same attempt, same lock time, still recording) may move the state. A
   // worker that stalled past the stale window and was taken over writes nothing.
@@ -397,41 +576,63 @@ export async function recordRetailPayment(params: { orderId: string; actor: stri
   }
 
   // (3) Re-verify UNDER the lock: a Sync or charge change that committed after the checks above but before
-  // the lock (both now excluded) must not leave us collecting a stale amount.
-  const v2 = await verifyLinkedRetailInvoice(orderId, drift ? { allowDrift: true } : {})
-  const v2Stale = !v2.ok || v2.draft.pricingIncomplete || v2.draft.referenceCents != null || flatPricingIssue(v2.full)
-    || (drift
+  // the lock (both now excluded) must not leave us collecting against a stale invoice.
+  // Money already applied: the invoice is frozen and QuickBooks' own total is the reference (identity + total only).
+  const frozen = s.state !== 'unpaid'
+  const v2 = await verifyLinkedRetailInvoice(orderId, frozen ? { paidInvoice: true } : drift ? { allowDrift: true } : {})
+  const v2Stale = !v2.ok || (frozen
+    ? v2.common.qbTotalCents !== v.common.qbTotalCents
+    : v2.draft.pricingIncomplete || v2.draft.referenceCents != null || flatPricingIssue(v2.full))
+    || (frozen ? false : drift
       ? v2.common.draftTotalCents !== target
-      : v2.common.draftTotalCents !== state.balanceCents || v2.common.qbTotalCents !== v.common.qbTotalCents
+      : v2.common.draftTotalCents !== v.common.draftTotalCents || v2.common.qbTotalCents !== v.common.qbTotalCents
         || (removeFee && (await cashTotalCents(v2)) !== target))
   if (v2Stale) {
     await release()
     const block = (!v2.ok ? (v2.block ?? 'qb_read_failed') : 'amount_changed') as PaymentBlock
-    return { ok: false, status: 'refused', block, invoiceId: v.est.qbInvoiceId, invoiceNumber: v.est.qbInvoiceNumber, error: !v2.ok ? (BLOCK_MSG[block] ?? 'This invoice can’t take a payment right now.') : 'The invoice changed while saving. Nothing was recorded — open Record Payment again.' }
+    return { ok: false, status: 'refused', block, ...ids, error: !v2.ok ? (BLOCK_MSG[block] ?? 'This invoice can’t take a payment right now.') : 'The invoice changed while saving. Nothing was recorded — open Record Payment again.' }
   }
 
-  // (4) Re-reconcile under the lock (a concurrent online payment / an earlier lost response) — BEFORE any
-  // charge change: an invoice that is already paid is adopted as-is, its charges untouched.
+  // (4) Re-reconcile under the lock (a concurrent payment / an earlier lost response) — BEFORE any charge change.
   let under
   try { under = await readPaymentState(v.est) }
   catch (e) {
     if (!(await setState({ qbPaymentStatus: resumeAttempt ? 'uncertain' : 'error', qbPaymentError: `Could not check QuickBooks before saving: ${safeErr(e)}` }))) return currentPaymentResult(orderId)
     return { ok: false, status: resumeAttempt ? 'uncertain' : 'error', block: 'qb_read_failed', error: 'Could not check QuickBooks before saving. Nothing was recorded — try again.' }
   }
-  const adoptOrRefuse = async (u: typeof under, expected: number | null): Promise<PaymentResult | null> => {
-    if (u && u.state.state === 'unpaid' && (expected == null || u.state.balanceCents === expected)) return null
-    if (u?.state.state === 'paid') {
-      if (!(await markPaid(v.est, u.state, actor, u.state.attemptId === attemptId ? 'recorded' : 'reconciled', lockFence))) return currentPaymentResult(orderId)
-      return paidResult(v.est, u.state, { reconciled: u.state.attemptId !== attemptId, alreadyPaid: u.state.attemptId !== attemptId })
+  /** Continue only if QuickBooks still shows the balance this installment was confirmed against (`expected`;
+   *  null = must still be fully unpaid). THIS attempt already in QuickBooks → confirmed, never paid again; a zero
+   *  balance → adopted; anything else → nothing written, renewed confirmation. */
+  const adoptOrRefuse = async (u: PaymentRead | null, expected: number | null): Promise<PaymentResult | null> => {
+    const us = u?.summary
+    if (u && us) {
+      const mine = findAttemptPayment(u.payments, { invoiceId: String(u.raw.Id), estimateId: v.est.id, attemptId })
+      if (mine && mine.appliedCents === target) {
+        const c: Confirmation = { paymentId: mine.paymentId, method, amountCents: target }
+        if (!(await markConfirmed(v.est, c, us, actor, 'recorded', lockFence))) return currentPaymentResult(orderId)
+        return confirmedResult(v.est, c, us)
+      }
+      if (mine) {
+        const msg = `QuickBooks payment ${mine.paymentId} for this attempt shows ${money(mine.appliedCents)} applied, not ${money(target)} — review it in QuickBooks.`
+        if (!(await setState({ qbPaymentStatus: 'review', qbPaymentId: mine.paymentId, qbPaymentError: msg, ...balancePatch(us) }))) return currentPaymentResult(orderId)
+        await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_review', employeeName: actor, note: msg }).catch(() => {})
+        return { ok: false, status: 'review', paymentId: mine.paymentId, error: msg, balance: view(us) }
+      }
+      if (us.state !== 'paid' && (expected == null ? us.state === 'unpaid' : us.balanceCents === expected)) return null
+      if (us.state === 'paid') {
+        const c = latestApplied(us)
+        if (!(await markConfirmed(v.est, c, us, actor, 'reconciled', lockFence))) return currentPaymentResult(orderId)
+        return confirmedResult(v.est, c, us, { reconciled: true, alreadyPaid: true })
+      }
     }
     if (!(await releaseRestoringFee())) return currentPaymentResult(orderId)
-    return { ok: false, status: 'refused', block: 'amount_changed', error: 'QuickBooks changed while saving. Nothing was recorded — open Record Payment again.' }
+    return { ok: false, status: 'refused', block: 'balance_changed', amountCents: us?.balanceCents, balance: us ? view(us) : undefined, ...ids, error: 'QuickBooks changed while saving. Nothing was recorded — check the balance and confirm again.' }
   }
-  const early = await adoptOrRefuse(under, drift ? null : state.balanceCents)
+  const early = await adoptOrRefuse(under, drift ? null : balance)
   if (early) return early
   let payRaw = under!.raw
 
-  // (5) Cash / Check: remove the card charge (pricing engine), sync the SAME invoice, verify QuickBooks.
+  // (5) Cash / Check in full: remove the card charge (pricing engine), sync the SAME invoice, verify QuickBooks.
   if (removeFee || drift) {
     if (removeFee) {
       const applied = await db.update(jobEstimates)
@@ -444,7 +645,7 @@ export async function recordRetailPayment(params: { orderId: string; actor: stri
       }
       feeApplied = true
       await recomputeEstimate(est1.id)
-      await logEvent({ serviceOrderId: orderId, eventType: 'invoice_override', employeeName: actor, note: JSON.stringify({ field: 'Payment charge', key: 'payment', action: 'removed', old: false, new: true, via: 'record_payment', method, attempt: attemptId, reason: `Paid by ${PAID_METHOD_LABEL[method]} — card-payment charge removed` }) }).catch(() => {})
+      await logEvent({ serviceOrderId: orderId, eventType: 'invoice_override', employeeName: actor, note: JSON.stringify({ field: 'Payment charge', key: 'payment', action: 'removed', old: false, new: true, via: 'record_payment', method, attempt: attemptId, reason: `Paid by ${label} — card-payment charge removed` }) }).catch(() => {})
       const adjusted = await getEstimateRow(orderId)
       if (adjusted?.totalCents !== target) {
         if (!(await releaseRestoringFee())) return currentPaymentResult(orderId)
@@ -462,13 +663,13 @@ export async function recordRetailPayment(params: { orderId: string; actor: stri
       const why = synced.error ?? synced.reviewReason ?? synced.block ?? 'unknown error'
       if (unchanged && feeApplied) {
         if (!(await releaseRestoringFee({ qbPaymentStatus: resumeAttempt ? 'uncertain' : 'error', qbPaymentError: `QuickBooks invoice update failed: ${why}` }))) return currentPaymentResult(orderId)
-        await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_failed', employeeName: actor, note: `${PAID_METHOD_LABEL[method]} ${money(target)} · invoice update failed, card charge restored: ${why}` }).catch(() => {})
+        await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_failed', employeeName: actor, note: `${label} ${money(target)} · invoice update failed, card charge restored: ${why}` }).catch(() => {})
         return { ok: false, status: 'error', block: 'record_failed', error: `QuickBooks did not update the invoice (${why}). Nothing was recorded and the card charge was put back.` }
       }
-      const msg = `The QuickBooks invoice update for this ${PAID_METHOD_LABEL[method]} payment was not confirmed (${why}). Nothing was paid. Tap Save as ${PAID_METHOD_LABEL[method]} again — it re-checks the invoice first and won’t record a second payment.`
+      const msg = `The QuickBooks invoice update for this ${label} payment was not confirmed (${why}). Nothing was paid. Tap Save as ${label} again — it re-checks the invoice first and won’t record a second payment.`
       if (!(await setState({ qbPaymentStatus: 'uncertain', qbPaymentError: msg }))) return currentPaymentResult(orderId)
-      await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_uncertain', employeeName: actor, note: `${PAID_METHOD_LABEL[method]} ${money(target)} · attempt ${attemptId}: invoice update unconfirmed — ${why}` }).catch(() => {})
-      return { ok: false, status: 'uncertain', method, methodLabel: PAID_METHOD_LABEL[method], amountCents: target, error: msg }
+      await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_uncertain', employeeName: actor, note: `${label} ${money(target)} · attempt ${attemptId}: invoice update unconfirmed — ${why}` }).catch(() => {})
+      return { ok: false, status: 'uncertain', method, methodLabel: label, amountCents: target, error: msg }
     }
     feeApplied = false   // QuickBooks now carries the adjusted invoice: the removal is no longer undone here
 
@@ -490,53 +691,75 @@ export async function recordRetailPayment(params: { orderId: string; actor: stri
     payRaw = afterSync!.raw
   }
 
-  // (6) Write the QuickBooks Payment.
+  // (6) Write the QuickBooks Payment for this installment — only while THIS worker still holds the lock (a
+  // worker stalled past the stale window, whose attempt was taken over, must not write a payment).
+  if (!(await setState({ qbPaymentStartedAt: lockAt }))) return currentPaymentResult(orderId)
   try {
     const created = await createRetailPaymentInQB({
       customerId: String(payRaw.CustomerRef?.value ?? ''), invoiceId: String(payRaw.Id), amountCents: target,
       paymentMethodId: mapping.paymentMethodId, depositAccountId: mapping.depositAccountId,
-      privateNote: `${paymentTag(v.est.id, attemptId, method)} · Pitt Stop counter payment (${PAID_METHOD_LABEL[method]}) by ${actor ?? 'unknown'}`,
+      privateNote: `${paymentTag(v.est.id, attemptId, method)} · Pitt Stop counter payment (${label}) by ${actor ?? 'unknown'}`,
       requestId: attemptId,
     })
     await setState({ qbPaymentId: created.paymentId })
-    // (7) Confirm in QuickBooks: Paid only on a zero balance.
-    let after
+    // (7) Confirm in QuickBooks by THIS payment applied to the invoice; Paid only on a zero balance.
+    let after: PaymentRead | null
     try { after = await readPaymentState(v.est) } catch { after = null }
-    if (after?.state.state === 'paid') {
-      // Fenced on THIS worker's lock: an old worker resuming with a paid confirmation never overwrites newer state.
-      if (!(await markPaid(v.est, { ...after.state, method, paymentId: created.paymentId, amountCents: created.totalCents }, actor, 'recorded', lockFence))) return currentPaymentResult(orderId)
-      logger.info(APP, 'payment_recorded', { orderId, paymentId: created.paymentId, method, amount: created.totalCents })
-      return paidResult(v.est, { ...after.state, method, paymentId: created.paymentId, amountCents: created.totalCents })
+    const mine = after?.summary ? findAttemptPayment(after.payments, { invoiceId: String(after.raw.Id), estimateId: v.est.id, attemptId }) : null
+    if (after?.summary && mine && mine.appliedCents === target) {
+      const c: Confirmation = { paymentId: mine.paymentId, method, amountCents: target }
+      // Fenced on THIS worker's lock: an old worker resuming with a confirmation never overwrites newer state.
+      if (!(await markConfirmed(v.est, c, after.summary, actor, 'recorded', lockFence))) return currentPaymentResult(orderId)
+      logger.info(APP, 'payment_recorded', { orderId, paymentId: c.paymentId, method, amount: target, balance: after.summary.balanceCents })
+      return confirmedResult(v.est, c, after.summary)
     }
-    if (!after) {
-      if (!(await setState({ qbPaymentStatus: 'uncertain', qbPaymentError: `QuickBooks payment ${created.paymentId} was created, but the zero balance could not be confirmed yet.` }))) return currentPaymentResult(orderId)
-      return { ok: false, status: 'uncertain', paymentId: created.paymentId, error: 'Payment saved in QuickBooks, but the paid balance could not be confirmed yet. Tap Check again.' }
+    if (after?.summary && mine) {
+      const msg = `QuickBooks payment ${mine.paymentId} was recorded for ${money(mine.appliedCents)} instead of ${money(target)} — review it in QuickBooks.`
+      if (!(await setState({ qbPaymentStatus: 'review', qbPaymentError: msg, ...balancePatch(after.summary) }))) return currentPaymentResult(orderId)
+      await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_review', employeeName: actor, note: msg }).catch(() => {})
+      return { ok: false, status: 'review', paymentId: mine.paymentId, error: msg, balance: view(after.summary) }
     }
-    const bal = after.state.state === 'unpaid' || after.state.state === 'partial' ? after.state.balanceCents : null
-    const msg = `QuickBooks payment ${created.paymentId} was recorded, but the invoice still shows ${bal != null ? money(bal) : 'an unexpected balance'} due — review in QuickBooks.`
-    if (!(await setState({ qbPaymentStatus: 'review', qbPaymentError: msg }))) return currentPaymentResult(orderId)
-    await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_review', employeeName: actor, note: msg }).catch(() => {})
-    return { ok: false, status: 'review', paymentId: created.paymentId, error: msg }
+    if (after?.summary?.state === 'paid') {
+      // Zero balance, but NOT by this payment (it isn't applied to the invoice): never confirmed by the balance —
+      // the customer may have paid twice, or our payment sits unapplied. A person reviews it in QuickBooks.
+      const msg = `QuickBooks payment ${created.paymentId} (${label} ${money(target)}) was created, but the invoice shows paid by other payments and this one isn’t applied to it — review it in QuickBooks before recording anything else.`
+      if (!(await setState({ qbPaymentStatus: 'review', qbPaymentError: msg, ...balancePatch(after.summary) }))) return currentPaymentResult(orderId)
+      await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_review', employeeName: actor, note: msg }).catch(() => {})
+      return { ok: false, status: 'review', paymentId: created.paymentId, error: msg, balance: view(after.summary) }
+    }
+    // Created, but QuickBooks doesn't show it on the invoice yet: unconfirmed (never a second payment — the
+    // next check finds it by its attempt id; a retry reuses the requestid).
+    const msg = `QuickBooks payment ${created.paymentId} was created, but it isn’t showing on the invoice yet. Tap Check again — it won’t record a second payment.`
+    if (!(await setState({ qbPaymentStatus: 'uncertain', qbPaymentError: msg }))) return currentPaymentResult(orderId)
+    await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_uncertain', employeeName: actor, note: `${label} ${money(target)} · attempt ${attemptId}: QB payment ${created.paymentId} not yet applied on the invoice` }).catch(() => {})
+    return { ok: false, status: 'uncertain', method, methodLabel: label, amountCents: target, paymentId: created.paymentId, error: msg }
   } catch (err) {
     const msg = safeErr(err)
     if (!isAmbiguousWriteError(err)) {
       // QuickBooks definitely rejected it — nothing was recorded; a retry starts a new attempt.
       if (!(await setState({ qbPaymentStatus: 'error', qbPaymentError: msg }))) return currentPaymentResult(orderId)
-      await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_failed', employeeName: actor, note: `${PAID_METHOD_LABEL[method]} ${money(target)}: ${msg}` }).catch(() => {})
+      await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_failed', employeeName: actor, note: `${label} ${money(target)}: ${msg}` }).catch(() => {})
       logger.error(APP, 'payment_failed', { orderId, error: msg })
       return { ok: false, status: 'error', block: 'record_failed', error: `QuickBooks did not record the payment: ${msg}` }
     }
-    // Ambiguous (timeout / network / 5xx) — maybe recorded. Reconcile now; never write again blind.
+    // Ambiguous (timeout / network / 5xx) — maybe recorded. Reconcile now by THIS attempt id; never write again blind.
     if (!(await setState({ qbPaymentStatus: 'uncertain', qbPaymentError: `Unconfirmed: ${msg}` }))) return currentPaymentResult(orderId)
-    await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_uncertain', employeeName: actor, note: `${PAID_METHOD_LABEL[method]} ${money(target)} · attempt ${attemptId}: ${msg}` }).catch(() => {})
+    await logEvent({ serviceOrderId: orderId, eventType: 'invoice_payment_uncertain', employeeName: actor, note: `${label} ${money(target)} · attempt ${attemptId}: ${msg}` }).catch(() => {})
     logger.warn(APP, 'payment_uncertain', { orderId, attemptId, error: msg })
     const check = await readPaymentState(v.est).catch(() => null)
-    if (check?.state.state === 'paid') {
-      const uncertainFence: PaymentFence = { statuses: ['uncertain'], requestId: attemptId, startedAt: lockAt }
-      if (!(await markPaid(v.est, check.state, actor, check.state.attemptId === attemptId ? 'recorded' : 'reconciled', uncertainFence))) return currentPaymentResult(orderId)
-      return paidResult(v.est, check.state)
+    const uncertainFence: PaymentFence = { statuses: ['uncertain'], requestId: attemptId, startedAt: lockAt }
+    const mine = check?.summary ? findAttemptPayment(check.payments, { invoiceId: String(check.raw.Id), estimateId: v.est.id, attemptId }) : null
+    if (check?.summary && mine && mine.appliedCents === target) {
+      const c: Confirmation = { paymentId: mine.paymentId, method, amountCents: target }
+      if (!(await markConfirmed(v.est, c, check.summary, actor, 'recorded', uncertainFence))) return currentPaymentResult(orderId)
+      return confirmedResult(v.est, c, check.summary)
     }
-    return { ok: false, status: 'uncertain', method, methodLabel: PAID_METHOD_LABEL[method], error: `QuickBooks did not confirm the ${PAID_METHOD_LABEL[method]} payment. Nothing is shown as paid. Tap Check again — retrying as ${PAID_METHOD_LABEL[method]} is safe and will not record a second payment.` }
+    if (check?.summary?.state === 'paid' && !mine) {
+      const c = latestApplied(check.summary)
+      if (!(await markConfirmed(v.est, c, check.summary, actor, 'reconciled', uncertainFence))) return currentPaymentResult(orderId)
+      return confirmedResult(v.est, c, check.summary, { reconciled: true, alreadyPaid: true })
+    }
+    return { ok: false, status: 'uncertain', method, methodLabel: label, amountCents: target, error: `QuickBooks did not confirm the ${label} payment of ${money(target)}. Nothing is shown as recorded. Tap Check again — retrying it as ${label} for ${money(target)} is safe and will not record a second payment.` }
   }
 }
 

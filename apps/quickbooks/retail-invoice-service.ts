@@ -14,7 +14,7 @@
  * and re-checked post-write. Dealer invoicing is untouched.
  */
 import crypto from 'node:crypto'
-import { and, eq, isNull, inArray, notInArray, desc } from 'drizzle-orm'
+import { and, eq, isNull, inArray, desc } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { jobEstimates, serviceOrders } from '@/apps/workflow/schema'
 import { customers } from '@/apps/directory/schema'
@@ -34,8 +34,8 @@ import { loadRetailItemIndex } from './retail-item-map'
 import { resolveRetailCustomer, resolveRetailCustomerIdentity, findRetailCustomerCandidates, persistRetailCustomerChoice, AmbiguousCustomerError, type QbCustomerCandidate } from './retail-customer'
 import { resolveRetailItems, createRetailInvoiceInQB, findRetailInvoiceByPsid, getRetailInvoiceRaw, updateRetailInvoiceInQB, fillRetailInvoiceEmail, sendRetailInvoiceInQB, type RawQBInvoice } from './retail-invoice-write'
 import { QBApiError } from './errors'
-import { PAYMENT_LOCKS_INVOICE, isAmbiguousWriteError } from './retail-payment'
-import { acquireRetailSyncLock, type PaymentLockOwner } from './invoice-locks'
+import { paymentLocksInvoice, isAmbiguousWriteError } from './retail-payment'
+import { acquireRetailSyncLock, invoiceFreeOfPayments, type PaymentLockOwner } from './invoice-locks'
 import { logger } from '@/platform/logger'
 
 const APP = 'quickbooks:retail-invoice-service'
@@ -479,7 +479,7 @@ export async function sendRetailQBInvoice(params: { orderId: string; actor: stri
   // Once a payment is recorded / in flight / unconfirmed, emailing is Email Paid Invoice's job (its delivery
   // check relies on no other send moving Invoice.DeliveryInfo). Checked here AND in the lock below.
   const estPay = await getEstimateRow(orderId)
-  if (estPay && PAYMENT_LOCKS_INVOICE.includes(estPay.qbPaymentStatus)) {
+  if (estPay && paymentLocksInvoice({ status: estPay.qbPaymentStatus, balanceState: estPay.qbPaymentBalanceState })) {
     return { ok: false, block: 'paid', invoiceId: estPay.qbInvoiceId, invoiceNumber: estPay.qbInvoiceNumber, error: 'A payment is recorded on this invoice — use Email Paid Invoice instead.' }
   }
   const r = await resolveRetailSend(orderId)
@@ -502,7 +502,7 @@ export async function sendRetailQBInvoice(params: { orderId: string; actor: stri
   const priorStatus = est0.qbStatus === 'sent' ? 'sent' : 'created'
   const locked = await db.update(jobEstimates)
     .set({ qbStatus: 'sending', updatedAt: new Date() })
-    .where(and(eq(jobEstimates.id, est0.id), inArray(jobEstimates.qbStatus, ['created', 'sent', 'error']), notInArray(jobEstimates.qbPaymentStatus, [...PAYMENT_LOCKS_INVOICE])))
+    .where(and(eq(jobEstimates.id, est0.id), inArray(jobEstimates.qbStatus, ['created', 'sent', 'error']), invoiceFreeOfPayments()))
     .returning({ id: jobEstimates.id })
   if (locked.length === 0) return { ok: false, block: 'sending', invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber, error: 'A send is already in progress for this Job.' }
 
@@ -599,7 +599,7 @@ export async function syncRetailQBInvoice(params: { orderId: string; actor: stri
   const estPay = await getEstimateRow(orderId)
   const ownsPaymentLock = !!params.paymentLock && estPay?.qbPaymentStatus === 'recording'
     && estPay.qbPaymentRequestId === params.paymentLock.requestId && estPay.qbPaymentStartedAt?.getTime() === params.paymentLock.startedAt.getTime()
-  if (estPay && PAYMENT_LOCKS_INVOICE.includes(estPay.qbPaymentStatus) && !ownsPaymentLock) {
+  if (estPay && paymentLocksInvoice({ status: estPay.qbPaymentStatus, balanceState: estPay.qbPaymentBalanceState }) && !ownsPaymentLock) {
     return { ok: false, block: 'paid', invoiceId: estPay.qbInvoiceId, invoiceNumber: estPay.qbInvoiceNumber, error: 'A payment is recorded on this invoice — it can no longer be synced from Pitt Stop. Correct it in QuickBooks.' }
   }
 
@@ -649,6 +649,9 @@ export async function syncRetailQBInvoice(params: { orderId: string; actor: stri
       const raw = await getRetailInvoiceRaw(est0.qbInvoiceId!)
       if (!raw) throw new NeedsReviewError('invoice_missing', 'Invoice missing in QuickBooks')
       if (String(raw.Id) !== String(est0.qbInvoiceId) || extractPsid(raw.PrivateNote) !== est0.id) throw new NeedsReviewError('identity_mismatch', 'Invoice identity / PSID mismatch')
+      // Money applied in QuickBooks (paid online / entered there) that Pitt Stop hasn't read yet: never rewrite it.
+      const liveTotal = Math.round((raw.TotalAmt ?? 0) * 100)
+      if (raw.Balance != null && Math.round(raw.Balance * 100) < liveTotal) throw new NeedsReviewError('paid', 'QuickBooks shows a payment or credit applied to this invoice — correct it in QuickBooks, not by syncing')
       const customerId = String(raw.CustomerRef?.value ?? '')
       const billEmail = contact.email && contact.email.trim() ? contact.email.trim() : (raw.BillEmail?.Address ?? null)
       const newHash = contentHash(customerId, payload, billEmail)
