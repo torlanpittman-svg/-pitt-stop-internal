@@ -1,0 +1,33 @@
+# Hourly trigger for unfinished-booking follow-ups + retention (see app/api/cron/booking-follow-ups/route.ts).
+# Vercel Hobby crons run at most once a day; this free GitHub schedule keeps a 24 h follow-up within ~1 h of due.
+# INERT until the owner adds two repository settings (Settings → Secrets and variables → Actions):
+#   secret   CRON_SECRET          = the same value as the Vercel project's CRON_SECRET
+#   variable BOOKING_CRON_BASE_URL = https://pitt-stop-internal.vercel.app
+# The endpoint itself does nothing until follow-ups / retention are turned on in Booking settings.
+name: booking-follow-ups
+on:
+  schedule:
+    - cron: '17 * * * *' # hourly, off the top of the hour (GitHub may delay scheduled runs at busy times)
+  workflow_dispatch: {}
+permissions: {}
+concurrency:
+  group: booking-follow-ups
+  cancel-in-progress: false
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Call the follow-up endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BASE_URL: ${{ vars.BOOKING_CRON_BASE_URL }}
+        run: |
+          if [ -z "$CRON_SECRET" ] || [ -z "$BASE_URL" ]; then
+            echo "Not configured (CRON_SECRET / BOOKING_CRON_BASE_URL missing) — skipping."
+            exit 0
+          fi
+          code=$(curl -sS -o /tmp/out.json -w '%{http_code}' --max-time 90 \
+            -H "Authorization: Bearer $CRON_SECRET" "$BASE_URL/api/cron/booking-follow-ups")
+          cat /tmp/out.json; echo
+          test "$code" = "200"
