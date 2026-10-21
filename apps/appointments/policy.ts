@@ -66,17 +66,29 @@ export interface BookingConfig {
   address: string
   instructions: string
   cancellationPolicy: string
+  /** Unfinished-booking follow-up email (only to customers who ticked the permission box). OFF until the owner
+   *  approves the delay below. */
+  draftFollowUpEnabled: boolean
+  /** Hours after the customer's last activity before the one follow-up email may go out. */
+  draftFollowUpDelayHours: number
+  /** Unfinished-booking contact details are erased after this many days (when retention is turned on). */
+  draftRetentionDays: number
+  draftRetentionEnabled: boolean
 }
 
 const weekday = (open: boolean): DayHours => ({ open, start: '07:15', cutoff: '11:00' })
 
+// Customer-facing names match the website's packages (Mini / Full / Premium Detail, Ceramic Coating — owner
+// decision 2026-10-20). Keys never change: they are stored on appointments and used in ?service= deep links;
+// "Full Detail" keeps the complete_detail key and catalog item.
 export const DEFAULT_BOOKING_SERVICES: BookingService[] = [
-  { key: 'complete_detail', label: 'Complete Detail', description: 'Interior and exterior.', category: 'detail', weight: 1, catalogSlug: 'complete_detail', enabled: true },
+  { key: 'mini_detail', label: 'Mini Detail', description: 'A lighter refresh, inside and out.', category: 'detail', weight: 1, catalogSlug: 'mini_detail', enabled: true },
+  { key: 'complete_detail', label: 'Full Detail', description: 'A complete interior and exterior detail.', category: 'detail', weight: 1, catalogSlug: 'complete_detail', enabled: true },
+  { key: 'premium_detail', label: 'Premium Detail', description: 'Our most thorough detail, inside and out.', category: 'detail', weight: 2, catalogSlug: null, enabled: true },
+  { key: 'ceramic_coating', label: 'Ceramic Coating', description: '1-year or 3-year coating. We confirm the option with you at drop-off.', category: 'detail', weight: 2, catalogSlug: null, enabled: true },
   { key: 'interior_detail', label: 'Interior Detail', description: 'Seats, carpets, surfaces, stains.', category: 'detail', weight: 1, catalogSlug: 'interior_detail', enabled: true },
   { key: 'exterior_detail', label: 'Exterior Detail', description: 'Wash and exterior care.', category: 'detail', weight: 1, catalogSlug: null, enabled: true },
-  { key: 'mini_detail', label: 'Mini Detail', description: 'A lighter refresh, inside and out.', category: 'detail', weight: 1, catalogSlug: 'mini_detail', enabled: true },
   { key: 'paint_correction', label: 'Paint Correction', description: 'Swirl and scratch removal. Final scope confirmed at drop-off.', category: 'detail', weight: 2, catalogSlug: null, enabled: true },
-  { key: 'ceramic_coating', label: 'Ceramic Coating', description: '1-year or 3-year coating. We confirm the option with you at drop-off.', category: 'detail', weight: 2, catalogSlug: null, enabled: true },
   { key: 'odor', label: 'Odor / Ozone', description: 'Smoke, pet and odor treatment.', category: 'detail', weight: 1, catalogSlug: null, enabled: true },
   { key: 'mechanic', label: 'Mechanic / Repair', description: 'Drop off for an assessment. Repairs and pricing are agreed with you first.', category: 'mechanic', weight: 1, catalogSlug: null, enabled: true },
   { key: 'other', label: 'Other / Need a Recommendation', description: 'Tell us what you need and we will recommend the right service.', category: 'detail', weight: 1, catalogSlug: null, enabled: true },
@@ -107,6 +119,12 @@ export const DEFAULT_BOOKING_CONFIG: BookingConfig = {
   address: '3112 Texas Ave S, College Station, TX 77845',
   instructions: 'Please remove valuables and personal items before drop-off. Your drop-off time is when we receive the vehicle, not a promised finish time. We will contact you when it is ready.',
   cancellationPolicy: 'Need to cancel? Use your appointment link up to 1 hour before drop-off, or call the shop. To change the time, call the shop.',
+  // Owner-approved values (2026-10-20): 24 h, 90 days. Both automations still default OFF and are switched on in
+  // Booking settings at release (audited); the email itself only goes out once a provider is configured.
+  draftFollowUpEnabled: false,
+  draftFollowUpDelayHours: 24,
+  draftRetentionDays: 90,
+  draftRetentionEnabled: false,
 }
 
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/
@@ -135,13 +153,18 @@ export function mergeBookingConfig(raw: unknown): BookingConfig {
     }]
   })) as Record<Weekday, DayHours>
   const cl = (r.categoryLimits && typeof r.categoryLimits === 'object' ? r.categoryLimits : {}) as Record<string, unknown>
-  const services = Array.isArray(r.services) && r.services.length
+  const stored = Array.isArray(r.services) && r.services.length
     ? (r.services as Partial<BookingService>[]).filter((s) => s && typeof s.key === 'string' && typeof s.label === 'string').map((s) => ({
         key: String(s.key).slice(0, 40), label: String(s.label).slice(0, 80), description: str(s.description, '', 240),
         category: (s.category === 'mechanic' ? 'mechanic' : 'detail') as ServiceCategory,
         weight: intIn(s.weight, 0, 20, 1), catalogSlug: typeof s.catalogSlug === 'string' && s.catalogSlug ? s.catalogSlug : null,
         enabled: bool(s.enabled, true),
       }))
+    : null
+  // A service added to the defaults later appears in an existing saved config switched OFF, so it is never
+  // offered to customers until a manager turns it on.
+  const services = stored
+    ? [...stored, ...d.services.filter((x) => !stored.some((s) => s.key === x.key)).map((x) => ({ ...x, enabled: false }))]
     : d.services
   return {
     enabled: bool(r.enabled, d.enabled),
@@ -165,6 +188,10 @@ export function mergeBookingConfig(raw: unknown): BookingConfig {
     title: str(r.title, d.title, 120), intro: str(r.intro, d.intro, 500), phone: str(r.phone, d.phone, 40),
     address: str(r.address, d.address, 200), instructions: str(r.instructions, d.instructions),
     cancellationPolicy: str(r.cancellationPolicy, d.cancellationPolicy),
+    draftFollowUpEnabled: bool(r.draftFollowUpEnabled, d.draftFollowUpEnabled),
+    draftFollowUpDelayHours: intIn(r.draftFollowUpDelayHours, 1, 14 * 24, d.draftFollowUpDelayHours),
+    draftRetentionDays: intIn(r.draftRetentionDays, 7, 730, d.draftRetentionDays),
+    draftRetentionEnabled: bool(r.draftRetentionEnabled, d.draftRetentionEnabled),
   }
 }
 

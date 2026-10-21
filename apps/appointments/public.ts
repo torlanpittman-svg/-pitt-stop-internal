@@ -27,7 +27,7 @@ export function publicSummary(a: Appointment): PublicAppointment {
     date: a.localDate, time: a.localTime,
     dateLabel: formatDateLabel(a.localDate), timeLabel: formatTimeLabel(a.localTime),
     services: a.serviceLabels,
-    vehicle: [a.vehicleYear, a.vehicleMake, a.vehicleModel].filter(Boolean).join(' '),
+    vehicle: [a.vehicleYear, a.vehicleMake === 'Trailer' ? null : a.vehicleMake, a.vehicleModel].filter(Boolean).join(' '),
     firstName: a.firstName, phone: a.phone, email: a.email,
     startsAt: a.startsAt.toISOString(),
   }

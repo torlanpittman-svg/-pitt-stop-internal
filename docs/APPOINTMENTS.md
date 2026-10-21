@@ -1,7 +1,7 @@
 # Appointments — the AutoLeap booking replacement
 
-Status (2026-10-19): **deployed to production** (see "Production state"). Public booking is **OFF** until a
-manager turns it on at `/appointments/settings`.
+Status (2026-10-19): **deployed to production** (see "Production state"). Public booking is **ON** in production
+(turned on 2026-10-20 by the owner; intentional).
 
 **The appointment time is the customer's drop-off time only** — not when work starts, not a bay, not a
 technician. Capacity only spaces arrivals apart: one public customer per 15-minute time, no daily cap.
@@ -32,6 +32,93 @@ Create / Send. Nothing in pricing, fees, Dealer Check-In or QuickBooks changed.
 **Marketing.** Campaign/ad link with `utm_*`, `gclid`, `fbclid`, `ps_cid` (campaign id) or `ref` → booking
 → lead + `marketing_attribution` → check-in calls the existing `linkLeadOutcome` → the existing
 completed/invoiced revenue report. No parameters ⇒ `unknown` (never guessed).
+
+## Booking redesign + unfinished bookings (2026-10-20 — branch `feat/booking-redesign`, NOT deployed; review fixes 2026-10-20)
+
+**Public flow, 3 steps** (`app/book/BookingFlow.tsx`, branded `BookShell` matching the website: Roboto, Courgette
+heading, navy bar, red gradient pill buttons, logo/banner in `public/book/`):
+1. **Service & vehicle** — service cards (Mini / Full / Premium Detail, Ceramic Coating, …); vehicle type
+   (car-truck-SUV-van, motorcycle, trailer online; **RV and boat = "Call to schedule"** with a tap-to-call button);
+   searchable dependent **Year → Make → Model** (`app/book/Combobox.tsx`, list-only — typed text that isn't in the list
+   is reverted). Makes = curated list from `apps/vehicle-entry/vehicle-data.ts`; models = NHTSA vPIC
+   `GetModelsForMakeYear` (same source the VIN decoder uses; no new decoder), cached; if vPIC is down, cars fall back to
+   the curated model list and motorcycles show "call us". Trailers pick a trailer type. `apps/appointments/vehicles.ts`.
+2. **Time & contact** — "drop-off time, not a finish time" callout; first/last name, phone, email all required
+   (`apps/appointments/contact.ts`, validated again server-side); optional follow-up permission box (unchecked) and
+   the separate, unchanged SMS-marketing box. **Continue to review** saves the draft (disclosure right above the button).
+3. **Review & confirm** — Edit links, **Book my drop-off** (idempotent; the same request also closes the draft).
+Each step is a browser-history entry: phone Back steps back with every answer kept.
+
+**Unfinished bookings (leads)** — `apps/appointments/drafts.ts`, table `booking_drafts` (+ append-only
+`booking_draft_events`), migration `0060_booking_drafts.sql` (also adds `appointments.vehicle_type`).
+- Nothing is captured while typing; a draft is written only on **Continue to review** (`POST /api/book/drafts`, honeypot,
+  20/hour per connection). A draft holds **no** time or capacity.
+- Follow-up permission is stored with timestamp, exact wording and version (`draft-follow-up-v1-2026-10-20`); the save
+  notice version is stored too. Marketing/SMS consent is separate and unchanged.
+- Booking marks the draft `booked`, links the appointment and suppresses its follow-up in the same transaction.
+- Follow-up: at most **one** email per draft and per address, only with permission, with an opaque resume link
+  `/book/r/<token>` (HMAC, no PII, noindex, no-referrer). The resume page re-checks availability (the earlier time is
+  re-offered only if still open) and says no appointment is confirmed.
+- **Send pipeline** (`dispatchDraftFollowUps`): select → **claim** (`pending → sending`, conditional, stamps
+  `follow_up_claimed_at`) → **final check** on the *current* row, in one transaction under a per-email advisory lock:
+  still open, not booked (this draft or any appointment with that email/phone since the draft began), permission still
+  given, lead not Closed, address not already emailed, no customer activity since the delay started → stamps
+  `follow_up_cleared_at` → provider call, rendered from the current row. Failing the check: permission withdrawn →
+  `not_permitted`; booked / closed / already emailed → `suppressed`; customer active again or changed details →
+  back to `pending` (a full delay from the new activity). A change that lands *during* the provider call can't un-send
+  the email; it is recorded as a `follow_up_raced_change` event, never silent.
+- **Closed leads:** marking a lead Closed suppresses any unsent email (pending / not set up / failed) in the same
+  statement and logs both `staff_status` and `follow_up_suppressed`. Closed leads are excluded at selection, claim and
+  final check, and "Queue again" refuses them. Reopening a lead does not restart the automatic email.
+- **Interrupted workers:** a claim older than 15 min (the job's own limit is 60 s) is recovered at the start of each
+  follow-up or retention run. Never cleared → the provider was provably not called → back to `pending` (or `failed`
+  after 3 attempts). Cleared → `uncertain` ("may have been sent"): **never retried automatically**, shown to staff, and
+  it counts as "already emailed" for that address. A stuck row therefore delays erasure by at most one run.
+- **Delivery certainty (shared with confirmations/reminders):** the provider result is `sent` only on a readable
+  Postmark acceptance; `failed` only when non-delivery is established — a 4xx rejection (permanent: not retried
+  automatically, staff may queue it again), 408/429/503 or a connection that never opened (ECONNREFUSED, DNS…: retried,
+  max 3). Anything that might have been accepted — a lost/reset/timed-out response (20 s limit), a 2xx without readable
+  acceptance details, any other 5xx — is **`uncertain`**: shown to staff as "Delivery uncertain — may have been sent",
+  recorded in history, **never retried, never re-queueable**, and it blocks the follow-up (automatic or "Queue again")
+  for every other draft with that address. Staff can confirm in Postmark's Activity log and contact the customer
+  directly if needed.
+- **Retention:** erases name, phone, email, notes, IP hash and attribution on drafts idle more than the retention period
+  (open → `purged`; booked drafts keep `booked` and their appointment link). **Appointments are never touched.** Runs
+  before the follow-up step, and with retention on an expired draft is never emailed.
+- Staff: `/appointments/leads` (strict manager/admin only): contact, service/vehicle, last activity, permission, follow-up
+  status (incl. "Interrupted — may have been sent"), New / Contacted / Closed (audited), "Queue again" for a not-set-up or
+  failed email on an open, permitted, not-closed lead.
+
+**Scheduling and timing tolerance.** The team is on **Vercel Hobby**: a Vercel cron runs at most once a day, so the
+existing 5 PM `/api/cron/appointment-notifications` alone would turn a 24 h delay into up to ~48 h. A separate endpoint,
+`/api/cron/booking-follow-ups` (same `CRON_SECRET` bearer, fail-closed), runs only retention + recovery + follow-ups and
+is called **hourly** by the free GitHub Actions schedule `.github/workflows/booking-follow-ups.yml`; the daily cron
+still runs them too as a backstop. Confirmations and reminders are unchanged (still the daily cron plus the immediate
+post-booking dispatch). Resulting timing: **never earlier than 24 h after the customer's last activity** (enforced in
+SQL at selection, claim and final check); normally sent **24 h–~25 h** after it, later only if GitHub delays a scheduled
+run (it can at busy times) — worst case the daily backstop, ≤ ~48 h. GitHub usage: ~744 short runs/month, within the
+free private-repo Actions allowance (personal accounts default to a $0 spending limit, so nothing is billed). The
+workflow is **inert** until the owner adds repository secret `CRON_SECRET` (same value as Vercel's) and variable
+`BOOKING_CRON_BASE_URL=https://pitt-stop-internal.vercel.app`; GitHub only runs schedules from the default branch.
+
+**Owner-approved decisions (2026-10-20):** motorcycles and trailers book online; boats and RVs stay "Call to schedule";
+enable **Premium Detail** (and rename "Complete Detail" → "Full Detail") when applying the booking settings; one
+unfinished-booking email after **24 h** of inactivity, only with explicit permission; erase unfinished-booking contact
+details after **90 days**; booking stays **ON** in production; keep `https://pitt-stop-internal.vercel.app/book` until
+branded-domain access is resolved. Code defaults for both automations remain OFF — they are switched on in Booking
+settings at release (recorded). **Real email stays off** until Postmark (account approval, sender domain DNS) is set up
+and a controlled test is approved; until then follow-ups are recorded `not_configured`, never sent.
+
+**Release order (each step needs explicit approval):** apply migration `0060` → deploy → Booking settings: Premium
+Detail on, "Full Detail" label, follow-up ON (24 h), retention ON (90 days) → add the two GitHub settings → later,
+Postmark + `APPOINTMENT_EMAIL_ALLOWLIST` controlled test → remove the allowlist.
+
+**Email:** confirmation is now branded HTML + text ("Drop-off confirmed — …"), queued only after a successful booking,
+still through the outbox/Postmark; a failure never undoes a booking, and the done screen only says "we're sending" when a
+provider is configured. `APPOINTMENT_EMAIL_ALLOWLIST` (comma-separated) restricts sending to listed addresses for a
+controlled test — everything else is recorded as skipped, not sent.
+
+New default services are added **disabled**; names/descriptions are editable per service in Booking settings.
 
 ## Rules (manager-editable at `/appointments/settings`, stored in `app_settings.booking_config`)
 
@@ -74,8 +161,8 @@ remain the existing QuickBooks invoice email.
 
 ## Security
 
-Public surface = `/book`, `/book/a/<token>`, `/api/book/availability` (yes/no per time only),
-`POST /api/book/appointments`, `/api/book/a/<token>/{cancel,ics}`. Everything else stays behind the employee
+Public surface = `/book`, `/book/a/<token>`, `/book/r/<token>` (resume), `/api/book/availability` (yes/no per time only),
+`GET /api/book/vehicles`, `POST /api/book/drafts`, `POST /api/book/appointments`, `/api/book/a/<token>/{cancel,ics}`. Everything else stays behind the employee
 PIN (`/appointments/*` is in the proxy matcher) and manager role checks in each action. Private links are
 an HMAC of the appointment id (`APPOINTMENT_TOKEN_SECRET`, falls back to `IDENTITY_SECRET`); only the hash is
 stored. Server-side zod validation, honeypot field, 6 bookings/hour per connection. The dedicated host
@@ -84,10 +171,11 @@ stored. Server-side zod validation, honeypot field, 6 bookings/hour per connecti
 ## Files
 
 `apps/appointments/` — `policy.ts` (pure rules), `db.ts` (atomic writes, reads), `checkin.ts`, `notify.ts`,
-`attribution.ts`, `tokens.ts`, `public.ts`, `public-host.ts`, `schema.ts`; tests `*.test.ts`.
+`attribution.ts`, `tokens.ts`, `public.ts`, `public-host.ts`, `schema.ts`, `vehicles.ts`, `contact.ts`, `drafts.ts`;
+tests `*.test.ts`.
 UI: `app/book/*` (public), `app/appointments/*` (staff). APIs: `app/api/book/*`,
 `app/api/cron/appointment-notifications`. Migration `drizzle/migrations/manual/0058_appointments.sql`
-(additive; 4 tables). `apps/directory/intake-customer.ts`: vehicle link now optional.
+(additive; 4 tables); `0060_booking_drafts.sql` (additive; drafts + events + `appointments.vehicle_type`). `apps/directory/intake-customer.ts`: vehicle link now optional.
 
 ## Replacement matrix (scope contract)
 
@@ -152,7 +240,7 @@ to ~10 minutes to a few days to show; check the live profile's Book button after
 
 ## Customer email (Postmark) — owner setup
 
-Code is complete (outbox → `PostmarkEmailProvider`, `MessageStream: outbound`, plain-text). Notices are recorded
+Code is complete (outbox → `PostmarkEmailProvider`, `MessageStream: outbound`, branded HTML + plain-text). Notices are recorded
 `not_configured` until all of this is done; nothing is reported as sent before a provider accepts it.
 1. Create a Postmark account; create a Server (e.g. "Pitt Stop appointments"); request account approval (new accounts can
    only send to their own domain until approved).
@@ -165,7 +253,13 @@ Code is complete (outbox → `PostmarkEmailProvider`, `MessageStream: outbound`,
 4. Send one test to an owner address via a staff-created appointment; then **Retry customer messages** on real ones.
 Email never blocks booking: the shop alert is the `/appointments` "New online bookings" list.
 
-Known limits (acceptable for launch): a failed send retries after 15 min but is only picked up by the next dispatch —
+Delivery certainty: a notice is `sent` only on a readable acceptance and `failed` only when non-delivery is established
+(4xx = permanent, not retried automatically but staff may retry; 408/429/503 or a connection that never opened =
+retried). A notice that **may** have been accepted (lost or timed-out response, unreadable 2xx, other 5xx) becomes
+**`uncertain`**: never resent, refused by staff retry, and logged in the appointment's History ("may have been delivered
+— not resent"); a final definite failure is logged there too. Migration 0060 adds `uncertain` to the notice status check.
+
+Known limits (acceptable for launch): a temporary failure retries after 15 min but is only picked up by the next dispatch —
 the daily 5 PM cron, another change to that appointment, or staff **Retry customer messages** — and after 3 attempts it
 stays `failed`. Delivery status shows on each appointment's page, not on the `/appointments` list. A notice whose
 process dies mid-send stays `sending` (never re-sent → no duplicate email; staff can see it).
@@ -183,7 +277,7 @@ process dies mid-send stays `sending` (never re-sent → no duplicate email; sta
 | Future AutoLeap appointments | **READY — none exist** (owner confirmed 2026-10-19) |
 | Final booking host `book.pittstopdetailandautosales.com` | PENDING — GoDaddy CNAME (account recovery) |
 | Controlled re-test on the final host over HTTPS | PENDING — after CNAME |
-| Public booking ON | OFF until the final host passes |
+| Public booking ON | **ON** on the app URL (owner, 2026-10-20, intentional); keep it until branded-domain access is resolved |
 | Website links (34 / 15 pages) | Prepared (above); switch after the final-host test |
 | Google "Book online" | Prepared (above); switch after the final-host test |
 | Customer email | Not live (queued-only); does not block cutover; needs Postmark + GoDaddy DNS |

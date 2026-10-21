@@ -31,6 +31,8 @@ import {
 } from './policy'
 import { appointmentToken, hashToken, newReference, isTokenShape } from './tokens'
 import { cleanAttribution, classifySource, attributionConfidence, campaignIdFrom, type BookingAttribution } from './attribution'
+import { validateContact } from './contact'
+import { validateVehicle } from './vehicles'
 
 export type Appointment = typeof appointments.$inferSelect
 export type AppointmentEvent = typeof appointmentEvents.$inferSelect
@@ -63,7 +65,7 @@ const rowsOf = (r: unknown): Record<string, unknown>[] =>
   Array.isArray(r) ? (r as Record<string, unknown>[]) : ((r as { rows?: Record<string, unknown>[] })?.rows ?? [])
 
 /** Run raw statements in ONE transaction: Neon batch in production, a real transaction elsewhere (tests). */
-async function runAtomic(stmts: SQL[]): Promise<Record<string, unknown>[][]> {
+export async function runAtomic(stmts: SQL[]): Promise<Record<string, unknown>[][]> {
   const db = getDb() as unknown as {
     batch?: (q: unknown[]) => Promise<unknown[]>
     execute: (s: SQL) => unknown
@@ -211,6 +213,7 @@ export const bookingInput = z.object({
   lastName: trimmed(120).default(''),
   phone: trimmed(40).default(''),
   email: z.union([z.email().max(240), z.literal('')]).default(''),
+  vehicleType: z.union([z.enum(['car', 'motorcycle', 'trailer']), z.literal('')]).default(''),
   vehicleYear: z.union([z.string().regex(/^(19|20)\d{2}$/, 'Enter a 4-digit year.'), z.literal('')]).default(''),
   vehicleMake: trimmed(100).default(''),
   vehicleModel: trimmed(100).default(''),
@@ -222,6 +225,8 @@ export const bookingInput = z.object({
   smsMarketingOptIn: z.boolean().default(false),
   attribution: z.record(z.string(), z.unknown()).default({}),
   externalRef: z.string().trim().max(120).optional(),
+  /** The public page's unfinished-booking key: the draft is marked booked in the same transaction. */
+  draftKey: z.string().trim().min(8).max(80).regex(/^[\w-]+$/).optional(),
 })
 export type BookingInput = z.input<typeof bookingInput>
 
@@ -236,6 +241,8 @@ export interface CreateOptions {
   cfg?: BookingConfig
   /** Exact wording + version shown next to the optional SMS marketing checkbox (stored with consent). */
   smsConsent?: { text: string; version: string; ip?: string | null; userAgent?: string | null }
+  /** Test hook for the NHTSA model lookup used by public vehicle validation. */
+  vehicleFetch?: typeof fetch
 }
 
 export interface CreateResult { appointment: Appointment; token: string; replayed: boolean }
@@ -260,8 +267,13 @@ export async function createAppointment(raw: BookingInput, opts: CreateOptions):
   const phoneDigits = normalizePhone(input.phone)
   if (opts.mode === 'public') {
     if (!publicBookingOpen(cfg)) throw new BookingError('closed', 'Online booking is not available right now. Please call the shop.')
-    if (phoneDigits.length < 10) throw new BookingError('invalid', 'Enter a mobile number so we can reach you.')
-    if (!input.vehicleYear || !input.vehicleMake || !input.vehicleModel) throw new BookingError('invalid', 'Enter the vehicle year, make and model.')
+    // First name, last name, phone and email are all required online (format checks only — not proof of ownership).
+    const contactErrors = validateContact({ firstName: input.firstName, lastName: input.lastName, phone: input.phone, email: input.email })
+    const firstError = Object.values(contactErrors)[0]
+    if (firstError) throw new BookingError('invalid', firstError)
+    // The vehicle must come from the dropdown lists (never a typed-in name).
+    const badVehicle = await validateVehicle({ type: input.vehicleType, year: input.vehicleYear, make: input.vehicleType === 'trailer' ? 'Trailer' : input.vehicleMake, model: input.vehicleModel }, { fetchImpl: opts.vehicleFetch })
+    if (badVehicle) throw new BookingError('invalid', badVehicle)
     if (opts.ipHash) {
       const [r] = await getDb().select({ n: sql<number>`count(*)::int` }).from(appointments)
         .where(and(eq(appointments.ipHash, opts.ipHash), gte(appointments.createdAt, new Date(now.getTime() - 3_600_000))))
@@ -304,16 +316,29 @@ export async function createAppointment(raw: BookingInput, opts: CreateOptions):
         SELECT * FROM (VALUES ${sql.join(notices.map((n) => sql`(${n})`), sql`, `)}) v(a, k, t, d, s) WHERE EXISTS (SELECT 1 FROM ins)
         ON CONFLICT (dedupe_key) DO NOTHING)`
     : sql``
+  // Completing the booking closes its unfinished-booking draft atomically: marked booked and any pending
+  // follow-up suppressed, so no "finish your booking" email can follow a confirmed appointment.
+  const draftCte = input.draftKey && opts.mode === 'public'
+    ? sql`, dr AS (
+        UPDATE booking_drafts SET status = 'booked', appointment_id = (SELECT id FROM ins), completed_at = now(), last_activity_at = now(),
+          follow_up_status = CASE WHEN follow_up_status = 'pending' THEN 'suppressed' ELSE follow_up_status END
+        WHERE client_key = ${input.draftKey} AND status = 'open' AND EXISTS (SELECT 1 FROM ins)
+        RETURNING id
+      ), dre AS (
+        INSERT INTO booking_draft_events (draft_id, event_type, actor, meta) SELECT id, 'booked', 'customer', jsonb_build_object('appointment_id', (SELECT id FROM ins)) FROM dr
+      )`
+    : sql``
 
   const insert = sql`WITH ins AS (
       INSERT INTO appointments (id, reference, token_hash, idempotency_key, status, local_date, local_time, starts_at,
         service_keys, service_labels, units_detail, units_mechanic, first_name, last_name, phone, normalized_phone, email,
-        vehicle_year, vehicle_make, vehicle_model, vehicle_color, vehicle_plate, vehicle_vin, customer_notes, internal_notes,
+        vehicle_type, vehicle_year, vehicle_make, vehicle_model, vehicle_color, vehicle_plate, vehicle_vin, customer_notes, internal_notes,
         source, attribution, external_ref, sms_marketing_opt_in, capacity_override, ip_hash, created_by)
       SELECT ${id}::uuid, ${reference}, ${hashToken(token)}, ${input.idempotencyKey}, 'confirmed', ${input.date}::date, ${input.time},
         ${startsAt.toISOString()}::timestamptz, ${JSON.stringify(services.services.map((s) => s.key))}::jsonb, ${services.labels},
         ${services.need.detail}, ${services.need.mechanic}, ${input.firstName}, ${input.lastName}, ${input.phone},
-        ${phoneDigits || null}, ${email}, ${input.vehicleYear || null}, ${input.vehicleMake || null}, ${input.vehicleModel || null},
+        ${phoneDigits || null}, ${email}, ${input.vehicleType || null}, ${input.vehicleYear || null},
+        ${input.vehicleType === 'trailer' ? 'Trailer' : input.vehicleMake || null}, ${input.vehicleModel || null},
         ${input.vehicleColor || null}, ${input.vehiclePlate.toUpperCase() || null}, ${input.vehicleVin || null}, ${input.notes || null},
         ${input.internalNotes || null}, ${opts.source}, ${JSON.stringify(attribution)}::jsonb, ${input.externalRef ?? null},
         ${input.smsMarketingOptIn}, ${override}, ${opts.ipHash ?? null}, ${opts.actor}
@@ -323,7 +348,7 @@ export async function createAppointment(raw: BookingInput, opts: CreateOptions):
     ), ev AS (
       INSERT INTO appointment_events (appointment_id, event_type, actor, meta)
       SELECT id, 'booked', ${opts.actor}, ${JSON.stringify({ source: opts.source, mode: opts.mode, override, date: input.date, time: input.time, services: services.labels })}::jsonb FROM ins
-    )${noticeCte}
+    )${noticeCte}${draftCte}
     SELECT id FROM ins`
 
   const [, inserted] = await runAtomic([dayLock(input.date), insert])

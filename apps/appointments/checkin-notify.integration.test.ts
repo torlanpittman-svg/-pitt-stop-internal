@@ -14,8 +14,9 @@ vi.mock('@/apps/marketing/attribution', async (orig) => ({ ...(await orig<typeof
 
 import { getDb } from '@/platform/db'
 import { createAppointment, cancelAppointment, getAppointment, type BookingInput } from './db'
+import { fakeVpic } from './test-vpic'
 import { checkInAppointment } from './checkin'
-import { dispatchDue, renderMessage, PostmarkEmailProvider, NotConfiguredEmailProvider, type TransactionalEmailProvider } from './notify'
+import { dispatchDue, renderMessage, requeueNotification, PostmarkEmailProvider, NotConfiguredEmailProvider, type TransactionalEmailProvider } from './notify'
 import { DEFAULT_BOOKING_CONFIG, zonedToUtc, addDays, localParts, weekdayOf, formatDateLabel, holidayName, type BookingConfig } from './policy'
 
 const pg = new PGlite()
@@ -41,7 +42,7 @@ const CFG: BookingConfig = { ...DEFAULT_BOOKING_CONFIG, enabled: true, slotCapac
 
 beforeAll(async () => {
   await pg.exec(SCHEMA)
-  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql']) await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
+  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql']) await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
   await pg.query(`INSERT INTO app_settings (key, value, type) VALUES ('booking_config', $1::jsonb, 'json')`, [JSON.stringify(CFG)])
   // A live Complete Detail catalog item exists — check-in must still not bill it from the booking.
   await pg.query(`INSERT INTO service_catalog (slug, name, kind) VALUES ('complete_detail', 'Complete Detail', 'package')`)
@@ -72,8 +73,8 @@ const EVENING_BEFORE = zonedToUtc(MON, '17:00', 'America/Chicago')
 const book = async (over: Partial<BookingInput> = {}) => (await createAppointment({
   idempotencyKey: `ck-${randomUUID()}`, date: TUE, time: '08:00', serviceKeys: ['complete_detail', 'odor'],
   firstName: 'Jane', lastName: 'Driver', phone: '9795550444', email: 'jane.driver@example.com',
-  vehicleYear: '2019', vehicleMake: 'Ford', vehicleModel: 'F-150', notes: 'Dog hair in the back seat', ...over,
-}, { mode: 'public', source: 'website_booking', actor: null, now: NOW, cfg: CFG })).appointment
+  vehicleType: 'car', vehicleYear: '2019', vehicleMake: 'Ford', vehicleModel: 'F-150', notes: 'Dog hair in the back seat', ...over,
+}, { mode: 'public', source: 'website_booking', actor: null, now: NOW, cfg: CFG, vehicleFetch: fakeVpic({ Ford: ['F-150', 'Ranger'] }) })).appointment
 
 describe('check-in → existing Work Board intake', () => {
   it('creates exactly one Job through the Quick Entry creator and links it', async () => {
@@ -89,7 +90,7 @@ describe('check-in → existing Work Board intake', () => {
     // Detail charge, no invented package breakdown — staff itemize on the Estimate. The request is the Job note.
     expect(arg.lines).toEqual([])
     expect(arg.workPriceCents ?? null).toBeNull()
-    expect(arg.jobNote).toBe(`Customer requested: Complete Detail, Odor / Ozone (appointment ${a.reference}). Customer note: Dog hair in the back seat`)
+    expect(arg.jobNote).toBe(`Customer requested: Full Detail, Odor / Ozone (appointment ${a.reference}). Customer note: Dog hair in the back seat`)
     expect(arg.internalNote).toContain(`Appointment ${a.reference}`)
     expect(arg.internalNote).toContain('Dog hair')
     const after = await getAppointment(a.id)
@@ -144,7 +145,12 @@ describe('transactional notices', () => {
   it('confirmation copy carries the real appointment data', async () => {
     const a = await book()
     const m = renderMessage('confirmation', a, CFG)
-    expect(m.text).toContain(`Your appointment with Pitt Stop Detail & Auto Sales is confirmed for ${formatDateLabel(TUE)} at 8:00 AM.`)
+    expect(m.text).toContain(`Your drop-off with Pitt Stop Detail & Auto Sales is confirmed for ${formatDateLabel(TUE)} at 8:00 AM. This is the time we receive your vehicle, not a promised finish time.`)
+    // Branded HTML carries the same facts, escaped, plus the secure view/cancel link.
+    expect(m.html).toContain(a.reference)
+    expect(m.html).toContain('View or cancel')
+    expect(m.html).toContain('/book/a/')
+    expect(m.html).not.toContain('<script')
     expect(formatDateLabel(TUE)).toMatch(/^Tuesday, /)
     expect(m.text).toContain(a.reference)
     expect(m.text).toContain('2019 Ford F-150')
@@ -165,7 +171,7 @@ describe('transactional notices', () => {
     expect((await dispatchDue({ provider: fake, now: NOW })).sent).toBe(1)
     expect((await dispatchDue({ provider: fake, now: NOW })).sent).toBe(0)
     expect(sent).toHaveLength(1)
-    expect(sent[0].subject).toMatch(/^Appointment confirmed/)
+    expect(sent[0].subject).toMatch(/^Drop-off confirmed/)
     const reminderTime = EVENING_BEFORE
     expect((await dispatchDue({ provider: fake, now: reminderTime })).sent).toBe(1)
     expect(sent[1].subject).toMatch(/^Reminder/)
@@ -177,7 +183,7 @@ describe('transactional notices', () => {
     await dispatchDue({ provider: fake, now: NOW })
     await cancelAppointment(a.id, { actor: 'Tony', by: 'staff' })
     await dispatchDue({ provider: fake, now: EVENING_BEFORE })
-    expect(sent.map((m) => m.subject.split(' ')[0])).toEqual(['Appointment', 'Appointment']) // confirmed + cancelled, no reminder
+    expect(sent.map((m) => m.subject.split(' ')[0])).toEqual(['Drop-off', 'Appointment']) // confirmed + cancelled, no reminder
     expect(sent[1].subject).toMatch(/cancelled/)
   })
 
@@ -197,5 +203,72 @@ describe('transactional notices', () => {
     const bad = vi.fn(async () => new Response(JSON.stringify({ ErrorCode: 406, Message: 'Inactive recipient' }), { status: 422 }))
     expect(await new PostmarkEmailProvider('tok', 'x@example.com', bad as unknown as typeof fetch).send({ to: 'a@b.co', subject: 's', text: 't' }))
       .toMatchObject({ status: 'failed' })
+  })
+})
+
+// ── Confirmation / reminder: uncertain delivery is never resent (independent review 2026-10-20) ──
+describe('transactional notices: ambiguous delivery', () => {
+  type Answer = () => Response | Promise<Response>
+  const postmark = (...answers: Answer[]) => {
+    let calls = 0
+    const t = (async () => { const a = answers[Math.min(calls, answers.length - 1)]; calls++; return a() }) as typeof fetch
+    return { provider: new PostmarkEmailProvider('tok', 'shop@example.com', t), calls: () => calls }
+  }
+  const accepted: Answer = () => new Response(JSON.stringify({ ErrorCode: 0, MessageID: 'pm-ok' }), { status: 200 })
+  const lostResponse: Answer = () => { throw new TypeError('fetch failed: response connection lost') }
+  const reply = (status: number, body: unknown): Answer => () => new Response(JSON.stringify(body), { status })
+  const notice = async (id: string, kind: string) => (await pg.query(`SELECT id, status, attempts, error, send_after FROM appointment_notifications WHERE appointment_id = $1 AND kind = $2`, [id, kind])).rows[0] as { id: string; status: string; attempts: number; error: string | null; send_after: Date }
+
+  it('confirmation accepted but the response is lost → "uncertain", visible in history, never resent or requeued', async () => {
+    const a = await book()
+    const pm = postmark(lostResponse, accepted)
+    expect(await dispatchDue({ provider: pm.provider, now: NOW })).toMatchObject({ sent: 0, failed: 0, uncertain: 1 })
+    let t = NOW.getTime()
+    for (let i = 0; i < 3; i++) { t += 16 * 60_000; await dispatchDue({ provider: pm.provider, now: new Date(t) }) }
+    expect(pm.calls()).toBe(1)
+    const n = await notice(a.id, 'confirmation')
+    expect(n).toMatchObject({ status: 'uncertain', attempts: 1 })
+    expect(n.error).toMatch(/may have been delivered/i)
+    expect(await count('appointment_events', `appointment_id = '${a.id}' AND event_type = 'email_uncertain'`)).toBe(1)
+    await requeueNotification(n.id)
+    await dispatchDue({ provider: pm.provider, now: new Date(t + 60_000) })
+    expect(pm.calls()).toBe(1)
+    expect((await notice(a.id, 'confirmation')).status).toBe('uncertain')
+  })
+
+  it('reminder accepted but the response is lost → "uncertain", not resent', async () => {
+    const a = await book()
+    await dispatchDue({ provider: postmark(accepted).provider, now: NOW }) // confirmation goes out normally
+    const pm = postmark(lostResponse, accepted)
+    await dispatchDue({ provider: pm.provider, now: EVENING_BEFORE })
+    await dispatchDue({ provider: pm.provider, now: new Date(EVENING_BEFORE.getTime() + 20 * 60_000) })
+    expect(pm.calls()).toBe(1)
+    expect((await notice(a.id, 'reminder')).status).toBe('uncertain')
+    expect((await notice(a.id, 'confirmation')).status).toBe('sent')
+  })
+
+  it('a definite permanent rejection → failed at once (no automatic retry); staff may requeue it', async () => {
+    const a = await book()
+    const pm = postmark(reply(422, { ErrorCode: 300, Message: 'Invalid email request' }), accepted)
+    await dispatchDue({ provider: pm.provider, now: NOW, appointmentId: a.id })
+    await dispatchDue({ provider: pm.provider, now: new Date(NOW.getTime() + 20 * 60_000), appointmentId: a.id })
+    expect(pm.calls()).toBe(1)
+    const n = await notice(a.id, 'confirmation')
+    expect(n).toMatchObject({ status: 'failed', attempts: 1 })
+    expect(n.error).toContain('Invalid email request')
+    await requeueNotification(n.id)
+    expect((await notice(a.id, 'confirmation')).status).toBe('pending')
+  })
+
+  it('a definite temporary rejection → retried after 15 minutes and delivered once', async () => {
+    const a = await book()
+    const pm = postmark(reply(429, { ErrorCode: 429, Message: 'Rate limit exceeded' }), accepted)
+    await dispatchDue({ provider: pm.provider, now: NOW, appointmentId: a.id })
+    expect(await notice(a.id, 'confirmation')).toMatchObject({ status: 'pending', attempts: 1 })
+    await dispatchDue({ provider: pm.provider, now: new Date(NOW.getTime() + 5 * 60_000), appointmentId: a.id }) // not yet
+    expect(pm.calls()).toBe(1)
+    await dispatchDue({ provider: pm.provider, now: new Date(NOW.getTime() + 16 * 60_000), appointmentId: a.id })
+    expect(pm.calls()).toBe(2)
+    expect(await notice(a.id, 'confirmation')).toMatchObject({ status: 'sent', attempts: 2 })
   })
 })

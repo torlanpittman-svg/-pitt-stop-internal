@@ -9,7 +9,8 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { after } from 'next/server'
-import { authenticatedActor, authorizedManager, employeeAuthorized, isManagerRole } from '@/apps/auth/employee-guard'
+import { authenticatedActor, authorizedManager, authorizedManagerStrict, employeeAuthorized, isManagerRole } from '@/apps/auth/employee-guard'
+import { setDraftStaffStatus, requeueDraftFollowUp, STAFF_STATUSES, type StaffStatus } from '@/apps/appointments/drafts'
 import {
   createAppointment, cancelAppointment, markNoShow, rescheduleAppointment, acknowledgeAppointments, addInternalNote,
   addBlock, removeBlock, getAvailability, getBookingConfig, saveBookingConfig, BookingError, APPOINTMENT_SOURCES,
@@ -114,6 +115,9 @@ export async function saveSettingsAction(_prev: ActionResult | null, form: FormD
     const services = cur.services.map((s) => ({
       ...s, enabled: form.get(`svc_${s.key}_enabled`) === 'on',
       weight: Number(form.get(`svc_${s.key}_weight`) ?? s.weight),
+      // Customer-facing name; the key (stored on appointments, used in website links) never changes.
+      label: String(form.get(`svc_${s.key}_label`) ?? s.label).trim().slice(0, 80) || s.label,
+      description: String(form.get(`svc_${s.key}_description`) ?? s.description).trim().slice(0, 240),
     }))
     const next: BookingConfig = mergeBookingConfig({
       ...cur,
@@ -136,9 +140,13 @@ export async function saveSettingsAction(_prev: ActionResult | null, form: FormD
       phone: String(form.get('phone') ?? cur.phone), address: String(form.get('address') ?? cur.address),
       instructions: String(form.get('instructions') ?? cur.instructions), cancellationPolicy: String(form.get('cancellationPolicy') ?? cur.cancellationPolicy),
       days, services,
+      draftFollowUpEnabled: form.get('draftFollowUpEnabled') === 'on',
+      draftFollowUpDelayHours: Number(form.get('draftFollowUpDelayHours') ?? cur.draftFollowUpDelayHours),
+      draftRetentionEnabled: form.get('draftRetentionEnabled') === 'on',
+      draftRetentionDays: Number(form.get('draftRetentionDays') ?? cur.draftRetentionDays),
     })
     await saveBookingConfig(next, name)
-    revalidatePath('/appointments'); revalidatePath('/book')
+    revalidatePath('/appointments'); revalidatePath('/book'); revalidatePath('/appointments/leads')
     return { ok: true }
   } catch (e) { return fail(e) }
 }
@@ -154,4 +162,29 @@ export async function addBlockAction(_prev: ActionResult | null, form: FormData)
 
 export async function removeBlockAction(id: string): Promise<ActionResult> {
   try { const name = await manager(); await removeBlock(id, name); revalidatePath('/appointments/settings'); return { ok: true } } catch (e) { return fail(e) }
+}
+
+// ── Unfinished online bookings (leads) — managers/admins only, fail-closed ────
+
+async function leadManager(): Promise<string> {
+  const m = await authorizedManagerStrict()
+  if (!m) throw new BookingError('conflict', 'Managers and admins only.')
+  return m.name
+}
+
+export async function setLeadStatusAction(id: string, status: string): Promise<ActionResult> {
+  try {
+    const name = await leadManager()
+    if (!(STAFF_STATUSES as readonly string[]).includes(status)) return { ok: false, error: 'Choose a valid status.' }
+    await setDraftStaffStatus(id, status as StaffStatus, name)
+    revalidatePath('/appointments/leads'); return { ok: true }
+  } catch (e) { return fail(e) }
+}
+
+export async function requeueLeadFollowUpAction(id: string): Promise<ActionResult> {
+  try {
+    const name = await leadManager()
+    if (!(await requeueDraftFollowUp(id, name))) return { ok: false, error: 'This email can’t be queued again (closed lead, no permission, already handled, or booked).' }
+    revalidatePath('/appointments/leads'); return { ok: true }
+  } catch (e) { return fail(e) }
 }

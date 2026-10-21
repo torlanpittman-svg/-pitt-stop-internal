@@ -220,3 +220,23 @@ describe('services and config', () => {
     expect(mergeBookingConfig('not json').enabled).toBe(false)
   })
 })
+
+describe('service names + defaults added later', () => {
+  it('defaults use the website package names and keep stable keys', async () => {
+    const { DEFAULT_BOOKING_SERVICES } = await import('./policy')
+    const byKey = Object.fromEntries(DEFAULT_BOOKING_SERVICES.map((s) => [s.key, s.label]))
+    expect(byKey).toMatchObject({ mini_detail: 'Mini Detail', complete_detail: 'Full Detail', premium_detail: 'Premium Detail', ceramic_coating: 'Ceramic Coating' })
+  })
+  it('a saved config keeps its own services; a newly added default appears switched OFF', async () => {
+    const { mergeBookingConfig } = await import('./policy')
+    const cfg = mergeBookingConfig({ services: [{ key: 'complete_detail', label: 'Complete Detail', enabled: true }] })
+    expect(cfg.services[0]).toMatchObject({ key: 'complete_detail', label: 'Complete Detail', enabled: true })
+    expect(cfg.services.find((s) => s.key === 'premium_detail')).toMatchObject({ enabled: false })
+  })
+  it('unfinished-booking automations default OFF with the proposed values', async () => {
+    const { mergeBookingConfig } = await import('./policy')
+    const cfg = mergeBookingConfig({})
+    expect(cfg).toMatchObject({ draftFollowUpEnabled: false, draftFollowUpDelayHours: 24, draftRetentionEnabled: false, draftRetentionDays: 90 })
+    expect(mergeBookingConfig({ draftRetentionDays: 2 }).draftRetentionDays).toBe(90) // below the 7-day floor → default
+  })
+})

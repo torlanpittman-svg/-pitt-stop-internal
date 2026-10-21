@@ -6,7 +6,8 @@ import Link from 'next/link'
 import NavHeader from '@/app/components/NavHeader'
 import { PageContainer, PageHeader } from '@/app/components/ui/PageHeader'
 import { Badge } from '@/app/components/ui/Badge'
-import { authorizedManager } from '@/apps/auth/employee-guard'
+import { authorizedManager, authorizedManagerStrict } from '@/apps/auth/employee-guard'
+import { countOpenDrafts } from '@/apps/appointments/drafts'
 import { getBookingConfig, listAppointments, type Appointment } from '@/apps/appointments/db'
 import { formatDateLabel, formatTimeLabel, localParts } from '@/apps/appointments/policy'
 import AcknowledgeButton from './AcknowledgeButton'
@@ -21,7 +22,8 @@ type View = (typeof VIEWS)[number][0]
 export default async function AppointmentsPage({ searchParams }: { searchParams: Promise<{ view?: string; q?: string }> }) {
   const sp = await searchParams
   const view: View = (VIEWS.map((v) => v[0]) as string[]).includes(sp.view ?? '') ? sp.view as View : 'today'
-  const [cfg, mgr] = await Promise.all([getBookingConfig(), authorizedManager()])
+  const [cfg, mgr, leadMgr] = await Promise.all([getBookingConfig(), authorizedManager(), authorizedManagerStrict()])
+  const openLeads = leadMgr ? await countOpenDrafts() : 0
   const [rows, fresh] = await Promise.all([
     listAppointments({ view, q: sp.q, tz: cfg.timezone }),
     listAppointments({ view: 'new', tz: cfg.timezone }),
@@ -37,6 +39,7 @@ export default async function AppointmentsPage({ searchParams }: { searchParams:
           title="Appointments"
           actions={<>
             <Link href="/appointments/new" className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-gray-950">+ New appointment</Link>
+            {leadMgr && <Link href="/appointments/leads" className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-200">Unfinished bookings{openLeads ? ` (${openLeads} new)` : ''}</Link>}
             {mgr && <Link href="/appointments/settings" className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-200">Settings</Link>}
           </>}
         />

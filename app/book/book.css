@@ -1,0 +1,70 @@
+/* Public booking theme — tokens taken from pittstopdetailandautosales.com (Avada palette + buttons). */
+.ps-book {
+  --ps-navy: #023456;        /* awb-color5 */
+  --ps-navy-bar: #0d4469;    /* top contact bar */
+  --ps-ink: #212934;         /* awb-color6 */
+  --ps-body: #555555;        /* awb-color7 body text (7.5:1 on white) */
+  --ps-muted: #6b7280;
+  --ps-line: #e2e2e2;        /* awb-color3 */
+  --ps-page: #f8f9fa;        /* awb-color2 */
+  --ps-red: #eb0523;
+  --ps-red-deep: #ac1d0e;
+  --ps-blue: #187ec3;
+  --ps-blue-deep: #025c99;
+  --ps-yellow: #fbda05;      /* awb-color4 */
+  --ps-error: #b3261e;
+  --ps-ok: #1b6e3a;
+  color-scheme: light;
+  min-height: 100dvh;
+  background: var(--ps-page);
+  color: var(--ps-ink);
+  font-family: var(--font-ps-body), Roboto, Arial, Helvetica, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+.ps-script { font-family: var(--font-ps-script), Courgette, cursive; font-weight: 400; }
+
+.ps-btn-primary {
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  min-height: 3rem; padding: 0 1.75rem; border-radius: 30px; border: 0;
+  background: linear-gradient(90deg, var(--ps-red) 0%, var(--ps-red-deep) 100%);
+  color: #fff; font-weight: 500; font-size: 1rem; text-decoration: none; cursor: pointer;
+  transition: filter .15s ease, transform .1s ease;
+}
+.ps-btn-primary:hover { filter: brightness(1.08); }
+.ps-btn-primary:active { transform: translateY(1px); }
+.ps-btn-primary:disabled { opacity: .55; cursor: not-allowed; filter: none; transform: none; }
+.ps-btn-secondary {
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  min-height: 3rem; padding: 0 1.5rem; border-radius: 30px;
+  background: #fff; color: var(--ps-navy); border: 1.5px solid var(--ps-navy);
+  font-weight: 500; text-decoration: none; cursor: pointer;
+}
+.ps-btn-secondary:hover { background: #eef4f9; }
+.ps-btn-call {
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  min-height: 3rem; padding: 0 1.5rem; border-radius: 30px; border: 0;
+  background: linear-gradient(90deg, var(--ps-blue) 0%, var(--ps-blue-deep) 100%);
+  color: #fff; font-weight: 500; text-decoration: none;
+}
+
+.ps-book :focus-visible { outline: 3px solid var(--ps-blue); outline-offset: 2px; }
+/* Step headings take focus programmatically (screen readers announce the new step); they never show a ring. */
+.ps-book h2[tabindex="-1"]:focus { outline: none; }
+.ps-book button, .ps-book a, .ps-book label, .ps-book [role="option"] { touch-action: manipulation; }
+.ps-field {
+  display: block; width: 100%; min-height: 3rem; padding: .625rem .875rem;
+  border: 1.5px solid #c9ced4; border-radius: 10px; background: #fff; color: var(--ps-ink); font-size: 1rem;
+}
+.ps-field::placeholder { color: #8a929b; }
+.ps-field:focus { outline: none; border-color: var(--ps-blue); box-shadow: 0 0 0 3px rgba(24, 126, 195, .25); }
+.ps-field[aria-invalid="true"] { border-color: var(--ps-error); }
+.ps-field:disabled { background: #f1f3f5; color: #8a929b; }
+
+.ps-choice { border: 1.5px solid var(--ps-line); background: #fff; border-radius: 12px; transition: border-color .12s ease, background-color .12s ease; }
+.ps-choice:hover { border-color: #b8c2cc; }
+.ps-choice[data-on="true"] { border-color: var(--ps-navy); background: #eef4f9; box-shadow: inset 0 0 0 1px var(--ps-navy); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ps-book *, .ps-book *::before, .ps-book *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}

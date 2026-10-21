@@ -23,6 +23,18 @@ describe('dedicated booking host', () => {
     expect(isBookingPublicHost('pittstopdetail.com')).toBe(false)
   })
 
+  it('allows the redesigned flow\'s routes (vehicle lists, draft save, resume link, brand images) and nothing new beyond them', () => {
+    expect(publicBookingRoute('/api/book/vehicles', 'GET')).toBe('allow')
+    expect(publicBookingRoute('/api/book/drafts', 'POST')).toBe('allow')
+    expect(publicBookingRoute(`/book/r/${TOKEN}`, 'GET')).toBe('allow')
+    expect(publicBookingRoute('/book/pittstop-logo.png', 'GET')).toBe('allow')
+    expect(publicBookingRoute('/book/shop-banner.webp', 'GET')).toBe('allow')
+    expect(publicBookingRoute('/api/book/drafts', 'GET')).toBe('deny')
+    expect(publicBookingRoute('/book/r/short', 'GET')).toBe('deny')
+    expect(publicBookingRoute('/book/../appointments.png', 'GET')).toBe('deny')
+    expect(publicBookingRoute('/appointments/leads', 'GET')).toBe('deny')
+  })
+
   it('the proxy runs on every booking host (matcher covers each one)', () => {
     const hostValues = config.matcher.flatMap((m) => (typeof m === 'string' ? [] : m.has?.map((h) => h.value) ?? []))
     for (const host of BOOKING_PUBLIC_HOSTS) expect(hostValues.some((v) => new RegExp(`^${v}$`).test(host)), host).toBe(true)

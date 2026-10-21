@@ -15,9 +15,10 @@ const TOKEN = '[A-Za-z0-9_-]{32}'
 export function publicBookingRoute(pathname: string, method: string): 'allow' | 'redirect' | 'deny' {
   const read = method === 'GET' || method === 'HEAD'
   if (pathname === '/' && read) return 'redirect'
-  if (read && (pathname === '/book' || new RegExp(`^/book/a/${TOKEN}$`).test(pathname))) return 'allow'
-  if (read && (pathname === '/api/book/availability' || new RegExp(`^/api/book/a/${TOKEN}/ics$`).test(pathname))) return 'allow'
-  if (method === 'POST' && (pathname === '/api/book/appointments' || new RegExp(`^/api/book/a/${TOKEN}/cancel$`).test(pathname))) return 'allow'
+  if (read && (pathname === '/book' || new RegExp(`^/book/[ar]/${TOKEN}$`).test(pathname))) return 'allow'
+  if (read && /^\/book\/[\w-]+\.(png|webp)$/.test(pathname)) return 'allow'
+  if (read && (pathname === '/api/book/availability' || pathname === '/api/book/vehicles' || new RegExp(`^/api/book/a/${TOKEN}/ics$`).test(pathname))) return 'allow'
+  if (method === 'POST' && (pathname === '/api/book/appointments' || pathname === '/api/book/drafts' || new RegExp(`^/api/book/a/${TOKEN}/cancel$`).test(pathname))) return 'allow'
   if (read && (['/privacy', '/terms', '/favicon.ico'].includes(pathname) || pathname.startsWith('/_next/static/'))) return 'allow'
   return 'deny'
 }

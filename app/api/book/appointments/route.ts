@@ -5,7 +5,8 @@
  */
 import { NextResponse, after } from 'next/server'
 import { createAppointment, BookingError, hashIp, type BookingInput } from '@/apps/appointments/db'
-import { dispatchDue } from '@/apps/appointments/notify'
+import { dispatchDue, transactionalEmailProvider, AllowlistEmailProvider } from '@/apps/appointments/notify'
+import { getBookingConfig } from '@/apps/appointments/db'
 import { publicSummary } from '@/apps/appointments/public'
 import { getMarketingConfig } from '@/apps/settings/db'
 import { a2pProfile, smsDisclosureText, SMS_OPT_IN_VERSION } from '@/apps/marketing/compliance'
@@ -26,18 +27,25 @@ export async function POST(req: Request) {
     const { appointment, token, replayed } = await createAppointment({
       idempotencyKey: body.idempotencyKey, date: body.date, time: body.time, serviceKeys: Array.isArray(body.serviceKeys) ? body.serviceKeys : [],
       firstName: body.firstName, lastName: body.lastName, phone: body.phone, email: body.email,
-      vehicleYear: body.vehicleYear, vehicleMake: body.vehicleMake, vehicleModel: body.vehicleModel,
+      vehicleType: body.vehicleType, vehicleYear: body.vehicleYear, vehicleMake: body.vehicleMake, vehicleModel: body.vehicleModel,
       vehicleColor: body.vehicleColor, vehiclePlate: body.vehiclePlate, vehicleVin: body.vehicleVin,
       notes: body.notes, smsMarketingOptIn: body.smsMarketingOptIn === true, attribution: body.attribution ?? {},
+      draftKey: typeof body.draftKey === 'string' && body.draftKey ? body.draftKey : undefined,
     }, {
       mode: 'public', source: 'website_booking', actor: null, ipHash: hashIp(ip),
       smsConsent: { text: smsDisclosureText(p), version: SMS_OPT_IN_VERSION, ip, userAgent: req.headers.get('user-agent') },
     })
     if (!replayed) after(() => dispatchDue({ appointmentId: appointment.id }).catch((e) => console.error('[book] dispatch failed:', e)))
-    return NextResponse.json({ ok: true, token, appointment: publicSummary(appointment) })
+    // 'queued' only when a live provider will actually attempt this address — the page then says "sending",
+    // never "sent". Otherwise the page itself is the confirmation.
+    const provider = transactionalEmailProvider()
+    const cfg = await getBookingConfig()
+    const attempts = !!appointment.email && cfg.confirmationEnabled && provider.live &&
+      (!(provider instanceof AllowlistEmailProvider) || provider.allows(appointment.email))
+    return NextResponse.json({ ok: true, token, appointment: publicSummary(appointment), confirmationEmail: attempts ? 'queued' : 'off' })
   } catch (err) {
     if (err instanceof BookingError) return NextResponse.json({ ok: false, code: err.code, error: err.message }, { status: STATUS[err.code] })
-    console.error('[book] booking failed:', err)
+    console.error('[book] booking failed:', err instanceof Error ? err.message : 'unknown error')
     return NextResponse.json({ ok: false, error: 'Something went wrong. Please try again or call the shop.' }, { status: 500 })
   }
 }

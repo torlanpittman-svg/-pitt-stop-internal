@@ -35,3 +35,10 @@ export function publicBaseUrl(): string {
 }
 
 export const manageUrl = (appointmentId: string) => `${publicBaseUrl()}/book/a/${appointmentToken(appointmentId)}`
+
+/** Unfinished-booking resume token: same HMAC scheme and secret, a different message prefix. Opaque — it
+ *  carries no contact details, so the resume URL never puts customer information in logs or referrers. */
+export function draftToken(draftId: string): string {
+  return createHmac('sha256', secret()).update(`booking-draft:${draftId}`).digest('base64url').slice(0, 32)
+}
+export const resumeUrl = (draftId: string) => `${publicBaseUrl()}/book/r/${draftToken(draftId)}`

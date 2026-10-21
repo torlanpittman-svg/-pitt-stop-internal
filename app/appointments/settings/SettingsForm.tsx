@@ -67,13 +67,18 @@ export default function SettingsForm({ cfg }: { cfg: BookingConfig }) {
           <Num name="limitDetail" label="Daily detailing units (optional)" value={cfg.categoryLimits.detail} />
           <Num name="limitMechanic" label="Daily mechanic units (optional)" value={cfg.categoryLimits.mechanic} />
         </div>
+        <p className="text-xs text-gray-500">Customer-facing name and description appear on the booking cards. Tick a service to offer it online.</p>
         <div className="divide-y divide-gray-800 rounded-xl border border-gray-800">
           {cfg.services.map((s) => (
-            <div key={s.key} className="flex items-center gap-3 px-3 py-2">
-              <label className="flex flex-1 items-center gap-2 text-sm"><input type="checkbox" name={`svc_${s.key}_enabled`} defaultChecked={s.enabled} className="h-4 w-4" />{s.label}
-                <span className="text-xs text-gray-500">{s.category}</span></label>
-              <label className="text-xs text-gray-400">weight
-                <input type="number" min={0} max={20} name={`svc_${s.key}_weight`} defaultValue={s.weight} className="ml-2 h-9 w-16 rounded-lg border border-gray-700 bg-gray-950 px-2 text-white" /></label>
+            <div key={s.key} className="grid gap-2 px-3 py-3">
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 text-sm"><input type="checkbox" name={`svc_${s.key}_enabled`} defaultChecked={s.enabled} className="h-4 w-4" aria-label={`Offer ${s.label} online`} />
+                  <span className="text-xs text-gray-500">{s.key} · {s.category}</span></label>
+                <label className="ml-auto text-xs text-gray-400">weight
+                  <input type="number" min={0} max={20} name={`svc_${s.key}_weight`} defaultValue={s.weight} className="ml-2 h-9 w-16 rounded-lg border border-gray-700 bg-gray-950 px-2 text-white" /></label>
+              </div>
+              <input name={`svc_${s.key}_label`} defaultValue={s.label} maxLength={80} aria-label={`${s.key} name`} className="h-10 rounded-lg border border-gray-700 bg-gray-950 px-3 text-sm text-white" />
+              <input name={`svc_${s.key}_description`} defaultValue={s.description} maxLength={240} aria-label={`${s.key} description`} className="h-10 rounded-lg border border-gray-700 bg-gray-950 px-3 text-sm text-gray-300" />
             </div>
           ))}
         </div>
@@ -86,6 +91,17 @@ export default function SettingsForm({ cfg }: { cfg: BookingConfig }) {
         <div className="grid grid-cols-2 gap-3">
           <Num name="reminderHoursBefore" label="Reminder (hours before)" value={cfg.reminderHoursBefore} />
           <Num name="cancelCutoffMinutes" label="Online cancel until (minutes before)" value={cfg.cancelCutoffMinutes} />
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="font-semibold">Unfinished bookings</h2>
+        <p className="text-xs text-gray-500">Customers who enter their details but don&apos;t confirm appear under Appointments → Unfinished bookings. One follow-up email goes only to customers who ticked &ldquo;If I don&apos;t finish booking, Pitt Stop may email me…&rdquo;, and never after they book. Owner-approved: one email 24 hours after the customer&apos;s last activity (sent within about an hour after that, never earlier); erase contact details after 90 days. Closing a lead stops its email. No email is sent until an email provider is set up.</p>
+        <Check name="draftFollowUpEnabled" label="Send the one follow-up email (needs an email provider)" on={cfg.draftFollowUpEnabled} />
+        <Check name="draftRetentionEnabled" label="Erase unfinished-booking contact details after the retention period" on={cfg.draftRetentionEnabled} />
+        <div className="grid grid-cols-2 gap-3">
+          <Num name="draftFollowUpDelayHours" label="Follow-up delay (hours)" value={cfg.draftFollowUpDelayHours} hint="After the customer's last activity." />
+          <Num name="draftRetentionDays" label="Retention (days)" value={cfg.draftRetentionDays} />
         </div>
       </section>
 

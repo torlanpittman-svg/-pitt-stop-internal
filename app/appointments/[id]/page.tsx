@@ -90,6 +90,8 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
           <ul className="mt-2 space-y-1 text-sm text-gray-300">
             {events.map((e) => (
               <li key={e.id}><span className="text-gray-500">{fmt(e.createdAt)}</span> · {e.eventType.replace('_', ' ')}{e.actor ? ` · ${e.actor}` : ''}
+                {e.eventType === 'email_uncertain' && ` · ${(e.meta as { kind?: string }).kind ?? 'email'} may have been delivered (connection lost) — not resent`}
+                {e.eventType === 'email_failed' && ` · ${(e.meta as { kind?: string }).kind ?? 'email'} was not delivered`}
                 {e.eventType === 'rescheduled' && (() => { const m = e.meta as { from?: { date: string; time: string }; to?: { date: string; time: string } }; return m.from && m.to ? ` · ${m.from.date} ${m.from.time} → ${m.to.date} ${m.to.time}` : '' })()}
               </li>
             ))}

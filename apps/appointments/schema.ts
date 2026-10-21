@@ -23,6 +23,7 @@ export const appointments = pgTable('appointments', {
   phone:             varchar('phone', { length: 40 }).notNull().default(''),
   normalizedPhone:   varchar('normalized_phone', { length: 20 }),
   email:             varchar('email', { length: 240 }),
+  vehicleType:       varchar('vehicle_type', { length: 16 }), // car | motorcycle | trailer (0060; null = older/staff rows)
   vehicleYear:       varchar('vehicle_year', { length: 4 }),
   vehicleMake:       varchar('vehicle_make', { length: 100 }),
   vehicleModel:      varchar('vehicle_model', { length: 100 }),
@@ -79,7 +80,7 @@ export const appointmentNotifications = pgTable('appointment_notifications', {
   channel:           varchar('channel', { length: 8 }).notNull().default('email'),
   toAddress:         varchar('to_address', { length: 240 }),
   dedupeKey:         varchar('dedupe_key', { length: 160 }).notNull(),
-  status:            varchar('status', { length: 16 }).notNull().default('pending'), // pending | sending | sent | not_configured | failed | skipped
+  status:            varchar('status', { length: 16 }).notNull().default('pending'), // pending | sending | sent | not_configured | failed | uncertain | skipped (uncertain = may have been delivered; never resent)
   sendAfter:         timestamp('send_after', { withTimezone: true }).notNull().defaultNow(),
   attempts:          integer('attempts').notNull().default(0),
   provider:          varchar('provider', { length: 40 }),
@@ -87,4 +88,65 @@ export const appointmentNotifications = pgTable('appointment_notifications', {
   error:             text('error'),
   createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   sentAt:            timestamp('sent_at', { withTimezone: true }),
+})
+
+/**
+ * Unfinished public bookings (migration 0060). Saved only when the customer submits the completed contact
+ * step next to a "saved even if you don't finish" disclosure. Never reserves capacity. booking_draft_events
+ * is append-only.
+ */
+export const bookingDrafts = pgTable('booking_drafts', {
+  id:                      uuid('id').primaryKey().defaultRandom(),
+  clientKey:               varchar('client_key', { length: 80 }).notNull(),
+  tokenHash:               varchar('token_hash', { length: 64 }).notNull(),
+  status:                  varchar('status', { length: 16 }).notNull().default('open'), // open | booked | purged
+  firstName:               varchar('first_name', { length: 120 }),
+  lastName:                varchar('last_name', { length: 120 }),
+  phone:                   varchar('phone', { length: 40 }),
+  normalizedPhone:         varchar('normalized_phone', { length: 20 }),
+  email:                   varchar('email', { length: 240 }),
+  serviceKeys:             jsonb('service_keys').$type<string[]>().notNull().default([]),
+  serviceLabels:           text('service_labels').notNull().default(''),
+  vehicleType:             varchar('vehicle_type', { length: 16 }),
+  vehicleYear:             varchar('vehicle_year', { length: 4 }),
+  vehicleMake:             varchar('vehicle_make', { length: 100 }),
+  vehicleModel:            varchar('vehicle_model', { length: 100 }),
+  preferredDate:           date('preferred_date'),
+  preferredTime:           varchar('preferred_time', { length: 5 }),
+  notes:                   text('notes'),
+  attribution:             jsonb('attribution').$type<Record<string, string>>().notNull().default({}),
+  saveNoticeVersion:       varchar('save_notice_version', { length: 40 }).notNull(),
+  followUpConsent:         boolean('follow_up_consent').notNull().default(false),
+  followUpConsentAt:       timestamp('follow_up_consent_at', { withTimezone: true }),
+  followUpConsentText:     text('follow_up_consent_text'),
+  followUpConsentVersion:  varchar('follow_up_consent_version', { length: 40 }),
+  // not_permitted | pending | sending | sent | not_configured | failed | suppressed | uncertain (interrupted after clearance; never auto-retried)
+  followUpStatus:          varchar('follow_up_status', { length: 16 }).notNull().default('not_permitted'),
+  followUpAttempts:        integer('follow_up_attempts').notNull().default(0),
+  followUpProvider:        varchar('follow_up_provider', { length: 40 }),
+  followUpMessageId:       varchar('follow_up_message_id', { length: 200 }),
+  followUpError:           text('follow_up_error'),
+  followUpSentAt:          timestamp('follow_up_sent_at', { withTimezone: true }),
+  /** When a worker claimed the send (pending → sending); a stale claim means the worker was interrupted. */
+  followUpClaimedAt:       timestamp('follow_up_claimed_at', { withTimezone: true }),
+  /** Set only after the final eligibility check passed — the provider may have been called from here on. */
+  followUpClearedAt:       timestamp('follow_up_cleared_at', { withTimezone: true }),
+  staffStatus:             varchar('staff_status', { length: 16 }).notNull().default('new'), // new | contacted | closed
+  staffStatusBy:           varchar('staff_status_by', { length: 200 }),
+  staffStatusAt:           timestamp('staff_status_at', { withTimezone: true }),
+  appointmentId:           uuid('appointment_id').references(() => appointments.id),
+  ipHash:                  varchar('ip_hash', { length: 64 }),
+  createdAt:               timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  lastActivityAt:          timestamp('last_activity_at', { withTimezone: true }).notNull().defaultNow(),
+  completedAt:             timestamp('completed_at', { withTimezone: true }),
+  purgedAt:                timestamp('purged_at', { withTimezone: true }),
+})
+
+export const bookingDraftEvents = pgTable('booking_draft_events', {
+  id:        uuid('id').primaryKey().defaultRandom(),
+  draftId:   uuid('draft_id').notNull().references(() => bookingDrafts.id),
+  eventType: varchar('event_type', { length: 32 }).notNull(),
+  actor:     varchar('actor', { length: 200 }),
+  meta:      jsonb('meta').$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })

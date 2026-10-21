@@ -11,6 +11,7 @@ import {
 } from './db'
 import { DEFAULT_BOOKING_CONFIG, zonedToUtc, type BookingConfig } from './policy'
 import { publicSummary } from './public'
+import { fakeVpic } from './test-vpic'
 
 const pg = new PGlite()
 const PARENTS = `
@@ -37,7 +38,7 @@ CREATE TABLE app_settings (
 
 beforeAll(async () => {
   await pg.exec(PARENTS)
-  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql']) {
+  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql']) {
     await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
   }
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
@@ -64,10 +65,10 @@ const input = (over: Partial<BookingInput> = {}): BookingInput => ({
   idempotencyKey: `test-key-${++seq}-${Math.random().toString(36).slice(2, 8)}`,
   date: TUE, time: '08:00', serviceKeys: ['complete_detail'],
   firstName: 'Test', lastName: 'Customer', phone: '(979) 555-0101', email: 'test.customer@example.com',
-  vehicleYear: '2020', vehicleMake: 'Honda', vehicleModel: 'Civic', ...over,
+  vehicleType: 'car', vehicleYear: '2020', vehicleMake: 'Honda', vehicleModel: 'Civic', ...over,
 })
 const pub = (over: Partial<Parameters<typeof createAppointment>[1]> = {}) =>
-  ({ mode: 'public' as const, source: 'website_booking' as const, actor: null, now: NOW, cfg: CFG, ...over })
+  ({ mode: 'public' as const, source: 'website_booking' as const, actor: null, now: NOW, cfg: CFG, vehicleFetch: fakeVpic(), ...over })
 
 describe('public booking', () => {
   it('creates a confirmed appointment, its history, its notices, a canonical customer and a lead', async () => {
@@ -97,6 +98,25 @@ describe('public booking', () => {
     expect(await count('customers')).toBe(1)
     // Anonymous booking data never overwrites the authoritative record.
     expect(((await pg.query(`SELECT display_name FROM customers WHERE id = '${id}'`)).rows[0] as { display_name: string }).display_name).toBe('Existing Person')
+  })
+
+  it('online bookings require first name, last name, phone and email, and a vehicle from the lists (server-side)', async () => {
+    await expect(createAppointment(input({ email: '' }), pub())).rejects.toMatchObject({ code: 'invalid', message: 'Enter your email address.' })
+    await expect(createAppointment(input({ lastName: '' }), pub())).rejects.toMatchObject({ code: 'invalid', message: 'Enter your last name.' })
+    await expect(createAppointment(input({ phone: '555-0101' }), pub())).rejects.toMatchObject({ code: 'invalid' })
+    await expect(createAppointment(input({ email: 'not-an-email' }), pub())).rejects.toMatchObject({ code: 'invalid' })
+    await expect(createAppointment(input({ vehicleModel: 'Batmobile' }), pub())).rejects.toMatchObject({ code: 'invalid', message: 'Choose the model from the list.' })
+    await expect(createAppointment(input({ vehicleType: '' }), pub())).rejects.toMatchObject({ code: 'invalid' })
+    expect(await count('appointments')).toBe(0)
+    // Staff entry is unchanged: phone OR email, free-text vehicle.
+    const { appointment } = await createAppointment(input({ email: '', lastName: '', vehicleType: '', vehicleModel: 'Custom build' }), { mode: 'staff', source: 'phone', actor: 'Tester', now: NOW, cfg: CFG })
+    expect(appointment.vehicleModel).toBe('Custom build')
+  })
+
+  it('a trailer is stored with its kind and shown without a fake make', async () => {
+    const { appointment } = await createAppointment(input({ vehicleType: 'trailer', vehicleYear: '2018', vehicleMake: '', vehicleModel: 'Car hauler' }), pub())
+    expect(appointment).toMatchObject({ vehicleType: 'trailer', vehicleMake: 'Trailer', vehicleModel: 'Car hauler' })
+    expect(publicSummary(appointment).vehicle).toBe('2018 Car hauler')
   })
 
   it('a duplicate submission (same key) returns the same appointment', async () => {
