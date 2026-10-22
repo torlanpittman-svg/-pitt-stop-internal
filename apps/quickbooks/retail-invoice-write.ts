@@ -10,6 +10,7 @@
 import { qbApiRequest, queryQBO, qboEscape } from './client'
 import { ensureIncomeAccount, ensureServiceItem, nextInvoiceDocNumber } from './invoice-write'
 import { extractPsid } from './retail-format'
+import { linesFromRawInvoice, linesFingerprint } from './shared-invoice-plan'
 import { logger } from '@/platform/logger'
 
 const APP = 'quickbooks:retail-invoice-write'
@@ -25,29 +26,35 @@ export async function resolveRetailItems(): Promise<{ labor: string; fees: strin
   return { labor, fees }
 }
 
-export interface RetailWriteLine { itemId: string; description: string; amountCents: number }
+export interface RetailWriteLine { itemId: string; description: string; amountCents: number; kind?: 'text' }
 export interface WrittenRetailInvoice {
   invoiceId: string
   invoiceNumber: string | null
   syncToken: string
   totalAmtCents: number
   lineCount: number
+  /** Fingerprint of the line set QuickBooks returned (shared-invoice drift detection). */
+  linesFingerprint: string
 }
 
 const cents = (dollars: number) => Math.round((dollars ?? 0) * 100)
 
-function summarize(inv: { Id: string; DocNumber?: string; SyncToken: string; TotalAmt?: number; Line?: Array<{ DetailType?: string }> }): WrittenRetailInvoice {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function summarize(inv: { Id: string; DocNumber?: string; SyncToken: string; TotalAmt?: number; Line?: Array<{ DetailType?: string; [k: string]: any }> }): WrittenRetailInvoice {
   return {
     invoiceId: inv.Id,
     invoiceNumber: inv.DocNumber ?? null,
     syncToken: inv.SyncToken,
     totalAmtCents: cents(inv.TotalAmt ?? 0),
     lineCount: (inv.Line ?? []).filter((l) => l.DetailType === 'SalesItemLineDetail').length,
+    linesFingerprint: linesFingerprint(linesFromRawInvoice(inv.Line)),
   }
 }
 
 /** Build a NON-taxable sales line (detailing → no QB-added tax). */
 function buildLine(l: RetailWriteLine) {
+  // Shared-invoice vehicle header: a QuickBooks description-only line (no item, no amount, never taxed).
+  if (l.kind === 'text') return { DetailType: 'DescriptionOnly', Description: l.description, DescriptionLineDetail: {} }
   const amount = l.amountCents / 100
   return {
     DetailType: 'SalesItemLineDetail',
@@ -184,4 +191,13 @@ export async function findRetailInvoiceByPsid(customerId: string, estimateId: st
     if (extractPsid(inv.PrivateNote) === estimateId) return summarize(inv)
   }
   return null
+}
+
+/** READ-ONLY: this customer's most recent invoices (shared-invoice discovery intersects them with Pitt Stop's own
+ *  app-created retail invoices — an invoice Pitt Stop didn't create is never offered). */
+export async function listRetailInvoicesForCustomer(customerId: string): Promise<RawQBInvoice[]> {
+  const res = await queryQBO<{ Invoice?: RawQBInvoice[] }>(
+    `SELECT * FROM Invoice WHERE CustomerRef = '${qboEscape(customerId)}' ORDERBY MetaData.CreateTime DESC MAXRESULTS 100`,
+  )
+  return res.Invoice ?? []
 }

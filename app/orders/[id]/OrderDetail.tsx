@@ -765,7 +765,11 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
   // A recorded / in-flight / unconfirmed payment freezes the invoice (no Sync; Email Paid Invoice replaces Send).
   const payLocked = !!qb && paymentLocksInvoice(qb.payment)
   // "current" = linked, not stale, not in review/error → the state where Send is allowed.
-  const current = linked && !syncNeeded && !needsReview && !syncFailed && !payLocked
+  // Shared invoice: another vehicle linked but not on the invoice yet → no Send / payment until it's reviewed
+  // and updated (the server enforces this too). A linked MEMBER never gets its own invoice (no Create).
+  const shared = draft?.shared ?? null
+  const sharedPending = (shared?.pendingCount ?? 0) > 0
+  const current = linked && !syncNeeded && !needsReview && !syncFailed && !payLocked && !sharedPending
   const canSend = current && !isSent && sendEnabled
   const canResend = current && isSent && sendEnabled
 
@@ -851,6 +855,9 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
                         <p className="text-gray-400 text-xs mt-0.5">{box.label}</p>
                         {isSent && contact?.email && !resendRecommended && !syncNeeded && <p className="text-gray-400 text-xs mt-0.5">{contact.email}</p>}
                         {needsReview && qb?.error && <p className="text-amber-400/80 text-xs mt-1">{qb.error}</p>}
+                        {shared && <p className={`text-xs mt-1 ${sharedPending ? 'text-amber-300' : 'text-gray-400'}`}>
+                          Shared invoice · {shared.vehicles.length} vehicles{sharedPending ? ' · a linked vehicle isn’t on it yet — Review Invoice to update it' : ''}
+                        </p>}
                       </div>
                     )
                   })()}
@@ -883,9 +890,23 @@ function CompletionSummary({ orderId, customerName, vehicleName, onDone }: {
                   {sendErr && <p className="text-amber-400 text-sm mt-2">{sendErr}</p>}
                   {/* Record Payment → Paid → Email / Print Paid Invoice. */}
                   {qb && (paymentEnabled || qb.payment.status !== 'none') && (
-                    <InvoicePaymentSection orderId={orderId} qb={qb} paymentEnabled={paymentEnabled && !needsReview} sendEnabled={sendEnabled}
+                    <InvoicePaymentSection orderId={orderId} qb={qb} paymentEnabled={paymentEnabled && !needsReview && !sharedPending} sendEnabled={sendEnabled}
                       disabled={syncing || sending} onChanged={loadDraft} onToast={(m) => { setToast(m); setTimeout(() => setToast(null), 5000) }} />
                   )}
+                </>
+              ) : shared ? (
+                /* Billed on another vehicle's QuickBooks invoice → never Create a separate one here. */
+                <>
+                  <div className={`rounded-xl border px-4 py-3 text-sm ${shared.memberState === 'pending' ? 'border-amber-900/60 bg-amber-950/30 text-amber-300' : 'border-sky-900/60 bg-sky-950/30 text-sky-300'}`}>
+                    On shared invoice{shared.invoiceNumber ? ` #${shared.invoiceNumber}` : ''}
+                    <span className="block text-gray-400 text-xs mt-0.5">
+                      {shared.memberState === 'pending' ? 'Linked — this vehicle’s charges go on when a manager reviews and updates the invoice.' : 'This vehicle’s charges are on that invoice.'}
+                    </span>
+                  </div>
+                  <button onClick={() => setShowInvoice(true)}
+                    className="mt-3 w-full text-white font-semibold text-base py-3.5 rounded-2xl bg-indigo-600 active:opacity-80">
+                    Review Invoice
+                  </button>
                 </>
               ) : !priced || pricingUnfinalized ? (
                 /* Not linked + unpriced OR partial itemized pricing OR itemized total not yet

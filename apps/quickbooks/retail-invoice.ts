@@ -17,7 +17,9 @@
 import { buildCustomerMemo, buildPrivateNote, type InvoiceVehicle } from './retail-format'
 
 export interface RetailWorkService { itemId: string; description: string; amountCents: number }
-export interface RetailBuiltLine { itemId: string; description: string; amountCents: number }
+/** kind 'text' = a QuickBooks DescriptionOnly line (no item, no amount) — used only as the per-vehicle header on
+ *  a shared invoice. Absent = an ordinary priced sales line (every single-job invoice). */
+export interface RetailBuiltLine { itemId: string; description: string; amountCents: number; kind?: 'text' }
 export interface RetailPayload { lines: RetailBuiltLine[]; customerMemo: string; privateNote: string; totalCents: number }
 
 export class RetailTotalMismatchError extends Error {

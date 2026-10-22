@@ -21,6 +21,8 @@ const PARENTS = `
     completed_at timestamptz, cancelled_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), approved_price_cents integer, services jsonb);
   CREATE TABLE order_photos (id uuid PRIMARY KEY);
   CREATE TABLE job_estimates (id uuid PRIMARY KEY, service_order_id uuid, total_cents integer, qb_invoice_id text);
+  -- shared retail invoice membership: an APPLIED member is invoiced on another Job's QB invoice
+  CREATE TABLE retail_invoice_members (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), member_estimate_id uuid, qb_invoice_number text, state text);
 `
 
 const both = randomUUID()     // phone + email, eligible

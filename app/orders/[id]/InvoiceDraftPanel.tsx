@@ -10,6 +10,8 @@ import { createDraftSequencer, invoiceActionsLocked, interpretDraftResponse, dra
 import { InvoicePaymentSection } from './InvoicePaymentSection'
 import { paymentLocksInvoice } from '@/apps/quickbooks/retail-payment'
 import type { InvoicePaymentState } from '@/apps/workflow/invoice-draft'
+import type { SharedInvoiceState } from '@/apps/quickbooks/shared-invoice'
+import { SharedInvoiceSection } from '@/app/components/SharedInvoice'
 
 export interface InvoiceDraftData {
   priced: boolean; isDealer: boolean
@@ -24,6 +26,8 @@ export interface InvoiceDraftData {
   pricingIncomplete: boolean
   referenceCents: number | null
   qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sent: boolean; resendRecommended: boolean; sentAt: string | null; payment: InvoicePaymentState }
+  /** One QuickBooks invoice billing several of this customer's vehicles (either side), or null. */
+  shared?: SharedInvoiceState | null
 }
 export interface SendPreview { ok: boolean; block?: string; recipient?: string | null; invoiceNumber?: string | null; draftTotalCents?: number; qbTotalCents?: number; error?: string }
 /** A colliding QB customer offered to the manager when email/name resolution is ambiguous. */
@@ -44,6 +48,8 @@ export const SEND_BLOCK_MSG: Record<string, string> = {
   send_failed: 'Could not send the invoice. Try again.',
   not_priced: 'Add a Work Price first.',
   dealer: 'Dealer invoices are handled by Dealer Check-In.',
+  shared_pending: 'A linked vehicle’s charges aren’t on this invoice yet — review and update the shared invoice first.',
+  shared_member_unready: 'A vehicle on this shared invoice isn’t ready to bill — review the shared invoice.',
 }
 export const SYNC_BLOCK_MSG: Record<string, string> = {
   customer_mismatch: 'The customer no longer matches this invoice — review before syncing.',
@@ -56,6 +62,10 @@ export const SYNC_BLOCK_MSG: Record<string, string> = {
   sync_failed: 'Could not sync the QuickBooks invoice.',
   paid: 'A payment is recorded on this invoice — correct it in QuickBooks.',
   pricing: 'The service prices don’t match the agreed Work Price — reconcile them in the Estimate first.',
+  stale: 'The invoice changed in QuickBooks — review it again.',
+  lines_changed: 'The invoice’s lines were changed in QuickBooks — reconcile it there first.',
+  member_unready: 'A linked vehicle isn’t ready to bill yet — finish its pricing first.',
+  member_customer_mismatch: 'A linked vehicle no longer belongs to this invoice’s customer — keep it separate.',
 }
 
 function ChargeRow({ label, cents, waived, canEdit, busy, onToggle }: {
@@ -190,6 +200,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
   const [resendMode, setResendMode] = useState(false)   // the pending confirm is a deliberate Resend
   const [syncEnabled, setSyncEnabled] = useState(false)
   const [paymentEnabled, setPaymentEnabled] = useState(false)
+  const [sharedEnabled, setSharedEnabled] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [syncMsg, setSyncMsg] = useState<string | null>(null)
@@ -216,10 +227,10 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
     if (mode === 'refresh') { setRefreshing(true); setSendPreview(null); setResendMode(false); setConfirmSentSync(false); setSyncMsg(null); setCustCandidates(null) }
     try {
       const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
-      const d = await r.json().catch(() => null) as { draft?: InvoiceDraftData; error?: string; qbEnabled?: boolean; qbSendEnabled?: boolean; qbSyncEnabled?: boolean; qbPaymentEnabled?: boolean } | null
+      const d = await r.json().catch(() => null) as { draft?: InvoiceDraftData; error?: string; qbEnabled?: boolean; qbSendEnabled?: boolean; qbSyncEnabled?: boolean; qbPaymentEnabled?: boolean; qbSharedEnabled?: boolean } | null
       if (!aliveRef.current || !seq.isCurrent(token)) return
       const res = interpretDraftResponse(r.ok, d)
-      if (res.draft) { setDraft(res.draft); setErr(null); setQbEnabled(!!d?.qbEnabled); setSendEnabled(!!d?.qbSendEnabled); setSyncEnabled(!!d?.qbSyncEnabled); setPaymentEnabled(!!d?.qbPaymentEnabled) }
+      if (res.draft) { setDraft(res.draft); setErr(null); setQbEnabled(!!d?.qbEnabled); setSendEnabled(!!d?.qbSendEnabled); setSyncEnabled(!!d?.qbSyncEnabled); setPaymentEnabled(!!d?.qbPaymentEnabled); setSharedEnabled(!!d?.qbSharedEnabled) }
       else { setDraft(null); setErr(res.error) }
     } catch {
       if (aliveRef.current && seq.isCurrent(token)) { setDraft(null); setErr('Could not load the invoice totals. Try again.') }
@@ -242,7 +253,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
     const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
     const d = await r.json()
     if (!seq.isCurrent(token)) return
-    if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled); setSyncEnabled(!!d.qbSyncEnabled); setPaymentEnabled(!!d.qbPaymentEnabled) }
+    if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled); setSyncEnabled(!!d.qbSyncEnabled); setPaymentEnabled(!!d.qbPaymentEnabled); setSharedEnabled(!!d.qbSharedEnabled) }
   }, [orderId, seq])
 
   // Sync (UPDATE) the linked invoice from the current draft. Two-tap confirm for a sent invoice
@@ -521,7 +532,10 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                   // A recorded / in-flight / unconfirmed payment freezes the invoice: no Sync, and the unpaid
                   // Send/Resend give way to Email Paid Invoice (in the payment section below).
                   const payLocked = paymentLocksInvoice(q.payment)
-                  const current = !q.syncNeeded && !q.needsReview && q.status !== 'error' && !payLocked  // Send/Resend allowed
+                  // Another vehicle linked but not yet on the invoice → the invoice is stale: no Send, no payment
+                  // until a manager reviews and updates it (the server enforces this too).
+                  const sharedPending = (draft.shared?.pendingCount ?? 0) > 0
+                  const current = !q.syncNeeded && !q.needsReview && q.status !== 'error' && !payLocked && !sharedPending  // Send/Resend allowed
                   return (
                   <div className={`mt-4 rounded-xl border px-4 py-3 ${stale || q.resendRecommended ? 'border-amber-900/60 bg-amber-950/30' : 'border-green-900/60 bg-green-950/40'}`}>
                     <p className={`text-sm font-semibold ${stale || q.resendRecommended ? 'text-amber-300' : 'text-green-300'}`}>QuickBooks Invoice{q.invoiceNumber ? ` #${q.invoiceNumber}` : ''}</p>
@@ -536,6 +550,8 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                         : 'Current'}
                     </p>
                     {q.needsReview && q.error && <p className="text-amber-400/80 text-xs mt-1">{q.error}</p>}
+
+                    {draft.shared && <SharedInvoiceSection orderId={orderId} shared={draft.shared} enabled={sharedEnabled} canOffer={false} disabled={locked} onChanged={refetch} />}
 
                     {/* Sync (manager + admin) — offered when stale/failed, never on needs-review. */}
                     {(q.syncNeeded || q.status === 'error') && !q.needsReview && syncEnabled && !payLocked && (
@@ -564,13 +580,16 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                     {/* Record Payment → Paid → Email / Print Paid Invoice (stays available after Send until
                         QuickBooks confirms a zero balance). */}
                     {(paymentEnabled || q.payment.status !== 'none') && (
-                      <InvoicePaymentSection orderId={orderId} qb={q} paymentEnabled={paymentEnabled && !q.needsReview} sendEnabled={sendEnabled}
+                      <InvoicePaymentSection orderId={orderId} qb={q} paymentEnabled={paymentEnabled && !q.needsReview && !sharedPending} sendEnabled={sendEnabled}
                         disabled={locked} onChanged={refetch} onToast={(m) => { setToast(m); setTimeout(() => setToast(null), 5000) }} />
                     )}
                     {toast && <p className="text-green-400 text-sm mt-2" role="status">{toast}</p>}
                   </div>
                   )
-                })() : (draft.pricingIncomplete || draft.referenceCents != null) ? (embedded ? (
+                })() : draft.shared ? (
+                  // Billed on another vehicle's invoice — never Create a separate one (the server refuses too).
+                  <SharedInvoiceSection orderId={orderId} shared={draft.shared} enabled={sharedEnabled} canOffer={false} disabled={locked} onChanged={refetch} />
+                ) : (draft.pricingIncomplete || draft.referenceCents != null) ? (embedded ? (
                   <p className="mt-4 rounded-xl border border-amber-800/70 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
                     {draft.pricingIncomplete ? 'Finish pricing every line above before creating the invoice.' : 'Resolve the total above before creating the invoice.'}
                   </p>
@@ -586,15 +605,22 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                       {creating ? 'Creating…' : draft.qb.status === 'error' ? 'Retry — Create QuickBooks Invoice' : 'Create QuickBooks Invoice'}
                     </button>
                     {draft.qb.status === 'error' && draft.qb.error && <p className="text-amber-400 text-xs mt-2">Last attempt: {draft.qb.error}</p>}
+                    <SharedInvoiceSection orderId={orderId} shared={null} enabled={sharedEnabled} canOffer={draft.qb.status === 'none' || draft.qb.status === 'error'} disabled={locked} onChanged={refetch} />
                   </div>
                 ) : (
                   <p className="text-gray-600 text-xs mt-4">QuickBooks invoicing is turned off.</p>
                 )}
 
-                {!draft.qb.linked && (
+                {!draft.qb.linked && !draft.shared && (
                   <p className="text-gray-600 text-xs mt-4">Draft only — no invoice has been created or sent. Every change is recorded.</p>
                 )}
               </>
+            )}
+            {/* Not priced yet: a linked vehicle still shows its shared invoice, and an unlinked retail Job may still
+                join one (its charges go on only after it is priced and the invoice is reviewed). */}
+            {!draft.isDealer && !draft.priced && (
+              <SharedInvoiceSection orderId={orderId} shared={draft.shared} enabled={sharedEnabled}
+                canOffer={!draft.shared && (draft.qb.status === 'none' || draft.qb.status === 'error')} disabled={locked} onChanged={refetch} />
             )}
           </>
         )}

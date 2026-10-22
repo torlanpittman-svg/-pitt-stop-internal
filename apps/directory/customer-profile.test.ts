@@ -37,8 +37,9 @@ beforeAll(async () => {
       status text, services jsonb, customer_name text, approved_price_cents int, quoted_price_cents int,
       completed_at timestamptz, arrived_at timestamptz, created_at timestamptz DEFAULT now());
     CREATE TABLE quick_entry_jobs(service_order_id uuid, customer_phone text, customer_email text);
-    CREATE TABLE job_estimates(service_order_id uuid, total_cents int, agreed_price_cents int,
+    CREATE TABLE job_estimates(id uuid DEFAULT gen_random_uuid(), service_order_id uuid, total_cents int, agreed_price_cents int,
       qb_invoice_number text, qb_status text DEFAULT 'none');
+    CREATE TABLE retail_invoice_members(member_estimate_id uuid, qb_invoice_number text, state text);
 
     INSERT INTO customers(id, display_name, normalized_phone, normalized_email) VALUES
       ('${C1}', 'Jane Doe', '5551112222', 'jane@x.com'),
@@ -123,6 +124,18 @@ describe('own transaction history — only what the customer authorized', () => 
     expect(o3.matchedBy).toBe('contact')
     expect(o1.amountCents).toBe(15000)
     expect(o1.invoice).toEqual({ number: '1042', status: 'sent' })
+  })
+
+  it('a vehicle billed on another Job’s shared invoice shows that invoice’s number', async () => {
+    const E = '00000000-0000-0000-0000-0000000000e3'
+    await pg.exec(`INSERT INTO job_estimates(id, service_order_id, total_cents, qb_status) VALUES ('${E}', '00000000-0000-0000-0000-0000000000a3', 5000, 'linked');
+      INSERT INTO retail_invoice_members(member_estimate_id, qb_invoice_number, state) VALUES ('${E}', '1042', 'applied');`)
+    try {
+      const page = await getCustomerHistory(C1, { limit: 50, offset: 0 })
+      expect(page.items.find((i) => i.orderNumber === 'SO-3')!.invoice?.number).toBe('1042')
+    } finally {
+      await pg.exec(`DELETE FROM retail_invoice_members; DELETE FROM job_estimates WHERE id = '${E}';`)
+    }
   })
 })
 

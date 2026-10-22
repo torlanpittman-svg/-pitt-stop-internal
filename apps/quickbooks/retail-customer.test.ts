@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   decideCustomer, isPlaceholderEmail, isPlaceholderPhone, sanitizeContact,
   resolveRetailCustomer, resolveRetailCustomerIdentity, AmbiguousCustomerError,
-  findRetailCustomerCandidates, persistRetailCustomerChoice,
+  findRetailCustomerCandidates, persistRetailCustomerChoice, resolveConfirmedRetailCustomer,
   type ResolveDeps, type RetailContact,
 } from './retail-customer'
 
@@ -223,5 +223,30 @@ describe('resolveRetailCustomerIdentity (read-only; safe for Sync)', () => {
       qbFindByName: async () => [{ id: '1', email: null, syncToken: '0' }, { id: '2', email: null, syncToken: '0' }],
     }))
     expect(r).toEqual({ qbCustomerId: null, matchedBy: 'none' })
+  })
+})
+
+// ── Shared-invoice discovery: confirmed identity only (email/phone evidence, never a name) ──
+describe('resolveConfirmedRetailCustomer (never matches by name, never creates)', () => {
+  const qbCust = (id: string) => ({ id, email: null, syncToken: '0' })
+  it('uses the directory cache found by email/phone — the name is never passed to the lookup', async () => {
+    const findDirectory = vi.fn<ResolveDeps['findDirectory']>(async () => ({ id: 'd1', quickbooksCustomerId: '42' }))
+    const r = await resolveConfirmedRetailCustomer({ name: 'Kelvin Cooper', email: 'kc@example.org', phone: null }, { findDirectory, qbFindByEmail: vi.fn() })
+    expect(r).toEqual({ qbCustomerId: '42', via: 'directory' })
+    expect(findDirectory.mock.calls[0][0]).toMatchObject({ name: '' })
+  })
+  it('falls back to a UNIQUE QuickBooks email match', async () => {
+    const r = await resolveConfirmedRetailCustomer({ name: 'K', email: 'kc@example.org', phone: null }, { findDirectory: async () => null, qbFindByEmail: async () => [qbCust('7')] })
+    expect(r).toEqual({ qbCustomerId: '7', via: 'qb-email' })
+  })
+  it('ambiguous email → no customer (the offer is simply not made)', async () => {
+    const r = await resolveConfirmedRetailCustomer({ name: 'K', email: 'kc@example.org', phone: null }, { findDirectory: async () => null, qbFindByEmail: async () => [qbCust('7'), qbCust('8')] })
+    expect(r).toEqual({ qbCustomerId: null, via: 'none' })
+  })
+  it('a name alone (or placeholder contact) is never evidence — no lookup at all', async () => {
+    const findDirectory = vi.fn(); const qbFindByEmail = vi.fn()
+    const r = await resolveConfirmedRetailCustomer({ name: 'Kelvin Cooper', email: 'no@no.com', phone: '0000000000' }, { findDirectory, qbFindByEmail })
+    expect(r).toEqual({ qbCustomerId: null, via: 'none' })
+    expect(findDirectory).not.toHaveBeenCalled(); expect(qbFindByEmail).not.toHaveBeenCalled()
   })
 })

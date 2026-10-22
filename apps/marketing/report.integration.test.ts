@@ -23,6 +23,8 @@ const PARENTS = `
     completed_at timestamptz, cancelled_at timestamptz, created_at timestamptz, approved_price_cents integer, services jsonb);
   CREATE TABLE order_photos (id uuid PRIMARY KEY);
   CREATE TABLE job_estimates (id uuid PRIMARY KEY, service_order_id uuid, total_cents integer, qb_invoice_id text);
+  -- shared retail invoice membership: an APPLIED member is invoiced on another Job's QB invoice
+  CREATE TABLE retail_invoice_members (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), member_estimate_id uuid, qb_invoice_number text, state text);
 `
 const RANGE = { from: new Date('2026-10-01T00:00:00Z'), to: new Date('2026-10-07T23:59:59Z') }
 const inRange = new Date('2026-10-04T00:00:00Z')
@@ -38,7 +40,7 @@ afterAll(() => pg.close())
 beforeEach(async () => {
   await pg.exec(`DELETE FROM marketing_ad_metrics; DELETE FROM marketing_attribution; DELETE FROM marketing_leads;
     DELETE FROM marketing_events; DELETE FROM marketing_campaign_recipients; DELETE FROM marketing_campaigns;
-    DELETE FROM job_estimates; DELETE FROM service_orders; DELETE FROM customers;`)
+    DELETE FROM retail_invoice_members; DELETE FROM job_estimates; DELETE FROM service_orders; DELETE FROM customers;`)
 })
 
 /** Insert a service order + optional estimate. `qbInvoiceId` set ⇒ invoiced; else quoted-only. */
@@ -149,6 +151,21 @@ describe('weekly report — canonical completed revenue', () => {
     const r = await marketingReport(RANGE)
     expect(r.completedJobs).toBe(1)
     expect(r.invoicedRevenueCents).toBe(50000)
+  })
+
+  it('shared invoice: each vehicle counts its OWN total once; a pending (not yet on the invoice) vehicle is not invoiced', async () => {
+    const anchor = await order({ completedAt: inRange, totalCents: 40000, qbInvoiceId: 'SH-1' })
+    const applied = await order({ completedAt: inRange, totalCents: 25000 })
+    const pending = await order({ completedAt: inRange, totalCents: 9000 })
+    for (const [o, state] of [[applied, 'applied'], [pending, 'pending']] as const) {
+      await pg.query(`INSERT INTO retail_invoice_members (member_estimate_id, qb_invoice_number, state)
+        SELECT id, '1001', $2 FROM job_estimates WHERE service_order_id = $1`, [o, state])
+    }
+    for (const o of [anchor, applied, pending]) await attr(o)
+    const r = await marketingReport(RANGE)
+    expect(r.completedJobs).toBe(3)
+    // 40,000 (anchor's own total — not the combined invoice) + 25,000 (applied member) — never 40,000 + 65,000.
+    expect(r.invoicedRevenueCents).toBe(65000)
   })
 
   it('respects reporting boundaries (completed_at inside vs outside the range)', async () => {

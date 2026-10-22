@@ -205,7 +205,7 @@ export async function campaignFunnel(campaignId: string): Promise<CampaignFunnel
 
   const [canon] = toRows<{ completedJobs: number; invoicedRevenueCents: number }>(await getDb().execute(sql`
     SELECT count(*)::int AS "completedJobs",
-           coalesce(sum(CASE WHEN je.qb_invoice_id IS NOT NULL THEN je.total_cents ELSE 0 END), 0)::int AS "invoicedRevenueCents"
+           coalesce(sum(CASE WHEN je.qb_invoice_id IS NOT NULL OR EXISTS (SELECT 1 FROM retail_invoice_members rim WHERE rim.member_estimate_id = je.id AND rim.state = 'applied') THEN je.total_cents ELSE 0 END), 0)::int AS "invoicedRevenueCents"
     FROM (SELECT DISTINCT booked_order_id FROM marketing_campaign_recipients WHERE campaign_id = ${campaignId} AND booked_order_id IS NOT NULL) b
     JOIN service_orders so ON so.id = b.booked_order_id
       AND so.status IN ('ready','delivered') AND so.completed_at IS NOT NULL AND so.cancelled_at IS NULL
@@ -272,7 +272,7 @@ export async function attributedCompletedJobs(range: { from: Date; to: Date }): 
            rep.source                                              AS source,
            rep.confidence                                          AS confidence,
            so.services                                             AS services,
-           CASE WHEN je.qb_invoice_id IS NOT NULL THEN je.total_cents ELSE NULL END AS "invoicedCents",
+           CASE WHEN je.qb_invoice_id IS NOT NULL OR EXISTS (SELECT 1 FROM retail_invoice_members rim WHERE rim.member_estimate_id = je.id AND rim.state = 'applied') THEN je.total_cents ELSE NULL END AS "invoicedCents",
            COALESCE(NULLIF(je.total_cents, 0), so.approved_price_cents)             AS "quotedValueCents",
            so.completed_at                                         AS "completedAt"
     FROM service_orders so

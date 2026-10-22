@@ -97,7 +97,9 @@ export async function getInflowForecast(days = 7): Promise<InflowForecast> {
     from job_estimates je join service_orders so on so.id = je.service_order_id
     where so.cancelled_at is null and so.delivered_at is null and so.status = 'ready'
       and coalesce(so.service_type,'') <> 'dealer_detail'
-      and je.qb_invoice_id is null and je.agreed_price_cents is not null`)
+      and je.qb_invoice_id is null and je.agreed_price_cents is not null
+      -- a Job whose charges are on ANOTHER Job's shared invoice is already in receivables (counted once there)
+      and not exists (select 1 from retail_invoice_members rim where rim.member_estimate_id = je.id and rim.state = 'applied')`)
   const earnedUninvoicedCents = Number((l3.rows as any[])[0]?.c ?? 0)
 
   // L5 baseline: cleaned derived run-rate rows within the horizon.

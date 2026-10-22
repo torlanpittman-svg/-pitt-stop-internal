@@ -8,7 +8,8 @@ import { getOrderWithContext } from '@/apps/workflow/db'
 import { getFullEstimate } from '@/apps/workflow/estimate-db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
-import { getBusinessConfig, retailQbEnabled, retailQbSendEnabled, retailQbSyncEnabled, retailQbPaymentEnabled } from '@/apps/settings/db'
+import { getBusinessConfig, retailQbEnabled, retailQbSendEnabled, retailQbSyncEnabled, retailQbPaymentEnabled, retailQbSharedInvoiceEnabled } from '@/apps/settings/db'
+import { loadSharedInvoiceState } from '@/apps/quickbooks/shared-invoice'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -21,6 +22,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   }
   const order = await getOrderWithContext(id)
   if (!order) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
-  const [full, cfg, qbEnabled, qbSendEnabled, qbSyncEnabled, qbPaymentEnabled] = await Promise.all([getFullEstimate(id), getBusinessConfig(), retailQbEnabled(), retailQbSendEnabled(), retailQbSyncEnabled(), retailQbPaymentEnabled()])
-  return NextResponse.json({ ok: true, qbEnabled, qbSendEnabled, qbSyncEnabled, qbPaymentEnabled, draft: buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: actor.role }) })
+  const [full, cfg, qbEnabled, qbSendEnabled, qbSyncEnabled, qbPaymentEnabled, qbSharedEnabled, shared] = await Promise.all([getFullEstimate(id), getBusinessConfig(), retailQbEnabled(), retailQbSendEnabled(), retailQbSyncEnabled(), retailQbPaymentEnabled(), retailQbSharedInvoiceEnabled(), loadSharedInvoiceState(id)])
+  // `shared`: this Job's shared-invoice state (either side) — shown even if the flag is later turned off, so a
+  // linked Job never looks like it can be invoiced on its own.
+  return NextResponse.json({ ok: true, qbEnabled, qbSendEnabled, qbSyncEnabled, qbPaymentEnabled, qbSharedEnabled, draft: { ...buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: actor.role }), shared } })
 }

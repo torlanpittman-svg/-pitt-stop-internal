@@ -24,6 +24,13 @@ function removeButtonLabel(preview: RemovalPreview | null): string {
 /** The QuickBooks consequence copy shown in the confirm sheet, driven by the live preview. */
 function renderQbConsequence(preview: RemovalPreview) {
   const inv = preview.invoiceNumber ? `#${preview.invoiceNumber}` : ''
+  if (preview.kind === 'shared_invoice') {
+    return (
+      <div className="rounded-xl border border-red-900/60 bg-red-950/30 px-4 py-3 mb-4">
+        <p className="text-red-300 text-sm">{preview.reason}</p>
+      </div>
+    )
+  }
   if (preview.kind === 'blocked_paid') {
     return (
       <div className="rounded-xl border border-red-900/60 bg-red-950/30 px-4 py-3 mb-4">

@@ -239,6 +239,25 @@ export async function resolveRetailCustomerIdentity(c0: RetailContact, deps: Res
   return { qbCustomerId: null, matchedBy: 'none' } // 0 or ambiguous
 }
 
+/**
+ * READ-ONLY, STRICT identity for the shared-invoice offer: which existing QB customer this contact is, proven by
+ * a usable EMAIL or PHONE only — a name never counts (two customers can share a name). Directory evidence is the
+ * unique email → phone row (its cached QB id); otherwise a unique QB email match. Never creates/caches anything.
+ * null when there is no such evidence or it is ambiguous — the shared-invoice offer is then simply not made.
+ */
+export async function resolveConfirmedRetailCustomer(c0: RetailContact, deps: Pick<ResolveDeps, 'findDirectory' | 'qbFindByEmail'> = defaultDeps): Promise<{ qbCustomerId: string | null; via: 'directory' | 'qb-email' | 'none' }> {
+  const c = sanitizeContact(c0)
+  if (!c.email && !c.phone) return { qbCustomerId: null, via: 'none' }
+  // name '' → the directory lookup uses email/phone evidence only (it skips an empty name).
+  const dir = await deps.findDirectory({ name: '', email: c.email, phone: c.phone })
+  if (dir?.quickbooksCustomerId) return { qbCustomerId: dir.quickbooksCustomerId, via: 'directory' }
+  if (c.email) {
+    const m = await deps.qbFindByEmail(normEmail(c.email))
+    if (m.length === 1) return { qbCustomerId: m[0].id, via: 'qb-email' }
+  }
+  return { qbCustomerId: null, via: 'none' }
+}
+
 export async function resolveRetailCustomer(c0: RetailContact, deps: ResolveDeps = defaultDeps): Promise<ResolvedCustomer> {
   const c = sanitizeContact(c0)
   const psEmail: string | null = c.email ?? null   // already null if it was a placeholder

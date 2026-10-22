@@ -4,8 +4,8 @@
  * cached on job_estimates after every mutation.
  */
 import { getDb } from '@/platform/db'
-import { eq, ne, and, asc, inArray, sql } from 'drizzle-orm'
-import { jobEstimates, jobServices, jobLineItems, serviceOrders, serviceOrderEvents } from './schema'
+import { eq, ne, and, asc, inArray, isNotNull, sql } from 'drizzle-orm'
+import { jobEstimates, jobServices, jobLineItems, serviceOrders, serviceOrderEvents, retailInvoiceMembers } from './schema'
 import {
   computeTotals, rollUpDecision, defaultTaxForType, defaultTaxBps, approvedTitlesToSync, convertSyncsServices, lineAmountCents,
   type LineType, type ApprovalState, type EstimateStatus, type TaxCategory,
@@ -671,7 +671,18 @@ export async function syncEstimateServicesToJob(orderId: string): Promise<{ adde
  *  yet, so this prevents Pitt Stop and QuickBooks silently diverging. Returns true if flagged. */
 export async function flagQbSyncNeededIfInvoiced(orderId: string, reason: string): Promise<boolean> {
   const est = await getEstimateRow(orderId)
-  if (!est?.qbInvoiceId) return false
+  if (!est) return false
+  if (!est.qbInvoiceId) {
+    // Shared invoice: this Job's charges are ALREADY on another Job's invoice (an applied member) → that invoice
+    // is now stale; flag its owner (the anchor). A pending member's charges aren't on it yet — nothing to flag.
+    if (est.qbStatus !== 'linked') return false
+    const [m] = await getDb().select({ anchor: retailInvoiceMembers.anchorEstimateId }).from(retailInvoiceMembers)
+      .where(and(eq(retailInvoiceMembers.memberEstimateId, est.id), eq(retailInvoiceMembers.state, 'applied'))).limit(1)
+    if (!m) return false
+    await getDb().update(jobEstimates).set({ qbSyncError: `QuickBooks sync needed — on a linked vehicle, ${reason}.`, updatedAt: new Date() })
+      .where(and(eq(jobEstimates.id, m.anchor), isNotNull(jobEstimates.qbInvoiceId)))
+    return true
+  }
   await getDb().update(jobEstimates).set({ qbSyncError: `QuickBooks sync needed — ${reason}.`, updatedAt: new Date() }).where(eq(jobEstimates.id, est.id))
   return true
 }
@@ -711,6 +722,8 @@ export async function removeServiceFromJob(orderId: string, serviceName: string,
     if (est.qbInvoiceId) {
       await db.update(jobEstimates).set({ qbSyncError: 'QuickBooks sync needed — a service was removed after the invoice was created.', updatedAt: new Date() }).where(eq(jobEstimates.id, est.id))
       qbSyncNeeded = true
+    } else {
+      qbSyncNeeded = await flagQbSyncNeededIfInvoiced(orderId, 'a service was removed after the invoice was created')
     }
   }
 

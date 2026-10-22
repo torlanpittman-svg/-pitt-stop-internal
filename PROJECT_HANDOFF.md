@@ -143,6 +143,9 @@ Verified in production DB on 2026-08-18:
   Record Payment. `retail_payment_mappings` (json, default `{}`) = owner-confirmed QBO
   PaymentMethod + deposit account per method, pinned to the QBO realm id; an unmapped method is
   not offered. Email Paid Invoice additionally needs `retail_qb_send_enabled`.
+- `retail_qb_shared_invoice_enabled = false` (default; built 2026-10-22, NOT deployed, migration 0062 not
+  applied) — shared retail invoice (one QB invoice for several of a customer's vehicles, §13). Effective
+  only with `retail_qb_enabled` + `retail_qb_sync_enabled`.
 - Create/Sync/Send are three INDEPENDENT kill-switches (`retail_qb_enabled` / `retail_qb_sync_enabled`
   / `retail_qb_send_enabled`).
 
@@ -289,3 +292,13 @@ the shared `SwipeRow`, same gesture as Phase-2 service removal). This is DISTINC
 - Verified: 17/17 API guards + 8/8 mobile UI (390×840) — soft cancel preserves records &
   `completed_at`; Ready/dealer/employee refused; QB linkage preserved; swipe-alone doesn't remove;
   Cancel keeps it; Confirm removes it.
+
+## 13. Shared retail invoice (several vehicles, one QuickBooks invoice) — release implementation (2026-10-22)
+
+After a retail Job is saved, managers are offered to add it to the same confirmed customer's open, unpaid,
+app-created retail invoice. Linking only associates (no charge/send). A manager-reviewed update rewrites the
+SAME invoice from every vehicle's own Invoice Draft. Anchor Job owns the invoice (unchanged), members live in
+`retail_invoice_members` with `qb_status='linked'` (Create refuses). Send/Payment are blocked while a member
+is pending, and nothing is ever resent automatically. Dealer is excluded server-side. Migration 0062, flag
+`retail_qb_shared_invoice_enabled` (defaults OFF; verify the live setting). Full design, safeguards, tests and deploy order:
+`docs/shared-retail-invoice.md`.

@@ -64,7 +64,7 @@ export type PaymentBlock =
   | 'no_invoice' | 'dealer' | 'not_priced' | 'needs_review' | 'sync_needed' | 'invoice_missing' | 'identity_mismatch'
   | 'customer_mismatch' | 'total_mismatch' | 'invalid_method' | 'invalid_amount' | 'over_balance' | 'balance_changed'
   | 'not_configured' | 'mapping_invalid' | 'invalid_balance' | 'amount_changed' | 'recording' | 'qb_read_failed'
-  | 'record_failed' | 'pricing_unresolved' | 'attempt_unresolved' | 'invoice_busy'
+  | 'record_failed' | 'pricing_unresolved' | 'attempt_unresolved' | 'invoice_busy' | 'shared_pending' | 'shared_member_unready'
 
 /** The invoice as QuickBooks reports it, for the phone sheet (history newest last). */
 export interface PaymentBalanceView {
@@ -247,6 +247,8 @@ const BLOCK_MSG: Partial<Record<PaymentBlock, string>> = {
   total_mismatch: 'The QuickBooks invoice does not match Pitt Stop’s total. Sync it first.',
   dealer: 'Dealer invoices are handled by Dealer Check-In.',
   no_invoice: 'Create the QuickBooks invoice first.',
+  shared_pending: 'A linked vehicle’s charges are not on this invoice yet. Review and update the shared invoice (or keep that vehicle separate) before recording a payment.',
+  shared_member_unready: 'A vehicle on this shared invoice isn’t priced. Fix it and update the shared invoice first.',
 }
 
 /**
@@ -343,6 +345,10 @@ const FEE_SYNC_MSG = 'QuickBooks sync needed — card-payment charge removed for
 /** Cash / Check total: the authoritative engine's total with the card-payment charge removed (no writes).
  *  Null when there is no un-waived charge to remove (none configured, or already waived — kept as-is). */
 async function cashTotalCents(v: VerifiedLinkedInvoice): Promise<number | null> {
+  // A shared invoice bills several Jobs, each with its own card charge: the automatic removal (one Job's pricing
+  // engine + one Job's sync) can't express that, so it is not offered — the person removes each Job's charge on
+  // its Invoice Draft and updates the shared invoice first. The amount due is then exactly QuickBooks' balance.
+  if (v.shared) return null
   const charge = v.draft.paymentCharge
   if (charge.waived || !(charge.cents > 0)) return null
   return projectEstimateTotalCents(v.est.id, { waiveCardFee: true })

@@ -14,9 +14,9 @@
  * and re-checked post-write. Dealer invoicing is untouched.
  */
 import crypto from 'node:crypto'
-import { and, eq, isNull, inArray, desc } from 'drizzle-orm'
+import { and, eq, isNull, inArray, desc, ne } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
-import { jobEstimates, serviceOrders } from '@/apps/workflow/schema'
+import { jobEstimates, serviceOrders, retailInvoiceMembers } from '@/apps/workflow/schema'
 import { customers } from '@/apps/directory/schema'
 import { quickEntryJobs } from '@/apps/quick-entry/schema'
 import { chooseInvoiceParty, type InvoiceParty } from './invoice-party'
@@ -36,6 +36,8 @@ import { resolveRetailItems, createRetailInvoiceInQB, findRetailInvoiceByPsid, g
 import { QBApiError } from './errors'
 import { paymentLocksInvoice, isAmbiguousWriteError } from './retail-payment'
 import { acquireRetailSyncLock, invoiceFreeOfPayments, type PaymentLockOwner } from './invoice-locks'
+import { combineSharedPayload, linesFromRawInvoice, linesFromPayload, linesFingerprint, invoiceMoneyState, overwriteUnsafeLineTypes, type SharedSegment } from './shared-invoice-plan'
+import { listActiveMembers, type MemberRow } from './shared-invoice-db'
 import { logger } from '@/platform/logger'
 
 const APP = 'quickbooks:retail-invoice-service'
@@ -83,6 +85,8 @@ async function invoiceParty(orderId: string, fallbackName: string): Promise<Invo
 async function jobContact(orderId: string, fallbackName: string) {
   return (await invoiceParty(orderId, fallbackName)).contact
 }
+/** The billed-customer identity of a Job (shared-invoice discovery / link use the same identity as Create). */
+export const retailInvoiceContact = jobContact
 
 /**
  * Build the retail QB payload (work lines + fee lines + memo + PSID) from the AUTHORITATIVE
@@ -166,6 +170,85 @@ export function flatPricingIssue(full: FullEstimate | null): string | null {
   return `The agreed Work Price is ${usd(agreed)}, but the service prices add up to ${usd(sum)}. Open the Estimate and reconcile them (Set individual prices) before invoicing — the agreed amount is never replaced automatically.`
 }
 
+// ── Shared retail invoice: one invoice, several retail Jobs (see shared-invoice.ts) ─────────────
+/** One Job's authoritative Invoice Draft (the same read model Create / Sync use — no second calculation). */
+export interface LoadedJob { orderId: string; order: OrderWithContext | null; full: FullEstimate | null; draft: InvoiceDraft | null }
+export async function loadJobDraft(orderId: string): Promise<LoadedJob> {
+  const order = await getOrderWithContext(orderId)
+  if (!order) return { orderId, order: null, full: null, draft: null }
+  const [full, cfg] = await Promise.all([getFullEstimate(orderId), getBusinessConfig()])
+  return { orderId, order, full, draft: buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: 'admin' }) }
+}
+
+/**
+ * Why this Job's charges can't be written onto an invoice yet — Create's exact gates (removed / estimate / dealer
+ * / unpriced / partial or unaccepted itemizing / flat mismatch / unresolved estimate review). null = ready.
+ */
+export async function jobChargesIssue(j: LoadedJob): Promise<string | null> {
+  const { order, full, draft } = j
+  if (!order || !draft) return 'Job not found.'
+  if (order.status === 'cancelled') return 'This Job was removed.'
+  if (order.status === 'estimate') return 'Move the estimate to the Work Board first.'
+  if (isDealerOrder(order)) return 'Dealer Jobs are invoiced through Dealer Check-In.'
+  if (!draft.priced) return 'Add a Work Price first.'
+  if (draft.pricingIncomplete) return 'Finish pricing every service first.'
+  if (draft.referenceCents != null) return 'Accept the itemized total in the Estimate first.'
+  const flat = flatPricingIssue(full)
+  if (flat) return flat
+  const review = await loadEstimateReview(order.id)
+  if (!review.readiness.ready) return `Resolve in the Estimate first: ${review.readiness.summary}`
+  return null
+}
+
+export type SharedMemberBlock = 'member_unready' | 'member_customer_mismatch'
+/** A member Job can't be written onto the shared invoice — refused WITHOUT touching the anchor's invoice state. */
+export class SharedMemberError extends Error {
+  constructor(public block: SharedMemberBlock, public orderId: string, message: string) { super(message); this.name = 'SharedMemberError' }
+}
+
+/** A Job's line group on the invoice, with the vehicle it belongs to (for review screens and audit notes). */
+export interface SharedPart { member: MemberRow | null; orderId: string; vehicle: string; totalCents: number; draft: InvoiceDraft }
+
+/**
+ * The invoice payload for the anchor Job plus the given member Jobs. With no members this is EXACTLY the
+ * single-job payload (unchanged invoices never drift). Each Job's lines come from the per-job builder, which
+ * enforces Σ its lines === its own draft total; combineSharedPayload re-asserts that and Σ all === Σ totals.
+ */
+export async function buildSharedInvoicePayload(params: { anchorEstimateId: string; anchor: LoadedJob; members: MemberRow[] }): Promise<{ payload: RetailPayload; fallbacks: string[]; parts: SharedPart[] }> {
+  const { anchorEstimateId, anchor, members } = params
+  if (!anchor.order || !anchor.draft) throw new Error('Job not found')
+  const own = await buildRetailWorkPayload({ estimateId: anchorEstimateId, order: anchor.order, full: anchor.full, draft: anchor.draft })
+  const parts: SharedPart[] = [{ member: null, orderId: anchor.orderId, vehicle: anchor.draft.vehicle, totalCents: anchor.draft.totalCents, draft: anchor.draft }]
+  if (members.length === 0) return { payload: own.payload, fallbacks: own.fallbacks, parts }
+  const v0 = anchor.order.vehicle
+  const segments: SharedSegment[] = [{ estimateId: anchorEstimateId, totalCents: anchor.draft.totalCents, lines: own.payload.lines, vehicle: { year: v0.year, make: v0.make, model: v0.model, vin: v0.vin, licensePlate: v0.licensePlate } }]
+  const fallbacks = [...own.fallbacks]
+  for (const m of members) {
+    const j = await loadJobDraft(m.memberServiceOrderId)
+    const issue = await jobChargesIssue(j)
+    if (issue) throw new SharedMemberError('member_unready', m.memberServiceOrderId, `${j.draft?.vehicle ?? 'A linked vehicle'}: ${issue}`)
+    const built = await buildRetailWorkPayload({ estimateId: m.memberEstimateId, order: j.order!, full: j.full, draft: j.draft! })
+    fallbacks.push(...built.fallbacks)
+    const v = j.order!.vehicle
+    segments.push({ estimateId: m.memberEstimateId, totalCents: j.draft!.totalCents, lines: built.payload.lines, vehicle: { year: v.year, make: v.make, model: v.model, vin: v.vin, licensePlate: v.licensePlate } })
+    parts.push({ member: m, orderId: m.memberServiceOrderId, vehicle: j.draft!.vehicle, totalCents: j.draft!.totalCents, draft: j.draft! })
+  }
+  return { payload: combineSharedPayload(anchorEstimateId, segments), fallbacks, parts }
+}
+
+/** Does every included member Job still bill the invoice's QuickBooks customer? (read-only; first mismatch or null) */
+export async function sharedMemberCustomerMismatch(members: MemberRow[], invoiceCustomerId: string): Promise<{ orderId: string; message: string } | null> {
+  for (const m of members) {
+    const order = await getOrderWithContext(m.memberServiceOrderId)
+    const contact = await jobContact(m.memberServiceOrderId, order?.customerName ?? '')
+    const ident = await resolveRetailCustomerIdentity({ name: contact.name, email: contact.email, phone: contact.phone })
+    if (!ident.qbCustomerId || String(ident.qbCustomerId) !== String(invoiceCustomerId)) {
+      return { orderId: m.memberServiceOrderId, message: `The customer on ${order ? [order.vehicle.year, order.vehicle.make, order.vehicle.model].filter(Boolean).join(' ') || 'a linked vehicle' : 'a linked vehicle'} no longer matches this invoice's QuickBooks customer — review it before updating.` }
+    }
+  }
+  return null
+}
+
 export async function createRetailQBInvoice(params: { orderId: string; actor: string | null; requestId?: string | null }): Promise<CreateRetailResult> {
   const { orderId, actor } = params
   const requestId = params.requestId ?? null
@@ -176,6 +259,12 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
   // (1) Local guard — already created.
   if (est0.qbInvoiceId) {
     return { ok: true, status: 'created', invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, alreadyExisted: true }
+  }
+  // A Job on a shared invoice never gets its own (the compare-and-set below refuses qb_status='linked' too).
+  if (est0.qbStatus === 'linked') {
+    const [m] = await db.select({ n: retailInvoiceMembers.qbInvoiceNumber }).from(retailInvoiceMembers)
+      .where(and(eq(retailInvoiceMembers.memberEstimateId, est0.id), ne(retailInvoiceMembers.state, 'removed'))).limit(1)
+    return { ok: false, status: 'refused', error: `This Job is billed on shared invoice${m?.n ? ` #${m.n}` : ''} — update that invoice instead of creating another.` }
   }
 
   const order = await getOrderWithContext(orderId)
@@ -240,7 +329,7 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
       const hash = contentHash(customer.qbCustomerId, payload, billEmail)
       await db.update(jobEstimates).set({
         qbInvoiceId: adopted.invoiceId, qbInvoiceNumber: adopted.invoiceNumber, qbSyncToken: adopted.syncToken,
-        qbStatus: 'created', qbContentHash: hash, qbSyncedAt: new Date(), qbSyncError: null, updatedAt: new Date(),
+        qbStatus: 'created', qbContentHash: hash, qbSyncedAt: new Date(), qbSyncError: null, qbLinesFingerprint: adopted.linesFingerprint, updatedAt: new Date(),
       }).where(eq(jobEstimates.id, est0.id))
       await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_created', employeeName: actor, note: `adopted #${adopted.invoiceNumber} (${adopted.invoiceId})` })
       return { ok: true, status: 'created', invoiceId: adopted.invoiceId, invoiceNumber: adopted.invoiceNumber, totalCents: draft2.totalCents, matchedBy: customer.matchedBy, adopted: true }
@@ -265,7 +354,7 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
     await db.update(jobEstimates).set({
       qbInvoiceId: inv.invoiceId, qbInvoiceNumber: inv.invoiceNumber, qbSyncToken: inv.syncToken,
       qbStatus: 'created', qbContentHash: hash, qbSyncedAt: new Date(), qbLastRequestId: requestId,
-      qbSyncError: null, updatedAt: new Date(),
+      qbSyncError: null, qbLinesFingerprint: inv.linesFingerprint, updatedAt: new Date(),
     }).where(eq(jobEstimates.id, est0.id))
     const emailNote = customer.emailConflict ? ' · EMAIL CONFLICT (review before Send)' : (billEmail ? '' : ' · no email (Send blocked)')
     const itemNote = fallbacks.length ? ` · Labor fallback: ${fallbacks.join(', ')}` : ''
@@ -373,6 +462,7 @@ export type SendBlock =
   | 'no_invoice' | 'not_priced' | 'dealer' | 'total_mismatch' | 'email_required' | 'email_conflict'
   | 'qb_read_failed' | 'invoice_missing' | 'identity_mismatch' | 'customer_mismatch'
   | 'sync_needed' | 'needs_review' | 'sending' | 'send_failed' | 'paid'
+  | 'shared_pending' | 'shared_member_unready'
 export interface RetailSendResolution {
   ok: boolean
   block?: SendBlock
@@ -399,6 +489,8 @@ export interface VerifiedLinkedInvoice {
   full: FullEstimate | null
   contact: { name: string; email: string | null; phone: string | null }
   common: { invoiceId: string | null; invoiceNumber: string | null; syncToken: string; qbTotalCents: number; draftTotalCents: number; emailStatus: string; alreadySent: boolean }
+  /** Other retail Jobs are on this invoice (draftTotalCents is then the combined total of every Job on it). */
+  shared: boolean
 }
 export type LinkedInvoiceCheck = VerifiedLinkedInvoice | (RetailSendResolution & { ok: false })
 
@@ -441,12 +533,28 @@ export async function verifyLinkedRetailInvoice(orderId: string, opts: { paidInv
   if (!ident.qbCustomerId || String(ident.qbCustomerId) !== String(raw.CustomerRef?.value ?? ''))
     return { ok: false, block: 'customer_mismatch', needsReview: true, ...idBase }
 
+  // Shared invoice: the authoritative total is this Job's draft + every APPLIED member Job's draft. While a linked
+  // Job's charges are still pending review, the invoice in QuickBooks is knowingly incomplete — Send and Record
+  // Payment wait (no stale invoice goes out). Paid-invoice paths only re-check identity, as before.
+  const members = await listActiveMembers(est.id)
+  let draftTotalCents = draft.totalCents
+  if (members.length && !opts.paidInvoice) {
+    if (members.some((m) => m.state === 'pending')) return { ok: false, block: 'shared_pending', ...idBase, error: 'A linked vehicle’s charges are not on this invoice yet — review and update the shared invoice first.' }
+    for (const m of members) {
+      const j = await loadJobDraft(m.memberServiceOrderId)
+      if (!j.draft?.priced || j.order?.status === 'cancelled') return { ok: false, block: 'shared_member_unready', ...idBase }
+      draftTotalCents += j.draft.totalCents
+    }
+    const mismatch = await sharedMemberCustomerMismatch(members, String(raw.CustomerRef?.value ?? ''))
+    if (mismatch) return { ok: false, block: 'customer_mismatch', needsReview: true, ...idBase, error: mismatch.message }
+  }
+
   const qbTotalCents = Math.round((raw.TotalAmt ?? 0) * 100)
   const emailStatus = raw.EmailStatus ?? 'NotSet'
-  const common = { ...idBase, syncToken: raw.SyncToken, qbTotalCents, draftTotalCents: draft.totalCents, emailStatus, alreadySent: est.qbStatus === 'sent' || emailStatus === 'EmailSent' }
+  const common = { ...idBase, syncToken: raw.SyncToken, qbTotalCents, draftTotalCents, emailStatus, alreadySent: est.qbStatus === 'sent' || emailStatus === 'EmailSent' }
   // Total integrity — QB must still equal the authoritative Pitt Stop total.
-  if (!opts.paidInvoice && !opts.allowDrift && qbTotalCents !== draft.totalCents) return { ok: false, block: 'total_mismatch', ...common }
-  return { ok: true, est, raw, draft, full, contact, common }
+  if (!opts.paidInvoice && !opts.allowDrift && qbTotalCents !== draftTotalCents) return { ok: false, block: 'total_mismatch', ...common }
+  return { ok: true, est, raw, draft, full, contact, common, shared: members.length > 0 }
 }
 
 /**
@@ -507,6 +615,15 @@ export async function sendRetailQBInvoice(params: { orderId: string; actor: stri
   if (locked.length === 0) return { ok: false, block: 'sending', invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber, error: 'A send is already in progress for this Job.' }
 
   try {
+    // A member Job can link to this invoice between the read-only precheck (resolveRetailSend) and this lock. A
+    // pending member means the invoice in QuickBooks is knowingly incomplete, so never email a stale copy. Re-read
+    // UNDER the lock and BEFORE any external write; if a member is now pending, release the lock and refuse — no
+    // email fill, no send. (Link already refuses while the anchor is 'sending', so this closes the race both ways.)
+    if ((await listActiveMembers(est0.id)).some((m) => m.state === 'pending')) {
+      await db.update(jobEstimates).set({ qbStatus: priorStatus, updatedAt: new Date() }).where(eq(jobEstimates.id, est0.id))
+      return { ok: false, block: 'shared_pending', invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber, recipient: r.recipient, error: 'A linked vehicle’s charges are not on this invoice yet — update the shared invoice before sending.' }
+    }
+
     if (r.needsFill && r.invoiceId && r.syncToken && r.recipient) {
       await fillRetailInvoiceEmail(r.invoiceId, r.syncToken, r.recipient)   // fills ONLY BillEmail
     }
@@ -531,6 +648,7 @@ export async function sendRetailQBInvoice(params: { orderId: string; actor: stri
 export type SyncBlock =
   | 'no_invoice' | 'dealer' | 'not_priced' | 'invoice_missing' | 'identity_mismatch'
   | 'customer_mismatch' | 'confirm_required' | 'syncing' | 'total_mismatch' | 'sync_failed' | 'estimate_review' | 'paid' | 'pricing'
+  | 'stale' | 'lines_changed' | 'shared_pending' | SharedMemberBlock
 export interface RetailSyncResolution {
   ok: boolean
   block?: SyncBlock
@@ -545,10 +663,18 @@ export interface RetailSyncResolution {
   error?: string
   /** The QuickBooks update failed in a way that may still have applied (timeout / network / 5xx). */
   ambiguous?: boolean
+  /** Shared invoice: member Jobs whose charges this update wrote onto the invoice for the first time. */
+  appliedOrderIds?: string[]
+  /** The member Job a shared-invoice refusal is about. */
+  memberOrderId?: string
 }
 
 class NeedsReviewError extends Error {
   constructor(public block: SyncBlock, message: string) { super(message); this.name = 'NeedsReviewError' }
+}
+/** The invoice changed in QuickBooks after the manager reviewed it — nothing written; review again. */
+class StaleReviewError extends Error {
+  constructor() { super('The invoice changed in QuickBooks after you reviewed it. Nothing was updated — review it again.'); this.name = 'StaleReviewError' }
 }
 
 /**
@@ -589,7 +715,13 @@ export async function resolveRetailSync(orderId: string): Promise<RetailSyncReso
  * second invoice, never sends, never repoints/renames/creates a QB customer. Idempotent: a
  * no-op when nothing changed; a stale SyncToken (409) re-fetches, re-verifies PSID, retries.
  */
-export async function syncRetailQBInvoice(params: { orderId: string; actor: string | null; confirmSent?: boolean; paymentLock?: PaymentLockOwner }): Promise<RetailSyncResolution> {
+export async function syncRetailQBInvoice(params: {
+  orderId: string; actor: string | null; confirmSent?: boolean; paymentLock?: PaymentLockOwner
+  /** Shared invoice: also write the charges of linked Jobs still pending review (the reviewed "Update invoice"). */
+  applyPending?: boolean
+  /** Shared invoice: the QuickBooks SyncToken the manager reviewed — refuse if the invoice changed since. */
+  expectedSyncToken?: string | null
+}): Promise<RetailSyncResolution> {
   const { orderId, actor } = params
   const db = getDb()
 
@@ -641,7 +773,25 @@ export async function syncRetailQBInvoice(params: { orderId: string; actor: stri
     // Flat Jobs sync as-is (checked by flatPricingIssue before the lock) — never itemized here.
     const fullNow = await getFullEstimate(orderId)
     const draftNow = buildInvoiceDraft({ order, full: fullNow, paymentLabel: cfg.paymentLabel, role: 'admin' })
-    const { payload } = await buildRetailWorkPayload({ estimateId: est0.id, order, full: fullNow, draft: draftNow })
+    // Shared invoice: read the members and this row AFTER taking the Sync lock — link / unlink serialize on that
+    // lock, so this member set and the stored line fingerprint are final for this write. Pending members are
+    // written only by a reviewed update (applyPending); otherwise only already-applied members are rebuilt.
+    const estL = (await getEstimateRow(orderId)) ?? est0
+    const active = await listActiveMembers(est0.id)
+    const shared = active.length > 0
+    // Ordinary Sync (NOT the reviewed "Update invoice") must never run while a member is still pending: it rebuilds
+    // the invoice from the anchor + APPLIED members only, so if a reviewed update's QuickBooks write had LANDED but
+    // its local finalization then failed (anchor now 'error', member still 'pending'), rebuilding without that member
+    // here would STRIP the charges already on the invoice. Only applyPending (reviewed, under expectedSyncToken) may
+    // change a shared invoice while a member is pending. Release the lock to the prior settled state and refuse.
+    if (!params.applyPending && active.some((m) => m.state === 'pending')) {
+      await db.update(jobEstimates).set({ qbStatus: est0.qbStatus, updatedAt: new Date() }).where(eq(jobEstimates.id, est0.id))
+      return { ok: false, block: 'shared_pending', invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, error: 'A linked vehicle’s charges are pending review — update the shared invoice, or keep that vehicle separate, before syncing.' }
+    }
+    const included = active.filter((m) => m.state === 'applied' || (params.applyPending && m.state === 'pending'))
+    const { payload, parts } = await buildSharedInvoicePayload({ anchorEstimateId: est0.id, anchor: { orderId, order, full: fullNow, draft: draftNow }, members: included })
+    const targetCents = payload.totalCents
+    const targetLinesFp = linesFingerprint(linesFromPayload(payload.lines))
     const contact = await jobContact(orderId, draftNow.customer ?? '')
 
     // Fetch → verify PSID identity → update. Re-fetch inside so a retry uses a fresh SyncToken.
@@ -652,13 +802,34 @@ export async function syncRetailQBInvoice(params: { orderId: string; actor: stri
       // Money applied in QuickBooks (paid online / entered there) that Pitt Stop hasn't read yet: never rewrite it.
       const liveTotal = Math.round((raw.TotalAmt ?? 0) * 100)
       if (raw.Balance != null && Math.round(raw.Balance * 100) < liveTotal) throw new NeedsReviewError('paid', 'QuickBooks shows a payment or credit applied to this invoice — correct it in QuickBooks, not by syncing')
+      // Shared invoice: this write concatenates ANOTHER Job's charges onto the SAME invoice, so it must be
+      // entirely untouched by money and hold only lines Pitt Stop can rebuild. The Balance<Total check above
+      // misses a $0/voided invoice, a missing balance, and a Payment/Credit/Deposit linked at an EQUAL balance,
+      // so rerun the full money state. And because the line fingerprint ignores SubTotal/Discount/Group/unknown
+      // lines, a rewrite would silently drop them — refuse any line type we can't rebuild. Fail closed on both.
+      if (shared) {
+        const money = invoiceMoneyState(raw)
+        if (!money.untouched) throw new NeedsReviewError('paid', `QuickBooks shows money activity on this invoice — ${money.reason ?? 'it is no longer untouched'} Correct it in QuickBooks, not by syncing.`)
+        const unsafe = overwriteUnsafeLineTypes(raw.Line)
+        if (unsafe.length) throw new NeedsReviewError('lines_changed', `This invoice has lines Pitt Stop can’t safely rebuild (${unsafe.join(', ')}) — review it in QuickBooks before updating the shared invoice.`)
+      }
+      // The manager reviewed a specific version of the invoice — never write over a newer one.
+      if (params.expectedSyncToken != null && String(raw.SyncToken) !== String(params.expectedSyncToken)) throw new StaleReviewError()
+      const liveFp = linesFingerprint(linesFromRawInvoice(raw.Line))
+      // Shared invoice: QuickBooks must still hold exactly the lines Pitt Stop last wrote/verified (or this very
+      // target, when an earlier ambiguous write landed) — never overwrite lines someone added in QuickBooks.
+      if (shared && liveFp !== estL.qbLinesFingerprint && liveFp !== targetLinesFp) throw new NeedsReviewError('lines_changed', 'The invoice was changed in QuickBooks since Pitt Stop last updated it — review it in QuickBooks before updating')
       const customerId = String(raw.CustomerRef?.value ?? '')
+      if (included.length) {
+        const mm = await sharedMemberCustomerMismatch(included, customerId)
+        if (mm) throw new SharedMemberError('member_customer_mismatch', mm.orderId, mm.message)
+      }
       const billEmail = contact.email && contact.email.trim() ? contact.email.trim() : (raw.BillEmail?.Address ?? null)
       const newHash = contentHash(customerId, payload, billEmail)
       const qbTotal = Math.round((raw.TotalAmt ?? 0) * 100)
       // No-op: content identical (lines+total+memo+email) AND QB total equals the draft.
-      if (newHash === est0.qbContentHash && qbTotal === draftNow.totalCents) {
-        return { noop: true as const, written: { invoiceId: raw.Id, invoiceNumber: raw.DocNumber ?? null, syncToken: raw.SyncToken, totalAmtCents: qbTotal, lineCount: 0 }, newHash }
+      if (newHash === estL.qbContentHash && qbTotal === targetCents) {
+        return { noop: true as const, written: { invoiceId: raw.Id, invoiceNumber: raw.DocNumber ?? null, syncToken: raw.SyncToken, totalAmtCents: qbTotal, lineCount: 0, linesFingerprint: liveFp }, newHash }
       }
       updateIssued = true
       const written = await updateRetailInvoiceInQB({ current: raw, lines: payload.lines, privateNote: payload.privateNote, customerMemo: payload.customerMemo, billEmail })
@@ -669,27 +840,64 @@ export async function syncRetailQBInvoice(params: { orderId: string; actor: stri
     try { res = await attempt() }
     catch (e) { if (e instanceof QBApiError && e.status === 409) res = await attempt(); else throw e }
 
-    // Post-write invariant: QB TotalAmt must equal the authoritative draft total exactly.
-    if (!res.noop && res.written.totalAmtCents !== draftNow.totalCents) {
-      const msg = `QuickBooks TotalAmt ${res.written.totalAmtCents}¢ != Pitt Stop total ${draftNow.totalCents}¢`
+    // Post-write invariant: QB TotalAmt must equal the authoritative total exactly (shared: Σ every Job's draft).
+    if (!res.noop && res.written.totalAmtCents !== targetCents) {
+      const msg = `QuickBooks TotalAmt ${res.written.totalAmtCents}¢ != Pitt Stop total ${targetCents}¢`
       await markError('qb_invoice_sync_failed', msg, 'error')
-      return { ok: false, block: 'total_mismatch', invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, qbTotalCents: res.written.totalAmtCents, draftTotalCents: draftNow.totalCents, error: msg }
+      return { ok: false, block: 'total_mismatch', invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, qbTotalCents: res.written.totalAmtCents, draftTotalCents: targetCents, error: msg }
     }
 
     // If a SENT invoice actually changed, the customer holds an older copy → flag
     // "Resend recommended" (invoice-id-first UI shows a Resend action; never auto-resends).
     const nextError = wasSent && !res.noop ? 'Resend recommended — invoice changed after it was emailed' : null
+    // Persist the QuickBooks write result but KEEP the Sync lock held (qb_status stays 'syncing') until every
+    // member is finalized below. Releasing it here (the old order) left a window in which a concurrent unlink —
+    // fenced only on qb_status NOT IN ('syncing', 'creating', 'sending') — could remove a member whose charges
+    // this write had just put on the invoice, stranding a billed vehicle and letting it create a second invoice.
     await db.update(jobEstimates).set({
-      qbSyncToken: res.written.syncToken, qbContentHash: res.newHash, qbStatus: restore,
-      qbSyncedAt: new Date(), qbSyncError: nextError, updatedAt: new Date(),
+      qbSyncToken: res.written.syncToken, qbContentHash: res.newHash,
+      qbSyncedAt: new Date(), qbSyncError: nextError, qbLinesFingerprint: res.written.linesFingerprint, updatedAt: new Date(),
     }).where(eq(jobEstimates.id, est0.id))
-    await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_synced', employeeName: actor, note: `#${est0.qbInvoiceNumber} (${est0.qbInvoiceId}) ${res.noop ? 'no-op (already current)' : `updated · total $${(draftNow.totalCents / 100).toFixed(2)}`}${wasSent ? ' · after send' : ''}` })
+    // Shared invoice: every included member is now on the invoice at its current total. Newly written members move
+    // pending → applied (fenced on not-removed — unlink cannot run while this Sync lock is still held above).
+    const appliedOrderIds: string[] = []
+    for (const part of parts) {
+      if (!part.member) continue
+      const first = part.member.state === 'pending'
+      await db.update(retailInvoiceMembers).set({ state: 'applied', appliedTotalCents: part.totalCents, ...(first ? { appliedAt: new Date(), appliedBy: actor } : {}), updatedAt: new Date() })
+        .where(and(eq(retailInvoiceMembers.id, part.member.id), ne(retailInvoiceMembers.state, 'removed')))
+      if (first) {
+        appliedOrderIds.push(part.orderId)
+        await logEvent({ serviceOrderId: part.orderId, eventType: 'shared_invoice_applied', employeeName: actor, note: `${part.vehicle} charges $${(part.totalCents / 100).toFixed(2)} added to shared invoice #${est0.qbInvoiceNumber} (${est0.qbInvoiceId})${wasSent ? ' · invoice was already emailed — NOT resent' : ''}` }).catch(() => {})
+      }
+    }
+    // Membership is final — release the Sync lock LAST, back to its settled state. A DB failure before this point
+    // falls to the catch below (qb_status → 'error', a re-runnable state): re-running the sync reconciles from
+    // QuickBooks — the live lines already equal this target so the fingerprint check passes, the write is a no-op,
+    // and any member still pending is applied — so a crash after the QB write can never duplicate or strand.
+    await db.update(jobEstimates).set({ qbStatus: restore, updatedAt: new Date() }).where(eq(jobEstimates.id, est0.id))
+    const breakdown = parts.length > 1 ? ` · shared: ${parts.map((p) => `${p.vehicle} $${(p.totalCents / 100).toFixed(2)}`).join(' + ')}` : ''
+    await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_synced', employeeName: actor, note: `#${est0.qbInvoiceNumber} (${est0.qbInvoiceId}) ${res.noop ? 'no-op (already current)' : `updated · total $${(targetCents / 100).toFixed(2)}`}${breakdown}${wasSent ? ' · after send' : ''}` })
+    if (appliedOrderIds.length) await logEvent({ serviceOrderId: orderId, eventType: 'shared_invoice_updated', employeeName: actor, note: `#${est0.qbInvoiceNumber} now bills ${parts.length} vehicles, total $${(targetCents / 100).toFixed(2)}${breakdown}` }).catch(() => {})
     if (wasSent && !res.noop) await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_synced_after_send', employeeName: actor, note: `#${est0.qbInvoiceNumber} updated after it was emailed — customer may hold an older copy` }).catch(() => {})
-    logger.info(APP, 'synced', { orderId, invoiceId: est0.qbInvoiceId, noop: res.noop, wasSent })
-    return { ok: true, invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, alreadySent: wasSent, noop: res.noop, draftTotalCents: draftNow.totalCents }
+    logger.info(APP, 'synced', { orderId, invoiceId: est0.qbInvoiceId, noop: res.noop, wasSent, shared: parts.length - 1, applied: appliedOrderIds.length })
+    return { ok: true, invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, alreadySent: wasSent, noop: res.noop, draftTotalCents: targetCents, appliedOrderIds }
   } catch (err) {
+    // Refusals that change nothing: the invoice moved under a reviewed update, or a member Job isn't ready /
+    // no longer bills this customer. These are all PRE-write (no QuickBooks change), so release the lock to the
+    // PRIOR status (est0.qbStatus), NOT the settled `restore`. Critically, if the anchor was already 'error' from
+    // an earlier ambiguous write whose charges landed, keep it 'error' — promoting it to created/sent would
+    // re-open unlink for a billed pending member (duplicate-invoice risk).
+    if (err instanceof StaleReviewError || err instanceof SharedMemberError) {
+      await db.update(jobEstimates).set({ qbStatus: est0.qbStatus, updatedAt: new Date() }).where(eq(jobEstimates.id, est0.id))
+      const block: SyncBlock = err instanceof StaleReviewError ? 'stale' : err.block
+      await logEvent({ serviceOrderId: orderId, eventType: 'shared_invoice_update_refused', employeeName: actor, note: `${block}: ${err.message}` }).catch(() => {})
+      return { ok: false, block, error: err.message, invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, memberOrderId: err instanceof SharedMemberError ? err.orderId : undefined }
+    }
     if (err instanceof NeedsReviewError) {
-      await markError('qb_invoice_sync_review', `Needs review — ${err.message}`, restore)
+      // Same rule: preserve an existing 'error' status (a prior ambiguous write may have landed charges) rather
+      // than promoting it to created/sent via `restore`.
+      await markError('qb_invoice_sync_review', `Needs review — ${err.message}`, est0.qbStatus === 'error' ? 'error' : restore)
       return { ok: false, block: err.block, needsReview: true, reviewReason: err.message, invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber }
     }
     const msg = err instanceof RetailTotalMismatchError ? err.message : safeErr(err)

@@ -13,6 +13,7 @@ import { resolveBack } from '@/app/components/back-origin'
 import PhotoInput from '@/app/components/PhotoInput'
 import NavHeader from '@/app/components/NavHeader'
 import { useIdentity } from '@/app/components/IdentityBar'
+import { useSharedInvoiceDiscovery, SharedInvoiceOfferSheet } from '@/app/components/SharedInvoice'
 import { type JobLine, type InterpEntry, linesFromEntries, chooseCandidate, keepAsTyped, choosePart, chooseTires, reopenChoice } from '@/apps/quick-entry/job-lines'
 import { type CustomerMatch, type CustVehicle } from '@/apps/quick-entry/customers'
 
@@ -125,6 +126,11 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
   const [isUrgent, setIsUrgent] = useState(false)
   const [tech, setTech] = useState<Set<string>>(new Set())
   const [result, setResult] = useState<{ orderNumber: string; serviceOrderId: string } | null>(null)
+  // After a RETAIL Job is saved (manager/admin only): offer to add it to the same customer's open invoice.
+  // Read-only lookup; the saved Job never depends on it. Dealer/no-identity Jobs are skipped server-side.
+  const offerFor = phase === 'done' && isManager && !isEstimate ? result?.serviceOrderId ?? null : null
+  const sharedOffer = useSharedInvoiceDiscovery(offerFor, !!offerFor)
+  const [offerDismissed, setOfferDismissed] = useState(false)
 
   useEffect(() => {
     fetch('/api/quick-entry/catalog').then((r) => r.json()).then((d) => {
@@ -853,8 +859,18 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
           <div className="text-5xl text-green-400">✓</div>
           <p className="text-2xl font-bold">Job created</p>
           <p className="text-gray-300">The Job is on the Work Board.</p>
+          {offerFor && sharedOffer.status === 'loading' && <p className="text-gray-500 text-sm" role="status">Checking for an open invoice…</p>}
+          {offerFor && sharedOffer.status === 'error' && (
+            <p className="max-w-xs text-amber-300 text-sm" role="alert">
+              {sharedOffer.result?.error ?? 'Couldn’t check QuickBooks for open invoices. The Job is saved — retry from its invoice.'}{' '}
+              <a href={`/orders/${result.serviceOrderId}`} className="underline font-semibold">Open the Job</a>
+            </p>
+          )}
+          {offerFor && sharedOffer.status === 'done' && sharedOffer.result && sharedOffer.eligible.length > 0 && !offerDismissed && (
+            <SharedInvoiceOfferSheet orderId={result.serviceOrderId} discovery={sharedOffer.result} onClose={() => setOfferDismissed(true)} />
+          )}
           <button onClick={() => router.push(`/work-board?new=${result.serviceOrderId}`)} className="mt-3 w-full max-w-xs h-14 rounded-2xl bg-white text-black text-lg font-bold">View Work Board</button>
-          <button onClick={() => { setCust({ first: '', last: '', phone: '', email: '' }); setVeh({ vin: '', year: '', make: '', model: '', color: '' }); setLines([]); setTech(new Set()); setIsUrgent(false); setResult(null); setVinMsg(null); setVinStatus('idle'); setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null }); setMatches([]); setCustVehicles([]); setSelectedVehicleId(null); setVehicleMode('new'); setError(null); setPhase('details') }}
+          <button onClick={() => { setCust({ first: '', last: '', phone: '', email: '' }); setVeh({ vin: '', year: '', make: '', model: '', color: '' }); setLines([]); setTech(new Set()); setIsUrgent(false); setResult(null); setOfferDismissed(false); setVinMsg(null); setVinStatus('idle'); setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null }); setMatches([]); setCustVehicles([]); setSelectedVehicleId(null); setVehicleMode('new'); setError(null); setPhase('details') }}
             className="w-full max-w-xs h-12 rounded-2xl border border-gray-700 text-gray-300">New Quick Entry</button>
         </div>
       )}

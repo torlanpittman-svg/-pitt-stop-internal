@@ -320,7 +320,11 @@ const HISTORY_SELECT = sql`
   so.completed_at, so.arrived_at, so.created_at,
   so.vehicle_id, v.year, v.make, v.model, v.color,
   so.approved_price_cents, so.quoted_price_cents,
-  je.total_cents, je.agreed_price_cents, je.qb_invoice_number, je.qb_status`
+  je.total_cents, je.agreed_price_cents,
+  -- a Job on a shared invoice shows that invoice's number (the invoice is owned by another Job)
+  coalesce(je.qb_invoice_number, (SELECT rim.qb_invoice_number FROM retail_invoice_members rim
+    WHERE rim.member_estimate_id = je.id AND rim.state <> 'removed' LIMIT 1)) AS qb_invoice_number,
+  je.qb_status`
 
 /**
  * The customer's OWN transaction history — orders they authorized (id link or a UNIQUE contact

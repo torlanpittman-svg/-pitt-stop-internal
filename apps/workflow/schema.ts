@@ -11,7 +11,10 @@ import {
   numeric,
   index,
   unique,
+  uniqueIndex,
+  check,
 } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 
 export const employees = pgTable('employees', {
   id:        uuid('id').primaryKey().defaultRandom(),
@@ -238,6 +241,10 @@ export const jobEstimates = pgTable(
     qbPaidEmailSentAt:      timestamp('qb_paid_email_sent_at', { withTimezone: true }),
     qbPaidEmailError:       text('qb_paid_email_error'),
     qbPaidEmailPriorDeliveryAt: timestamp('qb_paid_email_prior_delivery_at', { withTimezone: true }),
+    // Shared retail invoice (migration 0062). Fingerprint of the QuickBooks line set Pitt Stop last wrote or
+    // verified on this (anchor) invoice — a shared-invoice update refuses when QuickBooks' lines no longer match
+    // it (someone edited the invoice in QuickBooks), so unrelated lines are never overwritten.
+    qbLinesFingerprint:     varchar('qb_lines_fingerprint', { length: 64 }),
     createdBy:              varchar('created_by', { length: 200 }),
     updatedBy:              varchar('updated_by', { length: 200 }),
     createdAt:              timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -246,6 +253,52 @@ export const jobEstimates = pgTable(
   // NOTE: a partial UNIQUE index on qb_invoice_id (one QB invoice ↔ one estimate) is
   // created in migration 0019 — enforced in the DB, not modeled here.
   (t) => [unique('job_estimates_order_uniq').on(t.serviceOrderId)],
+)
+
+/**
+ * Shared retail invoice membership (migration 0062). One QuickBooks invoice billing several retail Jobs for the
+ * same customer. The ANCHOR Job keeps owning the invoice exactly as before (job_estimates.qb_invoice_id + its
+ * PSID + the one-invoice-per-estimate unique index); every other Job on it is a MEMBER row here. A member's own
+ * job_estimates row never gets a qb_invoice_id — its qb_status is 'linked', which the Create compare-and-set
+ * refuses, so a member can never also get a standalone invoice.
+ *   state: pending (linked, charges not on the QuickBooks invoice yet) → applied (charges written by a reviewed
+ *          update) | removed (unlinked before its charges were applied — row kept for history).
+ * The audit trail is service_order_events on BOTH Jobs; this table is current state, not a ledger.
+ */
+export const retailInvoiceMembers = pgTable(
+  'retail_invoice_members',
+  {
+    id:                   uuid('id').primaryKey().defaultRandom(),
+    anchorEstimateId:     uuid('anchor_estimate_id').notNull().references(() => jobEstimates.id, { onDelete: 'cascade' }),
+    anchorServiceOrderId: uuid('anchor_service_order_id').notNull().references(() => serviceOrders.id, { onDelete: 'cascade' }),
+    memberEstimateId:     uuid('member_estimate_id').notNull().references(() => jobEstimates.id, { onDelete: 'cascade' }),
+    memberServiceOrderId: uuid('member_service_order_id').notNull().references(() => serviceOrders.id, { onDelete: 'cascade' }),
+    qbInvoiceId:          varchar('qb_invoice_id', { length: 100 }).notNull(),
+    qbInvoiceNumber:      varchar('qb_invoice_number', { length: 100 }),
+    state:                varchar('state', { length: 20 }).notNull().default('pending'), // pending | applied | removed
+    linkRequestId:        varchar('link_request_id', { length: 80 }),
+    linkedBy:             varchar('linked_by', { length: 200 }),
+    linkedAt:             timestamp('linked_at', { withTimezone: true }).notNull().defaultNow(),
+    appliedAt:            timestamp('applied_at', { withTimezone: true }),
+    appliedBy:            varchar('applied_by', { length: 200 }),
+    appliedTotalCents:    integer('applied_total_cents'),   // this Job's total as last written onto the invoice
+    removedAt:            timestamp('removed_at', { withTimezone: true }),
+    removedBy:            varchar('removed_by', { length: 200 }),
+    removedReason:        text('removed_reason'),
+    createdAt:            timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:            timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // A Job belongs to at most ONE shared invoice at a time (the DB backstop for double-taps / races).
+    uniqueIndex('rim_member_active_uniq').on(t.memberEstimateId).where(sql`state <> 'removed'`),
+    index('rim_anchor_active_idx').on(t.anchorEstimateId).where(sql`state <> 'removed'`),
+    index('rim_member_estimate_idx').on(t.memberEstimateId),
+    index('rim_anchor_estimate_idx').on(t.anchorEstimateId),
+    index('rim_member_order_idx').on(t.memberServiceOrderId),
+    index('rim_anchor_order_idx').on(t.anchorServiceOrderId),
+    check('rim_not_self', sql`anchor_estimate_id <> member_estimate_id`),
+    check('rim_state_valid', sql`state IN ('pending', 'applied', 'removed')`),
+  ],
 )
 
 export const jobServices = pgTable(

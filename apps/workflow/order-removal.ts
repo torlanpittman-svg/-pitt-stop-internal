@@ -13,8 +13,8 @@
  * disagree. Idempotency is anchored on the Job's own append-only event ledger + status.
  */
 import { getDb } from '@/platform/db'
-import { eq } from 'drizzle-orm'
-import { jobEstimates, serviceOrderEvents } from './schema'
+import { and, eq, ne, or } from 'drizzle-orm'
+import { jobEstimates, serviceOrderEvents, retailInvoiceMembers } from './schema'
 import { getOrderWithContext, removeOrder, logEvent, type OrderWithContext } from './db'
 import { removalEligibility } from './removal'
 import {
@@ -66,8 +66,23 @@ async function resolveLinkageAndSnapshot(order: OrderWithContext): Promise<{ lin
   return { link, snap }
 }
 
+/**
+ * A Job on a shared retail invoice (either the Job that owns it or a Job linked to it) is never removed here:
+ * soft-cancelling it would strand its charges on — or pull the owner out from under — another Job's invoice.
+ * The manager first keeps a pending vehicle separate (its invoice screen), or corrects an applied one in QuickBooks.
+ */
+async function sharedInvoiceRemovalBlock(orderId: string): Promise<string | null> {
+  const [m] = await getDb().select({ state: retailInvoiceMembers.state, member: retailInvoiceMembers.memberServiceOrderId, number: retailInvoiceMembers.qbInvoiceNumber })
+    .from(retailInvoiceMembers)
+    .where(and(ne(retailInvoiceMembers.state, 'removed'), or(eq(retailInvoiceMembers.memberServiceOrderId, orderId), eq(retailInvoiceMembers.anchorServiceOrderId, orderId))))
+    .limit(1)
+  if (!m) return null
+  if (m.member === orderId && m.state === 'pending') return `This vehicle is linked to shared invoice #${m.number ?? '?'}. Choose “Keep separate” on its invoice first, then remove it.`
+  return `This Job shares QuickBooks invoice #${m.number ?? '?'} with another vehicle, so it can’t be removed here. Correct the shared invoice in QuickBooks first.`
+}
+
 // ── Human-readable preview (UI: what will happen before the manager confirms) ────────────────
-export type RemovalPreviewKind = QbRemovalPlan['kind'] | 'already_removed' | 'qb_unreachable'
+export type RemovalPreviewKind = QbRemovalPlan['kind'] | 'already_removed' | 'qb_unreachable' | 'shared_invoice'
 export interface RemovalPreview {
   kind:          RemovalPreviewKind
   isDealer:      boolean
@@ -105,6 +120,8 @@ export async function planOrderRemoval(orderId: string): Promise<{ ok: boolean; 
   }
   const gate = removalEligibility(order)
   if (!gate.ok) return { ok: false, error: gate.error }
+  const shared = await sharedInvoiceRemovalBlock(orderId)
+  if (shared) return { ok: true, preview: { kind: 'shared_invoice', isDealer: isDealerOrder(order), invoiceNumber: null, blocked: true, reason: shared } }
   try {
     const { link, snap } = await resolveLinkageAndSnapshot(order)
     const plan = decideQbRemovalPlan(link, snap)
@@ -148,6 +165,8 @@ export async function executeOrderRemoval(params: { orderId: string; actor: stri
 
   const gate = removalEligibility(order)
   if (!gate.ok) return { ok: false, block: 'not_eligible', error: gate.error }
+  const shared = await sharedInvoiceRemovalBlock(orderId)
+  if (shared) return { ok: false, block: 'not_eligible', error: shared }
 
   await logEvent({ serviceOrderId: orderId, eventType: 'remove_requested', employeeName: actor, oldStatus: order.status })
 

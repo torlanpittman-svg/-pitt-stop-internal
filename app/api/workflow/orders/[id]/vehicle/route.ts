@@ -13,7 +13,7 @@ import { NextResponse } from 'next/server'
 import { getDb } from '@/platform/db'
 import { eq } from 'drizzle-orm'
 import { getOrderWithContext, updateVehicleFields, logEvent } from '@/apps/workflow/db'
-import { getEstimateRow } from '@/apps/workflow/estimate-db'
+import { getEstimateRow, flagQbSyncNeededIfInvoiced } from '@/apps/workflow/estimate-db'
 import { jobEstimates } from '@/apps/workflow/schema'
 import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { getScanByServiceOrderId, updateScan, logScanEvent } from '@/apps/dealer-checkin/db'
@@ -114,6 +114,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (est?.qbInvoiceId && diff.changed.length > 0) {
       await getDb().update(jobEstimates).set({ qbSyncError: 'QuickBooks sync needed — vehicle changed after invoice was created.', updatedAt: new Date() }).where(eq(jobEstimates.id, est.id))
       qb = { action: 'retail_sync_needed', ok: true, invoiceNumber: est.qbInvoiceNumber }
+    } else if (est?.qbStatus === 'linked' && diff.changed.length > 0 && await flagQbSyncNeededIfInvoiced(id, 'the vehicle changed')) {
+      // On a shared invoice (applied): its vehicle header/memo is now stale on the anchor's invoice.
+      qb = { action: 'retail_sync_needed', ok: true, invoiceNumber: null }
     }
   }
 

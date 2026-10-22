@@ -19,6 +19,7 @@ import { getOrderWithContext, logEvent } from '@/apps/workflow/db'
 import { paymentLocksInvoice } from '@/apps/quickbooks/retail-payment'
 import { getEstimateRow, getFullEstimate, setEstimateWaiver, recomputeEstimate, flagQbSyncNeededIfInvoiced } from '@/apps/workflow/estimate-db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
+import { loadSharedInvoiceState } from '@/apps/quickbooks/shared-invoice'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 import { getBusinessConfig } from '@/apps/settings/db'
@@ -116,6 +117,6 @@ async function applyOverride(
     }),
   })
 
-  const [full, cfg] = await Promise.all([getFullEstimate(id), getBusinessConfig()])
-  return NextResponse.json({ ok: true, draft: buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: actor.role }) })
+  const [full, cfg, shared] = await Promise.all([getFullEstimate(id), getBusinessConfig(), loadSharedInvoiceState(id)])
+  return NextResponse.json({ ok: true, draft: { ...buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: actor.role }), shared } })
 }
