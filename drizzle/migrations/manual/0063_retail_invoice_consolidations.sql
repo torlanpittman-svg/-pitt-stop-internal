@@ -13,6 +13,9 @@
 --           separated  stopped after the void - replaced Job back on separate billing
 --
 -- ric_replaced_active_uniq / ric_retained_active_uniq: one unfinished consolidation per Job on either side.
+-- ric_customer_active_uniq: one unfinished consolidation per QuickBooks customer. Both invoices of a combine
+-- belong to that customer, so this also stops a Job being RETAINED in one combine and REPLACED in another when
+-- two starts race (the claim's NOT EXISTS checks alone can't see a concurrent claim under READ COMMITTED).
 -- ric_request_uniq: a double tap or retried request reuses the same row.
 --
 -- Additive and idempotent: one new table, no change to existing rows. Plain statements only (no DO blocks, no
@@ -64,5 +67,6 @@ CREATE TABLE IF NOT EXISTS retail_invoice_consolidations (
 CREATE UNIQUE INDEX IF NOT EXISTS ric_request_uniq ON retail_invoice_consolidations (request_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ric_replaced_active_uniq ON retail_invoice_consolidations (replaced_estimate_id) WHERE status IN ('prepared', 'voided', 'relinked');
 CREATE UNIQUE INDEX IF NOT EXISTS ric_retained_active_uniq ON retail_invoice_consolidations (retained_estimate_id) WHERE status IN ('prepared', 'voided', 'relinked');
+CREATE UNIQUE INDEX IF NOT EXISTS ric_customer_active_uniq ON retail_invoice_consolidations (qb_customer_id) WHERE status IN ('prepared', 'voided', 'relinked');
 CREATE INDEX IF NOT EXISTS ric_retained_order_idx ON retail_invoice_consolidations (retained_service_order_id);
 CREATE INDEX IF NOT EXISTS ric_replaced_order_idx ON retail_invoice_consolidations (replaced_service_order_id);

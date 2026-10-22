@@ -463,6 +463,34 @@ describe('concurrency, double taps, retries', () => {
     expect(live).toHaveLength(1)   // exactly one invoice bills Kelvin, for both vehicles
   })
 
+  it('DB backstop: one unfinished combine per QuickBooks customer (keep C / void A cannot claim while A is retained elsewhere)', async () => {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    const third = await retailJob({ vehicle: { year: '2015', make: 'Honda', model: 'Civic' }, work: 9000, completedAt: DONE_BMW })
+    expect((await createRetailQBInvoice({ orderId: third, actor: 'Manager' })).ok).toBe(true)
+    // First combine stays unfinished (QuickBooks unreachable after the claim).
+    await withAfterClaim(() => { qb.failRaw = 1 }, () => combine(f250, bmw))
+    const [op1] = await ops(); expect(op1.status).toBe('prepared')
+    const a = await est(f250); const c = await est(third)
+    // A racing claim that slipped past the NOT EXISTS checks: retained C, replaced A (A is retained in op1).
+    await expect(db.execute(sql`
+      INSERT INTO retail_invoice_consolidations (request_id, retained_estimate_id, retained_service_order_id, replaced_estimate_id, replaced_service_order_id,
+        qb_customer_id, retained_invoice_id, retained_sync_token, retained_lines_fingerprint, retained_total_cents,
+        replaced_invoice_id, replaced_sync_token, replaced_lines_fingerprint, replaced_total_cents, replaced_prior_qb_status, combined_total_cents)
+      VALUES ('race', ${c.id}::uuid, ${third}::uuid, ${a.id}::uuid, ${f250}::uuid, ${op1.qbCustomerId}, ${c.qbInvoiceId}, '0', 'x', 1, ${a.qbInvoiceId}, '0', 'x', 1, 'created', 2)`).catch((e: { message?: string; cause?: { message?: string } }) => { throw new Error(String(e?.cause?.message ?? e?.message)) })).rejects.toThrow(/ric_customer_active_uniq/)
+    // The app path refuses it too, before any write.
+    expect((await previewCombineInvoices({ orderId: third, otherOrderId: f250, retainOrderId: third })).ok).toBe(false)
+    expect(qb.calls.void).toBe(0)
+  })
+
+  it('a replaced invoice zeroed out by hand (no QuickBooks "Voided" marker) is never adopted as voided → cancelled, no void', async () => {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    const b0 = await est(bmw)
+    const r = await withAfterClaim(() => { const b = inv(b0.qbInvoiceId); b.TotalAmt = 0; b.Balance = 0; b.SyncToken = String(Number(b.SyncToken) + 1) }, () => combine(f250, bmw))
+    expect(r).toMatchObject({ ok: false, status: 'cancelled' })
+    expect(qb.calls.void).toBe(0)
+    expect(await est(bmw)).toMatchObject({ qbInvoiceId: b0.qbInvoiceId, qbStatus: 'created' })
+  })
+
   it('a concurrent Send of the replaced invoice wins the race → combine refused, nothing written', async () => {
     const { f250, bmw } = await kelvinTwoInvoices()
     const p = await previewCombineInvoices({ orderId: f250, otherOrderId: bmw, retainOrderId: f250 })

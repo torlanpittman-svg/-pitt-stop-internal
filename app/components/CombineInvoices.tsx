@@ -241,13 +241,15 @@ export function CombineInvoicesSection({ orderId, state, enabled, canOffer, disa
   const [msg, setMsg] = useState<string | null>(null)
   const [confirmSeparate, setConfirmSeparate] = useState(false)
   const [review, setReview] = useState<SharedPreview | null>(null)
+  const [ackFinish, setAckFinish] = useState(false)
 
   const act = useCallback(async (action: 'resume' | 'cancel' | 'separate', extra: Record<string, unknown> = {}) => {
     if (busy) return
     setBusy(action); setMsg(null)
     try {
       const { data } = await post<CombineResult>(orderId, { action, ...extra })
-      if (action === 'resume' && !data.ok && data.block === 'stale') {
+      // Only an AFTER-void stop needs a fresh review; a stale stop BEFORE the void already cancelled the combine.
+      if (action === 'resume' && !data.ok && data.block === 'stale' && (data.status === 'voided' || data.status === 'relinked')) {
         // The retained invoice changed since the original review (e.g. an earlier update landed): review it fresh.
         const { data: rv } = await post<SharedPreview>(orderId, { action: 'review' })
         setReview(rv)
@@ -281,8 +283,14 @@ export function CombineInvoicesSection({ orderId, state, enabled, canOffer, disa
                 {(review.blockers?.length ?? 0) > 0 && <ul className="mt-1 text-amber-300 text-xs space-y-0.5">{review.blockers!.map((b, i) => <li key={i}>{b}</li>)}</ul>}
               </div>
             )}
-            <button onClick={() => void act('resume', review?.ok ? { syncToken: review.syncToken, combinedTotalCents: review.combinedTotalCents, confirmSent: !!review.emailed } : {})}
-              disabled={disabled || !!busy || (review != null && (!review.ok || (review.blockers?.length ?? 0) > 0))}
+            {review?.ok && review.emailed && !state.retained.emailed && (
+              <label className="mt-2 flex items-start gap-3 rounded-xl border border-amber-800/70 bg-amber-950/30 px-3 py-3 text-amber-100 text-sm">
+                <input type="checkbox" checked={ackFinish} onChange={(e) => setAckFinish(e.target.checked)} className="mt-0.5 h-5 w-5 shrink-0 accent-amber-500" />
+                <span>#{state.retained.invoiceNumber} was emailed since this combine started. Updating it will not resend it — resend it yourself when ready.</span>
+              </label>
+            )}
+            <button onClick={() => void act('resume', review?.ok ? { syncToken: review.syncToken, combinedTotalCents: review.combinedTotalCents, confirmSent: !!review.emailed && ackFinish } : {})}
+              disabled={disabled || !!busy || (review != null && (!review.ok || (review.blockers?.length ?? 0) > 0 || (!!review.emailed && !state.retained.emailed && !ackFinish)))}
               className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
               {busy === 'resume' ? 'Working…' : review?.ok ? `Finish — update #${state.retained.invoiceNumber} to ${money(review.combinedTotalCents ?? 0)}` : voided ? 'Retry — finish combining' : 'Retry'}
             </button>

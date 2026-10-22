@@ -100,6 +100,15 @@ serializes drivers; a crashed worker's lease simply expires.
 
 ### Residual risks (documented, not eliminated)
 
+- **Concurrency backstop.** One unfinished combine per QuickBooks customer (`ric_customer_active_uniq`). Without
+  it, two concurrent starts (keep A / void B, and keep C / void A) could both claim under READ COMMITTED, because
+  the claim's NOT EXISTS checks don't see a concurrent claim. The step-1 re-check also refuses to void an invoice
+  that anchors a shared member or is retained by another combine. A shared-invoice *link* racing a combine claim
+  can still slip a pending member onto the retained invoice. It only stops the update with an "another vehicle is
+  pending" attention (that member can be kept separate), and it is never a double bill.
+- **Adopting a void requires QuickBooks' own "Voided" marker.** An invoice zeroed out by hand is not treated as
+  voided; the combine cancels instead.
+
 - **Payment applied in QuickBooks between the final re-read and the void.** The void carries the reviewed
   SyncToken. If applying the payment advanced the invoice's SyncToken, QuickBooks rejects the void and the combine
   cancels. **Verify in the sandbox before enabling.** If it did not, the void would unapply that payment, leaving
@@ -137,7 +146,7 @@ serializes drivers; a crashed worker's lease simply expires.
 
 ## Tests
 
-`apps/quickbooks/invoice-consolidation.test.ts` has 26 tests on PGlite (real schema, indexes and CTE claims) with
+`apps/quickbooks/invoice-consolidation.test.ts` has 28 tests on PGlite (real schema, indexes and CTE claims) with
 the real pricing engine, Invoice Draft and Create/Sync/Send. Only QuickBooks is faked, with SyncToken
 compare-and-set on update and void; send throws. They cover:
 
@@ -164,7 +173,7 @@ flag-off 503, actor from session, review required, status mapping.
 
 Verification on 2026-10-22:
 
-- full suite: 188 files, **2300 tests passed**;
+- full suite: 188 files, **2302 tests passed**;
 - `tsc --noEmit` clean;
 - eslint clean on all changed files (the 3 errors in `InvoiceDraftPanel.tsx` are pre-existing on `origin/main`);
 - `next build --webpack` exit 0.
@@ -193,9 +202,11 @@ Verification on 2026-10-22:
    - `GET …/invoice/combine` returns `enabled:false`.
 5. Owner enables `retail_qb_combine_invoices_enabled=true` (kill-switch: set it back to false; an unfinished
    combine still shows its status, but recovery needs the flag on).
-6. Rollback: redeploy `85d6190`. The table is unused by old code. An unfinished combine would leave the replaced
-   Job `consolidating` or `linked`, which old code treats as busy or linked. So finish or cancel any combine
-   before rolling back.
+6. Rollback: redeploy `85d6190`. **Hard precondition:** turn the flag off first (no new combine can start), then
+   `SELECT count(*) FROM retail_invoice_consolidations WHERE status IN ('prepared', 'voided', 'relinked')` must be
+   **0** — finish, cancel or bill separately any unfinished combine. Old code does NOT know `consolidating` (its
+   Record Payment would not refuse such an invoice) and has none of the combine guards. The table itself is unused
+   by old code and can stay.
 
 ## Kelvin Cooper — reconciliation plan (proposal only; nothing executed)
 

@@ -361,6 +361,8 @@ export const retailInvoiceConsolidations = pgTable(
     // One unfinished consolidation per Job, on either side (DB backstop for double taps / races).
     uniqueIndex('ric_replaced_active_uniq').on(t.replacedEstimateId).where(sql`status IN ('prepared', 'voided', 'relinked')`),
     uniqueIndex('ric_retained_active_uniq').on(t.retainedEstimateId).where(sql`status IN ('prepared', 'voided', 'relinked')`),
+    // One unfinished consolidation per QuickBooks customer — closes the retained-in-one / replaced-in-another race.
+    uniqueIndex('ric_customer_active_uniq').on(t.qbCustomerId).where(sql`status IN ('prepared', 'voided', 'relinked')`),
     index('ric_retained_order_idx').on(t.retainedServiceOrderId),
     index('ric_replaced_order_idx').on(t.replacedServiceOrderId),
     check('ric_not_self', sql`retained_estimate_id <> replaced_estimate_id`),

@@ -32,7 +32,7 @@ import { getEstimateRow } from '@/apps/workflow/estimate-db'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { extractPsid } from './retail-format'
 import { resolveConfirmedRetailCustomer } from './retail-customer'
-import { getRetailInvoiceRaw, listRetailInvoicesForCustomer, voidRetailInvoiceInQB, isVoidedInvoice, type RawQBInvoice } from './retail-invoice-write'
+import { getRetailInvoiceRaw, listRetailInvoicesForCustomer, voidRetailInvoiceInQB, hasVoidMarker, isVoidedInvoice, type RawQBInvoice } from './retail-invoice-write'
 import {
   loadJobDraft, jobChargesIssue, buildSharedInvoicePayload, retailInvoiceContact, syncRetailQBInvoice,
   SharedMemberError, type LoadedJob,
@@ -127,7 +127,7 @@ async function verifySide(orderId: string): Promise<SideCheck> {
   catch (e) { return { ok: false, qbReadFailed: true, reason: `Couldn’t read invoice #${est.qbInvoiceNumber ?? est.qbInvoiceId} from QuickBooks: ${safeErr(e)}` } }
   if (!raw) return { ok: false, reason: 'The invoice no longer exists in QuickBooks.' }
   if (String(raw.Id) !== String(est.qbInvoiceId) || extractPsid(raw.PrivateNote) !== est.id) return { ok: false, reason: 'This invoice can’t be verified as Pitt Stop’s.' }
-  if (isVoidedInvoice(raw)) return { ok: false, reason: 'This invoice is voided.' }
+  if (isVoidedInvoice(raw)) return { ok: false, reason: 'This invoice is voided or $0.' }
   const money = invoiceMoneyState(raw)
   if (!money.untouched) return { ok: false, reason: money.reason ?? 'Money is applied to this invoice.' }
   const unsafe = overwriteUnsafeLineTypes(raw.Line)
@@ -401,7 +401,9 @@ async function stepVoid(op: ConsolidationRow, actor: string | null): Promise<Com
   let rawB: RawQBInvoice | null
   try { rawB = await getRetailInvoiceRaw(op.replacedInvoiceId) }
   catch (e) { const o = await setAttention(op, `Couldn’t read #${op.replacedInvoiceNumber} from QuickBooks (${safeErr(e)}). Both invoices are blocked until this is retried.`, actor); return result(o, { block: 'qb_read_failed' }) }
-  if (rawB && extractPsid(rawB.PrivateNote) === op.replacedEstimateId && isVoidedInvoice(rawB)) {
+  // Adopt only QuickBooks' own void marker: a replaced invoice merely zeroed out by hand is NOT treated as voided
+  // (it fails the re-checks below and the combine cancels instead).
+  if (rawB && extractPsid(rawB.PrivateNote) === op.replacedEstimateId && hasVoidMarker(rawB)) {
     // A void issued earlier landed but its response (or our record of it) was lost — adopt it, never void twice.
     await markVoided(op, actor, op.voidAttemptedAt ? ' (an earlier attempt’s void had landed)' : ' (found already voided in QuickBooks)')
     return null
@@ -426,6 +428,14 @@ async function stepVoid(op: ConsolidationRow, actor: string | null): Promise<Com
     const [a, b] = [await getEstimateRow(op.retainedServiceOrderId), await getEstimateRow(op.replacedServiceOrderId)]
     if (!a || a.qbInvoiceId !== op.retainedInvoiceId || a.qbPaymentStatus !== 'none' || !['created', 'sent'].includes(a.qbStatus)) return `#${op.retainedInvoiceNumber} is being changed or paid in Pitt Stop.`
     if (!b || b.qbStatus !== 'consolidating' || b.qbInvoiceId !== op.replacedInvoiceId || b.qbPaymentStatus !== 'none') return `#${op.replacedInvoiceNumber} is being changed or paid in Pitt Stop.`
+    // Never void an invoice that another Job depends on: the replaced invoice must not anchor any shared member
+    // or be retained by another unfinished combine (DB backstop: ric_customer_active_uniq).
+    const deps = rowsOf(await getDb().execute(sql`
+      SELECT 1 FROM retail_invoice_members WHERE anchor_estimate_id = ${op.replacedEstimateId}::uuid AND state <> 'removed'
+      UNION ALL
+      SELECT 1 FROM retail_invoice_consolidations WHERE retained_estimate_id = ${op.replacedEstimateId}::uuid AND id <> ${op.id}::uuid AND status IN ('prepared', 'voided', 'relinked')
+      LIMIT 1`))
+    if (deps.length) return `#${op.replacedInvoiceNumber} is now part of another shared invoice or combine.`
     return null
   })()
   if (why === 'READ_FAILED') { const o = await setAttention(op, `Couldn’t read #${op.retainedInvoiceNumber} from QuickBooks. Nothing was written — retry.`, actor); return result(o, { block: 'qb_read_failed' }) }
@@ -441,7 +451,7 @@ async function stepVoid(op: ConsolidationRow, actor: string | null): Promise<Com
   await getDb().update(retailInvoiceConsolidations).set({ voidAttemptedAt: new Date(), updatedAt: new Date() }).where(eq(retailInvoiceConsolidations.id, op.id))
   try {
     const voided = await voidRetailInvoiceInQB(op.replacedInvoiceId, op.replacedSyncToken)
-    if (!isVoidedInvoice(voided)) {
+    if (!hasVoidMarker(voided)) {
       const o = await setAttention(op, `QuickBooks answered the void of #${op.replacedInvoiceNumber} but doesn’t show it voided — needs review in QuickBooks.`, actor)
       return result(o, { block: 'attention' })
     }
@@ -450,7 +460,7 @@ async function stepVoid(op: ConsolidationRow, actor: string | null): Promise<Com
   } catch (e) {
     // Did it land anyway? Read back before deciding (a lost response must never lead to a second action).
     const again = await getRetailInvoiceRaw(op.replacedInvoiceId).catch(() => undefined)
-    if (again && isVoidedInvoice(again)) { await markVoided(op, actor, ' (confirmed by reading QuickBooks after an unclear response)'); return null }
+    if (again && hasVoidMarker(again)) { await markVoided(op, actor, ' (confirmed by reading QuickBooks after an unclear response)'); return null }
     if (again && !isAmbiguousWriteError(e)) {
       // QuickBooks definitively refused (e.g. the invoice changed: stale SyncToken) — nothing was voided.
       await cancelPrepared(op, `QuickBooks refused to void #${op.replacedInvoiceNumber} (${safeErr(e)}).`, actor)
@@ -679,7 +689,7 @@ export async function cancelCombineInvoices(params: { orderId: string; actor: st
     let raw: RawQBInvoice | null
     try { raw = await getRetailInvoiceRaw(cur.replacedInvoiceId) }
     catch (e) { return result(cur, { ok: false, block: 'qb_read_failed', error: `Couldn’t confirm #${cur.replacedInvoiceNumber} in QuickBooks (${safeErr(e)}). Nothing changed — try again.` }) }
-    if (raw && isVoidedInvoice(raw)) {
+    if (raw && hasVoidMarker(raw)) {
       await markVoided(cur, params.actor, ' (found voided while cancelling)')
       return result((await loadOp(op.id))!, { ok: false, block: 'not_allowed', error: `#${cur.replacedInvoiceNumber} is already voided in QuickBooks — finish combining, or bill that vehicle separately.` })
     }

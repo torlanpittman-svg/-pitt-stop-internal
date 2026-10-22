@@ -195,7 +195,12 @@ export async function findRetailInvoiceByPsid(customerId: string, estimateId: st
   return null
 }
 
-/** QuickBooks voided this invoice: void prepends "Voided" to PrivateNote and zeroes TotalAmt and Balance. */
+/** QuickBooks' own void marker ("Voided" prepended to PrivateNote) — the strict test used to ADOPT a void. */
+export function hasVoidMarker(inv: { PrivateNote?: string }): boolean {
+  return /^\s*voided\b/i.test(String(inv.PrivateNote ?? ''))
+}
+
+/** Voided, or zeroed out ($0 total and balance) — the lenient test used to never re-adopt such an invoice. */
 export function isVoidedInvoice(inv: { PrivateNote?: string; TotalAmt?: number; Balance?: number }): boolean {
   if (/^\s*voided\b/i.test(String(inv.PrivateNote ?? ''))) return true
   return Number(inv.TotalAmt ?? 0) === 0 && Number(inv.Balance ?? 0) === 0
