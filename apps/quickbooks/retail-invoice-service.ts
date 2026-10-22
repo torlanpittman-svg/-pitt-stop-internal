@@ -28,7 +28,7 @@ import { SYNC_BLOCKING } from '@/apps/workflow/estimate-readiness'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { lineAmountCents } from '@/apps/workflow/estimate'
 import { getBusinessConfig, shopSuppliesLabel } from '@/apps/settings/db'
-import { buildRetailPayload, decideSendRecipient, RetailTotalMismatchError, type RetailWorkService, type RetailPayload } from './retail-invoice'
+import { buildRetailPayload, decideSendRecipient, RetailTotalMismatchError, type RetailWorkService, type RetailPayload, type RetailBuiltLine } from './retail-invoice'
 import { serviceDescription, extractPsid, composeLineDescription, partLineDescription } from './retail-format'
 import { loadRetailItemIndex } from './retail-item-map'
 import { resolveRetailCustomer, resolveRetailCustomerIdentity, findRetailCustomerCandidates, persistRetailCustomerChoice, AmbiguousCustomerError, type QbCustomerCandidate } from './retail-customer'
@@ -214,12 +214,12 @@ export interface SharedPart { member: MemberRow | null; orderId: string; vehicle
  * single-job payload (unchanged invoices never drift). Each Job's lines come from the per-job builder, which
  * enforces Σ its lines === its own draft total; combineSharedPayload re-asserts that and Σ all === Σ totals.
  */
-export async function buildSharedInvoicePayload(params: { anchorEstimateId: string; anchor: LoadedJob; members: MemberRow[] }): Promise<{ payload: RetailPayload; fallbacks: string[]; parts: SharedPart[] }> {
+export async function buildSharedInvoicePayload(params: { anchorEstimateId: string; anchor: LoadedJob; members: MemberRow[] }): Promise<{ payload: RetailPayload; legacyLines: RetailBuiltLine[]; fallbacks: string[]; parts: SharedPart[] }> {
   const { anchorEstimateId, anchor, members } = params
   if (!anchor.order || !anchor.draft) throw new Error('Job not found')
   const own = await buildRetailWorkPayload({ estimateId: anchorEstimateId, order: anchor.order, full: anchor.full, draft: anchor.draft })
   const parts: SharedPart[] = [{ member: null, orderId: anchor.orderId, vehicle: anchor.draft.vehicle, totalCents: anchor.draft.totalCents, draft: anchor.draft }]
-  if (members.length === 0) return { payload: own.payload, fallbacks: own.fallbacks, parts }
+  if (members.length === 0) return { payload: own.payload, legacyLines: own.payload.lines, fallbacks: own.fallbacks, parts }
   const v0 = anchor.order.vehicle
   const segments: SharedSegment[] = [{ estimateId: anchorEstimateId, totalCents: anchor.draft.totalCents, lines: own.payload.lines, vehicle: { year: v0.year, make: v0.make, model: v0.model, vin: v0.vin, licensePlate: v0.licensePlate } }]
   const fallbacks = [...own.fallbacks]
@@ -233,7 +233,11 @@ export async function buildSharedInvoicePayload(params: { anchorEstimateId: stri
     segments.push({ estimateId: m.memberEstimateId, totalCents: j.draft!.totalCents, lines: built.payload.lines, vehicle: { year: v.year, make: v.make, model: v.model, vin: v.vin, licensePlate: v.licensePlate } })
     parts.push({ member: m, orderId: m.memberServiceOrderId, vehicle: j.draft!.vehicle, totalCents: j.draft!.totalCents, draft: j.draft! })
   }
-  return { payload: combineSharedPayload(anchorEstimateId, segments), fallbacks, parts }
+  // The invoice is WRITTEN with the combined layout; `legacyLines` reconstructs the original per-vehicle layout
+  // from the SAME segments so the tamper guards still accept invoices created before the combined layout existed.
+  const payload = combineSharedPayload(anchorEstimateId, segments)
+  const legacyLines = combineSharedPayload(anchorEstimateId, segments, { layout: 'legacy' }).lines
+  return { payload, legacyLines, fallbacks, parts }
 }
 
 /** Does every included member Job still bill the invoice's QuickBooks customer? (read-only; first mismatch or null) */
@@ -451,9 +455,13 @@ export async function setRetailCustomerChoice(params: { orderId: string; qbCusto
 
 // Drift fingerprint — MUST cover every field Sync can push, so a vehicle-only (CustomerMemo)
 // or email-only (BillEmail) change is detected and not skipped as a no-op.
-function contentHash(customerId: string, payload: { lines: unknown; totalCents: number; customerMemo?: string }, billEmail?: string | null): string {
+function contentHash(customerId: string, payload: { lines: RetailBuiltLine[]; totalCents: number; customerMemo?: string }, billEmail?: string | null): string {
+  // Hash ONLY the wire fields of each line (kind/itemId/description/amountCents), never the internal `fee`
+  // metadata. Keeping the projection's key order identical to how the lines are built means a single-job invoice
+  // hashes byte-for-byte as it did before fee tagging existed — so existing invoices don't look "changed".
+  const lines = payload.lines.map((l) => ({ itemId: l.itemId, description: l.description, amountCents: l.amountCents, kind: l.kind }))
   return crypto.createHash('sha256')
-    .update(JSON.stringify({ customerId, lines: payload.lines, total: payload.totalCents, memo: payload.customerMemo ?? '', email: (billEmail ?? '').trim().toLowerCase() }))
+    .update(JSON.stringify({ customerId, lines, total: payload.totalCents, memo: payload.customerMemo ?? '', email: (billEmail ?? '').trim().toLowerCase() }))
     .digest('hex')
 }
 
@@ -789,9 +797,13 @@ export async function syncRetailQBInvoice(params: {
       return { ok: false, block: 'shared_pending', invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, error: 'A linked vehicle’s charges are pending review — update the shared invoice, or keep that vehicle separate, before syncing.' }
     }
     const included = active.filter((m) => m.state === 'applied' || (params.applyPending && m.state === 'pending'))
-    const { payload, parts } = await buildSharedInvoicePayload({ anchorEstimateId: est0.id, anchor: { orderId, order, full: fullNow, draft: draftNow }, members: included })
+    const { payload, legacyLines, parts } = await buildSharedInvoicePayload({ anchorEstimateId: est0.id, anchor: { orderId, order, full: fullNow, draft: draftNow }, members: included })
     const targetCents = payload.totalCents
     const targetLinesFp = linesFingerprint(linesFromPayload(payload.lines))
+    // Accept the legacy per-vehicle layout too: a shared invoice written before the combined layout still holds
+    // those lines in QuickBooks, so this reconstruction lets Sync recognise it as Pitt Stop's (and rewrite it to
+    // the combined layout) instead of refusing it as a QuickBooks-side edit. Any OTHER line set still fails closed.
+    const legacyLinesFp = linesFingerprint(linesFromPayload(legacyLines))
     const contact = await jobContact(orderId, draftNow.customer ?? '')
 
     // Fetch → verify PSID identity → update. Re-fetch inside so a retry uses a fresh SyncToken.
@@ -818,7 +830,7 @@ export async function syncRetailQBInvoice(params: {
       const liveFp = linesFingerprint(linesFromRawInvoice(raw.Line))
       // Shared invoice: QuickBooks must still hold exactly the lines Pitt Stop last wrote/verified (or this very
       // target, when an earlier ambiguous write landed) — never overwrite lines someone added in QuickBooks.
-      if (shared && liveFp !== estL.qbLinesFingerprint && liveFp !== targetLinesFp) throw new NeedsReviewError('lines_changed', 'The invoice was changed in QuickBooks since Pitt Stop last updated it — review it in QuickBooks before updating')
+      if (shared && liveFp !== estL.qbLinesFingerprint && liveFp !== targetLinesFp && liveFp !== legacyLinesFp) throw new NeedsReviewError('lines_changed', 'The invoice was changed in QuickBooks since Pitt Stop last updated it — review it in QuickBooks before updating')
       const customerId = String(raw.CustomerRef?.value ?? '')
       if (included.length) {
         const mm = await sharedMemberCustomerMismatch(included, customerId)

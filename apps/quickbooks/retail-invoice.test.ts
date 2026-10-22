@@ -39,10 +39,22 @@ describe('buildRetailPayload (per-service items, P-D3.1 revised)', () => {
     expect(p.lines[0]).toEqual({ itemId: '8', description: 'Interior Detail', amountCents: 40000 })
     expect(p.lines[1]).toEqual({ itemId: '6', description: 'Exterior Wash', amountCents: 10000 })
     expect(p.lines[2]).toEqual({ itemId: 'Labor', description: 'Wax', amountCents: 15000 })   // fallback item, clean desc
-    expect(p.lines[3]).toEqual({ itemId: 'FEE', description: 'Shop supplies', amountCents: 1950 })
-    expect(p.lines[4]).toEqual({ itemId: 'FEE', description: 'Card Payment', amountCents: 2009 })
+    expect(p.lines[3]).toEqual({ itemId: 'FEE', description: 'Shop supplies', amountCents: 1950, fee: 'shop_supplies' })
+    expect(p.lines[4]).toEqual({ itemId: 'FEE', description: 'Card Payment', amountCents: 2009, fee: 'payment' })
     // No vehicle text in any line description.
     expect(p.lines.every((l) => !l.description.includes('GMC') && !l.description.includes('VIN'))).toBe(true)
+  })
+
+  it('classifies ONLY the fee lines with internal `fee` metadata (never a real service line)', () => {
+    const p = buildRetailPayload({
+      ...base,
+      // A service literally NAMED like a fee must NOT be classified as one — identity is semantic, not by label.
+      workServices: [{ itemId: '8', description: 'Shop supplies', amountCents: 65000 }],
+      shopSuppliesCents: 1950, paymentChargeCents: 2009, expectedTotalCents: 68959,
+    })
+    expect(p.lines.map((l) => l.fee)).toEqual([undefined, 'shop_supplies', 'payment'])
+    // The real-service line keeps its own item id even though its description collides with the fee label.
+    expect(p.lines[0]).toEqual({ itemId: '8', description: 'Shop supplies', amountCents: 65000 })
   })
 
   it('service amounts + fees sum exactly to the draft total', () => {

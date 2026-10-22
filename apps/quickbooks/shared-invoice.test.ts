@@ -718,6 +718,64 @@ describe('review + update the SAME invoice', () => {
     expect(qb.invoices.size).toBe(1)
     expect(Math.round((await invoiceOf(a)).TotalAmt * 100)).toBe((await est(a)).totalCents + (await est(b)).totalCents)
   })
+
+  it('an invoice written in the ORIGINAL per-vehicle layout stays recognised: discovery eligible, a foreign edit still refused, and a reviewed update (no pending) migrates it to the combined layout', async () => {
+    const plan = await import('./shared-invoice-plan')
+    // Build a real shared invoice with the member APPLIED, then rewrite QuickBooks to the LEGACY per-vehicle fee
+    // layout to stand in for an invoice created before the combined presentation existed.
+    const { a, b } = await linkedPair()
+    const p0 = await previewSharedInvoiceUpdate(a)
+    await updateSharedInvoice({ orderId: a, actor: 'M', expectedSyncToken: p0.syncToken })
+    const anchorPart = p0.parts!.find((x) => x.state === 'anchor')!
+    const memberPart = p0.parts!.find((x) => x.state !== 'anchor')!
+    const inv = await invoiceOf(a)
+    // Combined layout today: [headerA, workA, headerB, workB, supplies(combined), card(combined)].
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const combinedSales = inv.Line.filter((l: any) => l.DetailType === 'SalesItemLineDetail')
+    const combinedSupplies = combinedSales.at(-2)
+    const combinedCard = combinedSales.at(-1)
+    const feeLine = (tmpl: any, cents: number) => ({ DetailType: 'SalesItemLineDetail', Amount: cents / 100, Description: tmpl.Description, SalesItemLineDetail: { ItemRef: { value: tmpl.SalesItemLineDetail.ItemRef.value }, Qty: 1, UnitPrice: cents / 100 } })
+    // The original interleaved layout: each vehicle's services then ITS OWN fee lines.
+    const legacyLine = [
+      inv.Line[0], inv.Line[1], feeLine(combinedSupplies, anchorPart.shopSuppliesCents), feeLine(combinedCard, anchorPart.paymentChargeCents),
+      inv.Line[2], inv.Line[3], feeLine(combinedSupplies, memberPart.shopSuppliesCents), feeLine(combinedCard, memberPart.paymentChargeCents),
+    ]
+    const legacyFp = plan.linesFingerprint(plan.linesFromRawInvoice(legacyLine))
+    const setLegacy = async () => {
+      inv.Line = legacyLine.map(clone)
+      inv.SyncToken = String(Number(inv.SyncToken) + 1)
+      // A pre-combined invoice's STORED fingerprint reflects the legacy layout; content hash is forced stale so the
+      // later reviewed update really writes (migrates) rather than no-ops.
+      await db.update(jobEstimates).set({ qbLinesFingerprint: legacyFp, qbContentHash: 'legacy-content' }).where(eq(jobEstimates.serviceOrderId, a))
+    }
+    await setLegacy()
+
+    // Discovery of a THIRD vehicle rebuilds anchor + applied member as the COMBINED layout, but must still accept
+    // this legitimate legacy invoice via the deterministic legacy reconstruction (not refuse it as a QB edit).
+    const cId = await retailJob({ ...KELVIN, vehicle: { make: 'Kia', model: 'Soul' }, work: 8000 })
+    const cand = (await findSharedInvoiceCandidates(cId)).candidates.find((x) => x.invoiceId === String(inv.Id))!
+    expect(cand.eligible).toBe(true)
+
+    // A foreign edit on top of the legacy layout is STILL refused — the tamper guard is not weakened.
+    inv.Line = [...legacyLine.map(clone), { DetailType: 'SalesItemLineDetail', Amount: 1, Description: 'Added in QB', SalesItemLineDetail: { ItemRef: { value: '9' } } }]
+    inv.SyncToken = String(Number(inv.SyncToken) + 1)
+    const tampered = (await findSharedInvoiceCandidates(cId)).candidates.find((x) => x.invoiceId === String(inv.Id))!
+    expect(tampered.eligible).toBe(false)
+    expect(tampered.reason).toMatch(/changed in QuickBooks/)
+    await setLegacy()   // restore the legitimate legacy layout
+
+    // A reviewed update with NO pending members succeeds and migrates the invoice to the combined layout — exactly
+    // one shop-supplies line and one card line, the money unchanged.
+    const p1 = await previewSharedInvoiceUpdate(a)
+    expect(p1.blockers).toEqual([])
+    const r = await updateSharedInvoice({ orderId: a, actor: 'M', expectedSyncToken: p1.syncToken })
+    expect(r.ok).toBe(true)
+    const feeItem = combinedCard.SalesItemLineDetail.ItemRef.value
+    const migrated = (await invoiceOf(a)).Line.filter((l: any) => l.DetailType === 'SalesItemLineDetail' && l.SalesItemLineDetail.ItemRef.value === feeItem)
+    expect(migrated.map((l: any) => l.Description)).toEqual([combinedSupplies.Description, combinedCard.Description])
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+    expect(Math.round((await invoiceOf(a)).TotalAmt * 100)).toBe((await est(a)).totalCents + (await est(b)).totalCents)
+  })
 })
 
 describe('after the update', () => {
@@ -759,6 +817,16 @@ describe('regression — single-job invoicing is unchanged', () => {
     const inv = await invoiceOf(a)
     expect(inv.Line.some((l: { DetailType: string }) => l.DetailType === 'DescriptionOnly')).toBe(false)
     expect(inv.PrivateNote).toBe(`PSID:${(await est(a)).id}`)
+    // Reconstruct the pre-fee-metadata hash independently from the QB wire fields. A previously stored
+    // single-job hash must remain identical, not merely no-op when both Create and Sync use the new code.
+    const oldLines = inv.Line.map((l: { SalesItemLineDetail: { ItemRef: { value: string } }; Description: string; Amount: number }) => ({
+      itemId: l.SalesItemLineDetail.ItemRef.value, description: l.Description, amountCents: Math.round(l.Amount * 100),
+    }))
+    const oldHash = (await import('node:crypto')).createHash('sha256').update(JSON.stringify({
+      customerId: inv.CustomerRef.value, lines: oldLines, total: Math.round(inv.TotalAmt * 100),
+      memo: inv.CustomerMemo.value, email: inv.BillEmail.Address.trim().toLowerCase(),
+    })).digest('hex')
+    expect((await est(a)).qbContentHash).toBe(oldHash)
     expect(Math.round(inv.TotalAmt * 100)).toBe((await est(a)).totalCents)
     expect(await syncRetailQBInvoice({ orderId: a, actor: 'M' })).toMatchObject({ ok: true, noop: true })
     expect(qb.calls.update).toBe(0)

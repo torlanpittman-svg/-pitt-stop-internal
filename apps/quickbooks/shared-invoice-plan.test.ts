@@ -19,7 +19,7 @@ const C = '33333333-3333-4333-8333-333333333333'
 const FEES: FeeConfig = { shopSuppliesEnabled: true, shopSuppliesBps: 300, shopSuppliesCapCents: 2000, paymentEnabled: true, paymentBps: 300, paymentLabel: 'Card Payment', paymentBasis: 'work_plus_supplies' }
 
 /** A Job's segment built exactly like Create: the real fee engine + the real per-job payload builder. */
-function jobSegment(estimateId: string, workCents: number, vehicle: SharedSegment['vehicle'], waive: { waivePayment?: boolean } = {}): SharedSegment {
+function jobSegment(estimateId: string, workCents: number, vehicle: SharedSegment['vehicle'], waive: { waivePayment?: boolean; waiveShopSupplies?: boolean } = {}): SharedSegment {
   const t = explicitPretaxTotals(workCents, effectiveFeeConfig(FEES, { isDealer: false, ...waive }), 0, 'detailing')
   const p = buildRetailPayload({
     estimateId, vehicle, feesItemId: 'FEES', paymentLabel: 'Card Payment', shopSuppliesLabel: 'Shop supplies',
@@ -42,7 +42,7 @@ describe('combineSharedPayload — money is concatenated, never recalculated', (
     expect(combineSharedPayload(A, [seg])).toEqual(single)
   })
 
-  it('two Jobs → each keeps its OWN shop-supplies cap and card charge; total = sum of the two Job totals', () => {
+  it('two Jobs → services per vehicle, then ONE combined supplies + ONE combined card line (exact per-job cents)', () => {
     // $2,100 → supplies capped at $20 + card $63.60 = $2,183.60 ; $150 → supplies $4.50 + card $4.64 = $159.14
     const a = jobSegment(A, 210000, civic)
     const b = jobSegment(B, 15000, f150)
@@ -51,15 +51,79 @@ describe('combineSharedPayload — money is concatenated, never recalculated', (
     const p = combineSharedPayload(A, [a, b])
     expect(p.totalCents).toBe(218360 + 15914)
     expect(p.lines.filter((l) => l.kind !== 'text').reduce((t, l) => t + l.amountCents, 0)).toBe(p.totalCents)
-    // Each Job's fee lines survive as-is (no pooled supplies, no re-based card charge).
+    // Both vehicles' SERVICE lines come first (each keeps its own amount), then the fee lines are combined once:
+    // supplies = $20.00 (capped) + $4.50 = $24.50 ; card = $63.60 + $4.64 = $68.24 — the EXACT sum of each Job's
+    // already-capped/rounded fee cents, never re-based or re-rounded.
     const priced = p.lines.filter((l) => l.kind !== 'text').map((l) => [l.description, l.amountCents])
     expect(priced).toEqual([
-      ['Full Detail', 210000], ['Shop supplies', 2000], ['Card Payment', 6360],
-      ['Full Detail', 15000], ['Shop supplies', 450], ['Card Payment', 464],
+      ['Full Detail', 210000],
+      ['Full Detail', 15000],
+      ['Shop supplies', 2000 + 450],
+      ['Card Payment', 6360 + 464],
     ])
+    // The combined fee lines carry the internal fee metadata (so later combines re-aggregate correctly)…
+    const fees = p.lines.filter((l) => l.fee)
+    expect(fees.map((l) => l.fee)).toEqual(['shop_supplies', 'payment'])
     // Pooling the work would have produced a different (wrong) total — prove the difference is real.
     const pooled = explicitPretaxTotals(225000, effectiveFeeConfig(FEES, { isDealer: false }), 0, 'detailing').totalCents
     expect(pooled).not.toBe(p.totalCents)
+  })
+
+  it('three Jobs → combined supplies + card are the sum across all three; headers stay in Job order', () => {
+    const a = jobSegment(A, 10000, civic)   // supplies 300, card 309
+    const b = jobSegment(B, 20000, f150)    // supplies 600, card 618
+    const c = jobSegment(C, 5000, { make: 'Kia' })  // supplies 150, card 155 (154.5 cents rounds up)
+    const p = combineSharedPayload(A, [a, b, c])
+    const priced = p.lines.filter((l) => l.kind !== 'text').map((l) => [l.description, l.amountCents])
+    expect(priced).toEqual([
+      ['Full Detail', 10000], ['Full Detail', 20000], ['Full Detail', 5000],
+      ['Shop supplies', 300 + 600 + 150], ['Card Payment', 309 + 618 + 155],
+    ])
+    expect(p.lines.filter((l) => l.kind === 'text')).toHaveLength(3)
+    expect(p.totalCents).toBe(a.totalCents + b.totalCents + c.totalCents)
+  })
+
+  it('a waived fee on one Job is simply not in the sum; shop supplies stays before card even if the FIRST Job waived it', () => {
+    // Anchor waives BOTH its fees (work only); member carries both. The combined invoice must still list supplies
+    // before card even though the first appearance of each fee is on the member.
+    const anchor = jobSegment(A, 20000, civic, { waiveShopSupplies: true, waivePayment: true })
+    const member = jobSegment(B, 20000, f150)
+    expect(anchor.totalCents).toBe(20000)
+    const p = combineSharedPayload(A, [anchor, member])
+    const priced = p.lines.filter((l) => l.kind !== 'text').map((l) => [l.description, l.amountCents])
+    expect(priced).toEqual([
+      ['Full Detail', 20000], ['Full Detail', 20000],
+      ['Shop supplies', 600], ['Card Payment', 618],
+    ])
+    expect(p.totalCents).toBe(20000 + member.totalCents)
+  })
+
+  it('incompatible fee lines (different label / item ref) are NEVER silently merged — each stays its own line', () => {
+    // Two member segments whose card fee uses a different label / item id than the anchor's. Same fee KIND, but
+    // incompatible identity → three distinct card lines, each the sum of only its own compatible group.
+    const anchor = jobSegment(A, 10000, civic)                 // FEES / 'Card Payment' / 309
+    const b: SharedSegment = {
+      estimateId: B, vehicle: f150, totalCents: 10309,
+      lines: [
+        { itemId: 'LABOR', description: 'Full Detail', amountCents: 10000 },
+        { itemId: 'FEES', description: 'CC Processing Fee', amountCents: 309, fee: 'payment' },  // different LABEL
+      ],
+    }
+    const cSeg: SharedSegment = {
+      estimateId: C, vehicle: { make: 'Kia' }, totalCents: 10309,
+      lines: [
+        { itemId: 'LABOR', description: 'Full Detail', amountCents: 10000 },
+        { itemId: 'OTHER-FEES', description: 'Card Payment', amountCents: 309, fee: 'payment' },  // different ITEM
+      ],
+    }
+    const p = combineSharedPayload(A, [anchor, b, cSeg])
+    const cards = p.lines.filter((l) => l.fee === 'payment').map((l) => [l.itemId, l.description, l.amountCents])
+    expect(cards).toEqual([
+      ['FEES', 'Card Payment', 309],
+      ['FEES', 'CC Processing Fee', 309],
+      ['OTHER-FEES', 'Card Payment', 309],
+    ])
+    expect(p.lines.filter((l) => l.fee === 'payment')).toHaveLength(3)
   })
 
   it('a waived card charge on one Job stays waived; the other Job keeps its charge', () => {
@@ -115,6 +179,36 @@ describe('line fingerprint — detects edits made in QuickBooks', () => {
     const reitemed = raw.map((l, i) => (i === 1 ? { ...l, SalesItemLineDetail: { ItemRef: { value: 'OTHER' } } } : l))
     const redescribed = raw.map((l, i) => (i === 1 ? { ...l, Description: 'Something else' } : l))
     for (const changed of [added, repriced, reitemed, redescribed]) expect(linesFingerprint(linesFromRawInvoice(changed))).not.toBe(base)
+  })
+})
+
+describe('legacy layout reconstruction — invoices written before the combined layout stay recognisable', () => {
+  const a = jobSegment(A, 210000, civic)
+  const b = jobSegment(B, 15000, f150)
+  const combined = combineSharedPayload(A, [a, b])
+  const legacy = combineSharedPayload(A, [a, b], { layout: 'legacy' })
+  const toRaw = (lines: typeof combined.lines) => lines.map((l) => l.kind === 'text'
+    ? { DetailType: 'DescriptionOnly', Description: l.description, DescriptionLineDetail: {} }
+    : { DetailType: 'SalesItemLineDetail', Amount: l.amountCents / 100, Description: l.description, SalesItemLineDetail: { ItemRef: { value: l.itemId }, Qty: 1 } })
+
+  it('legacy = the original per-vehicle interleaved layout (same money, different arrangement → different fingerprint)', () => {
+    const priced = legacy.lines.filter((l) => l.kind !== 'text').map((l) => [l.description, l.amountCents])
+    expect(priced).toEqual([
+      ['Full Detail', 210000], ['Shop supplies', 2000], ['Card Payment', 6360],
+      ['Full Detail', 15000], ['Shop supplies', 450], ['Card Payment', 464],
+    ])
+    expect(legacy.totalCents).toBe(combined.totalCents)
+    expect(linesFingerprint(linesFromPayload(legacy.lines))).not.toBe(linesFingerprint(linesFromPayload(combined.lines)))
+  })
+
+  it('an invoice QuickBooks still holds in the legacy layout matches the legacy reconstruction (a tampered one matches neither)', () => {
+    const rawLegacy = toRaw(legacy.lines)
+    expect(sameLines(linesFromRawInvoice(rawLegacy), linesFromPayload(legacy.lines))).toBe(true)
+    expect(sameLines(linesFromRawInvoice(rawLegacy), linesFromPayload(combined.lines))).toBe(false)
+    // Someone edits an amount in QuickBooks → matches NEITHER deterministic reconstruction → still refused.
+    const tampered = rawLegacy.map((l, i) => (i === 1 ? { ...l, Amount: 1 } : l))
+    expect(sameLines(linesFromRawInvoice(tampered), linesFromPayload(legacy.lines))).toBe(false)
+    expect(sameLines(linesFromRawInvoice(tampered), linesFromPayload(combined.lines))).toBe(false)
   })
 })
 

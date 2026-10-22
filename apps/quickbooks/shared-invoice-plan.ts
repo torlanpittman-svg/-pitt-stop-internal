@@ -10,7 +10,7 @@
  */
 import crypto from 'node:crypto'
 import { buildCustomerMemo, buildPrivateNote, type InvoiceVehicle } from './retail-format'
-import { RetailTotalMismatchError, type RetailBuiltLine, type RetailPayload } from './retail-invoice'
+import { RetailTotalMismatchError, type RetailBuiltLine, type RetailFeeKind, type RetailPayload } from './retail-invoice'
 
 // ── Line fingerprint (detects QuickBooks-side edits) ──────────────────────────────────────────────
 /** A QuickBooks line reduced to what Pitt Stop owns: priced item lines and description-only header lines. */
@@ -86,13 +86,74 @@ export function vehicleHeader(v: InvoiceVehicle, index: number, count: number): 
 }
 
 /**
+ * How a multi-vehicle invoice lays its lines out:
+ * - `'combined'` (today's presentation): each vehicle's SERVICE lines under its header, then — after every
+ *   vehicle section — ONE combined shop-supplies line and ONE combined card-payment line. Each combined fee line
+ *   is the exact SUM of the per-job fee cents it aggregates (no re-computation, no re-based percentage, no new
+ *   rounding): per-job caps, waivers and rounding have already been applied by each Job's own Invoice Draft.
+ * - `'legacy'`: the original per-vehicle layout (every Job's fee lines interleaved right after its services).
+ *   Kept ONLY to reconstruct invoices written before the combined layout existed, so the line fingerprint /
+ *   `sameLines` tamper guards still recognise those legitimate invoices as Pitt Stop's (see shared-invoice.ts).
+ */
+export type SharedInvoiceLayout = 'combined' | 'legacy'
+
+/** Fees are aggregated by SEMANTIC identity, not display text: same fee kind AND same item ref AND same label.
+ *  A JSON tuple is used (not space-joined) so values that merely concatenate the same can't collide. Different
+ *  item refs or labels are never silently merged — each distinct group becomes its own combined line. */
+const feeGroupKey = (l: RetailBuiltLine): string => JSON.stringify([l.fee ?? '', l.itemId, clean(l.description)])
+
+/** Canonical fee order on the combined invoice: shop supplies first, then card payment, then anything else. This is
+ *  independent of which Job carried each fee first (so a first Job that WAIVED supplies doesn't reorder the lines). */
+const FEE_KIND_RANK: Record<string, number> = { shop_supplies: 0, payment: 1 }
+const feeKindRank = (f: RetailFeeKind | undefined): number => (f && f in FEE_KIND_RANK ? FEE_KIND_RANK[f] : 2)
+
+/** 'combined': per-vehicle service sections, then the aggregated fee lines (shop supplies, then card payment). */
+function combinedLines(segments: SharedSegment[]): RetailBuiltLine[] {
+  const lines: RetailBuiltLine[] = []
+  segments.forEach((s, i) => {
+    lines.push({ kind: 'text', itemId: '', description: vehicleHeader(s.vehicle, i, segments.length), amountCents: 0 })
+    // Keep each vehicle's service lines (and any description-only lines) in place; only the fee lines are pulled
+    // out and aggregated below — a non-fee line is never silently dropped.
+    for (const l of s.lines) if (!l.fee) lines.push({ ...l })
+  })
+  // Aggregate compatible fees across all vehicles by semantic identity (kind + item ref + label). Incompatible
+  // item refs/labels fall into separate groups, never merged. Order: fee-kind rank first (shop supplies before
+  // card payment), then first appearance within a kind (keeps distinct same-kind labels deterministic).
+  const groups = new Map<string, { line: RetailBuiltLine; seq: number }>()
+  let seq = 0
+  for (const s of segments) {
+    for (const l of s.lines) {
+      if (!l.fee) continue
+      const key = feeGroupKey(l)
+      const g = groups.get(key)
+      if (g) g.line.amountCents = Math.round(g.line.amountCents) + Math.round(l.amountCents)
+      else groups.set(key, { line: { itemId: l.itemId, description: l.description, amountCents: Math.round(l.amountCents), fee: l.fee }, seq: seq++ })
+    }
+  }
+  const ordered = [...groups.values()].sort((a, b) => feeKindRank(a.line.fee) - feeKindRank(b.line.fee) || a.seq - b.seq)
+  for (const g of ordered) lines.push(g.line)
+  return lines
+}
+
+/** 'legacy': header then every one of the Job's lines (services AND fees) — the original interleaved layout. */
+function legacyLines(segments: SharedSegment[]): RetailBuiltLine[] {
+  const lines: RetailBuiltLine[] = []
+  segments.forEach((s, i) => {
+    lines.push({ kind: 'text', itemId: '', description: vehicleHeader(s.vehicle, i, segments.length), amountCents: 0 })
+    for (const l of s.lines) lines.push({ ...l })
+  })
+  return lines
+}
+
+/**
  * Combine per-job segments into ONE invoice payload. A single segment returns the ordinary single-job shape
  * (same lines, memo and PSID note — byte-identical to today's invoices, so existing invoices never drift).
- * Several segments: a description-only vehicle header before each Job's lines, every vehicle in the memo, and
- * the member PSIDs listed after the anchor PSID in the internal note (the anchor PSID stays first, so the
- * existing identity check — extractPsid — still proves the invoice is the anchor's).
+ * Several segments: lines per `layout` (default `'combined'`), every vehicle in the memo, and the member PSIDs
+ * listed after the anchor PSID in the internal note (the anchor PSID stays first, so the existing identity check
+ * — extractPsid — still proves the invoice is the anchor's). No amount is recalculated, merged by value, split or
+ * rounded here — fees are only SUMMED per compatible group.
  */
-export function combineSharedPayload(anchorEstimateId: string, segments: SharedSegment[]): RetailPayload {
+export function combineSharedPayload(anchorEstimateId: string, segments: SharedSegment[], opts: { layout?: SharedInvoiceLayout } = {}): RetailPayload {
   if (segments.length === 0) throw new Error('A shared invoice needs at least one Job.')
   if (segments[0].estimateId !== anchorEstimateId) throw new Error('The anchor Job must be the first segment.')
   const expected = segments.reduce((t, s) => t + Math.round(s.totalCents), 0)
@@ -105,11 +166,7 @@ export function combineSharedPayload(anchorEstimateId: string, segments: SharedS
     const s = segments[0]
     return { lines: s.lines.map((l) => ({ ...l })), customerMemo: buildCustomerMemo(s.vehicle), privateNote: buildPrivateNote(anchorEstimateId), totalCents: expected }
   }
-  const lines: RetailBuiltLine[] = []
-  segments.forEach((s, i) => {
-    lines.push({ kind: 'text', itemId: '', description: vehicleHeader(s.vehicle, i, segments.length), amountCents: 0 })
-    for (const l of s.lines) lines.push({ ...l })
-  })
+  const lines = (opts.layout ?? 'combined') === 'legacy' ? legacyLines(segments) : combinedLines(segments)
   const sum = lines.filter((l) => l.kind !== 'text').reduce((t, l) => t + Math.round(l.amountCents), 0)
   if (sum !== expected) throw new RetailTotalMismatchError(sum, expected)
   const customerMemo = segments

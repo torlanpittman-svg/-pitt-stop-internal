@@ -134,8 +134,12 @@ async function assessCandidate(ctx: MemberCtx, a: AnchorRow, raw: RawQBInvoice):
   if (/sync needed/i.test(a.qbSyncError ?? '')) return refuse('This invoice has unsynced changes — open its Job and sync it first.')
   try {
     const applied = members.filter((m) => m.state === 'applied')
-    const { payload } = await buildSharedInvoicePayload({ anchorEstimateId: a.estimateId, anchor: anchorJob, members: applied })
-    if (!sameLines(linesFromRawInvoice(raw.Line), linesFromPayload(payload.lines))) return refuse('This invoice was changed in QuickBooks, so its charges can’t be safely rebuilt — add this vehicle by hand in QuickBooks or keep it separate.')
+    const { payload, legacyLines } = await buildSharedInvoicePayload({ anchorEstimateId: a.estimateId, anchor: anchorJob, members: applied })
+    // The invoice must hold EXACTLY what Pitt Stop would write — either today's combined layout OR the original
+    // per-vehicle (legacy) layout, so invoices created before the combined layout are still recognised as ours.
+    // Both are deterministic reconstructions; anything else still fails closed (no arbitrary QuickBooks edits).
+    const live = linesFromRawInvoice(raw.Line)
+    if (!sameLines(live, linesFromPayload(payload.lines)) && !sameLines(live, linesFromPayload(legacyLines))) return refuse('This invoice was changed in QuickBooks, so its charges can’t be safely rebuilt — add this vehicle by hand in QuickBooks or keep it separate.')
     if (payload.totalCents !== money.totalCents) return refuse('This invoice’s total no longer matches its Jobs — sync it first.')
   } catch (e) {
     return refuse(e instanceof SharedMemberError ? e.message : 'This invoice’s charges couldn’t be verified right now.')
@@ -462,11 +466,13 @@ export async function previewSharedInvoiceUpdate(orderId: string): Promise<Share
   if (mm) blockers.push(mm.message)
   if (!blockers.length) {
     try {
-      const { payload } = await buildSharedInvoicePayload({ anchorEstimateId: anchorEst.id, anchor: anchorJob, members })
+      const { payload, legacyLines } = await buildSharedInvoicePayload({ anchorEstimateId: anchorEst.id, anchor: anchorJob, members })
       // A lost response can leave QuickBooks at the exact reviewed target while local members remain pending.
-      // Match that complete target before allowing recovery through the review screen; unrelated edits still block.
+      // Match that complete target (combined OR legacy layout) before allowing recovery through the review screen;
+      // unrelated edits still block.
+      const targetFps = [linesFingerprint(linesFromPayload(payload.lines)), linesFingerprint(linesFromPayload(legacyLines))]
       const landedPendingUpdate = anchorEst.qbStatus === 'error' && members.some((m) => m.state === 'pending')
-        && liveLinesFingerprint === linesFingerprint(linesFromPayload(payload.lines))
+        && targetFps.includes(liveLinesFingerprint)
         && money.totalCents === payload.totalCents
       if (anchorEst.qbLinesFingerprint && liveLinesFingerprint !== anchorEst.qbLinesFingerprint && !landedPendingUpdate) {
         blockers.push('The invoice was changed in QuickBooks since Pitt Stop last updated it — review it there first.')

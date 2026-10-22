@@ -17,9 +17,18 @@
 import { buildCustomerMemo, buildPrivateNote, type InvoiceVehicle } from './retail-format'
 
 export interface RetailWorkService { itemId: string; description: string; amountCents: number }
+/**
+ * INTERNAL fee identity carried on a built line. It exists ONLY so the shared-invoice combiner can recognise a
+ * fee line by semantics (not by matching its display text or item id, which services may legitimately share) and
+ * aggregate compatible fees across vehicles. It is never written to QuickBooks and never changes a single-job
+ * invoice's wire output or content hash — the wire builder and the content hash both read only the wire fields
+ * (`kind`/`itemId`/`description`/`amountCents`) and the line fingerprint drops it too.
+ */
+export type RetailFeeKind = 'shop_supplies' | 'payment'
 /** kind 'text' = a QuickBooks DescriptionOnly line (no item, no amount) — used only as the per-vehicle header on
- *  a shared invoice. Absent = an ordinary priced sales line (every single-job invoice). */
-export interface RetailBuiltLine { itemId: string; description: string; amountCents: number; kind?: 'text' }
+ *  a shared invoice. Absent = an ordinary priced sales line (every single-job invoice). `fee` tags the two fee
+ *  lines (internal only — see RetailFeeKind). */
+export interface RetailBuiltLine { itemId: string; description: string; amountCents: number; kind?: 'text'; fee?: RetailFeeKind }
 export interface RetailPayload { lines: RetailBuiltLine[]; customerMemo: string; privateNote: string; totalCents: number }
 
 export class RetailTotalMismatchError extends Error {
@@ -69,10 +78,10 @@ export function buildRetailPayload(input: BuildRetailPayloadInput): RetailPayloa
   }))
 
   if (input.shopSuppliesCents > 0) {
-    lines.push({ itemId: input.feesItemId, description: input.shopSuppliesLabel?.trim() || 'Shop supplies', amountCents: Math.round(input.shopSuppliesCents) })
+    lines.push({ itemId: input.feesItemId, description: input.shopSuppliesLabel?.trim() || 'Shop supplies', amountCents: Math.round(input.shopSuppliesCents), fee: 'shop_supplies' })
   }
   if (input.paymentChargeCents > 0) {
-    lines.push({ itemId: input.feesItemId, description: input.paymentLabel.trim(), amountCents: Math.round(input.paymentChargeCents) })
+    lines.push({ itemId: input.feesItemId, description: input.paymentLabel.trim(), amountCents: Math.round(input.paymentChargeCents), fee: 'payment' })
   }
 
   const sumCents = lines.reduce((s, l) => s + l.amountCents, 0)

@@ -221,7 +221,10 @@ export function SharedInvoiceReviewSheet({ orderId, onClose, onUpdated }: { orde
         </h3>
         {loading ? <p className="text-gray-500 text-sm py-6 text-center" role="status">Loading the combined invoice…</p> : preview?.ok && preview.parts ? (
           <>
-            <p className="text-gray-400 text-sm mb-4">Each vehicle keeps its own Job, pricing and history. The invoice is rebuilt from all of them below.</p>
+            <p className="text-gray-400 text-sm mb-4">
+              Each vehicle keeps its own Job, pricing and history. The customer’s invoice lists services by vehicle
+              and combines matching shop supplies and card payment fees into one line per fee type.
+            </p>
             <div className="space-y-3">
               {preview.parts.map((p, i) => (
                 <div key={p.orderId} className="rounded-2xl border border-gray-800 bg-gray-800/30 px-4 py-3">
@@ -344,7 +347,9 @@ export function SharedInvoiceSection({ orderId, shared, enabled, canOffer, disab
             : shared.invoice.sent ? `Invoice emailed${shared.invoice.sentAt ? ` ${when(shared.invoice.sentAt)}` : ''}.` : 'Invoice not emailed yet.'}
           {shared.role === 'member' && ' This vehicle is billed on that invoice — it never gets a separate one.'}
         </p>
-        {enabled && pending && (
+        {/* Either Job can review the shared invoice, including a layout update with no pending vehicles.
+            The server resolves the invoice owner and rechecks payment, identity and stale-review guards. */}
+        {enabled && (
           <button onClick={() => setReviewOpen(true)} disabled={disabled}
             className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
             Review &amp; update invoice

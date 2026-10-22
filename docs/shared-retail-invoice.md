@@ -40,10 +40,34 @@ unpaid, app-created retail invoice and offers:
 | Own Job / estimate / history / `completedAt` | unchanged | unchanged |
 
 Combined invoice payload = each Job's own `buildRetailWorkPayload` segment (each asserts Σ = that Job's own
-Invoice Draft total) concatenated under QuickBooks **DescriptionOnly** header lines
-`Vehicle N of M — 2019 Honda Accord · VIN …`. Memo lists every vehicle; PrivateNote
+Invoice Draft total), arranged for the customer as: each vehicle's **service** lines under its QuickBooks
+**DescriptionOnly** header `Vehicle N of M — 2019 Honda Accord · VIN …`, then — after every vehicle section —
+**one combined shop-supplies line and one combined card-payment line**. Each combined fee line is the exact
+**sum of the per-job fee cents** it aggregates: per-job caps, waivers and rounding have already been applied by
+each Job's own Invoice Draft, so no fee is re-computed, re-based or re-rounded here (`combineSharedPayload` still
+asserts Σ all priced lines === Σ each Job's draft total). Memo lists every vehicle; PrivateNote
 `PSID:<anchor> | PSLINK:<members>`. One pricing engine, one Invoice Draft, canonical QB descriptions. A
 single-Job invoice is byte-identical to before.
+
+**Fee identity is semantic, never by display text.** Each built fee line carries an internal `fee`
+(`shop_supplies` | `payment`) tag set by `buildRetailPayload`; the combiner groups fees by `fee` + item ref +
+label and sums each group, so a *service* that happens to be named like a fee is never treated as one, and
+fee lines with **incompatible** item refs/labels (e.g. a different configured card-fee label) are **never
+silently merged** — each distinct group becomes its own combined line. Canonical order is shop supplies before
+card payment, independent of which Job carried each first. The `fee` tag is **internal only**: it is dropped
+before the QuickBooks wire (`buildLine`), before the line fingerprint (`linesFromPayload`), and before the
+content hash (which projects each line to its wire fields), so a single-Job invoice's wire output **and** stored
+content hash are unchanged.
+
+**Backward compatibility (invoices written before the combined layout).** `combineSharedPayload(…, { layout:
+'legacy' })` deterministically reconstructs the ORIGINAL per-vehicle layout (each Job's fee lines interleaved
+after its services). Discovery (`assessCandidate`) accepts either exact layout. Preview retains the stored-fingerprint guard, with
+legacy target recovery allowed only for a failed pending update. Sync also accepts either exact target layout — so an invoice
+created under the old layout is still recognised as Pitt Stop's (and a reviewed update migrates it to the
+combined layout), while any **other** line set still fails closed as a QuickBooks-side edit. The two accepted
+layouts are exact, deterministic rebuilds; no broad normalization accepts arbitrary edits, so the tamper guards
+are not weakened. No migration and no automatic real invoice edit — an existing invoice only changes the next
+time a manager runs the reviewed Update (or an ordinary Sync) on it.
 
 ## Safeguards (each enforced server-side)
 
@@ -110,18 +134,25 @@ single-Job invoice is byte-identical to before.
 
 - Schema: `apps/workflow/schema.ts` (`retailInvoiceMembers`, `jobEstimates.qbLinesFingerprint`);
   migration `drizzle/migrations/manual/0062_retail_shared_invoice.sql`.
-- Pure plan: `apps/quickbooks/shared-invoice-plan.ts`. DB reads: `apps/quickbooks/shared-invoice-db.ts`.
+- Fee identity: `apps/quickbooks/retail-invoice.ts` (`RetailFeeKind`, the `fee` tag on `RetailBuiltLine`, set in
+  `buildRetailPayload`).
+- Pure plan: `apps/quickbooks/shared-invoice-plan.ts` (`combineSharedPayload` with the `layout` option +
+  `combinedLines` / `legacyLines`). DB reads: `apps/quickbooks/shared-invoice-db.ts`.
 - Orchestration: `apps/quickbooks/shared-invoice.ts` (`findSharedInvoiceCandidates`, `linkToSharedInvoice`,
   `unlinkSharedInvoiceMember`, `loadSharedInvoiceState`, `previewSharedInvoiceUpdate`, `updateSharedInvoice`).
 - Existing services extended (no parallel writer): `retail-invoice-service.ts` (Create refuses `linked`, Sync
   `applyPending` + `expectedSyncToken`, combined payload, Send/verify `shared_pending`),
-  `retail-invoice-write.ts` (DescriptionOnly lines, `listRetailInvoicesForCustomer`, fingerprint),
+  combined payload + legacy reconstruction accepted by discovery/Sync fingerprint checks; `retail-invoice-write.ts`
+  (DescriptionOnly lines, `listRetailInvoicesForCustomer`, fingerprint),
   `retail-customer.ts`, `retail-payment-service.ts`, `apps/workflow/estimate-db.ts`, `order-removal.ts`.
 - Route: `app/api/workflow/orders/[id]/invoice/shared/route.ts` (GET state / `?discover=1`; POST
   link | unlink | preview | update).
 - UI: `app/components/SharedInvoice.tsx` (offer sheet, Invoice Draft section, review sheet), wired into
   `app/quick-entry/QuickEntryFlow.tsx` (done screen), `app/orders/[id]/InvoiceDraftPanel.tsx`,
   `app/orders/[id]/OrderDetail.tsx` (Completion Summary), `app/work-board/VehicleCard.tsx`.
+  **"Review & update invoice"** remains available from either Job while the feature is on, including when no
+  vehicle is pending. It uses the existing reviewed-update endpoint, which resolves the invoice owner and checks
+  all payment, identity and stale-review guards. The review sheet explains the combined fee presentation.
 - Flag: `retail_qb_shared_invoice_enabled` (env `RETAIL_QB_SHARED_INVOICE_ENABLED`), default **OFF**,
   effective only with `retail_qb_enabled` + `retail_qb_sync_enabled`. Existing shared state still displays
   when it's off; no new links/updates.
@@ -133,9 +164,16 @@ whose send throws — incl. equal-balance/voided/no-balance money reruns, a disc
 an ordinary Sync refused while a member is pending, a DB-finalization-failure-after-QB-success recovery proving
 no unlink / no 2nd invoice / no stripped charges then a reviewed retry reconciles, a reviewed retry refused
 pre-write keeping the anchor in `error` with unlink still refused, a send-precheck→lock link race proving the
-fake send is never reached, and — via a test-only Drizzle `.then` proxy, no production seam — an unlink injected
-the instant the post-QB persist resolves being refused because the lock is still held), `shared-invoice-plan.test.ts`
-(16, incl. `overwriteUnsafeLineTypes`), `retail-customer.test.ts` (+4 identity),
+fake send is never reached, an unlink injected
+the instant the post-QB persist resolves being refused because the lock is still held — via a test-only Drizzle
+`.then` proxy, no production seam — and a **legacy-layout** invoice standing in for one created before the combined
+presentation: discovery stays eligible, a foreign edit on top of it is still refused, and a reviewed update with
+**no pending members** migrates it to the combined layout at the unchanged total), `shared-invoice-plan.test.ts`
+(combined aggregation: exact per-job fee cents, three vehicles, waived fee with shop-supplies-before-card ordering,
+a service named like a fee, incompatible item-ref/label groups never merged, legacy reconstruction + tamper
+refusal, plus `overwriteUnsafeLineTypes`), `retail-invoice.test.ts` (fee-line `fee` tagging + a fee-named service
+staying a service),
+`retail-customer.test.ts` (+4 identity),
 `app/api/workflow/orders/[id]/invoice/shared/route.test.ts` (6 role/flag gates),
 `apps/marketing/report.integration.test.ts` (+1 counted-once), `apps/directory/customer-profile.test.ts`
 (+1). Migration 0062 checked: applied (twice) to a pre-feature DB it yields exactly the Drizzle schema.
