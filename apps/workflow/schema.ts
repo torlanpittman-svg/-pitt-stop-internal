@@ -301,6 +301,73 @@ export const retailInvoiceMembers = pgTable(
   ],
 )
 
+/**
+ * Combine unpaid invoices (migration 0063). A durable record of ONE consolidation: two retail Jobs of the same
+ * confirmed QuickBooks customer each already have their own unpaid, app-created invoice; the REPLACED invoice is
+ * voided in QuickBooks (history kept, never deleted) and its Job joins the RETAINED invoice as a shared-invoice
+ * member. The row keeps the replaced invoice's identity forever and drives recovery:
+ *   prepared  claimed: replaced Job locked ('consolidating'), pending member row exists, nothing written to QB yet
+ *   voided    the replaced invoice is voided in QuickBooks (its charges are billed nowhere until the update)
+ *   relinked  the replaced Job no longer points at its voided invoice; it is a pending member of the retained one
+ *   completed the retained invoice now carries both Jobs' charges (member applied)
+ *   cancelled stopped before anything was written to QuickBooks — both invoices unchanged
+ *   separated stopped after the void; the replaced Job went back to separate billing (gets a new invoice)
+ * Audit = service_order_events on BOTH Jobs. This row is never deleted.
+ */
+export const retailInvoiceConsolidations = pgTable(
+  'retail_invoice_consolidations',
+  {
+    id:                       uuid('id').primaryKey().defaultRandom(),
+    requestId:                varchar('request_id', { length: 80 }).notNull(),
+    status:                   varchar('status', { length: 20 }).notNull().default('prepared'),
+    retainedEstimateId:       uuid('retained_estimate_id').notNull().references(() => jobEstimates.id),
+    retainedServiceOrderId:   uuid('retained_service_order_id').notNull().references(() => serviceOrders.id),
+    replacedEstimateId:       uuid('replaced_estimate_id').notNull().references(() => jobEstimates.id),
+    replacedServiceOrderId:   uuid('replaced_service_order_id').notNull().references(() => serviceOrders.id),
+    memberId:                 uuid('member_id'),
+    qbCustomerId:             varchar('qb_customer_id', { length: 100 }).notNull(),
+    retainedInvoiceId:        varchar('retained_invoice_id', { length: 100 }).notNull(),
+    retainedInvoiceNumber:    varchar('retained_invoice_number', { length: 100 }),
+    retainedSyncToken:        varchar('retained_sync_token', { length: 40 }).notNull(),
+    retainedLinesFingerprint: varchar('retained_lines_fingerprint', { length: 64 }).notNull(),
+    retainedTotalCents:       integer('retained_total_cents').notNull(),
+    retainedEmailed:          boolean('retained_emailed').notNull().default(false),
+    replacedInvoiceId:        varchar('replaced_invoice_id', { length: 100 }).notNull(),
+    replacedInvoiceNumber:    varchar('replaced_invoice_number', { length: 100 }),
+    replacedSyncToken:        varchar('replaced_sync_token', { length: 40 }).notNull(),
+    replacedLinesFingerprint: varchar('replaced_lines_fingerprint', { length: 64 }).notNull(),
+    replacedTotalCents:       integer('replaced_total_cents').notNull(),
+    replacedEmailed:          boolean('replaced_emailed').notNull().default(false),
+    replacedPriorQbStatus:    varchar('replaced_prior_qb_status', { length: 20 }).notNull(),
+    combinedTotalCents:       integer('combined_total_cents').notNull(),
+    emailedAcknowledged:      boolean('emailed_acknowledged').notNull().default(false),
+    /** What a person must look at (last failure / uncertainty). Cleared when a step succeeds. */
+    attention:                text('attention'),
+    leaseOwner:               varchar('lease_owner', { length: 80 }),
+    leaseExpiresAt:           timestamp('lease_expires_at', { withTimezone: true }),
+    startedBy:                varchar('started_by', { length: 200 }),
+    finishedBy:               varchar('finished_by', { length: 200 }),
+    voidAttemptedAt:          timestamp('void_attempted_at', { withTimezone: true }),
+    voidedAt:                 timestamp('voided_at', { withTimezone: true }),
+    relinkedAt:               timestamp('relinked_at', { withTimezone: true }),
+    completedAt:              timestamp('completed_at', { withTimezone: true }),
+    cancelledAt:              timestamp('cancelled_at', { withTimezone: true }),
+    separatedAt:              timestamp('separated_at', { withTimezone: true }),
+    createdAt:                timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:                timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('ric_request_uniq').on(t.requestId),
+    // One unfinished consolidation per Job, on either side (DB backstop for double taps / races).
+    uniqueIndex('ric_replaced_active_uniq').on(t.replacedEstimateId).where(sql`status IN ('prepared', 'voided', 'relinked')`),
+    uniqueIndex('ric_retained_active_uniq').on(t.retainedEstimateId).where(sql`status IN ('prepared', 'voided', 'relinked')`),
+    index('ric_retained_order_idx').on(t.retainedServiceOrderId),
+    index('ric_replaced_order_idx').on(t.replacedServiceOrderId),
+    check('ric_not_self', sql`retained_estimate_id <> replaced_estimate_id`),
+    check('ric_status_valid', sql`status IN ('prepared', 'voided', 'relinked', 'completed', 'cancelled', 'separated')`),
+  ],
+)
+
 export const jobServices = pgTable(
   'job_services',
   {

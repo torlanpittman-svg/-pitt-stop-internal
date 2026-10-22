@@ -188,9 +188,29 @@ export async function findRetailInvoiceByPsid(customerId: string, estimateId: st
     `SELECT * FROM Invoice WHERE CustomerRef = '${qboEscape(customerId)}' ORDERBY MetaData.CreateTime DESC MAXRESULTS 20`,
   )
   for (const inv of res.Invoice ?? []) {
-    if (extractPsid(inv.PrivateNote) === estimateId) return summarize(inv)
+    // A VOIDED invoice is never adopted: Combine unpaid invoices voids a Job's own invoice (keeping its PSID), and a
+    // Job later put back on separate billing must get a NEW invoice, not re-link the voided one.
+    if (extractPsid(inv.PrivateNote) === estimateId && !isVoidedInvoice(inv)) return summarize(inv)
   }
   return null
+}
+
+/** QuickBooks voided this invoice: void prepends "Voided" to PrivateNote and zeroes TotalAmt and Balance. */
+export function isVoidedInvoice(inv: { PrivateNote?: string; TotalAmt?: number; Balance?: number }): boolean {
+  if (/^\s*voided\b/i.test(String(inv.PrivateNote ?? ''))) return true
+  return Number(inv.TotalAmt ?? 0) === 0 && Number(inv.Balance ?? 0) === 0
+}
+
+/**
+ * VOID one retail invoice — POST /invoice?operation=void with the REVIEWED SyncToken (Intuit Invoice API: the
+ * transaction stays in QuickBooks with its number and history, amounts become 0, "Voided" is prepended to
+ * PrivateNote; a stale SyncToken is rejected). Never deletes, never retries with a fresher token: if QuickBooks
+ * refuses because the invoice changed (payment applied, edit, send), the caller re-reads and decides.
+ */
+export async function voidRetailInvoiceInQB(invoiceId: string, syncToken: string): Promise<RawQBInvoice> {
+  const res = await qbApiRequest<{ Invoice: RawQBInvoice }>({ method: 'POST', path: '/invoice', query: { operation: 'void' }, body: { Id: invoiceId, SyncToken: syncToken } })
+  logger.info(APP, 'retail_invoice.voided', { id: res.Invoice.Id, docNumber: res.Invoice.DocNumber })
+  return res.Invoice
 }
 
 /** READ-ONLY: this customer's most recent invoices (shared-invoice discovery intersects them with Pitt Stop's own

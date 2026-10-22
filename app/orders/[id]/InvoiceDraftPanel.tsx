@@ -12,6 +12,8 @@ import { paymentLocksInvoice } from '@/apps/quickbooks/retail-payment'
 import type { InvoicePaymentState } from '@/apps/workflow/invoice-draft'
 import type { SharedInvoiceState } from '@/apps/quickbooks/shared-invoice'
 import { SharedInvoiceSection } from '@/app/components/SharedInvoice'
+import type { CombineState } from '@/apps/quickbooks/invoice-consolidation'
+import { CombineInvoicesSection } from '@/app/components/CombineInvoices'
 
 export interface InvoiceDraftData {
   priced: boolean; isDealer: boolean
@@ -28,6 +30,8 @@ export interface InvoiceDraftData {
   qb: { status: string; linked: boolean; invoiceNumber: string | null; error: string | null; syncNeeded: boolean; needsReview: boolean; sent: boolean; resendRecommended: boolean; sentAt: string | null; payment: InvoicePaymentState }
   /** One QuickBooks invoice billing several of this customer's vehicles (either side), or null. */
   shared?: SharedInvoiceState | null
+  /** Combine unpaid invoices touching this Job: unfinished (blocks billing on both invoices) or the last finished one. */
+  combine?: CombineState | null
 }
 export interface SendPreview { ok: boolean; block?: string; recipient?: string | null; invoiceNumber?: string | null; draftTotalCents?: number; qbTotalCents?: number; error?: string }
 /** A colliding QB customer offered to the manager when email/name resolution is ambiguous. */
@@ -201,6 +205,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
   const [syncEnabled, setSyncEnabled] = useState(false)
   const [paymentEnabled, setPaymentEnabled] = useState(false)
   const [sharedEnabled, setSharedEnabled] = useState(false)
+  const [combineEnabled, setCombineEnabled] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [syncMsg, setSyncMsg] = useState<string | null>(null)
@@ -227,10 +232,10 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
     if (mode === 'refresh') { setRefreshing(true); setSendPreview(null); setResendMode(false); setConfirmSentSync(false); setSyncMsg(null); setCustCandidates(null) }
     try {
       const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
-      const d = await r.json().catch(() => null) as { draft?: InvoiceDraftData; error?: string; qbEnabled?: boolean; qbSendEnabled?: boolean; qbSyncEnabled?: boolean; qbPaymentEnabled?: boolean; qbSharedEnabled?: boolean } | null
+      const d = await r.json().catch(() => null) as { draft?: InvoiceDraftData; error?: string; qbEnabled?: boolean; qbSendEnabled?: boolean; qbSyncEnabled?: boolean; qbPaymentEnabled?: boolean; qbSharedEnabled?: boolean; qbCombineEnabled?: boolean } | null
       if (!aliveRef.current || !seq.isCurrent(token)) return
       const res = interpretDraftResponse(r.ok, d)
-      if (res.draft) { setDraft(res.draft); setErr(null); setQbEnabled(!!d?.qbEnabled); setSendEnabled(!!d?.qbSendEnabled); setSyncEnabled(!!d?.qbSyncEnabled); setPaymentEnabled(!!d?.qbPaymentEnabled); setSharedEnabled(!!d?.qbSharedEnabled) }
+      if (res.draft) { setDraft(res.draft); setErr(null); setQbEnabled(!!d?.qbEnabled); setSendEnabled(!!d?.qbSendEnabled); setSyncEnabled(!!d?.qbSyncEnabled); setPaymentEnabled(!!d?.qbPaymentEnabled); setSharedEnabled(!!d?.qbSharedEnabled); setCombineEnabled(!!d?.qbCombineEnabled) }
       else { setDraft(null); setErr(res.error) }
     } catch {
       if (aliveRef.current && seq.isCurrent(token)) { setDraft(null); setErr('Could not load the invoice totals. Try again.') }
@@ -253,7 +258,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
     const r = await fetch(`/api/workflow/orders/${orderId}/invoice`, { cache: 'no-store' })
     const d = await r.json()
     if (!seq.isCurrent(token)) return
-    if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled); setSyncEnabled(!!d.qbSyncEnabled); setPaymentEnabled(!!d.qbPaymentEnabled); setSharedEnabled(!!d.qbSharedEnabled) }
+    if (d.draft) { setDraft(d.draft); setQbEnabled(!!d.qbEnabled); setSendEnabled(!!d.qbSendEnabled); setSyncEnabled(!!d.qbSyncEnabled); setPaymentEnabled(!!d.qbPaymentEnabled); setSharedEnabled(!!d.qbSharedEnabled); setCombineEnabled(!!d.qbCombineEnabled) }
   }, [orderId, seq])
 
   // Sync (UPDATE) the linked invoice from the current draft. Two-tap confirm for a sent invoice
@@ -535,12 +540,17 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                   // Another vehicle linked but not yet on the invoice → the invoice is stale: no Send, no payment
                   // until a manager reviews and updates it (the server enforces this too).
                   const sharedPending = (draft.shared?.pendingCount ?? 0) > 0
-                  const current = !q.syncNeeded && !q.needsReview && q.status !== 'error' && !payLocked && !sharedPending  // Send/Resend allowed
+                  // An unfinished Combine unpaid invoices blocks every billing action on BOTH invoices (server-enforced too).
+                  const combining = !!draft.combine?.active || q.status === 'consolidating'
+                  const current = !q.syncNeeded && !q.needsReview && q.status !== 'error' && !payLocked && !sharedPending && !combining  // Send/Resend allowed
+                  // Offer Combine only on a settled, unpaid invoice of its own that isn't already shared.
+                  const canCombine = !draft.shared && !combining && !payLocked && q.payment.status === 'none' && (q.status === 'created' || q.status === 'sent') && !q.needsReview && !q.syncNeeded
                   return (
                   <div className={`mt-4 rounded-xl border px-4 py-3 ${stale || q.resendRecommended ? 'border-amber-900/60 bg-amber-950/30' : 'border-green-900/60 bg-green-950/40'}`}>
                     <p className={`text-sm font-semibold ${stale || q.resendRecommended ? 'text-amber-300' : 'text-green-300'}`}>QuickBooks Invoice{q.invoiceNumber ? ` #${q.invoiceNumber}` : ''}</p>
                     <p className="text-gray-400 text-xs mt-0.5">
-                      {q.payment.status === 'paid' ? 'Paid'
+                      {combining ? 'Being combined with another invoice — see below'
+                        : q.payment.status === 'paid' ? 'Paid'
                         : q.payment.balanceState === 'partial' ? 'Partially paid'
                         : q.needsReview ? 'Needs review'
                         : q.status === 'error' ? 'Sync failed'
@@ -551,10 +561,11 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                     </p>
                     {q.needsReview && q.error && <p className="text-amber-400/80 text-xs mt-1">{q.error}</p>}
 
-                    {draft.shared && <SharedInvoiceSection orderId={orderId} shared={draft.shared} enabled={sharedEnabled} canOffer={false} disabled={locked} onChanged={refetch} />}
+                    {draft.shared && <SharedInvoiceSection orderId={orderId} shared={draft.shared} enabled={sharedEnabled} canOffer={false} disabled={locked || combining} onChanged={refetch} />}
+                    <CombineInvoicesSection orderId={orderId} state={draft.combine} enabled={combineEnabled} canOffer={canCombine} disabled={locked} onChanged={refetch} />
 
                     {/* Sync (manager + admin) — offered when stale/failed, never on needs-review. */}
-                    {(q.syncNeeded || q.status === 'error') && !q.needsReview && syncEnabled && !payLocked && (
+                    {(q.syncNeeded || q.status === 'error') && !q.needsReview && syncEnabled && !payLocked && !combining && (
                       <button onClick={syncQb} disabled={locked}
                         className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
                         {syncing ? 'Syncing…' : q.status === 'error' ? 'Retry Sync' : 'Sync QuickBooks'}
@@ -580,7 +591,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                     {/* Record Payment → Paid → Email / Print Paid Invoice (stays available after Send until
                         QuickBooks confirms a zero balance). */}
                     {(paymentEnabled || q.payment.status !== 'none') && (
-                      <InvoicePaymentSection orderId={orderId} qb={q} paymentEnabled={paymentEnabled && !q.needsReview && !sharedPending} sendEnabled={sendEnabled}
+                      <InvoicePaymentSection orderId={orderId} qb={q} paymentEnabled={paymentEnabled && !q.needsReview && !sharedPending && !combining} sendEnabled={sendEnabled}
                         disabled={locked} onChanged={refetch} onToast={(m) => { setToast(m); setTimeout(() => setToast(null), 5000) }} />
                     )}
                     {toast && <p className="text-green-400 text-sm mt-2" role="status">{toast}</p>}
@@ -588,7 +599,10 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                   )
                 })() : draft.shared ? (
                   // Billed on another vehicle's invoice — never Create a separate one (the server refuses too).
-                  <SharedInvoiceSection orderId={orderId} shared={draft.shared} enabled={sharedEnabled} canOffer={false} disabled={locked} onChanged={refetch} />
+                  <>
+                    <SharedInvoiceSection orderId={orderId} shared={draft.shared} enabled={sharedEnabled} canOffer={false} disabled={locked || !!draft.combine?.active} onChanged={refetch} />
+                    <CombineInvoicesSection orderId={orderId} state={draft.combine} enabled={combineEnabled} canOffer={false} disabled={locked} onChanged={refetch} />
+                  </>
                 ) : (draft.pricingIncomplete || draft.referenceCents != null) ? (embedded ? (
                   <p className="mt-4 rounded-xl border border-amber-800/70 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
                     {draft.pricingIncomplete ? 'Finish pricing every line above before creating the invoice.' : 'Resolve the total above before creating the invoice.'}
@@ -606,6 +620,8 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                     </button>
                     {draft.qb.status === 'error' && draft.qb.error && <p className="text-amber-400 text-xs mt-2">Last attempt: {draft.qb.error}</p>}
                     <SharedInvoiceSection orderId={orderId} shared={null} enabled={sharedEnabled} canOffer={draft.qb.status === 'none' || draft.qb.status === 'error'} disabled={locked} onChanged={refetch} />
+                    {/* After "Bill separately": explains why this Job needs a NEW invoice (its old one stays voided). */}
+                    <CombineInvoicesSection orderId={orderId} state={draft.combine} enabled={combineEnabled} canOffer={false} disabled={locked} onChanged={refetch} />
                   </div>
                 ) : (
                   <p className="text-gray-600 text-xs mt-4">QuickBooks invoicing is turned off.</p>

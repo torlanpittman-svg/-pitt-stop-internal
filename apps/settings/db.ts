@@ -51,6 +51,10 @@ export const SETTINGS: Record<string, SettingDef> = {
   // app-created invoice; a manager reviews and updates that SAME invoice later. Default OFF. Requires
   // retail_qb_enabled + retail_qb_sync_enabled (the update is a Sync). Never sends anything.
   retail_qb_shared_invoice_enabled: { key: 'retail_qb_shared_invoice_enabled', type: 'bool', def: false, env: 'RETAIL_QB_SHARED_INVOICE_ENABLED' },
+  // Combine unpaid invoices: a manager combines two EXISTING unpaid app-created retail invoices of one customer —
+  // the replaced invoice is VOIDED in QuickBooks and its Job joins the retained one. Default OFF. Requires
+  // retail_qb_shared_invoice_enabled (and so Create + Sync). Never sends anything.
+  retail_qb_combine_invoices_enabled: { key: 'retail_qb_combine_invoices_enabled', type: 'bool', def: false, env: 'RETAIL_QB_COMBINE_INVOICES_ENABLED' },
   // Owner-confirmed QuickBooks mappings for Record Payment, per method (apps/quickbooks/retail-payment.ts):
   // { "realmId": "…", "cash": { "paymentMethodId": "…", "depositAccountId": "…" }, "check": {…}, "card_terminal": {…} }.
   // A method without both ids is not offered. Empty by default — nothing is guessed.
@@ -241,6 +245,12 @@ export async function retailQbSharedInvoiceEnabled(): Promise<boolean> {
   if (!(resolve(SETTINGS.retail_qb_shared_invoice_enabled, rows[0]?.value) as boolean)) return false
   const [create, sync] = await Promise.all([retailQbEnabled(), retailQbSyncEnabled()])
   return create && sync
+}
+/** Combine-unpaid-invoices kill-switch. Default OFF. Effective only with shared invoices (Create + Sync) on. */
+export async function retailQbCombineInvoicesEnabled(): Promise<boolean> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'retail_qb_combine_invoices_enabled'))
+  if (!(resolve(SETTINGS.retail_qb_combine_invoices_enabled, rows[0]?.value) as boolean)) return false
+  return retailQbSharedInvoiceEnabled()
 }
 /** Retail Record Payment kill-switch. Default OFF. */
 export async function retailQbPaymentEnabled(): Promise<boolean> {

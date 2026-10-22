@@ -11,8 +11,9 @@ import { getDb } from '@/platform/db'
 import { jobEstimates } from '@/apps/workflow/schema'
 import { BALANCE_LOCKS_INVOICE, PAYMENT_LOCKS_INVOICE } from './retail-payment'
 
-/** qb_status values during which the linked invoice's content may be changing (Record Payment waits). */
-export const INVOICE_CHANGING_STATUSES = ['creating', 'syncing']
+/** qb_status values during which the linked invoice's content may be changing (Record Payment waits).
+ *  'consolidating': Combine unpaid invoices is voiding this Job's invoice into another one. */
+export const INVOICE_CHANGING_STATUSES = ['creating', 'syncing', 'consolidating']
 
 /** SQL twin of paymentLocksInvoice(): no attempt holds the invoice AND no payment/credit is applied to it
  *  (a failed later installment never re-opens a partially paid invoice for Sync / charge changes). */

@@ -14,7 +14,7 @@
  * and re-checked post-write. Dealer invoicing is untouched.
  */
 import crypto from 'node:crypto'
-import { and, eq, isNull, inArray, desc, ne } from 'drizzle-orm'
+import { and, eq, isNull, isNotNull, inArray, desc, ne } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { jobEstimates, serviceOrders, retailInvoiceMembers } from '@/apps/workflow/schema'
 import { customers } from '@/apps/directory/schema'
@@ -523,6 +523,8 @@ export async function verifyLinkedRetailInvoice(orderId: string, opts: { paidInv
   const draft = buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: 'admin' })
   const idBase = { invoiceId: est.qbInvoiceId, invoiceNumber: est.qbInvoiceNumber }
   if (!opts.paidInvoice) {
+    // Combine unpaid invoices is voiding this invoice into another one — nothing may be sent or paid against it.
+    if (est.qbStatus === 'consolidating') return { ok: false, block: 'shared_pending', ...idBase, error: 'This invoice is being combined into another invoice — finish or cancel the combine first.' }
     if (!draft.priced) return { ok: false, block: 'not_priced', ...idBase }
     // A Job in a needs_review / sync-needed state must be resolved first — never act on a stale
     // invoice (same-total edits are caught here, not only by total_mismatch).
@@ -797,6 +799,13 @@ export async function syncRetailQBInvoice(params: {
       return { ok: false, block: 'shared_pending', invoiceId: est0.qbInvoiceId, invoiceNumber: est0.qbInvoiceNumber, error: 'A linked vehicle’s charges are pending review — update the shared invoice, or keep that vehicle separate, before syncing.' }
     }
     const included = active.filter((m) => m.state === 'applied' || (params.applyPending && m.state === 'pending'))
+    // A member whose OWN invoice still exists (a Combine unpaid invoices that hasn't voided it yet) must never be
+    // written here too — that would bill its charges on two invoices at once.
+    const ownInvoice = included.length
+      ? await db.select({ id: jobEstimates.serviceOrderId, n: jobEstimates.qbInvoiceNumber }).from(jobEstimates)
+        .where(and(inArray(jobEstimates.id, included.map((m) => m.memberEstimateId)), isNotNull(jobEstimates.qbInvoiceId)))
+      : []
+    if (ownInvoice.length) throw new SharedMemberError('member_unready', ownInvoice[0].id, `A linked vehicle still has its own invoice #${ownInvoice[0].n ?? ''} — finish the combine first.`)
     const { payload, legacyLines, parts } = await buildSharedInvoicePayload({ anchorEstimateId: est0.id, anchor: { orderId, order, full: fullNow, draft: draftNow }, members: included })
     const targetCents = payload.totalCents
     const targetLinesFp = linesFingerprint(linesFromPayload(payload.lines))

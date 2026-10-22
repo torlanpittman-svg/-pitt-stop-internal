@@ -39,6 +39,16 @@ const safeErr = (e: unknown) => (e instanceof Error ? e.message : String(e)).sli
 const vehicleName = (o: { vehicle: { year?: string | null; make?: string | null; model?: string | null; vin?: string | null } } | null) =>
   o ? ([o.vehicle.year, o.vehicle.make, o.vehicle.model].filter(Boolean).join(' ') || o.vehicle.vin || 'Vehicle') : 'Vehicle'
 
+/** Is this estimate on either side of an unfinished Combine unpaid invoices (invoice-consolidation.ts)? */
+async function underConsolidation(estimateId: string): Promise<boolean> {
+  const res = await getDb().execute(sql`
+    SELECT 1 FROM retail_invoice_consolidations
+    WHERE (retained_estimate_id = ${estimateId}::uuid OR replaced_estimate_id = ${estimateId}::uuid) AND status IN ('prepared', 'voided', 'relinked')
+    LIMIT 1`)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return ((res as any).rows ?? res).length > 0
+}
+
 // ── Discovery ─────────────────────────────────────────────────────────────────────────────────────
 export interface SharedCandidate {
   anchorOrderId: string
@@ -132,6 +142,7 @@ async function assessCandidate(ctx: MemberCtx, a: AnchorRow, raw: RawQBInvoice):
   if (local) return refuse(local)
   if (!money.untouched) return refuse(money.reason ?? 'Money is applied to this invoice.')
   if (/sync needed/i.test(a.qbSyncError ?? '')) return refuse('This invoice has unsynced changes — open its Job and sync it first.')
+  if (await underConsolidation(a.estimateId)) return refuse('A combine of this invoice is in progress — finish it first.')
   try {
     const applied = members.filter((m) => m.state === 'applied')
     const { payload, legacyLines } = await buildSharedInvoicePayload({ anchorEstimateId: a.estimateId, anchor: anchorJob, members: applied })
@@ -238,6 +249,7 @@ export async function linkToSharedInvoice(params: { orderId: string; anchorOrder
         SELECT a.id FROM job_estimates a
         WHERE a.id = ${anchor.estimateId}::uuid AND a.qb_invoice_id = ${invoiceId} AND a.qb_status IN ('created', 'sent')
           AND a.qb_payment_status = 'none' AND (a.qb_payment_balance_state IS NULL OR a.qb_payment_balance_state = 'unpaid')
+          AND NOT EXISTS (SELECT 1 FROM retail_invoice_consolidations c WHERE c.retained_estimate_id = a.id AND c.status IN ('prepared', 'voided', 'relinked'))
         FOR UPDATE
       ), lock AS (
         UPDATE job_estimates m SET qb_status = 'linked', qb_sync_error = NULL, updated_at = now()
@@ -294,6 +306,9 @@ export async function unlinkSharedInvoiceMember(params: { orderId: string; actor
   const m = est ? await activeMembershipOf(est.id) : null
   if (!m) return { ok: true }   // already separate (idempotent)
   if (m.state === 'applied') return { ok: false, block: 'applied', error: `This vehicle’s charges are already on invoice #${m.qbInvoiceNumber ?? m.qbInvoiceId}. Removing them is a correction to make in QuickBooks.` }
+  // A Combine unpaid invoices in progress owns this membership (its invoice may already be voided) — only its own
+  // recovery (Cancel / Bill separately) may undo it.
+  if (await underConsolidation(m.memberEstimateId)) return { ok: false, block: 'busy', error: 'This vehicle is being combined onto this invoice. Finish, cancel or bill it separately from the Combine panel.' }
   const res = await getDb().execute(sql`
     WITH anchor AS (
       SELECT a.id FROM job_estimates a
@@ -303,6 +318,7 @@ export async function unlinkSharedInvoiceMember(params: { orderId: string; actor
     ), rm AS (
       UPDATE retail_invoice_members r SET state = 'removed', removed_at = now(), removed_by = ${actor}, removed_reason = ${params.reason ?? 'Kept separate'}, updated_at = now()
       WHERE r.id = ${m.id}::uuid AND r.state = 'pending' AND EXISTS (SELECT 1 FROM anchor)
+        AND NOT EXISTS (SELECT 1 FROM retail_invoice_consolidations c WHERE c.member_id = r.id AND c.status IN ('prepared', 'voided', 'relinked'))
       RETURNING r.member_estimate_id
     )
     UPDATE job_estimates j SET qb_status = 'none', updated_at = now()
@@ -449,6 +465,11 @@ export async function previewSharedInvoiceUpdate(orderId: string): Promise<Share
     parts.push(previewPart(j, m.state as 'pending' | 'applied', await jobChargesIssue(j)))
   }
   for (const p of parts) if (p.issue) blockers.push(`${p.vehicle}: ${p.issue}`)
+  for (const m of members) {
+    if (m.state !== 'pending') continue
+    const own = await getEstimateRow(m.memberServiceOrderId)
+    if (own?.qbInvoiceId) blockers.push(`A combine is still voiding invoice #${own.qbInvoiceNumber ?? own.qbInvoiceId} — finish it from the Combine invoices panel.`)
+  }
   const combinedTotalCents = parts.reduce((t, p) => t + p.totalCents, 0)
 
   let raw: RawQBInvoice | null

@@ -210,3 +210,9 @@ staying a service),
 - Sandbox invoice 211: same-invoice update, two DescriptionOnly headers, exact total, and PDF visual check passed; temporary invoice deleted; no email.
 - Production migration 0062 applied before code rollout; table and fingerprint column verified.
 - No production QuickBooks write or email was performed during verification. Staff browser walkthrough remains owner verification after rollout.
+
+## Related: Combine unpaid invoices
+
+Two invoices that ALREADY exist (each Job invoiced on its own) are combined by a separate, reviewed operation
+that voids one and makes its Job a member of the other — see `docs/combine-unpaid-invoices.md`. Link still never
+merges two existing invoices.

@@ -143,9 +143,11 @@ Verified in production DB on 2026-08-18:
   Record Payment. `retail_payment_mappings` (json, default `{}`) = owner-confirmed QBO
   PaymentMethod + deposit account per method, pinned to the QBO realm id; an unmapped method is
   not offered. Email Paid Invoice additionally needs `retail_qb_send_enabled`.
-- `retail_qb_shared_invoice_enabled = false` (default; built 2026-10-22, NOT deployed, migration 0062 not
-  applied) — shared retail invoice (one QB invoice for several of a customer's vehicles, §13). Effective
-  only with `retail_qb_enabled` + `retail_qb_sync_enabled`.
+- `retail_qb_shared_invoice_enabled` (default false) — shared retail invoice (one QB invoice for several of a
+  customer's vehicles, §13). Deployed with 0062 (prod `85d6190`); read ON in prod app_settings 2026-10-22.
+  Effective only with `retail_qb_enabled` + `retail_qb_sync_enabled`.
+- `retail_qb_combine_invoices_enabled = false` (default; built 2026-10-22, NOT deployed, migration 0063 not
+  applied) — Combine unpaid invoices (§14). Effective only with shared invoices on.
 - Create/Sync/Send are three INDEPENDENT kill-switches (`retail_qb_enabled` / `retail_qb_sync_enabled`
   / `retail_qb_send_enabled`).
 
@@ -302,3 +304,14 @@ SAME invoice from every vehicle's own Invoice Draft. Anchor Job owns the invoice
 is pending, and nothing is ever resent automatically. Dealer is excluded server-side. Migration 0062, flag
 `retail_qb_shared_invoice_enabled` (defaults OFF; verify the live setting). Full design, safeguards, tests and deploy order:
 `docs/shared-retail-invoice.md`.
+
+## 14. Combine unpaid invoices (two existing invoices → one) — built 2026-10-22, NOT deployed
+
+A manager combines two of the same confirmed customer's EXISTING unpaid, app-created retail invoices (even after
+both Jobs are completed). The replaced invoice is VOIDED in QuickBooks (kept with its number, $0 — never deleted),
+then its Job joins the retained invoice as a shared-invoice member and the retained invoice is updated (reviewed
+shared Sync). Void first, so both invoices never bill the same charges. Durable, idempotent state machine on
+`retail_invoice_consolidations` (migration 0063 — apply BEFORE code) with Retry / Cancel / Bill separately;
+billing on both invoices is blocked while unfinished. Flag `retail_qb_combine_invoices_enabled` (OFF). Never
+emails. Full design, tests, deploy plan and the Kelvin Cooper (#100922 / #100924) reconciliation plan:
+`docs/combine-unpaid-invoices.md`.

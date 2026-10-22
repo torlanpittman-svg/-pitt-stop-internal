@@ -13,7 +13,7 @@
  * disagree. Idempotency is anchored on the Job's own append-only event ledger + status.
  */
 import { getDb } from '@/platform/db'
-import { and, eq, ne, or } from 'drizzle-orm'
+import { and, eq, ne, or, sql } from 'drizzle-orm'
 import { jobEstimates, serviceOrderEvents, retailInvoiceMembers } from './schema'
 import { getOrderWithContext, removeOrder, logEvent, type OrderWithContext } from './db'
 import { removalEligibility } from './removal'
@@ -72,6 +72,10 @@ async function resolveLinkageAndSnapshot(order: OrderWithContext): Promise<{ lin
  * The manager first keeps a pending vehicle separate (its invoice screen), or corrects an applied one in QuickBooks.
  */
 async function sharedInvoiceRemovalBlock(orderId: string): Promise<string | null> {
+  const combining = await getDb().execute(sql`SELECT 1 FROM retail_invoice_consolidations
+    WHERE (retained_service_order_id = ${orderId}::uuid OR replaced_service_order_id = ${orderId}::uuid) AND status IN ('prepared', 'voided', 'relinked') LIMIT 1`)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (((combining as any).rows ?? combining).length) return 'This Job’s invoice is being combined with another invoice. Finish, cancel or bill it separately from the Combine panel first.'
   const [m] = await getDb().select({ state: retailInvoiceMembers.state, member: retailInvoiceMembers.memberServiceOrderId, number: retailInvoiceMembers.qbInvoiceNumber })
     .from(retailInvoiceMembers)
     .where(and(ne(retailInvoiceMembers.state, 'removed'), or(eq(retailInvoiceMembers.memberServiceOrderId, orderId), eq(retailInvoiceMembers.anchorServiceOrderId, orderId))))
