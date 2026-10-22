@@ -147,7 +147,8 @@ Verified in production DB on 2026-08-18:
   customer's vehicles, §13). Deployed with 0062 (prod `85d6190`); read ON in prod app_settings 2026-10-22.
   Effective only with `retail_qb_enabled` + `retail_qb_sync_enabled`.
 - `retail_qb_combine_invoices_enabled = false` (default; built 2026-10-22, NOT deployed, migration 0063 not
-  applied) — Combine unpaid invoices (§14). Effective only with shared invoices on.
+  applied) — Combine unpaid invoices (§14). Effective only with shared invoices on, and gates NEW combines only:
+  finishing / undoing an unfinished one stays available with Create + Sync on.
 - Create/Sync/Send are three INDEPENDENT kill-switches (`retail_qb_enabled` / `retail_qb_sync_enabled`
   / `retail_qb_send_enabled`).
 
@@ -312,6 +313,9 @@ both Jobs are completed). The replaced invoice is VOIDED in QuickBooks (kept wit
 then its Job joins the retained invoice as a shared-invoice member and the retained invoice is updated (reviewed
 shared Sync). Void first, so both invoices never bill the same charges. Durable, idempotent state machine on
 `retail_invoice_consolidations` (migration 0063 — apply BEFORE code) with Retry / Cancel / Bill separately;
-billing on both invoices is blocked while unfinished. Flag `retail_qb_combine_invoices_enabled` (OFF). Never
-emails. Full design, tests, deploy plan and the Kelvin Cooper (#100922 / #100924) reconciliation plan:
+billing on both invoices is blocked while unfinished. DB-enforced: one unfinished combine per QuickBooks customer
+per company (`ric_customer_active_uniq` on realm + customer). A void is recorded only when QuickBooks shows the
+"Voided" marker AND $0; anything in between needs a person to reconcile. An invoice emailed mid-combine (even from
+QuickBooks) needs an explicit acknowledgement on Finish, enforced server-side. Flag `retail_qb_combine_invoices_enabled`
+(OFF). Never emails. **Rollback to `85d6190` only after zero unfinished combines** (old code can't handle them). Full design, tests, deploy plan and the Kelvin Cooper (#100922 / #100924) reconciliation plan:
 `docs/combine-unpaid-invoices.md`.

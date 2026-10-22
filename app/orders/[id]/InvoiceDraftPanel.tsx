@@ -562,7 +562,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                     {q.needsReview && q.error && <p className="text-amber-400/80 text-xs mt-1">{q.error}</p>}
 
                     {draft.shared && <SharedInvoiceSection orderId={orderId} shared={draft.shared} enabled={sharedEnabled} canOffer={false} disabled={locked || combining} onChanged={refetch} />}
-                    <CombineInvoicesSection orderId={orderId} state={draft.combine} enabled={combineEnabled} canOffer={canCombine} disabled={locked} onChanged={refetch} />
+                    <CombineInvoicesSection orderId={orderId} state={draft.combine} enabled={combineEnabled} recoveryEnabled={qbEnabled && syncEnabled} canOffer={canCombine} disabled={locked} onChanged={refetch} />
 
                     {/* Sync (manager + admin) — offered when stale/failed, never on needs-review. */}
                     {(q.syncNeeded || q.status === 'error') && !q.needsReview && syncEnabled && !payLocked && !combining && (
@@ -601,7 +601,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                   // Billed on another vehicle's invoice — never Create a separate one (the server refuses too).
                   <>
                     <SharedInvoiceSection orderId={orderId} shared={draft.shared} enabled={sharedEnabled} canOffer={false} disabled={locked || !!draft.combine?.active} onChanged={refetch} />
-                    <CombineInvoicesSection orderId={orderId} state={draft.combine} enabled={combineEnabled} canOffer={false} disabled={locked} onChanged={refetch} />
+                    <CombineInvoicesSection orderId={orderId} state={draft.combine} enabled={combineEnabled} recoveryEnabled={qbEnabled && syncEnabled} canOffer={false} disabled={locked} onChanged={refetch} />
                   </>
                 ) : (draft.pricingIncomplete || draft.referenceCents != null) ? (embedded ? (
                   <p className="mt-4 rounded-xl border border-amber-800/70 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
@@ -621,7 +621,7 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                     {draft.qb.status === 'error' && draft.qb.error && <p className="text-amber-400 text-xs mt-2">Last attempt: {draft.qb.error}</p>}
                     <SharedInvoiceSection orderId={orderId} shared={null} enabled={sharedEnabled} canOffer={draft.qb.status === 'none' || draft.qb.status === 'error'} disabled={locked} onChanged={refetch} />
                     {/* After "Bill separately": explains why this Job needs a NEW invoice (its old one stays voided). */}
-                    <CombineInvoicesSection orderId={orderId} state={draft.combine} enabled={combineEnabled} canOffer={false} disabled={locked} onChanged={refetch} />
+                    <CombineInvoicesSection orderId={orderId} state={draft.combine} enabled={combineEnabled} recoveryEnabled={qbEnabled && syncEnabled} canOffer={false} disabled={locked} onChanged={refetch} />
                   </div>
                 ) : (
                   <p className="text-gray-600 text-xs mt-4">QuickBooks invoicing is turned off.</p>

@@ -252,6 +252,15 @@ export async function retailQbCombineInvoicesEnabled(): Promise<boolean> {
   if (!(resolve(SETTINGS.retail_qb_combine_invoices_enabled, rows[0]?.value) as boolean)) return false
   return retailQbSharedInvoiceEnabled()
 }
+/**
+ * Recovery of an UNFINISHED combine (Retry / Cancel / Bill separately) stays possible when the combine flag is turned
+ * off — the kill switch stops NEW combines, never strands one half-done. It still needs QuickBooks Create + Sync on,
+ * because finishing writes the retained invoice.
+ */
+export async function retailQbCombineRecoveryEnabled(): Promise<boolean> {
+  const [create, sync] = await Promise.all([retailQbEnabled(), retailQbSyncEnabled()])
+  return create && sync
+}
 /** Retail Record Payment kill-switch. Default OFF. */
 export async function retailQbPaymentEnabled(): Promise<boolean> {
   const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'retail_qb_payment_enabled'))

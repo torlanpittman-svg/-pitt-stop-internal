@@ -1,7 +1,9 @@
 /**
  * Combine unpaid invoices — /api/workflow/orders/[id]/invoice/combine. Manager/admin only (server-enforced; the
  * actor always comes from the signed session, never the body). Gated by retail_qb_combine_invoices_enabled (which
- * itself requires shared invoices + Create + Sync). Dealer Jobs are refused inside the service.
+ * itself requires shared invoices + Create + Sync) for NEW combines (discover / preview / start). Recovery of an
+ * unfinished combine (review / resume / cancel / separate) keeps working with that flag off — the kill switch never
+ * strands a half-done combine — and needs only QuickBooks Create + Sync. Dealer Jobs are refused inside the service.
  *
  * GET                    → { enabled, state }                       this Job's combine state (DB only)
  * GET ?discover=1        → { enabled, state, discovery }            + this customer's other invoices (READ-ONLY QB)
@@ -15,7 +17,7 @@
  */
 import { NextResponse } from 'next/server'
 import { authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
-import { retailQbCombineInvoicesEnabled } from '@/apps/settings/db'
+import { retailQbCombineInvoicesEnabled, retailQbCombineRecoveryEnabled } from '@/apps/settings/db'
 import {
   findCombineCandidates, previewCombineInvoices, startCombineInvoices, resumeCombineInvoices, cancelCombineInvoices,
   separateCombineInvoices, loadCombineState, type CombineResult,
@@ -47,13 +49,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params
   const { actor, denied } = await managerOnly(req)
   if (denied) return denied
-  if (!(await retailQbCombineInvoicesEnabled())) return NextResponse.json({ ok: false, error: 'Combining invoices is turned off.' }, { status: 503 })
   const body = await req.json().catch(() => ({})) as {
     action?: string; otherOrderId?: string; retainOrderId?: string; retainedOrderId?: string; replacedOrderId?: string; requestId?: string
     expected?: { retainedSyncToken?: string; replacedSyncToken?: string; combinedTotalCents?: number }
     acknowledgeEmailed?: boolean; syncToken?: string; combinedTotalCents?: number; confirmSent?: boolean
   }
   const name = actor!.name
+  const recovery = body.action === 'review' || body.action === 'resume' || body.action === 'cancel' || body.action === 'separate'
+  if (recovery ? !(await retailQbCombineRecoveryEnabled()) : !(await retailQbCombineInvoicesEnabled())) {
+    return NextResponse.json({ ok: false, error: recovery ? 'QuickBooks invoicing is turned off, so this combine can’t be finished or undone right now.' : 'Combining invoices is turned off.' }, { status: 503 })
+  }
 
   switch (body.action) {
     case 'preview': {

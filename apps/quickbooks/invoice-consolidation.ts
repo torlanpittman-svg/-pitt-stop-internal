@@ -41,6 +41,7 @@ import { previewSharedInvoiceUpdate, type SharedPreview } from './shared-invoice
 import { activeMembershipOf, listActiveMembers, type MemberRow } from './shared-invoice-db'
 import { anchorLocalBlock, invoiceMoneyState, linesFromRawInvoice, linesFromPayload, linesFingerprint, sameLines, overwriteUnsafeLineTypes } from './shared-invoice-plan'
 import { isAmbiguousWriteError } from './retail-payment'
+import { connectedRealmId } from './retail-payment-write'
 import { logger } from '@/platform/logger'
 
 const APP = 'quickbooks:invoice-consolidation'
@@ -56,6 +57,28 @@ export type ConsolidationRow = typeof retailInvoiceConsolidations.$inferSelect
 const LEASE_SECONDS = 90
 /** After an uncertain void, wait this long before allowing Cancel (a slow void could still land). */
 const VOID_SETTLE_MS = 2 * 60 * 1000
+
+/**
+ * What QuickBooks shows for the replaced invoice. Only `voided` (QuickBooks' own "Voided" marker AND $0 total and
+ * balance) is ever recorded as a void. `unconfirmed` = one without the other (zeroed by hand, or a marker typed on
+ * a live invoice): Pitt Stop can't tell what happened, so it never records a void and never cancels on it — a person
+ * reconciles in QuickBooks first.
+ */
+export function replacedVoidState(inv: RawQBInvoice): 'voided' | 'unconfirmed' | 'live' {
+  const marker = hasVoidMarker(inv)
+  const zero = Number(inv.TotalAmt ?? 0) === 0 && Number(inv.Balance ?? 0) === 0
+  return marker && zero ? 'voided' : marker || zero ? 'unconfirmed' : 'live'
+}
+const reconcileMsg = (op: ConsolidationRow) =>
+  `QuickBooks shows #${op.replacedInvoiceNumber} at $0 or marked "Voided", but not both, so Pitt Stop can’t confirm it was voided. Nothing is recorded as voided. Check #${op.replacedInvoiceNumber} in QuickBooks: if it should be void, void it there; otherwise restore its charges. Then Retry.`
+
+/** The QuickBooks company (realm) now connected must be the one this combine was claimed in — invoice ids are per company. */
+async function realmProblem(op: ConsolidationRow): Promise<{ block: CombineBlock; msg: string } | null> {
+  const realm = await connectedRealmId()
+  if (!realm) return { block: 'qb_read_failed', msg: 'Couldn’t confirm which QuickBooks company is connected. Nothing was written — retry.' }
+  if (realm !== op.qbRealmId) return { block: 'attention', msg: `QuickBooks is now connected to a different company than the one this combine started in. Nothing was written — reconnect the original company (${op.qbRealmId}), then retry.` }
+  return null
+}
 
 // ── One side (one Job + its own invoice), fully re-verified from QuickBooks ──────────────────────────────
 export interface CombineSide {
@@ -259,12 +282,26 @@ function emailGuidance(retained: CombineSide, replaced: CombineSide): string | n
 
 const fakeMember = (s: CombineSide): MemberRow => ({ memberServiceOrderId: s.orderId, memberEstimateId: s.estimateId, state: 'pending' } as unknown as MemberRow)
 
-async function buildPreview(orderId: string, otherOrderId: string, retainOrderId?: string | null): Promise<CombinePreview & { rawRetained?: RawQBInvoice; rawReplaced?: RawQBInvoice }> {
+/** The unfinished combine (any state, recovery included) for this QuickBooks customer in this company, if any. */
+async function activeForCustomer(realmId: string, customerId: string): Promise<ConsolidationRow | null> {
+  const [r] = await getDb().select().from(retailInvoiceConsolidations)
+    .where(and(eq(retailInvoiceConsolidations.qbRealmId, realmId), eq(retailInvoiceConsolidations.qbCustomerId, customerId), inArray(retailInvoiceConsolidations.status, [...ACTIVE_CONSOLIDATION])))
+    .limit(1)
+  return r ?? null
+}
+const customerBusyMsg = (op: ConsolidationRow) =>
+  `This customer already has an unfinished combine (#${op.replacedInvoiceNumber} into #${op.retainedInvoiceNumber}). Finish, cancel or bill it separately first — only one combine per customer can be open at a time. Nothing was changed.`
+
+async function buildPreview(orderId: string, otherOrderId: string, retainOrderId?: string | null): Promise<CombinePreview & { rawRetained?: RawQBInvoice; rawReplaced?: RawQBInvoice; realmId?: string }> {
   if (orderId === otherOrderId) return { ok: false, error: 'Choose a different invoice.' }
   const [x, y] = [await verifySide(orderId), await verifySide(otherOrderId)]
   if (!x.ok) return { ok: false, error: x.reason }
   if (!y.ok) return { ok: false, error: y.reason }
   if (x.side.qbCustomerId !== y.side.qbCustomerId) return { ok: false, error: 'These invoices belong to different QuickBooks customers — they can’t be combined.' }
+  const realmId = await connectedRealmId()
+  if (!realmId) return { ok: false, error: 'Couldn’t confirm which QuickBooks company is connected — try again.' }
+  const busy = await activeForCustomer(realmId, x.side.qbCustomerId)
+  if (busy) return { ok: false, error: customerBusyMsg(busy) }
   let [retained, replaced] = pickRetained(x.side, y.side)
   if (retainOrderId) {
     if (retainOrderId === x.side.orderId) [retained, replaced] = [x.side, y.side]
@@ -288,7 +325,7 @@ async function buildPreview(orderId: string, otherOrderId: string, retainOrderId
     ok: true, retained, replaced, combinedTotalCents,
     combinedLines: built.payload.lines.map((l) => ({ description: l.description, cents: l.kind === 'text' ? null : l.amountCents })),
     emailedAny: retained.emailed || replaced.emailed, plan, emailGuidance: emailGuidance(retained, replaced),
-    rawRetained: retainedCheck.ok ? retainedCheck.raw : undefined, rawReplaced: replacedCheck.ok ? replacedCheck.raw : undefined,
+    rawRetained: retainedCheck.ok ? retainedCheck.raw : undefined, rawReplaced: replacedCheck.ok ? replacedCheck.raw : undefined, realmId,
   }
 }
 
@@ -296,7 +333,7 @@ async function buildPreview(orderId: string, otherOrderId: string, retainOrderId
 export async function previewCombineInvoices(params: { orderId: string; otherOrderId: string; retainOrderId?: string | null }): Promise<CombinePreview> {
   try {
     const p = await buildPreview(params.orderId, params.otherOrderId, params.retainOrderId)
-    delete p.rawRetained; delete p.rawReplaced
+    delete p.rawRetained; delete p.rawReplaced; delete p.realmId
     return p
   } catch (e) {
     logger.warn(APP, 'preview_failed', { orderId: params.orderId, error: safeErr(e) })
@@ -401,9 +438,14 @@ async function stepVoid(op: ConsolidationRow, actor: string | null): Promise<Com
   let rawB: RawQBInvoice | null
   try { rawB = await getRetailInvoiceRaw(op.replacedInvoiceId) }
   catch (e) { const o = await setAttention(op, `Couldn’t read #${op.replacedInvoiceNumber} from QuickBooks (${safeErr(e)}). Both invoices are blocked until this is retried.`, actor); return result(o, { block: 'qb_read_failed' }) }
-  // Adopt only QuickBooks' own void marker: a replaced invoice merely zeroed out by hand is NOT treated as voided
-  // (it fails the re-checks below and the combine cancels instead).
-  if (rawB && extractPsid(rawB.PrivateNote) === op.replacedEstimateId && hasVoidMarker(rawB)) {
+  // Adopt only a CONFIRMED void (QuickBooks' "Voided" marker AND $0). A half state is never recorded as voided; if
+  // Pitt Stop had already sent a void, or the marker is there, it can't be cancelled either — a person reconciles.
+  // (A hand-zeroed invoice with no void attempt fails the re-checks below and the combine cancels.)
+  const stateB = rawB ? replacedVoidState(rawB) : null
+  if (rawB && stateB === 'unconfirmed' && (op.voidAttemptedAt || hasVoidMarker(rawB))) {
+    const o = await setAttention(op, reconcileMsg(op), actor); return result(o, { block: 'attention' })
+  }
+  if (rawB && extractPsid(rawB.PrivateNote) === op.replacedEstimateId && stateB === 'voided') {
     // A void issued earlier landed but its response (or our record of it) was lost — adopt it, never void twice.
     await markVoided(op, actor, op.voidAttemptedAt ? ' (an earlier attempt’s void had landed)' : ' (found already voided in QuickBooks)')
     return null
@@ -451,8 +493,8 @@ async function stepVoid(op: ConsolidationRow, actor: string | null): Promise<Com
   await getDb().update(retailInvoiceConsolidations).set({ voidAttemptedAt: new Date(), updatedAt: new Date() }).where(eq(retailInvoiceConsolidations.id, op.id))
   try {
     const voided = await voidRetailInvoiceInQB(op.replacedInvoiceId, op.replacedSyncToken)
-    if (!hasVoidMarker(voided)) {
-      const o = await setAttention(op, `QuickBooks answered the void of #${op.replacedInvoiceNumber} but doesn’t show it voided — needs review in QuickBooks.`, actor)
+    if (replacedVoidState(voided) !== 'voided') {
+      const o = await setAttention(op, `QuickBooks answered the void of #${op.replacedInvoiceNumber} but doesn’t show it as a confirmed void. ${reconcileMsg(op)}`, actor)
       return result(o, { block: 'attention' })
     }
     await markVoided(op, actor, '')
@@ -460,7 +502,9 @@ async function stepVoid(op: ConsolidationRow, actor: string | null): Promise<Com
   } catch (e) {
     // Did it land anyway? Read back before deciding (a lost response must never lead to a second action).
     const again = await getRetailInvoiceRaw(op.replacedInvoiceId).catch(() => undefined)
-    if (again && hasVoidMarker(again)) { await markVoided(op, actor, ' (confirmed by reading QuickBooks after an unclear response)'); return null }
+    const stateAgain = again ? replacedVoidState(again) : null
+    if (again && stateAgain === 'voided') { await markVoided(op, actor, ' (confirmed by reading QuickBooks after an unclear response)'); return null }
+    if (stateAgain === 'unconfirmed') { const o = await setAttention(op, reconcileMsg(op), actor); return result(o, { block: 'attention' }) }
     if (again && !isAmbiguousWriteError(e)) {
       // QuickBooks definitively refused (e.g. the invoice changed: stale SyncToken) — nothing was voided.
       await cancelPrepared(op, `QuickBooks refused to void #${op.replacedInvoiceNumber} (${safeErr(e)}).`, actor)
@@ -530,7 +574,21 @@ async function stepUpdate(op: ConsolidationRow, actor: string | null, review: { 
     const o = await setAttention(op, `#${op.retainedInvoiceNumber} changed in QuickBooks since it was reviewed. Review the combined invoice and finish.`, actor)
     return result(o, { block: 'stale' })
   }
-  const r = await syncRetailQBInvoice({ orderId: op.retainedServiceOrderId, actor, confirmSent: op.emailedAcknowledged || !!review.confirmSent, applyPending: true, expectedSyncToken: token })
+  // Emailed acknowledgement, enforced HERE (never trusted from the screen's state): the start acknowledgement only
+  // covers the retained invoice if it was ALREADY emailed when the manager confirmed. If QuickBooks now shows it
+  // emailed and that wasn't covered (e.g. emailed straight from QuickBooks mid-combine), this Finish / Retry must
+  // carry its own explicit acknowledgement — otherwise nothing is written.
+  const covered = op.retainedEmailed && op.emailedAcknowledged
+  if (p.emailed && !covered && !review.confirmSent) {
+    const o = await setAttention(op, `#${op.retainedInvoiceNumber} has been emailed to the customer since this combine was reviewed. Confirm that you understand their copy will be out of date (nothing is resent), then finish.`, actor)
+    return result(o, { block: 'confirm_required' })
+  }
+  if (p.emailed && !covered) {
+    await bothEvents(op, 'invoice_combine_email_acknowledged', actor,
+      `Manager acknowledged #${op.retainedInvoiceNumber} was already emailed before it billed both vehicles — nothing resent`,
+      `Manager acknowledged #${op.retainedInvoiceNumber} was already emailed before it included this vehicle — nothing resent`)
+  }
+  const r = await syncRetailQBInvoice({ orderId: op.retainedServiceOrderId, actor, confirmSent: covered || !!review.confirmSent, applyPending: true, expectedSyncToken: token })
   if (!r.ok) {
     const o = await setAttention(op, `Updating #${op.retainedInvoiceNumber} didn’t finish: ${r.error ?? r.reviewReason ?? r.block}. #${op.replacedInvoiceNumber} is voided, so its vehicle isn’t billed yet — retry, or bill it separately.`, actor)
     return result(o, { block: r.block === 'stale' ? 'stale' : 'attention' })
@@ -552,6 +610,10 @@ async function drive(id: string, actor: string | null, review: { expectedSyncTok
       const op = await loadOp(id)
       if (!op) return { ok: false, block: 'not_found', error: 'Combine not found.' }
       let stop: CombineResult | null = null
+      if (op.status === 'prepared' || op.status === 'relinked') {
+        const rp = await realmProblem(op)
+        if (rp) { const o = await setAttention(op, rp.msg, actor); return result(o, { block: rp.block }) }
+      }
       if (op.status === 'prepared') stop = await stepVoid(op, actor)
       else if (op.status === 'voided') stop = await stepRelink(op, actor)
       else if (op.status === 'relinked') stop = await stepUpdate(op, actor, review)
@@ -591,7 +653,7 @@ export async function startCombineInvoices(params: {
   }
 
   const p = await buildPreview(retainedOrderId, replacedOrderId, retainedOrderId)
-  if (!p.ok || !p.retained || !p.replaced || !p.rawRetained || !p.rawReplaced) return { ok: false, block: /couldn’t read|couldn’t confirm/i.test(p.error ?? '') ? 'qb_read_failed' : 'ineligible', error: p.error }
+  if (!p.ok || !p.retained || !p.replaced || !p.rawRetained || !p.rawReplaced || !p.realmId) return { ok: false, block: /couldn’t read|couldn’t confirm/i.test(p.error ?? '') ? 'qb_read_failed' : 'ineligible', error: p.error }
   const { retained: A, replaced: B } = p
   if (A.syncToken !== params.expected.retainedSyncToken || B.syncToken !== params.expected.replacedSyncToken || p.combinedTotalCents !== params.expected.combinedTotalCents) {
     return { ok: false, block: 'stale', error: 'An invoice changed after you reviewed it. Nothing was combined — review again.' }
@@ -622,11 +684,11 @@ export async function startCombineInvoices(params: {
       ), op AS (
         INSERT INTO retail_invoice_consolidations (
           id, request_id, status, retained_estimate_id, retained_service_order_id, replaced_estimate_id, replaced_service_order_id, member_id,
-          qb_customer_id, retained_invoice_id, retained_invoice_number, retained_sync_token, retained_lines_fingerprint, retained_total_cents, retained_emailed,
+          qb_customer_id, qb_realm_id, retained_invoice_id, retained_invoice_number, retained_sync_token, retained_lines_fingerprint, retained_total_cents, retained_emailed,
           replaced_invoice_id, replaced_invoice_number, replaced_sync_token, replaced_lines_fingerprint, replaced_total_cents, replaced_emailed,
           replaced_prior_qb_status, combined_total_cents, emailed_acknowledged, started_by)
         SELECT ${opId}::uuid, ${requestId}, 'prepared', ${A.estimateId}::uuid, ${A.orderId}::uuid, ${B.estimateId}::uuid, ${B.orderId}::uuid, ${memberId}::uuid,
-          ${A.qbCustomerId}, ${A.invoiceId}, ${A.invoiceNumber}, ${A.syncToken}, ${A.linesFingerprint}, ${A.totalCents}, ${A.emailed},
+          ${A.qbCustomerId}, ${p.realmId}, ${A.invoiceId}, ${A.invoiceNumber}, ${A.syncToken}, ${A.linesFingerprint}, ${A.totalCents}, ${A.emailed},
           ${B.invoiceId}, ${B.invoiceNumber}, ${B.syncToken}, ${B.linesFingerprint}, ${B.totalCents}, ${B.emailed},
           ${B.qbStatus}, ${p.combinedTotalCents!}, ${!!params.acknowledgeEmailed}, ${actor}
         FROM b
@@ -642,6 +704,9 @@ export async function startCombineInvoices(params: {
     const [again] = await getDb().select().from(retailInvoiceConsolidations).where(eq(retailInvoiceConsolidations.requestId, requestId)).limit(1)
     if (again) return drive(again.id, actor)
     logger.warn(APP, 'claim_failed', { retainedOrderId, replacedOrderId, error: safeErr(e) })
+    // ric_customer_active_uniq: another combine for this customer claimed first (a concurrent start).
+    const other = await activeForCustomer(p.realmId, A.qbCustomerId)
+    if (other) return { ok: false, block: 'busy', error: customerBusyMsg(other) }
     return { ok: false, block: 'busy', error: 'Another change to these invoices happened at the same time. Nothing was combined — check again.' }
   }
   if (!claimed.length) return { ok: false, block: 'busy', error: 'One of the invoices is being changed, paid, emailed or combined right now. Nothing was combined — check again.' }
@@ -686,10 +751,17 @@ export async function cancelCombineInvoices(params: { orderId: string; actor: st
     const cur = (await loadOp(op.id))!
     if (cur.status !== 'prepared') return result(cur, { ok: false, block: 'not_allowed' })
     if (cur.voidAttemptedAt && Date.now() - new Date(cur.voidAttemptedAt).getTime() < VOID_SETTLE_MS) return result(cur, { ok: false, block: 'busy', error: 'A void request was sent moments ago. Wait a couple of minutes, then retry or cancel.' })
+    const rp = await realmProblem(cur)
+    if (rp) return result(cur, { ok: false, block: rp.block, error: rp.msg })
     let raw: RawQBInvoice | null
     try { raw = await getRetailInvoiceRaw(cur.replacedInvoiceId) }
     catch (e) { return result(cur, { ok: false, block: 'qb_read_failed', error: `Couldn’t confirm #${cur.replacedInvoiceNumber} in QuickBooks (${safeErr(e)}). Nothing changed — try again.` }) }
-    if (raw && hasVoidMarker(raw)) {
+    const st = raw ? replacedVoidState(raw) : null
+    if (st === 'unconfirmed') {
+      const o = await setAttention(cur, reconcileMsg(cur), params.actor)
+      return result(o, { ok: false, block: 'attention', error: reconcileMsg(cur) })
+    }
+    if (raw && st === 'voided') {
       await markVoided(cur, params.actor, ' (found voided while cancelling)')
       return result((await loadOp(op.id))!, { ok: false, block: 'not_allowed', error: `#${cur.replacedInvoiceNumber} is already voided in QuickBooks — finish combining, or bill that vehicle separately.` })
     }
@@ -714,6 +786,8 @@ export async function separateCombineInvoices(params: { orderId: string; actor: 
     let op = (await loadOp(op0.id))!
     if (op.status === 'voided') { const stop = await stepRelink(op, params.actor); if (stop) return stop; op = (await loadOp(op.id))! }
     if (op.status !== 'relinked') return result(op, { ok: false, block: 'not_allowed' })
+    const rp = await realmProblem(op)
+    if (rp) return result(op, { ok: false, block: rp.block, error: rp.msg })
     let raw: RawQBInvoice | null
     try { raw = await getRetailInvoiceRaw(op.retainedInvoiceId) }
     catch (e) { return result(op, { ok: false, block: 'qb_read_failed', error: `Couldn’t read #${op.retainedInvoiceNumber} from QuickBooks (${safeErr(e)}). Nothing changed — try again.` }) }

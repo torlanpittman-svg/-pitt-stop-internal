@@ -31,6 +31,16 @@ async function fetchCombineDiscovery(orderId: string): Promise<{ discovery: Comb
   } catch { return { discovery: null, error: 'Network error — nothing was changed. Try again.' } }
 }
 
+/**
+ * After Retry / Finish: what the panel does next. A fresh review (and, if needed, the emailed acknowledgement) is only
+ * meaningful once the replaced invoice is voided — a stale stop BEFORE the void has already cancelled the combine,
+ * so the panel must refresh straight away (the "not finished" block disappears without a reload).
+ */
+export function afterResume(r: Pick<CombineResult, 'ok' | 'block' | 'status'>): 'review' | 'refresh' {
+  const afterVoid = r.status === 'voided' || r.status === 'relinked'
+  return !r.ok && afterVoid && (r.block === 'stale' || r.block === 'confirm_required') ? 'review' : 'refresh'
+}
+
 function SideCard({ s, keeps }: { s: CombineSide; keeps: boolean }) {
   return (
     <div className={`rounded-2xl border px-4 py-3 ${keeps ? 'border-emerald-700 bg-emerald-950/30' : 'border-gray-700 bg-gray-800/30'}`}>
@@ -226,11 +236,13 @@ export function CombineInvoicesSheet({ orderId, onClose }: { orderId: string; on
 
 /**
  * On a Job's invoice: the "Combine unpaid invoices" entry (when `canOffer`) and, whenever a combine touching this
- * Job is unfinished, its status + recovery actions. `enabled` = the feature flag; an unfinished combine's status
- * always shows, but its recovery actions need the flag on (the panel says so).
+ * Job is unfinished, its status + recovery actions. `enabled` = the feature flag (NEW combines only); an unfinished
+ * combine's status always shows and its recovery stays available while QuickBooks Create + Sync are on.
  */
-export function CombineInvoicesSection({ orderId, state, enabled, canOffer, disabled, onChanged }: {
+export function CombineInvoicesSection({ orderId, state, enabled, recoveryEnabled = true, canOffer, disabled, onChanged }: {
   orderId: string; state: CombineState | null | undefined; enabled: boolean
+  /** QuickBooks Create + Sync on — recovery of an unfinished combine works even when `enabled` (new combines) is off. */
+  recoveryEnabled?: boolean
   /** This Job has its own unpaid, settled retail invoice that isn't shared → it may be combined. */
   canOffer: boolean
   disabled?: boolean
@@ -248,8 +260,7 @@ export function CombineInvoicesSection({ orderId, state, enabled, canOffer, disa
     setBusy(action); setMsg(null)
     try {
       const { data } = await post<CombineResult>(orderId, { action, ...extra })
-      // Only an AFTER-void stop needs a fresh review; a stale stop BEFORE the void already cancelled the combine.
-      if (action === 'resume' && !data.ok && data.block === 'stale' && (data.status === 'voided' || data.status === 'relinked')) {
+      if (action === 'resume' && afterResume(data) === 'review') {
         // The retained invoice changed since the original review (e.g. an earlier update landed): review it fresh.
         const { data: rv } = await post<SharedPreview>(orderId, { action: 'review' })
         setReview(rv)
@@ -272,8 +283,8 @@ export function CombineInvoicesSection({ orderId, state, enabled, canOffer, disa
         {state.attention && <p className="text-amber-300/90 text-xs mt-2">Last problem: {state.attention}</p>}
         {state.emailGuidance && <p className="text-gray-300 text-xs mt-2">{state.emailGuidance}</p>}
         <p className="text-gray-400 text-xs mt-2">Sending, payments and other invoice changes are blocked on both invoices until this is resolved.</p>
-        {!enabled ? (
-          <p className="text-gray-500 text-xs mt-2">Combining invoices is turned off — turn it back on to finish or undo this.</p>
+        {!recoveryEnabled ? (
+          <p className="text-gray-500 text-xs mt-2">QuickBooks invoicing is turned off — turn it back on to finish or undo this.</p>
         ) : (
           <>
             {review?.ok && (
@@ -323,6 +334,8 @@ export function CombineInvoicesSection({ orderId, state, enabled, canOffer, disa
 
   return (
     <>
+      {/* e.g. a Retry that found an invoice changed: the combine was cancelled, so the panel above is gone — say why. */}
+      {msg && <p className="text-amber-400 text-xs mt-3" role="status">{msg}</p>}
       {state && (state.status === 'completed' || state.status === 'separated') && (
         <p className="text-gray-500 text-xs mt-3">{state.summary}{state.status === 'completed' && state.emailGuidance ? ` ${state.emailGuidance}` : ''}</p>
       )}

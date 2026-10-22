@@ -326,6 +326,8 @@ export const retailInvoiceConsolidations = pgTable(
     replacedServiceOrderId:   uuid('replaced_service_order_id').notNull().references(() => serviceOrders.id),
     memberId:                 uuid('member_id'),
     qbCustomerId:             varchar('qb_customer_id', { length: 100 }).notNull(),
+    /** The QuickBooks company (realm) both invoices live in — customer ids are only unique within one company. */
+    qbRealmId:                varchar('qb_realm_id', { length: 100 }).notNull(),
     retainedInvoiceId:        varchar('retained_invoice_id', { length: 100 }).notNull(),
     retainedInvoiceNumber:    varchar('retained_invoice_number', { length: 100 }),
     retainedSyncToken:        varchar('retained_sync_token', { length: 40 }).notNull(),
@@ -361,8 +363,9 @@ export const retailInvoiceConsolidations = pgTable(
     // One unfinished consolidation per Job, on either side (DB backstop for double taps / races).
     uniqueIndex('ric_replaced_active_uniq').on(t.replacedEstimateId).where(sql`status IN ('prepared', 'voided', 'relinked')`),
     uniqueIndex('ric_retained_active_uniq').on(t.retainedEstimateId).where(sql`status IN ('prepared', 'voided', 'relinked')`),
-    // One unfinished consolidation per QuickBooks customer — closes the retained-in-one / replaced-in-another race.
-    uniqueIndex('ric_customer_active_uniq').on(t.qbCustomerId).where(sql`status IN ('prepared', 'voided', 'relinked')`),
+    // One unfinished consolidation per QuickBooks customer within one QuickBooks company (realm), across every
+    // unfinished state including recovery — closes the retained-in-one / replaced-in-another race.
+    uniqueIndex('ric_customer_active_uniq').on(t.qbRealmId, t.qbCustomerId).where(sql`status IN ('prepared', 'voided', 'relinked')`),
     index('ric_retained_order_idx').on(t.retainedServiceOrderId),
     index('ric_replaced_order_idx').on(t.replacedServiceOrderId),
     check('ric_not_self', sql`retained_estimate_id <> replaced_estimate_id`),

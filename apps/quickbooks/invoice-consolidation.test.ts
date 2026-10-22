@@ -25,7 +25,8 @@ const qb = vi.hoisted(() => ({
   failRaw: 0,
   beforeVoid: null as null | (() => Promise<void>),
   afterVoid: null as null | (() => Promise<void>),
-  voidMode: 'ok' as 'ok' | 'lost_response' | 'timeout_not_applied' | 'refuse',
+  voidMode: 'ok' as 'ok' | 'lost_response' | 'timeout_not_applied' | 'refuse' | 'marker_only',
+  realm: 'sandbox-realm' as string | null,
   beforeUpdate: null as null | (() => Promise<void>),
   afterUpdate: null as null | (() => Promise<void>),
 }))
@@ -66,6 +67,8 @@ vi.mock('@/apps/quickbooks/retail-invoice-write', async (orig) => {
       if (qb.voidMode === 'refuse') throw new QBApiError(400, 'Business Validation Error')
       if (qb.voidMode === 'timeout_not_applied') throw new Error('ETIMEDOUT')
       if (String(token) !== String(inv.SyncToken)) throw new QBApiError(400, 'Stale Object Error: You and someone else were editing the same transaction')
+      // A response that can't be trusted: the "Voided" marker without the zeroed amounts.
+      if (qb.voidMode === 'marker_only') { Object.assign(inv, { PrivateNote: `Voided - ${inv.PrivateNote}` }); bump(inv); return clone(inv) }
       // QuickBooks void: keeps the transaction and its DocNumber, zeroes amounts, prepends "Voided" to PrivateNote.
       Object.assign(inv, { TotalAmt: 0, Balance: 0, PrivateNote: `Voided - ${inv.PrivateNote}`, Line: inv.Line.map((l: any) => (l.DetailType === 'SalesItemLineDetail' ? { ...l, Amount: 0, SalesItemLineDetail: { ...l.SalesItemLineDetail, UnitPrice: 0 } } : l)) }); bump(inv)
       if (qb.afterVoid) { const h = qb.afterVoid; qb.afterVoid = null; await h() }
@@ -94,7 +97,7 @@ vi.mock('@/apps/quickbooks/retail-item-map', () => ({
 }))
 vi.mock('@/apps/quickbooks/retail-payment-write', async (orig) => ({
   ...(await orig<typeof import('./retail-payment-write')>()),
-  connectedRealmId: async () => 'sandbox-realm',
+  connectedRealmId: async () => qb.realm,
   getQbPayment: async () => null,
   loadInvoicePayments: async () => [],
   createRetailPaymentInQB: async () => { throw new Error('payment write not expected') },
@@ -193,7 +196,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   for (const t of ['retail_invoice_consolidations', 'retail_invoice_members', 'job_line_items', 'job_services', 'job_estimates', 'quick_entry_jobs', 'service_order_events', 'service_orders', 'vehicles']) await db.execute(sql.raw(`DELETE FROM ${t}`))
   qb.invoices.clear(); qb.customers.clear()
-  qb.failRaw = 0; qb.beforeVoid = null; qb.afterVoid = null; qb.voidMode = 'ok'; qb.beforeUpdate = null; qb.afterUpdate = null
+  qb.failRaw = 0; qb.realm = 'sandbox-realm'; qb.beforeVoid = null; qb.afterVoid = null; qb.voidMode = 'ok'; qb.beforeUpdate = null; qb.afterUpdate = null
   qb.calls = { create: 0, update: 0, send: 0, list: 0, raw: 0, void: 0 }
   qb.customers.set(KELVIN.email, 'C-KELVIN'); qb.customers.set(KELVIN.phone, 'C-KELVIN')
   qb.customers.set('other@example.org', 'C-OTHER')
@@ -474,9 +477,9 @@ describe('concurrency, double taps, retries', () => {
     // A racing claim that slipped past the NOT EXISTS checks: retained C, replaced A (A is retained in op1).
     await expect(db.execute(sql`
       INSERT INTO retail_invoice_consolidations (request_id, retained_estimate_id, retained_service_order_id, replaced_estimate_id, replaced_service_order_id,
-        qb_customer_id, retained_invoice_id, retained_sync_token, retained_lines_fingerprint, retained_total_cents,
+        qb_customer_id, qb_realm_id, retained_invoice_id, retained_sync_token, retained_lines_fingerprint, retained_total_cents,
         replaced_invoice_id, replaced_sync_token, replaced_lines_fingerprint, replaced_total_cents, replaced_prior_qb_status, combined_total_cents)
-      VALUES ('race', ${c.id}::uuid, ${third}::uuid, ${a.id}::uuid, ${f250}::uuid, ${op1.qbCustomerId}, ${c.qbInvoiceId}, '0', 'x', 1, ${a.qbInvoiceId}, '0', 'x', 1, 'created', 2)`).catch((e: { message?: string; cause?: { message?: string } }) => { throw new Error(String(e?.cause?.message ?? e?.message)) })).rejects.toThrow(/ric_customer_active_uniq/)
+      VALUES ('race', ${c.id}::uuid, ${third}::uuid, ${a.id}::uuid, ${f250}::uuid, ${op1.qbCustomerId}, ${op1.qbRealmId}, ${c.qbInvoiceId}, '0', 'x', 1, ${a.qbInvoiceId}, '0', 'x', 1, 'created', 2)`).catch((e: { message?: string; cause?: { message?: string } }) => { throw new Error(String(e?.cause?.message ?? e?.message)) })).rejects.toThrow(/ric_customer_active_uniq/)
     // The app path refuses it too, before any write.
     expect((await previewCombineInvoices({ orderId: third, otherOrderId: f250, retainOrderId: third })).ok).toBe(false)
     expect(qb.calls.void).toBe(0)
@@ -648,5 +651,196 @@ describe('other billing actions on BOTH invoices are blocked while a combine is 
     const p = await previewCombineInvoices({ orderId: third, otherOrderId: f250 })
     expect(p.ok).toBe(false)
     expect(qb.calls.send).toBe(0)
+  })
+})
+
+/** Run `fn` right BEFORE the claim statement executes (after the review passed) — a competitor slipping in. */
+async function withBeforeClaim<T>(fn: () => Promise<void>, body: () => Promise<T>): Promise<T> {
+  const real = holder.db!
+  let fired = false
+  holder.db = new Proxy(real, {
+    get(t, p) {
+      const v = Reflect.get(t, p)
+      if (p !== 'execute') return typeof v === 'function' ? v.bind(t) : v
+      return async (q: unknown) => {
+        if (!fired && JSON.stringify(q).includes('INSERT INTO retail_invoice_consolidations')) { fired = true; await fn() }
+        return (t as typeof real).execute(q as never)
+      }
+    },
+  }) as typeof real
+  try { return await body() } finally { holder.db = real; expect(fired).toBe(true) }
+}
+async function kelvinFourInvoices() {
+  const { f250, bmw } = await kelvinTwoInvoices()
+  const civic = await retailJob({ vehicle: { year: '2015', make: 'Honda', model: 'Civic' }, work: 9000, completedAt: DONE_BMW })
+  const camry = await retailJob({ vehicle: { year: '2019', make: 'Toyota', model: 'Camry' }, work: 7000, completedAt: DONE_BMW })
+  for (const id of [civic, camry]) expect((await createRetailQBInvoice({ orderId: id, actor: 'Manager' })).ok).toBe(true)
+  return { f250, bmw, civic, camry }
+}
+const settle = () => db.update(retailInvoiceConsolidations).set({ voidAttemptedAt: new Date(Date.now() - 10 * 60 * 1000) })
+
+describe('review fixes: one unfinished combine per customer (realm-scoped)', () => {
+  it('a second combine for the same customer is refused gracefully while the first is unfinished — at review AND at confirm', async () => {
+    const { f250, bmw, civic, camry } = await kelvinFourInvoices()
+    qb.voidMode = 'timeout_not_applied'
+    await combine(f250, bmw)                                   // unfinished (prepared, uncertain void)
+    expect((await ops())[0]).toMatchObject({ status: 'prepared', qbRealmId: 'sandbox-realm', qbCustomerId: 'C-KELVIN' })
+    qb.voidMode = 'ok'
+    const p = await previewCombineInvoices({ orderId: civic, otherOrderId: camry })
+    expect(p).toMatchObject({ ok: false, error: expect.stringMatching(/already has an unfinished combine.*only one combine per customer/) })
+    expect(qb.calls.void).toBe(1)
+    expect((await est(civic)).qbStatus).toBe('created'); expect((await est(camry)).qbStatus).toBe('created')
+    // Finishing the first frees the customer.
+    expect(await resumeCombineInvoices({ orderId: f250, actor: 'M' })).toMatchObject({ ok: true, status: 'completed' })
+    expect(await combine(civic, camry)).toMatchObject({ ok: true, status: 'completed' })
+  })
+
+  it('a concurrent start that claims first (lands between the review and the claim) → the DB index refuses the loser: busy, nothing written', async () => {
+    const { f250, bmw, civic, camry } = await kelvinFourInvoices()
+    const [a, b] = [await est(f250), await est(bmw)]
+    const p = await previewCombineInvoices({ orderId: civic, otherOrderId: camry, retainOrderId: civic })
+    expect(p.ok).toBe(true)
+    const r = await withBeforeClaim(async () => {
+      // The competitor's committed claim for the same customer (keep F-250 / void BMW).
+      await holder.db!.insert(retailInvoiceConsolidations).values({ requestId: 'competitor', status: 'prepared', retainedEstimateId: a.id, retainedServiceOrderId: f250, replacedEstimateId: b.id, replacedServiceOrderId: bmw,
+        qbCustomerId: 'C-KELVIN', qbRealmId: 'sandbox-realm', retainedInvoiceId: a.qbInvoiceId!, retainedSyncToken: '0', retainedLinesFingerprint: 'x', retainedTotalCents: a.totalCents,
+        replacedInvoiceId: b.qbInvoiceId!, replacedSyncToken: '0', replacedLinesFingerprint: 'y', replacedTotalCents: b.totalCents, replacedPriorQbStatus: 'created', combinedTotalCents: a.totalCents + b.totalCents })
+    }, () => startCombineInvoices({ retainedOrderId: civic, replacedOrderId: camry, requestId: 'loser', actor: 'M',
+      expected: { retainedSyncToken: p.retained!.syncToken, replacedSyncToken: p.replaced!.syncToken, combinedTotalCents: p.combinedTotalCents! } }))
+    expect(r).toMatchObject({ ok: false, block: 'busy', error: expect.stringMatching(/already has an unfinished combine/) })
+    expect((await ops()).map((o) => o.requestId)).toEqual(['competitor'])
+    expect(await members()).toHaveLength(0)
+    expect((await est(camry)).qbStatus).toBe('created')         // the claim statement rolled back as a whole
+    expect(qb.calls.void).toBe(0)
+  })
+
+  it('the same customer id in ANOTHER QuickBooks company is a different customer — not blocked', async () => {
+    const { f250, bmw, civic, camry } = await kelvinFourInvoices()
+    const [a, b] = [await est(f250), await est(bmw)]
+    await db.insert(retailInvoiceConsolidations).values({ requestId: 'other-company', status: 'relinked', retainedEstimateId: a.id, retainedServiceOrderId: f250, replacedEstimateId: b.id, replacedServiceOrderId: bmw,
+      qbCustomerId: 'C-KELVIN', qbRealmId: 'some-other-realm', retainedInvoiceId: 'X1', retainedSyncToken: '0', retainedLinesFingerprint: 'x', retainedTotalCents: 1,
+      replacedInvoiceId: 'X2', replacedSyncToken: '0', replacedLinesFingerprint: 'y', replacedTotalCents: 1, replacedPriorQbStatus: 'created', combinedTotalCents: 2 })
+    expect(await combine(civic, camry)).toMatchObject({ ok: true, status: 'completed' })
+  })
+
+  it('QuickBooks reconnected to a different company mid-combine → every QuickBooks step stops (no void, no cancel), resumes once restored', async () => {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    qb.voidMode = 'timeout_not_applied'
+    await combine(f250, bmw)
+    await settle(); qb.voidMode = 'ok'
+    qb.realm = 'another-company'
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false, status: 'prepared', block: 'attention', error: expect.stringMatching(/different company/) })
+    expect(await cancelCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false, block: 'attention' })
+    qb.realm = null
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false, block: 'qb_read_failed' })
+    expect(qb.calls.void).toBe(1)                               // only the original uncertain attempt
+    expect(await events(bmw)).not.toContain('invoice_combine_voided')
+    qb.realm = 'sandbox-realm'
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: true, status: 'completed' })
+  })
+})
+
+describe('review fixes: emailed acknowledgement enforced server-side on Finish / Retry', () => {
+  async function stuckBeforeUpdate(opts: { ackAtStart?: boolean } = {}) {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    qb.beforeUpdate = async () => { throw new Error('ETIMEDOUT') }
+    const r = await combine(f250, bmw, { acknowledgeEmailed: opts.ackAtStart })
+    expect(r).toMatchObject({ ok: false, status: 'relinked' })
+    return { f250, bmw }
+  }
+  const emailFromQuickBooks = async (orderId: string) => { const a = inv((await est(orderId)).qbInvoiceId); a.EmailStatus = 'EmailSent'; a.SyncToken = String(Number(a.SyncToken) + 1) }
+
+  it('retained invoice emailed straight from QuickBooks mid-combine → Retry without acknowledgement writes nothing; with it, finishes and records the acknowledgement', async () => {
+    const { f250, bmw } = await stuckBeforeUpdate()
+    await emailFromQuickBooks(f250)
+    const rv = await previewSharedInvoiceUpdate(f250)
+    expect(rv).toMatchObject({ emailed: true, blockers: [] })
+    const u0 = qb.calls.update
+    const refused = await resumeCombineInvoices({ orderId: bmw, actor: 'M', expectedSyncToken: rv.syncToken, combinedTotalCents: rv.combinedTotalCents })
+    expect(refused).toMatchObject({ ok: false, block: 'confirm_required', status: 'relinked', error: expect.stringMatching(/emailed to the customer since this combine was reviewed/) })
+    expect(qb.calls.update).toBe(u0)
+    expect((await members())[0].state).toBe('pending')
+    const done = await resumeCombineInvoices({ orderId: bmw, actor: 'M', expectedSyncToken: rv.syncToken, combinedTotalCents: rv.combinedTotalCents, confirmSent: true })
+    expect(done).toMatchObject({ ok: true, status: 'completed' })
+    expect(qb.calls.send).toBe(0)
+    expect(await events(f250)).toContain('invoice_combine_email_acknowledged')
+  })
+
+  it('an acknowledgement given at start for the REPLACED invoice does not cover the retained one being emailed later', async () => {
+    const { f250, bmw } = await (async () => {
+      const { f250, bmw } = await kelvinTwoInvoices()
+      inv((await est(bmw)).qbInvoiceId).EmailStatus = 'EmailSent'
+      await db.update(jobEstimates).set({ qbStatus: 'sent', qbSentAt: new Date() }).where(eq(jobEstimates.serviceOrderId, bmw))
+      qb.beforeUpdate = async () => { throw new Error('ETIMEDOUT') }
+      expect(await combine(f250, bmw, { acknowledgeEmailed: true })).toMatchObject({ ok: false, status: 'relinked' })   // keep the F-250 explicitly
+      return { f250, bmw }
+    })()
+    expect((await ops())[0]).toMatchObject({ emailedAcknowledged: true, retainedEmailed: false, replacedEmailed: true })
+    await emailFromQuickBooks(f250)
+    const rv = await previewSharedInvoiceUpdate(f250)
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M', expectedSyncToken: rv.syncToken, combinedTotalCents: rv.combinedTotalCents })).toMatchObject({ ok: false, block: 'confirm_required' })
+  })
+
+  it('an invoice already emailed AND acknowledged at start needs no second acknowledgement', async () => {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    inv((await est(f250)).qbInvoiceId).EmailStatus = 'EmailSent'
+    await db.update(jobEstimates).set({ qbStatus: 'sent', qbSentAt: new Date() }).where(eq(jobEstimates.serviceOrderId, f250))
+    qb.beforeUpdate = async () => { throw new Error('ETIMEDOUT') }
+    expect(await combine(f250, bmw, { acknowledgeEmailed: true })).toMatchObject({ ok: false, status: 'relinked' })
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: true, status: 'completed' })
+    expect(await events(f250)).not.toContain('invoice_combine_email_acknowledged')
+  })
+})
+
+describe('review fixes: a genuine void vs an invoice merely reduced to $0', () => {
+  it('after an uncertain void, QuickBooks shows #B at $0 WITHOUT the "Voided" marker → reconcile: no void recorded, no cancel; a real void in QuickBooks then lets Retry finish', async () => {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    const b0 = await est(bmw)
+    qb.voidMode = 'timeout_not_applied'
+    await combine(f250, bmw)
+    await settle()
+    const B = inv(b0.qbInvoiceId); B.TotalAmt = 0; B.Balance = 0; B.SyncToken = String(Number(B.SyncToken) + 1)   // zeroed by hand
+    qb.voidMode = 'ok'
+    const r = await resumeCombineInvoices({ orderId: bmw, actor: 'M' })
+    expect(r).toMatchObject({ ok: false, status: 'prepared', block: 'attention', error: expect.stringMatching(/can’t confirm it was voided/) })
+    expect(await cancelCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false, block: 'attention' })
+    expect(await events(bmw)).not.toContain('invoice_combine_voided')
+    expect(await events(bmw)).not.toContain('invoice_combine_cancelled')
+    expect(await est(bmw)).toMatchObject({ qbStatus: 'consolidating', qbInvoiceId: b0.qbInvoiceId })   // still blocked from billing
+    expect(qb.calls.void).toBe(1)
+    // A person voids it properly in QuickBooks → Retry adopts the confirmed void and finishes.
+    B.PrivateNote = `Voided - ${B.PrivateNote}`
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: true, status: 'completed' })
+    expect(qb.calls.void).toBe(1)
+  })
+
+  it('…or the person restores its charges instead → Retry sees a changed invoice and cancels cleanly (no void recorded)', async () => {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    const b0 = await est(bmw)
+    qb.voidMode = 'timeout_not_applied'
+    await combine(f250, bmw)
+    await settle()
+    const B = inv(b0.qbInvoiceId); const total = B.TotalAmt
+    B.TotalAmt = 0; B.Balance = 0; B.SyncToken = String(Number(B.SyncToken) + 1)
+    qb.voidMode = 'ok'
+    expect((await resumeCombineInvoices({ orderId: bmw, actor: 'M' })).block).toBe('attention')
+    B.TotalAmt = total; B.Balance = total; B.SyncToken = String(Number(B.SyncToken) + 1)
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false, status: 'cancelled', block: 'stale' })
+    expect(await events(bmw)).not.toContain('invoice_combine_voided')
+    expect(await est(bmw)).toMatchObject({ qbStatus: 'created', qbInvoiceId: b0.qbInvoiceId })
+  })
+
+  it('a void response with the marker but NOT zeroed amounts is never recorded as a void → reconcile, both invoices stay blocked', async () => {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    qb.voidMode = 'marker_only'
+    const r = await combine(f250, bmw)
+    expect(r).toMatchObject({ ok: false, status: 'prepared', block: 'attention', error: expect.stringMatching(/can’t confirm it was voided/) })
+    expect(await events(bmw)).not.toContain('invoice_combine_voided')
+    expect(await sendRetailQBInvoice({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false })
+    expect(await sendRetailQBInvoice({ orderId: f250, actor: 'M' })).toMatchObject({ ok: false, block: 'shared_pending' })
+    // Retry keeps refusing to guess (no second void, no cancel).
+    qb.voidMode = 'ok'; await settle()
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false, block: 'attention' })
+    expect(qb.calls.void).toBe(1)
   })
 })

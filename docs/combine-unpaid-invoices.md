@@ -93,21 +93,43 @@ The UI also hides Send, Sync and Payment and shows the recovery panel on both Jo
 | Retained update refused (payment applied, edited in QuickBooks, charges changed) | attention; the replaced vehicle is not billed yet | **Retry** after fixing, or **Bill that vehicle separately**. Only allowed while QuickBooks shows the retained invoice WITHOUT those charges; the vehicle then gets a NEW invoice (voided invoices are never re-adopted) |
 | Retained update landed but its response/finalization was lost | attention; Bill separately refused | **Finish** with a fresh review (the panel loads it); the update reconciles as a no-op-equivalent rewrite, billed once |
 | Finished from the shared-invoice screen instead | — | reading either Job's invoice records the combine as completed |
+| QuickBooks shows the replaced invoice at $0 **or** "Voided", but not both (after a void attempt, or a marker on a live invoice) | attention: "can't confirm it was voided"; **no void is recorded, Cancel is refused**, both invoices stay blocked | a person checks QuickBooks: void it there properly (Retry adopts the confirmed void and finishes) or restore its charges (Retry sees the change and cancels cleanly) |
+| The retained invoice was emailed (from Pitt Stop OR straight from QuickBooks) after the combine was reviewed | `confirm_required`, nothing written | **Finish** shows the acknowledgement; the server refuses the update without it, and records it in both Jobs' history |
+| QuickBooks reconnected to a different company, or the connection can't be read | attention / read failure; no QuickBooks call is made by any step (void, update, cancel, separate) | reconnect the original company (its realm id is on the combine row), then Retry |
+| Another combine for the same customer is unfinished | refused at review; a concurrent start that loses at the database index gets "busy" with the reason; nothing written | finish / cancel / bill separately the open one first |
 
 Double taps reuse the same request id (unique index) and get the same consolidation. Two different requests for
 the same invoices race on the claim statement and unique indexes; exactly one wins. A worker lease (90 s)
 serializes drivers; a crashed worker's lease simply expires.
 
+**Kill switch.** Turning `retail_qb_combine_invoices_enabled` off stops NEW combines (discover / preview / start).
+An unfinished combine can still be finished, cancelled or billed separately: those need only QuickBooks Create +
+Sync, so the switch never strands a half-done combine (and rollback can drain them, see below).
+
+### Guarantees: what the database enforces vs. what is argued
+
+| Guarantee | How | Evidence |
+|---|---|---|
+| One unfinished combine per QuickBooks customer **per QuickBooks company**, in every unfinished state (prepared / voided / relinked — recovery included) | `ric_customer_active_uniq` UNIQUE on `(qb_realm_id, qb_customer_id) WHERE status IN (…)`. Finished rows (completed / cancelled / separated) never block | `invoice-consolidation-migration.test.ts`: applies 0063 itself, inserts straight into the table |
+| One unfinished combine per Job on either side; one row per request id | `ric_replaced_active_uniq`, `ric_retained_active_uniq`, `ric_request_uniq` | same |
+| A losing concurrent claim writes nothing (no `consolidating`, no member row) | the claim is ONE statement: a unique violation rolls back all of it | `invoice-consolidation.test.ts` "a concurrent start that claims first" (competitor row committed just before the claim) |
+| A Job retained in one combine can't be replaced in another | follows from the customer index (both sides of a combine are that customer's) + the step-1 re-check | DB part tested; the true two-connection READ COMMITTED interleaving is **not reproducible** here (PGlite is single-connection, no local Postgres) — it is argued, not demonstrated |
+| QuickBooks writes go to the company the combine was claimed in | `qb_realm_id` on the row; every step re-reads the connected realm first | tested (company switch / unreadable connection) |
+
 ### Residual risks (documented, not eliminated)
 
-- **Concurrency backstop.** One unfinished combine per QuickBooks customer (`ric_customer_active_uniq`). Without
-  it, two concurrent starts (keep A / void B, and keep C / void A) could both claim under READ COMMITTED, because
-  the claim's NOT EXISTS checks don't see a concurrent claim. The step-1 re-check also refuses to void an invoice
-  that anchors a shared member or is retained by another combine. A shared-invoice *link* racing a combine claim
-  can still slip a pending member onto the retained invoice. It only stops the update with an "another vehicle is
-  pending" attention (that member can be kept separate), and it is never a double bill.
-- **Adopting a void requires QuickBooks' own "Voided" marker.** An invoice zeroed out by hand is not treated as
-  voided; the combine cancels instead.
+- **Concurrency.** The database guarantees above close the "keep C / void A while A is kept elsewhere" race the
+  review found. Not covered by an index: a shared-invoice *link* racing a combine claim can still slip a pending
+  member onto the retained invoice (the link's NOT EXISTS check reads the pre-claim snapshot). That only stops the
+  update with an "another vehicle is pending" attention (that member can be kept separate); it is never a double
+  bill.
+- **A void is recorded only when QuickBooks confirms it:** the "Voided" marker AND $0 total and balance. A hand-
+  zeroed invoice with no void attempt from Pitt Stop cancels the combine (nothing of ours was written). Any half
+  state after a void attempt, or a marker on a live invoice, needs a person to reconcile; it is never recorded as a
+  void and never auto-cancelled. Assumption to confirm in the sandbox: QuickBooks' void response and later reads
+  carry both signals (Intuit's reference says so).
+- **Kill switch + QuickBooks off.** If QuickBooks Create or Sync is switched off while a combine is unfinished, it
+  can't be finished or undone until they're back on (both invoices stay blocked meanwhile).
 
 - **Payment applied in QuickBooks between the final re-read and the void.** The void carries the reviewed
   SyncToken. If applying the payment advanced the invoice's SyncToken, QuickBooks rejects the void and the combine
@@ -140,13 +162,14 @@ serializes drivers; a crashed worker's lease simply expires.
   - `shared-invoice.ts` (link / unlink / candidate / preview)
   - `apps/workflow/order-removal.ts`
 - `apps/settings/db.ts`: `retail_qb_combine_invoices_enabled` (default OFF; requires shared invoices + Create + Sync)
+  for new combines; `retailQbCombineRecoveryEnabled()` (Create + Sync) for finishing / undoing an unfinished one
 - `app/api/workflow/orders/[id]/invoice/combine/route.ts`: manager/admin only, flag-gated. The invoice GET now
   also returns `combine` + `qbCombineEnabled`.
 - `app/components/CombineInvoices.tsx` and `app/orders/[id]/InvoiceDraftPanel.tsx`
 
 ## Tests
 
-`apps/quickbooks/invoice-consolidation.test.ts` has 28 tests on PGlite (real schema, indexes and CTE claims) with
+`apps/quickbooks/invoice-consolidation.test.ts` has 38 tests on PGlite (real schema, indexes and CTE claims) with
 the real pricing engine, Invoice Draft and Create/Sync/Send. Only QuickBooks is faked, with SyncToken
 compare-and-set on update and void; send throws. They cover:
 
@@ -166,47 +189,96 @@ compare-and-set on update and void; send throws. They cover:
 - lost / uncertain voids; a QuickBooks outage after the claim;
 - an update that fails before writing; an update that landed but whose response was lost;
 - completion from the shared screen; Cancel; lease expiry;
-- all blocked actions while unfinished.
+- all blocked actions while unfinished;
+- review fixes: second combine for the same customer refused at review and at confirm (DB index loser → busy,
+  nothing written); same customer id in another company not blocked; company switch / unreadable connection stops
+  every QuickBooks step; retained invoice emailed straight from QuickBooks mid-combine → Finish refused without
+  acknowledgement, then finished and audited with it; a start acknowledgement for the replaced invoice doesn't
+  cover the retained one; $0-without-marker and marker-without-$0 never recorded as voided (reconcile → real void
+  finishes, restored charges cancel).
 
-`app/api/workflow/orders/[id]/invoice/combine/route.test.ts` has 5 tests: employee/unauthenticated 403,
-flag-off 503, actor from session, review required, status mapping.
+`apps/quickbooks/invoice-consolidation-migration.test.ts` (4): 0063 applied twice with the apply script's splitter
+equals the Drizzle schema (columns, indexes, checks); additive only; the realm-scoped unique index rejects a second
+unfinished row in every unfinished state and allows finished rows / another company.
+
+`app/components/CombineInvoices.test.ts` (3): after Retry, a pre-void stale stop (combine cancelled) refreshes the
+panel immediately; only post-void stale / acknowledgement stops load a fresh review.
+
+Each new test was checked to fail with its fix reverted (realm index, server-side acknowledgement, strict void
+state, panel rule, realm check).
+
+`app/api/workflow/orders/[id]/invoice/combine/route.test.ts` has 7 tests: employee/unauthenticated 403,
+flag-off refuses new combines (503) but still allows resume / cancel / separate, QuickBooks off refuses recovery,
+actor from session, review required, status mapping.
 
 Verification on 2026-10-22:
 
-- full suite: 188 files, **2302 tests passed**;
+- full suite: 190 files, **2321 tests passed** (after the review fixes);
 - `tsc --noEmit` clean;
-- eslint clean on all changed files (the 3 errors in `InvoiceDraftPanel.tsx` are pre-existing on `origin/main`);
+- eslint on all 16 changed/new TS files vs. the same files at production `85d6190`: 3 findings both before and
+  after, all pre-existing in `InvoiceDraftPanel.tsx` (`react-hooks/refs` ×2, `react-hooks/purity` ×1); **0 new**;
 - `next build --webpack` exit 0.
 
 **Not yet verified:**
 
 - a real QuickBooks **sandbox** void through this code path;
 - whether a payment application bumps the invoice SyncToken (see residual risks);
+- that a sandbox void returns BOTH the "Voided" marker and $0 (the strict void test relies on it);
+- a true two-connection race on the claim (only the database index outcome is tested);
 - the UI in a browser.
 
 ## Deploy plan (each step needs explicit owner approval)
 
-1. **Sandbox check first** (local, sandbox realm only):
+1. **Sandbox check first** (local, sandbox realm only; never production QuickBooks):
    - Create two invoices for one test customer and combine them.
-   - Confirm in QuickBooks that the replaced invoice shows VOID with its number kept and the retained invoice
-     bills both.
-   - Apply a payment to an invoice and confirm its SyncToken advances.
+   - Confirm in QuickBooks that the replaced invoice shows VOID with its number kept, `PrivateNote` starts with
+     "Voided" AND `TotalAmt` / `Balance` are 0 (the code records a void only when both hold), and the retained
+     invoice bills both.
+   - Apply a payment to an invoice and confirm its SyncToken advances (see residual risks).
+   - Email an invoice from QuickBooks and confirm `EmailStatus` becomes `EmailSent` (the server-side
+     acknowledgement keys on it).
 2. **Migration 0063 BEFORE code.** The invoice GET reads `retail_invoice_consolidations` for every Job, so code
-   without the table would break the invoice screen. Apply with `scripts/apply-qb-migration.mjs`; the statements
-   are additive and idempotent. Verify the table, the five indexes and the two checks.
-3. Cherry-pick this branch's commit into a worktree off current `origin/main`, then FF-push and deploy. Confirm
-   READY and the commit via the Vercel API. The flag stays OFF, so behavior is identical except for the
-   blocking guards, which only act on combine rows (none exist).
-4. Read-only live checks:
-   - Kelvin's invoices render as before;
-   - `GET …/invoice/combine` returns `enabled:false`.
-5. Owner enables `retail_qb_combine_invoices_enabled=true` (kill-switch: set it back to false; an unfinished
-   combine still shows its status, but recovery needs the flag on).
-6. Rollback: redeploy `85d6190`. **Hard precondition:** turn the flag off first (no new combine can start), then
-   `SELECT count(*) FROM retail_invoice_consolidations WHERE status IN ('prepared', 'voided', 'relinked')` must be
-   **0** — finish, cancel or bill separately any unfinished combine. Old code does NOT know `consolidating` (its
-   Record Payment would not refuse such an invoice) and has none of the combine guards. The table itself is unused
-   by old code and can stay.
+   without the table would break the invoice screen. Confirm the target first (`tsx scripts/db-target.ts` →
+   `ep-morning-base-adq5h6rq`), then apply with `scripts/apply-qb-migration.mjs` (additive and idempotent; one new
+   table, nothing else touched). Verify:
+   ```sql
+   SELECT column_name FROM information_schema.columns
+    WHERE table_name = 'retail_invoice_consolidations' AND column_name IN ('qb_realm_id', 'qb_customer_id');  -- 2 rows
+   SELECT indexname FROM pg_indexes WHERE tablename = 'retail_invoice_consolidations' ORDER BY 1;
+   -- ric_customer_active_uniq, ric_replaced_active_uniq, ric_replaced_order_idx, ric_request_uniq,
+   -- ric_retained_active_uniq, ric_retained_order_idx, retail_invoice_consolidations_pkey
+   SELECT indexdef FROM pg_indexes WHERE indexname = 'ric_customer_active_uniq';   -- (qb_realm_id, qb_customer_id) WHERE status IN (…)
+   SELECT conname FROM pg_constraint WHERE conrelid = 'retail_invoice_consolidations'::regclass AND contype = 'c';  -- ric_not_self, ric_status_valid
+   SELECT count(*) FROM retail_invoice_consolidations;   -- 0
+   ```
+   (Read-only check 2026-10-22: production `job_estimates.qb_status` is varchar(20) with no CHECK constraint, so
+   the new `consolidating` value fits; the table does not exist yet.)
+3. Cherry-pick this branch's commits into a worktree off current `origin/main`, then FF-push and deploy. Confirm
+   READY and the commit via the Vercel API. The flag stays OFF, so behavior is identical except for the blocking
+   guards, which only act on combine rows (none exist).
+4. Read-only live checks: Kelvin's invoices render as before; `GET …/invoice/combine` returns `enabled:false`.
+5. Owner enables `retail_qb_combine_invoices_enabled=true`. Kill switch = set it back to false: no new combine can
+   start; any unfinished one can still be finished, cancelled or billed separately.
+
+## Rollback (to `85d6190`)
+
+The previous production version **cannot safely handle an unfinished combine**: it doesn't know `consolidating`
+(its Record Payment would not refuse such an invoice, and Send/Sync have no combine guards), and it would treat a
+relinked Job as an ordinary pending shared member that "Keep separate" could unlink while its old invoice is
+already void. So:
+
+1. Set `retail_qb_combine_invoices_enabled = false` (no new combine can start; recovery keeps working).
+2. Drain: for every row from
+   ```sql
+   SELECT id, status, retained_invoice_number, replaced_invoice_number, attention
+     FROM retail_invoice_consolidations WHERE status IN ('prepared', 'voided', 'relinked');
+   ```
+   a manager opens either Job's invoice and Finishes, Cancels (only before the void) or Bills separately. An
+   attention "can't confirm it was voided" needs QuickBooks reconciled first.
+3. **Hard gate:** the same query must return **0 rows**, and
+   `SELECT count(*) FROM job_estimates WHERE qb_status = 'consolidating'` must be **0**. Do not redeploy otherwise.
+4. Redeploy `85d6190`; confirm READY + commit via the Vercel API. The table (and finished rows, which are the
+   permanent audit of each voided invoice's identity) stays — old code never reads it. Do NOT drop it.
 
 ## Kelvin Cooper — reconciliation plan (proposal only; nothing executed)
 

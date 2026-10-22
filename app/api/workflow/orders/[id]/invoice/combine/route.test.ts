@@ -5,12 +5,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const actor = vi.hoisted(() => ({ current: null as null | { name: string; role: string } }))
-const flag = vi.hoisted(() => ({ on: false }))
+const flag = vi.hoisted(() => ({ on: false, qb: true }))
 const svc = vi.hoisted(() => ({
   find: vi.fn(), preview: vi.fn(), start: vi.fn(), resume: vi.fn(), cancel: vi.fn(), separate: vi.fn(), state: vi.fn(), review: vi.fn(),
 }))
 vi.mock('@/apps/auth/employee-guard', () => ({ authenticatedActorFromRequest: async () => actor.current }))
-vi.mock('@/apps/settings/db', () => ({ retailQbCombineInvoicesEnabled: async () => flag.on }))
+vi.mock('@/apps/settings/db', () => ({ retailQbCombineInvoicesEnabled: async () => flag.on && flag.qb, retailQbCombineRecoveryEnabled: async () => flag.qb }))
 vi.mock('@/apps/quickbooks/invoice-consolidation', () => ({
   findCombineCandidates: svc.find, previewCombineInvoices: svc.preview, startCombineInvoices: svc.start, resumeCombineInvoices: svc.resume,
   cancelCombineInvoices: svc.cancel, separateCombineInvoices: svc.separate, loadCombineState: svc.state,
@@ -29,7 +29,7 @@ beforeEach(() => {
   svc.state.mockResolvedValue(null)
   svc.find.mockResolvedValue({ ok: true, candidates: [] })
   svc.start.mockResolvedValue({ ok: true, status: 'completed' })
-  flag.on = true
+  flag.on = true; flag.qb = true
   actor.current = { name: 'Darryl', role: 'manager' }
 })
 
@@ -42,12 +42,25 @@ describe('combine invoices route', () => {
     }
     expect(svc.find).not.toHaveBeenCalled(); expect(svc.start).not.toHaveBeenCalled(); expect(svc.state).not.toHaveBeenCalled()
   })
-  it('flag off → GET reports enabled:false without discovery; every POST is refused', async () => {
+  it('flag off → no discovery and no NEW combine (preview / start refused)', async () => {
     flag.on = false
     expect(await (await get('?discover=1')).json()).toMatchObject({ ok: true, enabled: false })
     expect(svc.find).not.toHaveBeenCalled()
-    for (const action of ['preview', 'start', 'resume', 'cancel', 'separate']) expect((await post({ ...START, action, otherOrderId: 'o2' })).status).toBe(503)
-    expect(svc.start).not.toHaveBeenCalled(); expect(svc.cancel).not.toHaveBeenCalled()
+    for (const action of ['preview', 'start']) expect((await post({ ...START, action, otherOrderId: 'o2' })).status).toBe(503)
+    expect(svc.start).not.toHaveBeenCalled(); expect(svc.preview).not.toHaveBeenCalled()
+  })
+  it('flag off → an UNFINISHED combine can still be finished, cancelled or billed separately (the kill switch never strands one)', async () => {
+    flag.on = false
+    for (const [action, fn] of [['resume', svc.resume], ['cancel', svc.cancel], ['separate', svc.separate]] as const) {
+      fn.mockResolvedValue({ ok: true, status: 'cancelled' })
+      expect((await post({ action })).status).toBe(200)
+      expect(fn).toHaveBeenCalledWith(expect.objectContaining({ orderId: 'o1', actor: 'Darryl' }))
+    }
+  })
+  it('QuickBooks Create/Sync off → recovery is refused too (it would write the retained invoice)', async () => {
+    flag.qb = false
+    for (const action of ['resume', 'cancel', 'separate', 'review']) expect((await post({ action })).status).toBe(503)
+    expect(svc.resume).not.toHaveBeenCalled()
   })
   it('admin is allowed; the actor comes from the session, never the body', async () => {
     actor.current = { name: 'Torlan', role: 'admin' }
