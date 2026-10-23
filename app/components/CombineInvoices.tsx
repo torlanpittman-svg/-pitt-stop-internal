@@ -41,13 +41,14 @@ export function afterResume(r: Pick<CombineResult, 'ok' | 'block' | 'status'>): 
   return !r.ok && afterVoid && (r.block === 'stale' || r.block === 'confirm_required') ? 'review' : 'refresh'
 }
 
-function SideCard({ s, keeps }: { s: CombineSide; keeps: boolean }) {
+function SideCard({ s, keeps, total }: { s: CombineSide; keeps: boolean; total?: number }) {
+  const others = s.vehicles.slice(1)
   return (
     <div className={`rounded-2xl border px-4 py-3 ${keeps ? 'border-emerald-700 bg-emerald-950/30' : 'border-gray-700 bg-gray-800/30'}`}>
       <div className="flex items-center justify-between gap-2">
         <p className="text-white text-sm font-semibold">Invoice #{s.invoiceNumber ?? s.invoiceId}</p>
         <span className={`shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded-full ${keeps ? 'bg-emerald-900/70 text-emerald-200' : 'bg-red-950/70 text-red-200'}`}>
-          {keeps ? 'Stays · bills both' : 'Voided · $0'}
+          {keeps ? (total && total > 2 ? `Stays · bills all ${total}` : 'Stays · bills both') : 'Voided · $0'}
         </span>
       </div>
       <p className="text-gray-300 text-sm mt-0.5 truncate">{s.vehicle}{s.orderNumber ? <span className="text-gray-500"> · {s.orderNumber}</span> : null}</p>
@@ -63,6 +64,9 @@ function SideCard({ s, keeps }: { s: CombineSide; keeps: boolean }) {
         {s.shopSuppliesCents > 0 && <div className="flex justify-between"><span className="text-gray-400">Shop supplies</span><span className="tabular-nums text-gray-300">{money(s.shopSuppliesCents)}</span></div>}
         {s.paymentChargeCents > 0 && <div className="flex justify-between"><span className="text-gray-400">{s.paymentChargeLabel}</span><span className="tabular-nums text-gray-300">{money(s.paymentChargeCents)}</span></div>}
         {s.taxCents > 0 && <div className="flex justify-between"><span className="text-gray-400">Sales tax</span><span className="tabular-nums text-gray-300">{money(s.taxCents)}</span></div>}
+        {others.map((v) => (
+          <div key={v.orderId} className="flex justify-between gap-3"><span className="text-gray-400 truncate">Already on this invoice: {v.vehicle}</span><span className="tabular-nums text-gray-300">{money(v.totalCents)}</span></div>
+        ))}
         <div className="flex justify-between pt-1 border-t border-gray-800"><span className="text-gray-300 font-semibold">Invoice total</span><span className="tabular-nums text-white font-semibold">{money(s.totalCents)}</span></div>
       </div>
     </div>
@@ -142,7 +146,7 @@ export function CombineInvoicesSheet({ orderId, onClose }: { orderId: string; on
             </h3>
             <p className="text-gray-300 text-sm">
               {done.status === 'completed'
-                ? `Invoice #${done.retainedInvoiceNumber} now bills both vehicles (${money(done.combinedTotalCents ?? 0)}). Invoice #${done.replacedInvoiceNumber} is voided in QuickBooks ($0, kept in its history). Nothing was emailed.`
+                ? `Invoice #${done.retainedInvoiceNumber} now bills ${(preview?.retained?.vehicles.length ?? 1) > 1 ? `all ${(preview?.retained?.vehicles.length ?? 1) + 1}` : 'both'} vehicles (${money(done.combinedTotalCents ?? 0)}). Invoice #${done.replacedInvoiceNumber} is voided in QuickBooks ($0, kept in its history). Nothing was emailed.`
                 : done.error ?? 'Open the invoice to finish or undo it.'}
             </p>
             {done.status !== 'completed' && done.status !== 'cancelled' && (
@@ -183,13 +187,13 @@ export function CombineInvoicesSheet({ orderId, onClose }: { orderId: string; on
               <div className="mt-5">
                 <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Review</p>
                 <div className="space-y-3">
-                  <SideCard s={preview.retained} keeps />
+                  <SideCard s={preview.retained} keeps total={preview.retained.vehicles.length + 1} />
                   <SideCard s={preview.replaced} keeps={false} />
                 </div>
-                <button type="button" disabled={working} onClick={() => void loadPreview(other, preview.replaced!.orderId)}
+                {preview.retained.vehicles.length === 1 && <button type="button" disabled={working} onClick={() => void loadPreview(other, preview.replaced!.orderId)}
                   className="mt-2 text-blue-400 text-xs font-semibold active:opacity-70 disabled:opacity-40">
                   Keep #{preview.replaced.invoiceNumber} instead →
-                </button>
+                </button>}
                 <div className="mt-4 rounded-2xl border border-gray-800 bg-gray-800/20 px-4 py-3">
                   <p className="text-gray-400 text-xs mb-1">Invoice #{preview.retained.invoiceNumber} after combining</p>
                   <div className="space-y-0.5 text-sm">
@@ -254,6 +258,7 @@ export function CombineInvoicesSection({ orderId, state, enabled, recoveryEnable
   const [confirmSeparate, setConfirmSeparate] = useState(false)
   const [review, setReview] = useState<SharedPreview | null>(null)
   const [ackFinish, setAckFinish] = useState(false)
+  const [ackVoid, setAckVoid] = useState(false)
 
   const act = useCallback(async (action: 'resume' | 'cancel' | 'separate', extra: Record<string, unknown> = {}) => {
     if (busy) return
@@ -276,6 +281,8 @@ export function CombineInvoicesSection({ orderId, state, enabled, recoveryEnable
 
   if (state?.active) {
     const voided = state.status !== 'prepared'
+    // Two separate acknowledgements, never one checkbox for both (the server keeps them apart too).
+    const needEmailAck = state.ackRequired === 'email' || (!!review?.ok && !!review.emailed && !state.retained.emailed)
     return (
       <div className="mt-4 rounded-xl border border-amber-800/70 bg-amber-950/30 px-4 py-3" role="status">
         <p className="text-amber-300 text-sm font-semibold">Combining #{state.replaced.invoiceNumber} into #{state.retained.invoiceNumber} — not finished</p>
@@ -294,14 +301,20 @@ export function CombineInvoicesSection({ orderId, state, enabled, recoveryEnable
                 {(review.blockers?.length ?? 0) > 0 && <ul className="mt-1 text-amber-300 text-xs space-y-0.5">{review.blockers!.map((b, i) => <li key={i}>{b}</li>)}</ul>}
               </div>
             )}
-            {review?.ok && review.emailed && !state.retained.emailed && (
+            {state.ackRequired === 'external_void' && (
               <label className="mt-2 flex items-start gap-3 rounded-xl border border-amber-800/70 bg-amber-950/30 px-3 py-3 text-amber-100 text-sm">
-                <input type="checkbox" checked={ackFinish} onChange={(e) => setAckFinish(e.target.checked)} className="mt-0.5 h-5 w-5 shrink-0 accent-amber-500" />
-                <span>#{state.retained.invoiceNumber} was emailed since this combine started. Updating it will not resend it — resend it yourself when ready.</span>
+                <input type="checkbox" checked={ackVoid} onChange={(e) => setAckVoid(e.target.checked)} className="mt-0.5 h-5 w-5 shrink-0 accent-amber-500" />
+                <span>I checked this customer in QuickBooks: no payment was made on #{state.replaced.invoiceNumber} before it was voided (or it was handled). Add that vehicle to #{state.retained.invoiceNumber}.</span>
               </label>
             )}
-            <button onClick={() => void act('resume', review?.ok ? { syncToken: review.syncToken, combinedTotalCents: review.combinedTotalCents, confirmSent: !!review.emailed && ackFinish } : {})}
-              disabled={disabled || !!busy || (review != null && (!review.ok || (review.blockers?.length ?? 0) > 0 || (!!review.emailed && !state.retained.emailed && !ackFinish)))}
+            {needEmailAck && (
+              <label className="mt-2 flex items-start gap-3 rounded-xl border border-amber-800/70 bg-amber-950/30 px-3 py-3 text-amber-100 text-sm">
+                <input type="checkbox" checked={ackFinish} onChange={(e) => setAckFinish(e.target.checked)} className="mt-0.5 h-5 w-5 shrink-0 accent-amber-500" />
+                <span>{state.ackRequired === 'email' ? 'An invoice in this combine was emailed after it was reviewed (see above).' : `#${state.retained.invoiceNumber} was emailed since this combine started.`} The customer’s copy will be out of date. Nothing is resent — resend #{state.retained.invoiceNumber} yourself when ready.</span>
+              </label>
+            )}
+            <button onClick={() => void act('resume', { ...(review?.ok ? { syncToken: review.syncToken, combinedTotalCents: review.combinedTotalCents } : {}), confirmSent: needEmailAck && ackFinish, confirmExternalVoid: state.ackRequired === 'external_void' && ackVoid })}
+              disabled={disabled || !!busy || (needEmailAck && !ackFinish) || (state.ackRequired === 'external_void' && !ackVoid) || (review != null && (!review.ok || (review.blockers?.length ?? 0) > 0))}
               className="mt-3 w-full text-white font-semibold text-base py-3 rounded-2xl bg-emerald-600 active:opacity-80 disabled:opacity-50">
               {busy === 'resume' ? 'Working…' : review?.ok ? `Finish — update #${state.retained.invoiceNumber} to ${money(review.combinedTotalCents ?? 0)}` : voided ? 'Retry — finish combining' : 'Retry'}
             </button>

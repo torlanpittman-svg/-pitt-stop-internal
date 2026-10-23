@@ -9,7 +9,7 @@
  * GET ?discover=1        → { enabled, state, discovery }            + this customer's other invoices (READ-ONLY QB)
  * POST { action: 'preview', otherOrderId, retainOrderId? }          READ-ONLY review of the combine
  * POST { action: 'start', retainedOrderId, replacedOrderId, requestId, expected, acknowledgeEmailed? }
- * POST { action: 'resume', syncToken?, combinedTotalCents?, confirmSent? }   retry / finish an unfinished combine
+ * POST { action: 'resume', syncToken?, combinedTotalCents?, confirmSent?, confirmExternalVoid? }   retry / finish an unfinished combine
  * POST { action: 'review' }                                         READ-ONLY review of the retained invoice update
  * POST { action: 'cancel' }                                         stop before anything was written to QuickBooks
  * POST { action: 'separate' }                                       after the void: bill that vehicle separately
@@ -52,7 +52,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const body = await req.json().catch(() => ({})) as {
     action?: string; otherOrderId?: string; retainOrderId?: string; retainedOrderId?: string; replacedOrderId?: string; requestId?: string
     expected?: { retainedSyncToken?: string; replacedSyncToken?: string; combinedTotalCents?: number }
-    acknowledgeEmailed?: boolean; syncToken?: string; combinedTotalCents?: number; confirmSent?: boolean
+    acknowledgeEmailed?: boolean; syncToken?: string; combinedTotalCents?: number; confirmSent?: boolean; confirmExternalVoid?: boolean
   }
   const name = actor!.name
   const recovery = body.action === 'review' || body.action === 'resume' || body.action === 'cancel' || body.action === 'separate'
@@ -82,10 +82,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     case 'review': {
       const state = await loadCombineState(id, name)
       if (!state?.active) return NextResponse.json({ ok: false, error: 'No unfinished combine for this Job.' }, { status: 404 })
-      return NextResponse.json(await previewSharedInvoiceUpdate(state.retained.orderId))
+      return NextResponse.json(await previewSharedInvoiceUpdate(state.retained.orderId, { forCombine: true }))
     }
     case 'resume': {
-      const r = await resumeCombineInvoices({ orderId: id, actor: name, expectedSyncToken: body.syncToken ?? null, combinedTotalCents: typeof body.combinedTotalCents === 'number' ? body.combinedTotalCents : null, confirmSent: !!body.confirmSent })
+      const r = await resumeCombineInvoices({ orderId: id, actor: name, expectedSyncToken: body.syncToken ?? null, combinedTotalCents: typeof body.combinedTotalCents === 'number' ? body.combinedTotalCents : null, confirmSent: !!body.confirmSent, confirmExternalVoid: !!body.confirmExternalVoid })
       return NextResponse.json(r, { status: statusOf(r) })
     }
     case 'cancel': {

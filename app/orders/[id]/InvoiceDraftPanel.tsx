@@ -543,8 +543,9 @@ export function InvoiceDraftPanel({ orderId, embedded = false, mode = 'full', su
                   // An unfinished Combine unpaid invoices blocks every billing action on BOTH invoices (server-enforced too).
                   const combining = !!draft.combine?.active || q.status === 'consolidating'
                   const current = !q.syncNeeded && !q.needsReview && q.status !== 'error' && !payLocked && !sharedPending && !combining  // Send/Resend allowed
-                  // Offer Combine only on a settled, unpaid invoice of its own that isn't already shared.
-                  const canCombine = !draft.shared && !combining && !payLocked && q.payment.status === 'none' && (q.status === 'created' || q.status === 'sent') && !q.needsReview && !q.syncNeeded
+                  // Offer Combine only on a settled, unpaid invoice of its own. One that already bills other vehicles
+                  // (this Job is its anchor, nothing pending) may take one more — it is always the invoice kept.
+                  const canCombine = (!draft.shared || (draft.shared.role === 'anchor' && draft.shared.pendingCount === 0)) && !combining && !payLocked && q.payment.status === 'none' && (q.status === 'created' || q.status === 'sent') && !q.needsReview && !q.syncNeeded
                   return (
                   <div className={`mt-4 rounded-xl border px-4 py-3 ${stale || q.resendRecommended ? 'border-amber-900/60 bg-amber-950/30' : 'border-green-900/60 bg-green-950/40'}`}>
                     <p className={`text-sm font-semibold ${stale || q.resendRecommended ? 'text-amber-300' : 'text-green-300'}`}>QuickBooks Invoice{q.invoiceNumber ? ` #${q.invoiceNumber}` : ''}</p>

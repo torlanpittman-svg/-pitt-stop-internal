@@ -69,8 +69,9 @@ vi.mock('@/apps/quickbooks/retail-invoice-write', async (orig) => {
       if (String(token) !== String(inv.SyncToken)) throw new QBApiError(400, 'Stale Object Error: You and someone else were editing the same transaction')
       // A response that can't be trusted: the "Voided" marker without the zeroed amounts.
       if (qb.voidMode === 'marker_only') { Object.assign(inv, { PrivateNote: `Voided - ${inv.PrivateNote}` }); bump(inv); return clone(inv) }
-      // QuickBooks void: keeps the transaction and its DocNumber, zeroes amounts, prepends "Voided" to PrivateNote.
-      Object.assign(inv, { TotalAmt: 0, Balance: 0, PrivateNote: `Voided - ${inv.PrivateNote}`, Line: inv.Line.map((l: any) => (l.DetailType === 'SalesItemLineDetail' ? { ...l, Amount: 0, SalesItemLineDetail: { ...l.SalesItemLineDetail, UnitPrice: 0 } } : l)) }); bump(inv)
+      // QuickBooks void, as observed on production #100897 (voided by Pitt Stop 2026-10-05): keeps the transaction,
+      // its DocNumber and customer, zeroes amounts, and REPLACES PrivateNote with "Voided" (the PSID is gone).
+      Object.assign(inv, { TotalAmt: 0, Balance: 0, PrivateNote: 'Voided', Line: inv.Line.map((l: any) => (l.DetailType === 'SalesItemLineDetail' ? { ...l, Amount: 0, SalesItemLineDetail: { ...l.SalesItemLineDetail, UnitPrice: 0 } } : l)) }); bump(inv)
       if (qb.afterVoid) { const h = qb.afterVoid; qb.afterVoid = null; await h() }
       if (qb.voidMode === 'lost_response') throw new Error('socket hang up')
       return clone(inv)
@@ -118,7 +119,7 @@ vi.mock('@/apps/quickbooks/retail-customer', async (orig) => ({
 import { serviceOrders, vehicles, jobEstimates, retailInvoiceMembers, retailInvoiceConsolidations, serviceOrderEvents } from '@/drizzle/schema'
 import { quickEntryJobs } from '@/apps/quick-entry/schema'
 import { getOrCreateEstimate, setExplicitPrice, recomputeEstimate, getEstimateRow } from '@/apps/workflow/estimate-db'
-import { createRetailQBInvoice, sendRetailQBInvoice, syncRetailQBInvoice } from './retail-invoice-service'
+import { createRetailQBInvoice, sendRetailQBInvoice, syncRetailQBInvoice, loadJobDraft } from './retail-invoice-service'
 import { findSharedInvoiceCandidates, linkToSharedInvoice, unlinkSharedInvoiceMember, loadSharedInvoiceState, previewSharedInvoiceUpdate, updateSharedInvoice } from './shared-invoice'
 import {
   findCombineCandidates, previewCombineInvoices, startCombineInvoices, resumeCombineInvoices, cancelCombineInvoices,
@@ -172,7 +173,7 @@ async function combine(retainedOrderId: string, replacedOrderId: string, extra: 
 }
 
 /** Run `fn` right after the claim statement commits (the durable row + pending member exist, no QB write yet). */
-async function withAfterClaim<T>(fn: () => void, body: () => Promise<T>): Promise<T> {
+async function withAfterClaim<T>(fn: () => void | Promise<void>, body: () => Promise<T>): Promise<T> {
   const real = holder.db!
   let fired = false
   holder.db = new Proxy(real, {
@@ -181,7 +182,7 @@ async function withAfterClaim<T>(fn: () => void, body: () => Promise<T>): Promis
       if (p !== 'execute') return typeof v === 'function' ? v.bind(t) : v
       return async (q: unknown) => {
         const r = await (t as typeof real).execute(q as never)
-        if (!fired && JSON.stringify(q).includes('INSERT INTO retail_invoice_members')) { fired = true; fn() }
+        if (!fired && JSON.stringify(q).includes('INSERT INTO retail_invoice_members')) { fired = true; await fn() }
         return r
       }
     },
@@ -286,11 +287,11 @@ describe('discovery and review (read-only)', () => {
     await db.update(jobEstimates).set({ qbPaymentStatus: 'recorded' }).where(eq(jobEstimates.serviceOrderId, bmw))
     expect(await previewCombineInvoices({ orderId: f250, otherOrderId: bmw })).toMatchObject({ ok: false, error: expect.stringMatching(/payment/) })
     await db.update(jobEstimates).set({ qbPaymentStatus: 'none' }).where(eq(jobEstimates.serviceOrderId, bmw))
-    // An invoice that is already a shared anchor fails closed.
+    // A shared invoice with a vehicle still PENDING review fails closed (an APPLIED one may be kept — see "third vehicle").
     const third = await retailJob({ vehicle: { make: 'Honda', model: 'Accord' }, work: 8000 })
     const c = (await findSharedInvoiceCandidates(third)).candidates.find((x) => x.anchorOrderId === f250)!
     expect((await linkToSharedInvoice({ orderId: third, anchorOrderId: f250, invoiceId: c.invoiceId, expectedSyncToken: c.syncToken, actor: 'M' })).ok).toBe(true)
-    expect(await previewCombineInvoices({ orderId: bmw, otherOrderId: f250 })).toMatchObject({ ok: false, error: expect.stringMatching(/more than one vehicle/) })
+    expect(await previewCombineInvoices({ orderId: bmw, otherOrderId: f250 })).toMatchObject({ ok: false, error: expect.stringMatching(/waiting to be added/) })
   })
 })
 
@@ -485,11 +486,19 @@ describe('concurrency, double taps, retries', () => {
     expect(qb.calls.void).toBe(0)
   })
 
-  it('a replaced invoice zeroed out by hand (no QuickBooks "Voided" marker) is never adopted as voided → cancelled, no void', async () => {
+  it('a replaced invoice zeroed out by hand (no QuickBooks "Voided" marker) is never adopted as voided NOR auto-cancelled → reconcile; restoring its charges then cancels cleanly', async () => {
     const { f250, bmw } = await kelvinTwoInvoices()
     const b0 = await est(bmw)
+    const saved = clone(inv(b0.qbInvoiceId))
     const r = await withAfterClaim(() => { const b = inv(b0.qbInvoiceId); b.TotalAmt = 0; b.Balance = 0; b.SyncToken = String(Number(b.SyncToken) + 1) }, () => combine(f250, bmw))
-    expect(r).toMatchObject({ ok: false, status: 'cancelled' })
+    expect(r).toMatchObject({ ok: false, block: 'attention', status: 'prepared', error: expect.stringMatching(/can’t confirm it was voided/) })
+    expect(qb.calls.void).toBe(0)
+    expect((await ops())[0].voidedAt).toBeNull()
+    expect(await cancelCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false, block: 'attention' })
+    expect(await est(bmw)).toMatchObject({ qbStatus: 'consolidating' })   // still blocked
+    // A person restores its charges in QuickBooks → Retry sees a changed (live) invoice and cancels; nothing voided.
+    Object.assign(inv(b0.qbInvoiceId), { TotalAmt: saved.TotalAmt, Balance: saved.Balance, SyncToken: String(Number(saved.SyncToken) + 2) })
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ status: 'cancelled', block: 'stale' })
     expect(qb.calls.void).toBe(0)
     expect(await est(bmw)).toMatchObject({ qbInvoiceId: b0.qbInvoiceId, qbStatus: 'created' })
   })
@@ -565,7 +574,7 @@ describe('every write boundary: failure and recovery', () => {
     const r = await combine(f250, bmw)
     expect(r).toMatchObject({ ok: false, status: 'relinked', block: 'attention' })
     expect(Math.round(inv(a0.qbInvoiceId).TotalAmt * 100)).toBe(a0.totalCents)
-    const rv = await previewSharedInvoiceUpdate(f250)
+    const rv = await previewSharedInvoiceUpdate(f250, { forCombine: true })
     expect(rv.blockers).toEqual([])
     expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M', expectedSyncToken: rv.syncToken, combinedTotalCents: rv.combinedTotalCents })).toMatchObject({ ok: true, status: 'completed' })
     expect(Math.round(inv(a0.qbInvoiceId).TotalAmt * 100)).toBe(a0.totalCents + b0.totalCents)
@@ -579,23 +588,31 @@ describe('every write boundary: failure and recovery', () => {
     expect(r).toMatchObject({ ok: false, status: 'relinked' })
     expect(Math.round(inv(a0.qbInvoiceId).TotalAmt * 100)).toBe(a0.totalCents + b0.totalCents)   // landed
     expect((await members())[0].state).toBe('pending')
-    // Bill separately is refused: the retained invoice already carries the BMW's charges.
+    // Bill separately is refused: first while the update may still be landing (settle window), then because the
+    // retained invoice already carries the BMW's charges.
+    expect(await separateCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false, block: 'busy', error: expect.stringMatching(/may still land/) })
+    await db.update(retailInvoiceConsolidations).set({ updateAttemptedAt: new Date(Date.now() - 3 * 60_000) })
     expect(await separateCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false, block: 'not_allowed' })
     // The original review token is stale now — Retry without a fresh review asks for one.
     expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false, block: 'stale' })
-    const rv = await previewSharedInvoiceUpdate(f250)
+    const rv = await previewSharedInvoiceUpdate(f250, { forCombine: true })
     expect(rv.blockers).toEqual([])
     expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M', expectedSyncToken: rv.syncToken, combinedTotalCents: rv.combinedTotalCents })).toMatchObject({ ok: true, status: 'completed' })
     expect(Math.round(inv(a0.qbInvoiceId).TotalAmt * 100)).toBe(a0.totalCents + b0.totalCents)
     expect([...qb.invoices.values()].filter((i) => i.TotalAmt > 0)).toHaveLength(1)
   })
 
-  it('completed from the shared-invoice screen instead → the combine record reconciles to completed', async () => {
+  it('the shared-invoice "Update invoice" can’t finish an unfinished combine behind its back (server-side) — only the combine’s Finish can', async () => {
     const { f250, bmw } = await kelvinTwoInvoices()
     qb.beforeUpdate = async () => { throw new Error('ETIMEDOUT') }
     await combine(f250, bmw)
     const rv = await previewSharedInvoiceUpdate(f250)
-    expect((await updateSharedInvoice({ orderId: f250, actor: 'M', expectedSyncToken: rv.syncToken })).ok).toBe(true)
+    expect(rv.blockers).toEqual(expect.arrayContaining([expect.stringMatching(/combine of this invoice is unfinished/)]))
+    const u0 = qb.calls.update
+    expect(await updateSharedInvoice({ orderId: f250, actor: 'M', expectedSyncToken: rv.syncToken })).toMatchObject({ ok: false, block: 'shared_pending' })
+    expect(qb.calls.update).toBe(u0)
+    const fresh = await previewSharedInvoiceUpdate(f250, { forCombine: true })
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M', expectedSyncToken: fresh.syncToken })).toMatchObject({ ok: true, status: 'completed' })
     expect(await loadCombineState(f250)).toMatchObject({ status: 'completed', active: false })
   })
 
@@ -643,7 +660,7 @@ describe('other billing actions on BOTH invoices are blocked while a combine is 
     await db.update(serviceOrders).set({ status: 'in_progress' }).where(eq(serviceOrders.id, bmw))
     expect((await planOrderRemoval(bmw)).preview).toMatchObject({ blocked: true, reason: expect.stringMatching(/combine/i) })
     expect(await syncRetailQBInvoice({ orderId: f250, actor: 'M' })).toMatchObject({ ok: false, block: 'shared_pending' })
-    const rv = await previewSharedInvoiceUpdate(f250)
+    const rv = await previewSharedInvoiceUpdate(f250, { forCombine: true })
     expect(rv.blockers!.join(' ')).toMatch(/combine is still voiding/)
     expect(await updateSharedInvoice({ orderId: f250, actor: 'M', expectedSyncToken: rv.syncToken })).toMatchObject({ ok: false })
     expect(qb.calls.update).toBe(0)
@@ -753,11 +770,11 @@ describe('review fixes: emailed acknowledgement enforced server-side on Finish /
   it('retained invoice emailed straight from QuickBooks mid-combine → Retry without acknowledgement writes nothing; with it, finishes and records the acknowledgement', async () => {
     const { f250, bmw } = await stuckBeforeUpdate()
     await emailFromQuickBooks(f250)
-    const rv = await previewSharedInvoiceUpdate(f250)
+    const rv = await previewSharedInvoiceUpdate(f250, { forCombine: true })
     expect(rv).toMatchObject({ emailed: true, blockers: [] })
     const u0 = qb.calls.update
     const refused = await resumeCombineInvoices({ orderId: bmw, actor: 'M', expectedSyncToken: rv.syncToken, combinedTotalCents: rv.combinedTotalCents })
-    expect(refused).toMatchObject({ ok: false, block: 'confirm_required', status: 'relinked', error: expect.stringMatching(/emailed to the customer since this combine was reviewed/) })
+    expect(refused).toMatchObject({ ok: false, block: 'confirm_required', status: 'relinked', error: expect.stringMatching(/emailed to the customer after this combine was reviewed/) })
     expect(qb.calls.update).toBe(u0)
     expect((await members())[0].state).toBe('pending')
     const done = await resumeCombineInvoices({ orderId: bmw, actor: 'M', expectedSyncToken: rv.syncToken, combinedTotalCents: rv.combinedTotalCents, confirmSent: true })
@@ -777,7 +794,7 @@ describe('review fixes: emailed acknowledgement enforced server-side on Finish /
     })()
     expect((await ops())[0]).toMatchObject({ emailedAcknowledged: true, retainedEmailed: false, replacedEmailed: true })
     await emailFromQuickBooks(f250)
-    const rv = await previewSharedInvoiceUpdate(f250)
+    const rv = await previewSharedInvoiceUpdate(f250, { forCombine: true })
     expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M', expectedSyncToken: rv.syncToken, combinedTotalCents: rv.combinedTotalCents })).toMatchObject({ ok: false, block: 'confirm_required' })
   })
 
@@ -842,5 +859,317 @@ describe('review fixes: a genuine void vs an invoice merely reduced to $0', () =
     qb.voidMode = 'ok'; await settle()
     expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false, block: 'attention' })
     expect(qb.calls.void).toBe(1)
+  })
+})
+
+// ── Kelvin's real case and his THIRD vehicle ─────────────────────────────────────────────────────────────
+const TAHOE = { year: '2020', make: 'Chevrolet', model: 'Tahoe', vin: '1GNSKBKC0LR000003' }
+type RawLine = { DetailType: string; Amount?: number; Description?: string }
+const lineView = (id: string | null | undefined) => (inv(id).Line as RawLine[]).map((l) => (l.DetailType === 'DescriptionOnly' ? `# ${l.Description}` : `${l.Description} ${l.Amount}`))
+const qbCents = (id: string | null | undefined) => ({ total: Math.round(inv(id).TotalAmt * 100), balance: Math.round(inv(id).Balance * 100) })
+
+/** #A bills F-250 + BMW (combined); #B voided. */
+async function kelvinCombined() {
+  const { f250, bmw } = await kelvinTwoInvoices()
+  expect(await combine(f250, bmw)).toMatchObject({ ok: true, status: 'completed' })
+  return { f250, bmw, a: (await est(f250)).qbInvoiceId! }
+}
+
+describe('Kelvin: two completed Jobs combined — exact totals, combined fee lines, history preserved', () => {
+  it('#A keeps both vehicles at $318.28 (balance $318.28), #B voided $0, each vehicle’s services separate, ONE shop-supplies and ONE card-fee line, each Job’s own fees intact', async () => {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    const [a0, b0] = [await est(f250), await est(bmw)]
+    expect([a0.totalCents, b0.totalCents]).toEqual([15914, 15914])   // the real #100922 / #100924 amounts
+    const fees = async (id: string) => { const d = (await loadJobDraft(id)).draft!; return [d.workPriceCents, d.shopSupplies.cents, d.paymentCharge.cents, d.totalCents] }
+    const [fa0, fb0] = [await fees(f250), await fees(bmw)]
+    expect(fa0).toEqual([15000, 450, 464, 15914])
+    const p = await previewCombineInvoices({ orderId: bmw, otherOrderId: f250 })
+    expect(p).toMatchObject({ ok: true, combinedTotalCents: 31828, retained: { orderId: f250 }, replaced: { orderId: bmw } })
+    expect(await combine(f250, bmw)).toMatchObject({ ok: true, status: 'completed', combinedTotalCents: 31828 })
+    expect(qbCents(a0.qbInvoiceId)).toEqual({ total: 31828, balance: 31828 })
+    expect(qbCents(b0.qbInvoiceId)).toEqual({ total: 0, balance: 0 })
+    expect(lineView(a0.qbInvoiceId)).toEqual([
+      '# Vehicle 1 of 2 — 2018 Ford F-250 · VIN 1FT7W2BT0JE000001', 'Full Detail 150',
+      '# Vehicle 2 of 2 — 2022 BMW 330i · VIN WBA5R1C00NF000002', 'Full Detail 150',
+      'Shop supplies 9', 'Card Payment 9.28',
+    ])
+    // Each Job's own fee calculation is unchanged (3% supplies, card fee on its own subtotal, own rounding).
+    expect([await fees(f250), await fees(bmw)]).toEqual([fa0, fb0])
+    expect(qb.calls.send).toBe(0)
+  })
+})
+
+describe('third vehicle WITHOUT its own invoice joins the combined invoice (existing shared-invoice flow)', () => {
+  for (const when of ['before completion', 'after completion'] as const) {
+    it(`${when}: offered #A, linked, reviewed, updated — 3 vehicle sections, combined fees, total = Σ 3 Job totals; first two untouched`, async () => {
+      const { f250, bmw, a } = await kelvinCombined()
+      const bmwMember0 = (await members()).find((m) => m.memberServiceOrderId === bmw)!
+      const third = await retailJob({ vehicle: TAHOE, work: 20000, status: when === 'before completion' ? 'in_progress' : 'ready', completedAt: when === 'after completion' ? new Date('2026-10-25T18:00:00Z') : undefined })
+      const disc = await findSharedInvoiceCandidates(third)
+      const c = disc.candidates.find((x) => x.invoiceId === a)!
+      expect(c).toMatchObject({ eligible: true, anchorOrderId: f250, vehicles: ['2018 Ford F-250', '2022 BMW 330i'], totalCents: 31828 })
+      expect((await linkToSharedInvoice({ orderId: third, anchorOrderId: f250, invoiceId: a, expectedSyncToken: c.syncToken, actor: 'Manager' })).ok).toBe(true)
+      const rv = await previewSharedInvoiceUpdate(f250)
+      const t3 = (await est(third)).totalCents
+      expect(rv).toMatchObject({ ok: true, blockers: [], combinedTotalCents: 31828 + t3 })
+      expect((await updateSharedInvoice({ orderId: f250, actor: 'Manager', expectedSyncToken: rv.syncToken! })).ok).toBe(true)
+      expect(qbCents(a)).toEqual({ total: 31828 + t3, balance: 31828 + t3 })
+      const lines = lineView(a)
+      expect(lines.filter((l) => l.startsWith('# Vehicle'))).toEqual([
+        '# Vehicle 1 of 3 — 2018 Ford F-250 · VIN 1FT7W2BT0JE000001', '# Vehicle 2 of 3 — 2022 BMW 330i · VIN WBA5R1C00NF000002', '# Vehicle 3 of 3 — 2020 Chevrolet Tahoe · VIN 1GNSKBKC0LR000003',
+      ])
+      expect(lines.filter((l) => /^Shop supplies/.test(l))).toHaveLength(1)
+      expect(lines.filter((l) => /^Card Payment/.test(l))).toHaveLength(1)
+      // The first two memberships are preserved exactly; the third is added once.
+      const ms = await members()
+      expect(ms.filter((m) => m.state === 'applied').map((m) => m.memberServiceOrderId).sort()).toEqual([bmw, third].sort())
+      expect(ms.find((m) => m.id === bmwMember0.id)).toMatchObject({ state: 'applied', appliedAt: bmwMember0.appliedAt, appliedTotalCents: 15914 })
+      expect(await est(third)).toMatchObject({ qbInvoiceId: null, qbStatus: 'linked' })
+      expect((await order(third)).status).toBe(when === 'before completion' ? 'in_progress' : 'ready')
+      expect(qb.calls).toMatchObject({ create: 2, void: 1, send: 0 })
+    })
+  }
+})
+
+describe('third vehicle WITH its own invoice is combined into the existing two-vehicle invoice', () => {
+  async function thirdInvoiced(work = 20000) {
+    const base = await kelvinCombined()
+    const third = await retailJob({ vehicle: TAHOE, work, completedAt: new Date('2026-10-25T18:00:00Z') })
+    expect((await createRetailQBInvoice({ orderId: third, actor: 'Manager' })).ok).toBe(true)
+    return { ...base, third, c: (await est(third)).qbInvoiceId! }
+  }
+
+  it('offered from either side; #A (already shared) is always the one kept — even when the third invoice is emailed — and can’t be swapped away', async () => {
+    const { f250, bmw, third, c } = await thirdInvoiced()
+    expect((await findCombineCandidates(third)).candidates).toEqual([expect.objectContaining({ orderId: f250, eligible: true, totalCents: 31828 })])
+    expect((await findCombineCandidates(f250)).candidates).toEqual([expect.objectContaining({ orderId: third, eligible: true })])
+    expect(await findCombineCandidates(bmw)).toMatchObject({ ok: true, blocked: expect.stringMatching(/another vehicle’s shared invoice/) })
+    inv(c).EmailStatus = 'EmailSent'   // would normally make it the one kept
+    const p = await previewCombineInvoices({ orderId: third, otherOrderId: f250 })
+    expect(p).toMatchObject({ ok: true, retained: { orderId: f250, vehicles: [{ vehicle: '2018 Ford F-250' }, { vehicle: '2022 BMW 330i' }] }, replaced: { orderId: third } })
+    expect(p.plan!.join(' ')).toMatch(/all 3 vehicles/)
+    expect(await previewCombineInvoices({ orderId: third, otherOrderId: f250, retainOrderId: third })).toMatchObject({ ok: false, error: expect.stringMatching(/already bills 2 vehicles .* must be the one kept/) })
+  })
+
+  it('combines: #C voided, #A bills 3 vehicles at Σ of the three Job totals, first two members untouched, third added once, nothing emailed', async () => {
+    const { f250, bmw, a, third, c } = await thirdInvoiced()
+    const bmwMember0 = (await members()).find((m) => m.memberServiceOrderId === bmw)!
+    const totals = [(await est(f250)).totalCents, (await est(bmw)).totalCents, (await est(third)).totalCents]
+    const sum = totals.reduce((x, y) => x + y, 0)
+    const [o1, o2, o3] = [await order(f250), await order(bmw), await order(third)]
+    const r = await combine(f250, third)
+    expect(r).toMatchObject({ ok: true, status: 'completed', combinedTotalCents: sum })
+    expect(qbCents(a)).toEqual({ total: sum, balance: sum })
+    expect(qbCents(c)).toEqual({ total: 0, balance: 0 })
+    expect(inv(c).PrivateNote).toMatch(/^Voided/)
+    const lines = lineView(a)
+    expect(lines.filter((l) => l.startsWith('# Vehicle')).map((l) => l.slice(0, 18))).toEqual(['# Vehicle 1 of 3 —', '# Vehicle 2 of 3 —', '# Vehicle 3 of 3 —'])
+    expect(lines.filter((l) => /^Shop supplies/.test(l))).toHaveLength(1)
+    expect(lines.filter((l) => /^Card Payment/.test(l))).toHaveLength(1)
+    const ms = await members()
+    expect(ms.filter((m) => m.state === 'applied').map((m) => m.memberServiceOrderId).sort()).toEqual([bmw, third].sort())
+    expect(ms.find((m) => m.id === bmwMember0.id)).toMatchObject({ state: 'applied', appliedAt: bmwMember0.appliedAt, appliedTotalCents: totals[1] })
+    expect(await est(third)).toMatchObject({ qbInvoiceId: null, qbStatus: 'linked' })
+    const op = (await ops()).find((o) => o.replacedServiceOrderId === third)!
+    expect(op).toMatchObject({ status: 'completed', retainedMemberCount: 1, retainedTotalCents: 31828 })
+    for (const [before, id] of [[o1, f250], [o2, bmw], [o3, third]] as const) {
+      const after = await order(id)
+      expect(after.status).toBe(before.status)
+      expect(after.completedAt?.toISOString()).toBe(before.completedAt?.toISOString())
+    }
+    expect(await events(third)).toEqual(expect.arrayContaining(['invoice_combine_voided', 'invoice_combine_completed']))
+    expect(qb.calls).toMatchObject({ create: 3, void: 2, send: 0 })
+    expect((await loadCombineState(third))?.summary).toMatch(/all 3 vehicles/)
+    // Reports: each vehicle counted once; one open receivable.
+    const rows = (await db.execute(sql`SELECT je.service_order_id AS id FROM job_estimates je
+      WHERE je.qb_invoice_id IS NOT NULL OR EXISTS (SELECT 1 FROM retail_invoice_members rim WHERE rim.member_estimate_id = je.id AND rim.state = 'applied')`) as unknown as { rows: { id: string }[] }).rows
+    expect(rows.map((x) => x.id).sort()).toEqual([f250, bmw, third].sort())
+    expect([...qb.invoices.values()].filter((i) => i.Balance > 0)).toHaveLength(1)
+  })
+
+  it('a payment or credit applied to #A before the third vehicle arrives → both workflows refuse with the reason, nothing written', async () => {
+    for (const mutate of [(x: { Balance: number }) => { x.Balance -= 50 }, (x: { LinkedTxn?: unknown[] }) => { x.LinkedTxn = [{ TxnId: '77', TxnType: 'CreditMemo' }] }]) {
+      for (const t of ['retail_invoice_consolidations', 'retail_invoice_members', 'job_line_items', 'job_services', 'job_estimates', 'quick_entry_jobs', 'service_order_events', 'service_orders', 'vehicles']) await db.execute(sql.raw(`DELETE FROM ${t}`))
+      qb.invoices.clear()
+      const { f250, a, third } = await thirdInvoiced()
+      const uninvoiced = await retailJob({ vehicle: { make: 'Toyota', model: 'Camry' }, work: 9000 })
+      mutate(inv(a))
+      const w0 = { ...qb.calls }
+      expect((await findSharedInvoiceCandidates(uninvoiced)).candidates.find((x) => x.invoiceId === a)).toMatchObject({ eligible: false, reason: expect.stringMatching(/payment or credit/) })
+      expect(await previewCombineInvoices({ orderId: third, otherOrderId: f250 })).toMatchObject({ ok: false, error: expect.stringMatching(/payment or credit/) })
+      expect((await findCombineCandidates(third)).candidates[0]).toMatchObject({ eligible: false, reason: expect.stringMatching(/payment or credit/) })
+      expect(qb.calls).toMatchObject({ create: w0.create, update: w0.update, void: w0.void, send: 0 })
+      expect((await ops()).filter((o) => o.replacedServiceOrderId === third)).toHaveLength(0)
+    }
+  })
+
+  it('a dealer Job is never offered and never combined into the shared invoice', async () => {
+    const { f250, a } = await kelvinCombined()
+    const dealer = await retailJob({ vehicle: TAHOE, work: 9000, source: 'dealer_checkin', serviceType: 'dealer' })
+    expect((await findSharedInvoiceCandidates(dealer))).toMatchObject({ skipped: 'dealer', candidates: [] })
+    expect(await previewCombineInvoices({ orderId: f250, otherOrderId: dealer })).toMatchObject({ ok: false, error: expect.stringMatching(/Dealer/) })
+    expect((await findCombineCandidates(f250)).candidates.map((x) => x.orderId)).not.toContain(dealer)
+    expect(qbCents(a).total).toBe(31828)
+  })
+
+  it('two invoices that each already bill several vehicles are never combined', async () => {
+    const { f250, third } = await thirdInvoiced()
+    const fourth = await retailJob({ vehicle: { make: 'Toyota', model: 'Camry' }, work: 9000 })
+    const c = (await findSharedInvoiceCandidates(fourth)).candidates.find((x) => x.anchorOrderId === third)!
+    await linkToSharedInvoice({ orderId: fourth, anchorOrderId: third, invoiceId: c.invoiceId, expectedSyncToken: c.syncToken, actor: 'M' })
+    const rv = await previewSharedInvoiceUpdate(third)
+    expect((await updateSharedInvoice({ orderId: third, actor: 'M', expectedSyncToken: rv.syncToken! })).ok).toBe(true)
+    expect(await previewCombineInvoices({ orderId: third, otherOrderId: f250 })).toMatchObject({ ok: false, error: expect.stringMatching(/Both invoices already bill more than one vehicle/) })
+  })
+
+  it('another vehicle linked to #A after the claim (pending) → cancelled before the void; nothing voided or rewritten', async () => {
+    const { f250, a, third, c } = await thirdInvoiced()
+    const other = await retailJob({ vehicle: { make: 'Toyota', model: 'Camry' }, work: 9000 })
+    const [anchorEst, otherEst] = [await est(f250), await getOrCreateEstimate(other, 'T')]
+    const r = await withAfterClaim(async () => {
+      await db.insert(retailInvoiceMembers).values({ anchorEstimateId: anchorEst.id, anchorServiceOrderId: f250, memberEstimateId: otherEst.id, memberServiceOrderId: other, qbInvoiceId: a, qbInvoiceNumber: anchorEst.qbInvoiceNumber, state: 'pending', linkRequestId: 'race', linkedBy: 'X' })
+    }, () => combine(f250, third))
+    expect(r).toMatchObject({ ok: false, block: 'stale', status: 'cancelled', error: expect.stringMatching(/vehicles on .* changed/) })
+    expect(qb.calls.void).toBe(1)   // only the first combine's void
+    expect(qbCents(c).total).toBeGreaterThan(0)
+    expect(qbCents(a).total).toBe(31828)
+    expect(await est(third)).toMatchObject({ qbInvoiceId: c, qbStatus: 'created' })
+  })
+
+  it('the vehicles on #A change between the final re-check and the claim → the claim statement refuses (busy), nothing written', async () => {
+    const { f250, a, third, c } = await thirdInvoiced()
+    const other = await retailJob({ vehicle: { make: 'Toyota', model: 'Camry' }, work: 9000 })
+    const [anchorEst, otherEst] = [await est(f250), await getOrCreateEstimate(other, 'T')]
+    const real = holder.db!
+    let fired = false
+    holder.db = new Proxy(real, {
+      get(t, k) {
+        const v = Reflect.get(t, k)
+        if (k !== 'execute') return typeof v === 'function' ? v.bind(t) : v
+        return async (q: unknown) => {
+          if (!fired && JSON.stringify(q).includes('INSERT INTO retail_invoice_consolidations')) {
+            fired = true
+            await real.insert(retailInvoiceMembers).values({ anchorEstimateId: anchorEst.id, anchorServiceOrderId: f250, memberEstimateId: otherEst.id, memberServiceOrderId: other, qbInvoiceId: a, qbInvoiceNumber: anchorEst.qbInvoiceNumber, state: 'applied', linkRequestId: 'race2', linkedBy: 'X' })
+          }
+          return (t as typeof real).execute(q as never)
+        }
+      },
+    }) as typeof real
+    let r
+    try { r = await combine(f250, third) } finally { holder.db = real }
+    expect(fired).toBe(true)
+    expect(r).toMatchObject({ ok: false, block: 'busy' })
+    expect((await ops()).filter((o) => o.replacedServiceOrderId === third)).toHaveLength(0)
+    expect(await est(third)).toMatchObject({ qbInvoiceId: c, qbStatus: 'created' })
+    expect(qb.calls.void).toBe(1)
+  })
+
+  it('every write boundary for the 3-vehicle combine recovers to exactly one update and Σ totals (void lost, update failed, update landed but lost)', async () => {
+    for (const fault of ['void_lost', 'update_failed', 'update_landed_lost'] as const) {
+      for (const t of ['retail_invoice_consolidations', 'retail_invoice_members', 'job_line_items', 'job_services', 'job_estimates', 'quick_entry_jobs', 'service_order_events', 'service_orders', 'vehicles']) await db.execute(sql.raw(`DELETE FROM ${t}`))
+      qb.invoices.clear(); qb.voidMode = 'ok'
+      const { f250, bmw, a, third, c } = await thirdInvoiced()
+      const sum = 31828 + (await est(third)).totalCents
+      if (fault === 'void_lost') qb.voidMode = 'lost_response'
+      if (fault === 'update_failed') qb.beforeUpdate = async () => { throw new Error('ETIMEDOUT') }
+      if (fault === 'update_landed_lost') qb.afterUpdate = async () => { throw new Error('socket hang up') }
+      const first = await combine(f250, third)
+      qb.voidMode = 'ok'
+      let final = first
+      if (!first.ok) {
+        const rv = await previewSharedInvoiceUpdate(f250, { forCombine: true })
+        final = await resumeCombineInvoices({ orderId: third, actor: 'M', expectedSyncToken: rv.ok ? rv.syncToken : null, combinedTotalCents: rv.ok ? rv.combinedTotalCents : null })
+      }
+      expect(final, fault).toMatchObject({ ok: true, status: 'completed' })
+      expect(qbCents(a), fault).toEqual({ total: sum, balance: sum })
+      expect(qbCents(c).total, fault).toBe(0)
+      expect((await members()).filter((m) => m.state === 'applied').map((m) => m.memberServiceOrderId).sort(), fault).toEqual([bmw, third].sort())
+      expect(qb.calls.send).toBe(0)
+    }
+  })
+})
+
+describe('review fix: an invoice emailed from QuickBooks mid-combine WITHOUT a SyncToken change still needs acknowledgement', () => {
+  it('replaced invoice emailed after the review → no void until acknowledged (server-side); Retry with it voids, finishes and records it', async () => {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    const b = inv((await est(bmw)).qbInvoiceId)
+    const r = await withAfterClaim(() => { b.EmailStatus = 'EmailSent' }, () => combine(f250, bmw))
+    expect(r).toMatchObject({ ok: false, block: 'confirm_required', status: 'prepared', error: expect.stringMatching(/emailed to the customer after this combine was reviewed/) })
+    expect(qb.calls.void).toBe(0)
+    expect(await loadCombineState(f250)).toMatchObject({ active: true, ackRequired: 'email' })
+    // Retry without the acknowledgement still writes nothing.
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ block: 'confirm_required' })
+    expect(qb.calls.void).toBe(0)
+    const done = await resumeCombineInvoices({ orderId: bmw, actor: 'M', confirmSent: true })
+    expect(done).toMatchObject({ ok: true, status: 'completed' })
+    const op = (await ops())[0]
+    expect(op).toMatchObject({ lateEmailAcknowledgedBy: 'M', ackRequired: null, lateEmailAcknowledgedInvoices: `#${op.replacedInvoiceNumber}` })
+    for (const id of [f250, bmw]) expect(await events(id)).toContain('invoice_combine_email_acknowledged')
+    expect(qb.calls.send).toBe(0)
+  })
+})
+
+describe('independent review (2026-10-23) fixes', () => {
+  it('acknowledgements are PER INVOICE: acknowledging #B’s late email does not cover #A being emailed later', async () => {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    const [aId, bId] = [(await est(f250)).qbInvoiceId, (await est(bmw)).qbInvoiceId]
+    qb.beforeUpdate = async () => { throw new Error('ETIMEDOUT') }
+    expect(await withAfterClaim(() => { inv(bId).EmailStatus = 'EmailSent' }, () => combine(f250, bmw))).toMatchObject({ block: 'confirm_required', status: 'prepared' })
+    // Acknowledge #B → void + relink, then the update times out.
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M', confirmSent: true })).toMatchObject({ ok: false, status: 'relinked' })
+    inv(aId).EmailStatus = 'EmailSent'   // #A emailed straight from QuickBooks afterwards
+    const rv = await previewSharedInvoiceUpdate(f250, { forCombine: true })
+    const u0 = qb.calls.update
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M', expectedSyncToken: rv.syncToken })).toMatchObject({ ok: false, block: 'confirm_required', error: expect.stringMatching(new RegExp(`#${inv(aId).DocNumber} was emailed`)) })
+    expect(qb.calls.update).toBe(u0)
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M', expectedSyncToken: rv.syncToken, confirmSent: true })).toMatchObject({ ok: true, status: 'completed' })
+    expect((await ops())[0].lateEmailAcknowledgedInvoices).toBe(`#${inv(bId).DocNumber},#${inv(aId).DocNumber}`)
+    expect(qb.calls.send).toBe(0)
+  })
+
+  it('a void done in QuickBooks by someone else is recorded (never cancelled) but finishing needs an explicit payment check; Bill separately stays available', async () => {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    const bId = (await est(bmw)).qbInvoiceId
+    const r = await withAfterClaim(() => { const b = inv(bId); Object.assign(b, { PrivateNote: 'Voided', TotalAmt: 0, Balance: 0, SyncToken: String(Number(b.SyncToken) + 1) }) }, () => combine(f250, bmw))
+    expect(r).toMatchObject({ ok: false, block: 'confirm_required', status: 'voided', error: expect.stringMatching(/voided in QuickBooks outside this combine/) })
+    expect(qb.calls.void).toBe(0)   // Pitt Stop never voided it
+    expect(await loadCombineState(f250)).toMatchObject({ ackRequired: 'external_void', canCancel: false, canSeparate: true })
+    expect(await cancelCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false, block: 'not_allowed' })
+    const u0 = qb.calls.update
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ ok: false, block: 'confirm_required', status: 'relinked' })
+    expect(qb.calls.update).toBe(u0)
+    // The EMAIL acknowledgement is not the payment check — it never satisfies it.
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M', confirmSent: true })).toMatchObject({ ok: false, block: 'confirm_required' })
+    expect(qb.calls.update).toBe(u0)
+    expect(await resumeCombineInvoices({ orderId: bmw, actor: 'M', confirmExternalVoid: true })).toMatchObject({ ok: true, status: 'completed' })
+    for (const id of [f250, bmw]) expect(await events(id)).toContain('invoice_combine_void_acknowledged')
+  })
+
+  it('an unclear (timed-out) update keeps Bill separately waiting; a definitive pre-write refusal does not', async () => {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    qb.afterUpdate = async () => { throw new Error('socket hang up') }   // landed, response lost → ambiguous
+    expect(await combine(f250, bmw)).toMatchObject({ ok: false, status: 'relinked' })
+    expect((await ops())[0].updateAttemptedAt).not.toBeNull()
+    expect(await separateCombineInvoices({ orderId: bmw, actor: 'M' })).toMatchObject({ block: 'busy' })
+  })
+
+  it('Cancel never half-commits: a replaced Job that is no longer "consolidating" keeps the combine prepared and reports not-ok', async () => {
+    const { f250, bmw } = await kelvinTwoInvoices()
+    qb.failRaw = 0
+    const r = await withAfterClaim(() => { qb.failRaw = 5 }, () => combine(f250, bmw))   // QuickBooks unreachable → stays prepared
+    expect(r).toMatchObject({ ok: false, status: 'prepared' })
+    qb.failRaw = 0
+    await db.update(jobEstimates).set({ qbStatus: 'created' }).where(eq(jobEstimates.serviceOrderId, bmw))   // out-of-band change
+    const c = await cancelCombineInvoices({ orderId: bmw, actor: 'M' })
+    expect(c.ok).toBe(false)
+    expect((await ops())[0].status).toBe('prepared')
+    expect((await members())[0].state).toBe('pending')
+  })
+
+  it('a void response with the marker but WITHOUT amounts is never a confirmed void', async () => {
+    const { replacedVoidState } = await import('./invoice-consolidation')
+    expect(replacedVoidState({ Id: '1', PrivateNote: 'Voided' } as never)).toBe('unconfirmed')
+    expect(replacedVoidState({ Id: '1', PrivateNote: 'Voided', TotalAmt: 0, Balance: 0 } as never)).toBe('voided')
+    expect(replacedVoidState({ Id: '1', PrivateNote: 'PSID:x', TotalAmt: 0 } as never)).toBe('live')
   })
 })

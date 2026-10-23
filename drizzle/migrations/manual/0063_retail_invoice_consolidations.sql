@@ -19,6 +19,14 @@
 -- two starts race (the claim's NOT EXISTS checks alone can't see a concurrent claim under READ COMMITTED).
 -- ric_request_uniq: a double tap or retried request reuses the same row.
 --
+-- retained_member_count: vehicles ALREADY on the retained invoice besides its own Job (applied shared members) when
+-- the combine was claimed - a retained invoice may already be shared (e.g. a third vehicle joins a combined invoice).
+-- ack_required: the next write waits for a manager's explicit acknowledgement - 'email' (an invoice was emailed,
+-- from Pitt Stop or straight from QuickBooks, AFTER the review) or 'external_void' (the replaced invoice was voided
+-- in QuickBooks outside this combine, so a payment made before that may now be unapplied credit).
+-- late_email_acknowledged_invoices: the invoice numbers whose late email was acknowledged (per invoice).
+-- update_attempted_at: when the retained invoice's update was last sent - Bill separately waits for it to settle.
+--
 -- Additive and idempotent: one new table, no change to existing rows. Plain statements only (no DO blocks, no
 -- semicolons in comments) so scripts/apply-qb-migration.mjs, which splits on semicolons, applies it as-is.
 -- Ships dark: the feature is gated by app_settings retail_qb_combine_invoices_enabled (defaults OFF in code).
@@ -49,6 +57,12 @@ CREATE TABLE IF NOT EXISTS retail_invoice_consolidations (
   replaced_prior_qb_status    varchar(20) NOT NULL,
   combined_total_cents        integer NOT NULL,
   emailed_acknowledged        boolean NOT NULL DEFAULT false,
+  retained_member_count       integer NOT NULL DEFAULT 0,
+  ack_required                varchar(20),
+  late_email_acknowledged_invoices varchar(400),
+  late_email_acknowledged_at  timestamptz,
+  late_email_acknowledged_by  varchar(200),
+  update_attempted_at         timestamptz,
   attention                   text,
   lease_owner                 varchar(80),
   lease_expires_at            timestamptz,

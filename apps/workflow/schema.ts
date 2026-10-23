@@ -343,6 +343,16 @@ export const retailInvoiceConsolidations = pgTable(
     replacedPriorQbStatus:    varchar('replaced_prior_qb_status', { length: 20 }).notNull(),
     combinedTotalCents:       integer('combined_total_cents').notNull(),
     emailedAcknowledged:      boolean('emailed_acknowledged').notNull().default(false),
+    /** Vehicles already on the retained invoice besides its own Job (applied shared members) when claimed. */
+    retainedMemberCount:      integer('retained_member_count').notNull().default(0),
+    /** The next write waits for a manager's acknowledgement: 'email' (emailed after the review) or 'external_void'. */
+    ackRequired:              varchar('ack_required', { length: 20 }),
+    /** Invoice numbers ("#100922,…") whose email after the review a manager acknowledged — per invoice. */
+    lateEmailAcknowledgedInvoices: varchar('late_email_acknowledged_invoices', { length: 400 }),
+    lateEmailAcknowledgedAt:  timestamp('late_email_acknowledged_at', { withTimezone: true }),
+    lateEmailAcknowledgedBy:  varchar('late_email_acknowledged_by', { length: 200 }),
+    /** When the retained invoice's update was last sent to QuickBooks (Bill separately waits for it to settle). */
+    updateAttemptedAt:        timestamp('update_attempted_at', { withTimezone: true }),
     /** What a person must look at (last failure / uncertainty). Cleared when a step succeeds. */
     attention:                text('attention'),
     leaseOwner:               varchar('lease_owner', { length: 80 }),

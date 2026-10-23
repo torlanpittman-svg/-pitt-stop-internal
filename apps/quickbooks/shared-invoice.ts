@@ -451,7 +451,7 @@ function previewPart(job: LoadedJob, state: SharedPreviewPart['state'], issue: s
  * combined total, the invoice's current QuickBooks total / balance / emailed state, and anything blocking the
  * update. Callable from either Job. Nothing is written.
  */
-export async function previewSharedInvoiceUpdate(orderId: string): Promise<SharedPreview> {
+export async function previewSharedInvoiceUpdate(orderId: string, opts: { forCombine?: boolean } = {}): Promise<SharedPreview> {
   const at = await anchorOrderIdFor(orderId)
   if (!at) return { ok: false, error: 'This Job isn’t on a shared invoice.' }
   const anchorEst = await getEstimateRow(at.anchorOrderId)
@@ -465,6 +465,9 @@ export async function previewSharedInvoiceUpdate(orderId: string): Promise<Share
     parts.push(previewPart(j, m.state as 'pending' | 'applied', await jobChargesIssue(j)))
   }
   for (const p of parts) if (p.issue) blockers.push(`${p.vehicle}: ${p.issue}`)
+  // An unfinished Combine unpaid invoices owns this update (its acknowledgements, realm check and settle window);
+  // only the combine's own Finish may run it (opts.forCombine).
+  if (!opts.forCombine && await underConsolidation(at.anchorEstimateId)) blockers.push('A combine of this invoice is unfinished — finish it from the Combine invoices panel.')
   for (const m of members) {
     if (m.state !== 'pending') continue
     const own = await getEstimateRow(m.memberServiceOrderId)
@@ -521,6 +524,7 @@ export async function updateSharedInvoice(params: { orderId: string; actor: stri
   const members: MemberRow[] = await listActiveMembers(at.anchorEstimateId)
   if (!members.length) return { ok: false, block: 'no_invoice', error: 'No other vehicles are linked to this invoice.' }
   if (params.expectedSyncToken == null) return { ok: false, block: 'stale', error: 'Review the combined invoice before updating it.' }
+  if (await underConsolidation(at.anchorEstimateId)) return { ok: false, block: 'shared_pending', error: 'A combine of this invoice is unfinished — finish it from the Combine invoices panel.' }
   const r = await syncRetailQBInvoice({ orderId: at.anchorOrderId, actor: params.actor, confirmSent: params.confirmSent, applyPending: true, expectedSyncToken: params.expectedSyncToken })
   logger.info(APP, 'update', { orderId: params.orderId, anchorOrderId: at.anchorOrderId, ok: r.ok, block: r.block, applied: r.appliedOrderIds?.length ?? 0 })
   return { ...r, anchorOrderId: at.anchorOrderId }

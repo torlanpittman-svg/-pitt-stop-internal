@@ -33,13 +33,45 @@ A manager combines them into one, even after both Jobs are completed:
 
 Never changed: Job status, `completedAt`, services, prices, fees, production reporting, history.
 
+## A retained invoice that already bills several vehicles (Kelvin's third vehicle)
+
+The invoice kept may already be a shared invoice (its own Job + APPLIED members — e.g. #100922 after it absorbed
+#100924). It can take one more vehicle in two ways:
+
+| The new Job… | Workflow | What happens |
+|---|---|---|
+| has NO QuickBooks invoice | existing shared-invoice flow: on the new Job's invoice, **Add to an open invoice** → pick #A → open #A's Job → **Review & update invoice** | #A is rewritten once with all vehicles; nothing voided |
+| already has its OWN invoice #C | **Combine unpaid invoices…** (from the new Job or from #A's Job) → pick the other → review → Combine | #C is voided; the new Job becomes one more member of #A; #A is rewritten once |
+
+Rules for the combine (server-side, `verifySide` / `buildPreview` / claim):
+
+- An invoice that already bills several vehicles is **always the one kept**, even if the other invoice was emailed or
+  is older; "Keep the other instead" is refused. Two multi-vehicle invoices are never combined. Only a
+  single-vehicle invoice is ever voided.
+- Its existing members must all be **applied** (none pending), still bill the same QuickBooks customer (email /
+  phone), and QuickBooks must hold exactly the lines Pitt Stop would write for all of them (current combined layout or
+  the legacy per-vehicle layout). Any payment, credit, edit, or vehicle pending review → refused with the reason.
+- The claim is fenced on the exact number of applied members reviewed (`retained_member_count`, migration 0063), and
+  step 1 re-checks it (plus "no other pending vehicle") before the void. A link that races in → nothing written.
+- The existing members' rows are never touched: the update only adds the new member (pending → applied).
+
+After the third vehicle: #A shows three "Vehicle n of 3" sections, ONE shop-supplies line and ONE card-payment line
+(each Job's own fee is computed, capped and rounded on its own — the line is just their sum), and its total equals
+the sum of the three Jobs' canonical totals.
+
 ## Treatment of the replaced invoice: VOID, not delete
 
 The QuickBooks Online Invoice API's void operation is `POST /v3/company/<realm>/invoice?operation=void` with
 body `{ Id, SyncToken }`. According to Intuit's Invoice API reference:
 
 - the transaction **stays** in QuickBooks with its number;
-- its amounts are set to 0 and "Voided" is prepended to `PrivateNote`;
+- its amounts are set to 0 and its `PrivateNote` marked "Voided". **Production evidence (2026-10-23, read-only):**
+  #100897 (id 24167), voided by Pitt Stop on 2026-10-05, reads `PrivateNote = "Voided"` exactly, `TotalAmt` 0,
+  `Balance` 0, every line `Amount` 0 — the PSID is **gone**. So a void is identified by the invoice id (in the
+  realm-checked company), its DocNumber and its CustomerRef — never by the PSID. (The earlier code adopted a
+  previously landed void only if the PSID was still there; after a crash between the void and recording it, that
+  would have fallen through to "invoice changed → cancel" on a voided invoice. Fixed and tested with a fake that
+  reproduces the real format.)
 - a stale SyncToken is rejected;
 - voiding **unapplies** any linked payment (it becomes unapplied credit).
 
@@ -92,9 +124,11 @@ The UI also hides Send, Sync and Payment and shows the recovery panel on both Jo
 | Crash between void and relink, or relink and update | durable status voided / relinked | **Retry — finish combining** |
 | Retained update refused (payment applied, edited in QuickBooks, charges changed) | attention; the replaced vehicle is not billed yet | **Retry** after fixing, or **Bill that vehicle separately**. Only allowed while QuickBooks shows the retained invoice WITHOUT those charges; the vehicle then gets a NEW invoice (voided invoices are never re-adopted) |
 | Retained update landed but its response/finalization was lost | attention; Bill separately refused | **Finish** with a fresh review (the panel loads it); the update reconciles as a no-op-equivalent rewrite, billed once |
-| Finished from the shared-invoice screen instead | — | reading either Job's invoice records the combine as completed |
-| QuickBooks shows the replaced invoice at $0 **or** "Voided", but not both (after a void attempt, or a marker on a live invoice) | attention: "can't confirm it was voided"; **no void is recorded, Cancel is refused**, both invoices stay blocked | a person checks QuickBooks: void it there properly (Retry adopts the confirmed void and finishes) or restore its charges (Retry sees the change and cancels cleanly) |
-| The retained invoice was emailed (from Pitt Stop OR straight from QuickBooks) after the combine was reviewed | `confirm_required`, nothing written | **Finish** shows the acknowledgement; the server refuses the update without it, and records it in both Jobs' history |
+| Someone tries the shared-invoice "Update invoice" instead | refused server-side while the combine is unfinished | finish from the Combine panel (reading either Job's invoice still reconciles a combine whose member was applied) |
+| QuickBooks shows the replaced invoice at $0 **or** "Voided", but not both — at ANY point, whether or not Pitt Stop attempted a void (e.g. reduced to $0 by hand) — or shows it voided under a different number / customer | attention: "can't confirm it was voided"; **no void is recorded, Cancel is refused, nothing is auto-cancelled**, both invoices stay blocked | a person checks QuickBooks: void it there properly (Retry adopts the confirmed void and finishes) or restore its charges (Retry sees the change and cancels cleanly) |
+| Either invoice was emailed (from Pitt Stop OR straight from QuickBooks, with or without a SyncToken change) after the combine was reviewed | `confirm_required` before the void (replaced or retained) or before the update (retained); nothing written; `email_ack_required` shows the checkbox on the panel | **Retry / Finish** with the acknowledgement; the server refuses without it, records `late_email_acknowledged_at/by` and an event on both Jobs |
+| The replaced invoice was voided in QuickBooks by someone else (Pitt Stop never sent a void) | it IS void, so it is recorded (never cancelled), but `ack_required='external_void'`: a payment made before that void is now unapplied credit | the manager checks the customer in QuickBooks, ticks the confirmation and Finishes — or Bills separately |
+| The retained invoice's update timed out / its outcome is unclear | attention; `update_attempted_at` set | **Retry** (reconciles a landed write); **Bill separately** is refused for 2 minutes after an unclear update so a late-landing write can't double-bill. A definitive pre-write refusal clears the window |
 | QuickBooks reconnected to a different company, or the connection can't be read | attention / read failure; no QuickBooks call is made by any step (void, update, cancel, separate) | reconnect the original company (its realm id is on the combine row), then Retry |
 | Another combine for the same customer is unfinished | refused at review; a concurrent start that loses at the database index gets "busy" with the reason; nothing written | finish / cancel / bill separately the open one first |
 
@@ -116,18 +150,25 @@ Sync, so the switch never strands a half-done combine (and rollback can drain th
 | A Job retained in one combine can't be replaced in another | follows from the customer index (both sides of a combine are that customer's) + the step-1 re-check | DB part tested; the true two-connection READ COMMITTED interleaving is **not reproducible** here (PGlite is single-connection, no local Postgres) — it is argued, not demonstrated |
 | QuickBooks writes go to the company the combine was claimed in | `qb_realm_id` on the row; every step re-reads the connected realm first | tested (company switch / unreadable connection) |
 
+Independent review 2026-10-23 (on the finished branch) — all fixed and covered by tests in the "independent review
+(2026-10-23) fixes" block: acknowledgements are per invoice (`late_email_acknowledged_invoices`); Bill separately
+waits for an unclear update to settle (`update_attempted_at`); the cancel / separate multi-step statements gate every
+step on the replaced Job's state (no half commit) and Cancel reports the real outcome; a void response missing its
+amounts is never "$0"; a void done outside Pitt Stop needs an explicit payment check before its vehicle is billed
+on the retained invoice. Re-review: the late-email acknowledgement (`confirmSent`) and the external-void payment
+check (`confirmExternalVoid`) are separate flags and separate checkboxes — neither satisfies the other; the
+shared-invoice "Update invoice" (preview blocker + `updateSharedInvoice` refusal) can no longer finish an unfinished
+combine behind its back, only the combine's own Finish can (`previewSharedInvoiceUpdate(…, { forCombine: true })`);
+a cancel inside the void step that doesn't apply now reports attention instead of "nothing was combined".
+
 ### Residual risks (documented, not eliminated)
 
 - **Concurrency.** The database guarantees above close the "keep C / void A while A is kept elsewhere" race the
-  review found. Not covered by an index: a shared-invoice *link* racing a combine claim can still slip a pending
-  member onto the retained invoice (the link's NOT EXISTS check reads the pre-claim snapshot). That only stops the
-  update with an "another vehicle is pending" attention (that member can be kept separate); it is never a double
-  bill.
-- **A void is recorded only when QuickBooks confirms it:** the "Voided" marker AND $0 total and balance. A hand-
-  zeroed invoice with no void attempt from Pitt Stop cancels the combine (nothing of ours was written). Any half
-  state after a void attempt, or a marker on a live invoice, needs a person to reconcile; it is never recorded as a
-  void and never auto-cancelled. Assumption to confirm in the sandbox: QuickBooks' void response and later reads
-  carry both signals (Intuit's reference says so).
+  review found. A shared-invoice *link* racing a combine claim is caught by the claim's member-count fence or by the
+  step-1 re-check (another pending vehicle / changed member count → cancelled before the void); never a double bill.
+- **A void is recorded only when QuickBooks confirms it:** the "Voided" marker AND $0 total and balance, on the
+  reviewed invoice id / number / customer. Any half state needs a person to reconcile; it is never recorded as a
+  void and never auto-cancelled. Production #100897 shows QuickBooks carries both signals after a void.
 - **Kill switch + QuickBooks off.** If QuickBooks Create or Sync is switched off while a combine is unfinished, it
   can't be finished or undone until they're back on (both invoices stay blocked meanwhile).
 
@@ -169,7 +210,7 @@ Sync, so the switch never strands a half-done combine (and rollback can drain th
 
 ## Tests
 
-`apps/quickbooks/invoice-consolidation.test.ts` has 38 tests on PGlite (real schema, indexes and CTE claims) with
+`apps/quickbooks/invoice-consolidation.test.ts` has 59 tests on PGlite (real schema, indexes and CTE claims) with
 the real pricing engine, Invoice Draft and Create/Sync/Send. Only QuickBooks is faked, with SyncToken
 compare-and-set on update and void; send throws. They cover:
 
@@ -211,6 +252,18 @@ state, panel rule, realm check).
 flag-off refuses new combines (503) but still allows resume / cancel / separate, QuickBooks off refuses recovery,
 actor from session, review required, status mapping.
 
+Added 2026-10-23: Kelvin's exact figures ($159.14 × 2 → $318.28, ONE $9.00 shop-supplies and ONE $9.28 card-fee line,
+each Job's fees unchanged); a third vehicle WITHOUT an invoice joining the combined invoice before and after
+completion; a third vehicle WITH its own invoice combined into the two-vehicle invoice (kept even if the other is
+emailed, swap refused, first members untouched, 3 sections, Σ totals, reports once); payment / credit on #A blocks
+both workflows; dealer exclusion; two multi-vehicle invoices refused; a link racing the claim (statement fence) and
+after the claim (step-1 check); every write boundary for the 3-vehicle combine; the replaced invoice emailed without
+a SyncToken change; the review fixes above; realistic QuickBooks void format (PSID removed).
+
+Verification on 2026-10-23 (final): full suite 190 files, **2338 tests passed**; `tsc --noEmit` clean; eslint on
+changed files = the same 3 pre-existing findings as production (`InvoiceDraftPanel.tsx`), 0 new; `next build
+--webpack` exit 0.
+
 Verification on 2026-10-22:
 
 - full suite: 190 files, **2321 tests passed** (after the review fixes);
@@ -221,9 +274,12 @@ Verification on 2026-10-22:
 
 **Not yet verified:**
 
-- a real QuickBooks **sandbox** void through this code path;
-- whether a payment application bumps the invoice SyncToken (see residual risks);
-- that a sandbox void returns BOTH the "Voided" marker and $0 (the strict void test relies on it);
+- a real QuickBooks **sandbox** run: the sandbox connection's refresh token has expired (2026-10-23
+  `QBReauthRequiredError` before any QuickBooks call), so the one-off sandbox check could not run; re-connecting
+  the sandbox needs the owner's Intuit login. The void's post-state was instead confirmed on production #100897
+  (read-only), and the live Kelvin combine is verified read-only afterwards;
+- whether a payment application bumps the invoice SyncToken (see residual risks — the money state is re-read right
+  before the void either way);
 - a true two-connection race on the claim (only the database index outcome is tested);
 - the UI in a browser.
 
@@ -260,9 +316,10 @@ Verification on 2026-10-22:
 5. Owner enables `retail_qb_combine_invoices_enabled=true`. Kill switch = set it back to false: no new combine can
    start; any unfinished one can still be finished, cancelled or billed separately.
 
-## Rollback (to `85d6190`)
+## Rollback (to `85d6190`, or ANY build without the combine guards)
 
-The previous production version **cannot safely handle an unfinished combine**: it doesn't know `consolidating`
+This applies to every version that lacks the consolidation payment / send / sync guards — `85d6190` and anything
+older. The previous production version **cannot safely handle an unfinished combine**: it doesn't know `consolidating`
 (its Record Payment would not refuse such an invoice, and Send/Sync have no combine guards), and it would treat a
 relinked Job as an ordinary pending shared member that "Keep separate" could unlink while its old invoice is
 already void. So:
