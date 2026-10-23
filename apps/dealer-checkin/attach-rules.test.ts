@@ -13,6 +13,7 @@ const DEALERS = [
   { stockPrefix: 'K',  name: 'Sterling Kia' },
   { stockPrefix: 'S',  name: 'Sterling Auto Group' },
   { stockPrefix: 'AP', name: 'Purdy Mazda' },
+  { stockPrefix: null, name: 'BMW of College Station' },
 ]
 
 describe('canLinkInvoice (environment guard)', () => {
@@ -56,6 +57,17 @@ describe('resolveDealerForOrder', () => {
   })
   it('returns null when neither resolves', () => {
     expect(resolveDealerForOrder({ stock: 'Z9', customerName: 'Unknown Lot' }, DEALERS)).toBeNull()
+  })
+  it('the Job\'s confirmed dealer wins over the stock prefix (BMW VIN suffix starting with S)', () => {
+    expect(resolveDealerForOrder({ stock: 'SN123456', customerName: 'BMW of College Station' }, DEALERS)?.name).toBe('BMW of College Station')
+  })
+  it('a prefix-less dealer is never reached by stock alone', () => {
+    expect(resolveDealerForOrder({ stock: 'G0408509', customerName: null }, DEALERS)).toBeNull()
+  })
+  it('Sterling Jobs still resolve to the same dealer', () => {
+    expect(resolveDealerForOrder({ stock: 'S515324', customerName: 'Sterling Auto Group' }, DEALERS)?.name).toBe('Sterling Auto Group')
+    expect(resolveDealerForOrder({ stock: 'K518991', customerName: 'Sterling Kia' }, DEALERS)?.name).toBe('Sterling Kia')
+    expect(resolveDealerForOrder({ stock: 'S515324', customerName: 'Some Retail Name' }, DEALERS)?.name).toBe('Sterling Auto Group')
   })
 })
 

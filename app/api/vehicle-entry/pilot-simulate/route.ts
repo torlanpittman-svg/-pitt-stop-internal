@@ -32,7 +32,8 @@ export async function POST() {
   }
 
   const now = new Date()
-  const dealerships = await listDealerships(true)
+  // Simulated stocks are [prefix] + digits, so only prefixed dealers can be simulated.
+  const dealerships = (await listDealerships(true)).filter(d => !!d.stockPrefix)
   if (dealerships.length === 0) {
     return NextResponse.json({ error: 'No active dealerships found' }, { status: 400 })
   }

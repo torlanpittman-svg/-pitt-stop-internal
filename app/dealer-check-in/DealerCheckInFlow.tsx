@@ -17,6 +17,8 @@ import { resolveBack } from '@/app/components/back-origin'
 import NavHeader from '@/app/components/NavHeader'
 import { newClientRequestId, blankFields } from '@/apps/dealer-checkin/scan-session'
 import PhotoInput from '@/app/components/PhotoInput'
+import AddDealerForm from '@/app/components/AddDealerForm'
+import { VIN_SUFFIX_STOCK_RE } from '@/apps/dealer-checkin/rules'
 
 type Phase = 'entry' | 'camera' | 'processing' | 'review' | 'submitting' | 'done'
 
@@ -39,12 +41,14 @@ interface Fields {
   color: string
 }
 
-interface DealerOption { dealershipId: string; name: string; qbCustomerId: string }
+interface DealerOption { dealershipId: string; name: string; qbCustomerId: string; stockPrefix: string | null }
+
+const ADD_DEALER = '__add_dealer__'
 
 // A stock number is a letter prefix followed by digits (e.g. K1234, S72951).
 const STOCK_RE = /^[A-Za-z]{1,3}[- ]?\d{2,}$/
 
-export default function DealerCheckInFlow() {
+export default function DealerCheckInFlow({ canManageDealers = false }: { canManageDealers?: boolean }) {
   const router = useRouter()
   // Back target: Check In when reached via Smart Check-In (?from=check-in), else Work Board fallback.
   // Resolved AFTER mount so SSR + first client render match (no hydration mismatch); allowlist-only.
@@ -55,6 +59,7 @@ export default function DealerCheckInFlow() {
   const submittingRef = useRef(false)
   const startedAt = useRef(0)
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const previewSeq = useRef(0)
   const objectUrlRef = useRef<string | null>(null)          // local preview URL to revoke
   const clientRequestIdRef = useRef<string>(newClientRequestId()) // idempotency key per scan
 
@@ -125,23 +130,23 @@ export default function DealerCheckInFlow() {
   }, [phase, stopCamera])
 
   // ── Dealer list for the override dropdown (configured customer list) ─────────
-  useEffect(() => {
-    ;(async () => {
-      try {
-        const res = await fetch('/api/vehicle-entry/dealerships')
-        const rows = (await res.json()) as Array<{ id: string; name: string; qbCustomerId?: string | null }>
-        const seen = new Set<string>()
-        const opts: DealerOption[] = []
-        for (const r of rows) {
-          if (!r.qbCustomerId || seen.has(r.name)) continue // one entry per dealer/customer
-          seen.add(r.name)
-          opts.push({ dealershipId: r.id, name: r.name, qbCustomerId: r.qbCustomerId })
-        }
-        opts.sort((a, b) => a.name.localeCompare(b.name))
-        setDealers(opts)
-      } catch { /* dropdown stays empty; dealer still resolves from the stock prefix */ }
-    })()
+  const loadDealers = useCallback(async () => {
+    try {
+      const res = await fetch('/api/vehicle-entry/dealerships')
+      const rows = (await res.json()) as Array<{ id: string; name: string; qbCustomerId?: string | null; stockPrefix?: string | null }>
+      const seen = new Set<string>()
+      const opts: DealerOption[] = []
+      for (const r of rows) {
+        if (!r.qbCustomerId || seen.has(r.name)) continue // one entry per dealer/customer
+        seen.add(r.name)
+        opts.push({ dealershipId: r.id, name: r.name, qbCustomerId: r.qbCustomerId, stockPrefix: r.stockPrefix ?? null })
+      }
+      opts.sort((a, b) => a.name.localeCompare(b.name))
+      setDealers(opts)
+    } catch { /* dropdown stays empty; dealer still resolves from the stock prefix */ }
   }, [])
+  useEffect(() => { void loadDealers() }, [loadDealers])
+  const [addingDealer, setAddingDealer] = useState(false)
 
   const captureFrame = useCallback((): Promise<Blob | null> => {
     return new Promise((resolve) => {
@@ -234,6 +239,9 @@ export default function DealerCheckInFlow() {
   const runPreview = useCallback(async (
     stockNumber: string, isNewVehicle: boolean, dealershipId?: string | null,
   ): Promise<Preview | null> => {
+    // Only the LATEST request may update the screen: a slower stock-prefix preview that
+    // returns after the operator picked a dealer must not paint the old dealer back.
+    const seq = ++previewSeq.current
     setResolving(true)
     try {
       const res = await fetch('/api/dealer-checkin/preview', {
@@ -241,9 +249,10 @@ export default function DealerCheckInFlow() {
         body: JSON.stringify({ stockNumber, tagColor: isNewVehicle ? 'white' : 'yellow', dealershipId: dealershipId ?? undefined }),
       })
       const p = (await res.json()) as Preview
+      if (seq !== previewSeq.current) return null
       setPreview(p)
       return p
-    } catch { return null /* keep last preview */ } finally { setResolving(false) }
+    } catch { return null /* keep last preview */ } finally { if (seq === previewSeq.current) setResolving(false) }
   }, [])
 
   // Debounced re-resolve when the stock number changes. If the operator has
@@ -260,6 +269,7 @@ export default function DealerCheckInFlow() {
   // pricing / invoice target / duplicate against the chosen customer.
   const onDealerChange = useCallback((dealershipId: string) => {
     if (!dealershipId) return
+    if (dealershipId === ADD_DEALER) { setAddingDealer(true); return }
     setSelectedDealerId(dealershipId)
     if (previewTimer.current) clearTimeout(previewTimer.current)
     void runPreview(fields.stockNumber, newVehicle, dealershipId)
@@ -392,12 +402,15 @@ export default function DealerCheckInFlow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const stockValid = STOCK_RE.test(fields.stockNumber.trim())
   const dealerOk = Boolean(preview?.dealership?.qbCustomerId)
-  const canSend = dealerOk && !preview?.duplicate && (stockValid || overrideFormat)
   // The dropdown value: the operator's explicit choice, else the resolved dealer.
   const optionIdForName = (name?: string | null) => (name ? dealers.find((d) => d.name === name)?.dealershipId ?? '' : '')
   const currentDealerId = selectedDealerId ?? optionIdForName(preview?.dealership?.name)
+  // A dealer with no prefix (BMW) uses the last 8 of the VIN as its stock number — valid as entered.
+  const currentDealer = dealers.find((d) => d.dealershipId === currentDealerId)
+  const stockValid = STOCK_RE.test(fields.stockNumber.trim())
+    || (!!currentDealer && !currentDealer.stockPrefix && VIN_SUFFIX_STOCK_RE.test(fields.stockNumber.trim()))
+  const canSend = dealerOk && !preview?.duplicate && (stockValid || overrideFormat)
 
   // ── UI ──────────────────────────────────────────────────────────────────────
   return (
@@ -485,8 +498,25 @@ export default function DealerCheckInFlow() {
                 {dealers.map((d) => (
                   <option key={d.dealershipId} value={d.dealershipId} className="bg-gray-900 text-white">{d.name}</option>
                 ))}
+                {canManageDealers && (
+                  <option value={ADD_DEALER} className="bg-gray-900 text-blue-300">+ Add New Dealer</option>
+                )}
               </select>
+              {!selectedDealerId && dealerOk && !resolving && (
+                <p className="text-gray-500 text-xs mt-1">Matched from the stock number — change it if this vehicle is from another dealer.</p>
+              )}
             </div>
+            {addingDealer && (
+              <div className="p-3">
+                <AddDealerForm
+                  onCancel={() => setAddingDealer(false)}
+                  onAdded={(d) => {
+                    setAddingDealer(false)
+                    void loadDealers().then(() => onDealerChange(d.id))
+                  }}
+                />
+              </div>
+            )}
             <EditRow label="Stock Number" value={fields.stockNumber} onChange={onStockChange} autoCapitalize="characters" mono
                      warn={!stockValid && fields.stockNumber.length > 0 && !overrideFormat} />
             <div className="grid grid-cols-2 divide-x divide-gray-800">

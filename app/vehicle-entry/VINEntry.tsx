@@ -22,6 +22,7 @@ const COLOR_SWATCH: Record<string, string> = {
 }
 
 type Step = 'vin' | 'details' | 'saving'
+type PrefixedDealership = DealershipRow & { stockPrefix: string }
 
 export default function VINEntry() {
   const router = useRouter()
@@ -31,8 +32,8 @@ export default function VINEntry() {
   const [vinError,       setVinError]       = useState<string | null>(null)
   const [loading,        setLoading]        = useState(false)
   const [decoded,        setDecoded]        = useState<VINDecodeResult | null>(null)
-  const [dealerships,    setDealerships]    = useState<DealershipRow[] | null>(null)
-  const [selectedDealer, setSelectedDealer] = useState<DealershipRow | null>(null)
+  const [dealerships,    setDealerships]    = useState<PrefixedDealership[] | null>(null)
+  const [selectedDealer, setSelectedDealer] = useState<PrefixedDealership | null>(null)
   const [color,          setColor]          = useState('')
   const [submitError,    setSubmitError]    = useState<string | null>(null)
 
@@ -40,7 +41,11 @@ export default function VINEntry() {
   useEffect(() => {
     fetch('/api/vehicle-entry/dealerships')
       .then(r => r.json())
-      .then((data: DealershipRow[]) => setDealerships(Array.isArray(data) ? data : []))
+      // This flow builds stock as [prefix] + VIN tail, so only prefixed dealers apply here
+      // (no-prefix dealers like BMW are checked in through Dealer Check-In instead).
+      .then((data: DealershipRow[]) => setDealerships(
+        Array.isArray(data) ? data.filter((d): d is PrefixedDealership => !!d.stockPrefix) : [],
+      ))
       .catch(() => setDealerships([]))
   }, [])
 

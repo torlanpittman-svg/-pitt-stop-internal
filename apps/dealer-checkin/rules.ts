@@ -103,7 +103,7 @@ export function normalizeStock(stock: string | null | undefined): string {
  * stock starts with "AP". Longest-match disambiguates any future overlap (e.g. an
  * "A" and an "AP" dealer). Returns null when nothing matches.
  */
-export function matchDealershipByStock<T extends { stockPrefix: string }>(
+export function matchDealershipByStock<T extends { stockPrefix: string | null }>(
   stockNumber: string | null | undefined,
   dealers: T[],
 ): T | null {
@@ -112,10 +112,70 @@ export function matchDealershipByStock<T extends { stockPrefix: string }>(
   let best: T | null = null
   let bestLen = 0
   for (const d of dealers) {
+    // A dealer with no prefix (NULL) is manual-pick only — it never auto-matches.
     const p = normalizeStock(d.stockPrefix)
     if (p && stock.startsWith(p) && p.length > bestLen) { best = d; bestLen = p.length }
   }
   return best
+}
+
+/**
+ * The dealer for a check-in. An explicitly chosen dealer (the operator's dropdown
+ * pick, or the dealer already confirmed on a scan) ALWAYS wins and is never replaced
+ * by a stock-prefix guess — a BMW VIN suffix starting with "S" stays BMW. An unknown
+ * id resolves to null (fail closed), never to the prefix match. Only when no dealer
+ * was chosen does the stock prefix decide.
+ */
+export function pickDealer<T extends { id: string; stockPrefix: string | null }>(
+  input: { dealershipId?: string | null; stockNumber?: string | null },
+  dealers: T[],
+): T | null {
+  if (input.dealershipId) return dealers.find((d) => d.id === input.dealershipId) ?? null
+  return matchDealershipByStock(input.stockNumber, dealers)
+}
+
+/**
+ * Stock number of a dealer with NO prefix (e.g. BMW of College Station): the last 8
+ * characters of the VIN, entered exactly as given. VIN alphabet (no I/O/Q).
+ */
+export const VIN_SUFFIX_STOCK_RE = /^[A-HJ-NPR-Z0-9]{8}$/i
+
+/**
+ * Normalize a manager-entered stock prefix. Blank → null ("no prefix", manual pick
+ * only) — never '' (startsWith('') would match every stock). Returns undefined when
+ * the value is not a valid prefix (1–10 letters/digits).
+ */
+export function normalizeDealerPrefix(raw: string | null | undefined): string | null | undefined {
+  const p = (raw ?? '').trim().toUpperCase()
+  if (!p) return null
+  return /^[A-Z0-9]{1,10}$/.test(p) ? p : undefined
+}
+
+/**
+ * Would giving a dealer this prefix change how ANOTHER dealer's stocks resolve?
+ * With longest-prefix matching, a new prefix that extends an existing one (e.g. "S1"
+ * when Sterling owns "S") would silently steal part of that dealer's stocks, and an
+ * existing longer prefix inside a new shorter one makes the two compete. Both are
+ * refused when the other dealer bills a DIFFERENT QuickBooks customer; rows for the
+ * same customer (Sterling Auto Group owns S and T) may overlap freely. Returns the
+ * conflicting dealer, or null when the prefix is safe (or absent).
+ */
+export function findPrefixConflict<T extends { id: string; stockPrefix: string | null; qbCustomerId?: string | null }>(
+  prefix: string | null,
+  candidate: { id?: string | null; qbCustomerId: string | null },
+  dealers: T[],
+): T | null {
+  if (!prefix) return null
+  const p = prefix.toUpperCase()
+  for (const d of dealers) {
+    if (candidate.id && d.id === candidate.id) continue
+    const q = normalizeStock(d.stockPrefix)
+    if (!q) continue
+    if (!(p.startsWith(q) || q.startsWith(p))) continue
+    if (candidate.qbCustomerId && d.qbCustomerId === candidate.qbCustomerId) continue
+    return d
+  }
+  return null
 }
 
 /** dealer_scans free-text column limits — keep in sync with schema.ts. */

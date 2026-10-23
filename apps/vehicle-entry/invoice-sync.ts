@@ -50,7 +50,7 @@ async function resolveDealer(entry: VehicleEntryRow) {
   // Key-tag entries: extract prefix from stock number
   const prefix = extractStockPrefix(entry.stockNumber)
   if (!prefix) return null
-  return all.find(d => d.stockPrefix.toUpperCase() === prefix) ?? null
+  return all.find(d => d.stockPrefix?.toUpperCase() === prefix) ?? null
 }
 
 export async function syncEntryToInvoice(entryId: string): Promise<SyncOutcome> {

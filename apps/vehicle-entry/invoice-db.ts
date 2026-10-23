@@ -122,14 +122,14 @@ export async function countVehiclesInBatch(batchId: string): Promise<number> {
 // (by explicit dealershipId OR by stock number prefix)
 export async function countPendingForDealership(
   dealershipId: string,
-  stockPrefix: string
+  stockPrefix: string | null
 ): Promise<number> {
   if (isDemoMode()) {
     return demoStore.list<{ invoiceSyncStatus: string; dealershipId: string; stockNumber: string }>('vehicle_entries')
       .filter(e =>
         e.invoiceSyncStatus === 'pending_invoice_assignment' &&
         (e.dealershipId === dealershipId ||
-         (e.stockNumber ?? '').toUpperCase().startsWith(stockPrefix.toUpperCase()))
+         (!!stockPrefix && (e.stockNumber ?? '').toUpperCase().startsWith(stockPrefix.toUpperCase())))
       ).length
   }
   const db = getDb()
@@ -139,7 +139,7 @@ export async function countPendingForDealership(
     .where(eq(vehicleEntries.invoiceSyncStatus, 'pending_invoice_assignment'))
   return all.filter(e =>
     e.dealershipId === dealershipId ||
-    (e.stockNumber ?? '').toUpperCase().startsWith(stockPrefix.toUpperCase())
+    (!!stockPrefix && (e.stockNumber ?? '').toUpperCase().startsWith(stockPrefix.toUpperCase()))
   ).length
 }
 
@@ -178,7 +178,7 @@ export async function findDuplicateInBatch(
 // List pending entries for a dealership (by dealershipId or stock prefix)
 export async function listPendingEntriesForDealership(
   dealershipId: string,
-  stockPrefix: string
+  stockPrefix: string | null
 ): Promise<{ id: string; stockNumber: string | null; year: string | null; make: string | null; model: string | null; createdAt: Date }[]> {
   if (isDemoMode()) {
     return demoStore
@@ -186,7 +186,7 @@ export async function listPendingEntriesForDealership(
       .filter(e =>
         e.invoiceSyncStatus === 'pending_invoice_assignment' &&
         (e.dealershipId === dealershipId ||
-         (e.stockNumber ?? '').toUpperCase().startsWith(stockPrefix.toUpperCase()))
+         (!!stockPrefix && (e.stockNumber ?? '').toUpperCase().startsWith(stockPrefix.toUpperCase())))
       )
       .map(e => ({ id: e.id, stockNumber: e.stockNumber, year: e.year, make: e.make, model: e.model, createdAt: e.createdAt }))
   }
@@ -198,7 +198,7 @@ export async function listPendingEntriesForDealership(
   return rows
     .filter(e =>
       e.dealershipId === dealershipId ||
-      (e.stockNumber ?? '').toUpperCase().startsWith(stockPrefix.toUpperCase())
+      (!!stockPrefix && (e.stockNumber ?? '').toUpperCase().startsWith(stockPrefix.toUpperCase()))
     )
     .map(e => ({ id: e.id, stockNumber: e.stockNumber, year: e.year, make: e.make, model: e.model, createdAt: e.createdAt }))
 }

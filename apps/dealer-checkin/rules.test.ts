@@ -2,6 +2,10 @@ import { describe, it, expect } from 'vitest'
 import {
   extractStockPrefix,
   matchDealershipByStock,
+  normalizeDealerPrefix,
+  pickDealer,
+  findPrefixConflict,
+  VIN_SUFFIX_STOCK_RE,
   formatLineDescription,
   decidePricing,
   selectAppendableInvoice,
@@ -162,6 +166,68 @@ describe('matchDealershipByStock (dealer resolution incl. Purdy "AP")', () => {
     expect(who('')).toBeNull()
     expect(matchDealershipByStock(null, dealers)).toBeNull()
     expect(who('W71')).toBeNull()
+  })
+})
+
+describe('dealers with no stock prefix (BMW of College Station)', () => {
+  const dealers = [
+    { id: 's', name: 'Sterling Auto Group', stockPrefix: 'S', qbCustomerId: '6' },
+    { id: 't', name: 'Sterling Auto Group', stockPrefix: 'T', qbCustomerId: '6' },
+    { id: 'k', name: 'Sterling Kia', stockPrefix: 'K', qbCustomerId: '67' },
+    { id: 'u', name: 'Sterling Subaru', stockPrefix: 'U', qbCustomerId: '836' },
+    { id: 'ap', name: 'Purdy Mazda', stockPrefix: 'AP', qbCustomerId: '1281' },
+    { id: 'bmw', name: 'BMW of College Station', stockPrefix: null, qbCustomerId: '167' },
+  ]
+  it('a NULL prefix never auto-matches any stock', () => {
+    expect(matchDealershipByStock('G0408509', dealers)).toBeNull()
+    expect(matchDealershipByStock('FK195564', dealers)).toBeNull()
+  })
+  it('Sterling S detection is unchanged by the BMW row', () => {
+    expect(matchDealershipByStock('S515324', dealers)?.id).toBe('s')
+    // A BMW VIN suffix starting with S still auto-detects as Sterling — that is why the
+    // operator's explicit dealer choice must (and does) take priority server-side.
+    expect(matchDealershipByStock('SN123456', dealers)?.id).toBe('s')
+  })
+  it('pickDealer: an explicitly selected dealer is never overridden by the stock prefix', () => {
+    expect(pickDealer({ dealershipId: 'bmw', stockNumber: 'SN123456' }, dealers)?.name).toBe('BMW of College Station')
+    expect(pickDealer({ dealershipId: 'bmw', stockNumber: 'TA987654' }, dealers)?.name).toBe('BMW of College Station')
+    expect(pickDealer({ dealershipId: 'k', stockNumber: 'S515324' }, dealers)?.name).toBe('Sterling Kia')
+  })
+  it('pickDealer: unknown id fails closed (never falls back to the prefix guess)', () => {
+    expect(pickDealer({ dealershipId: 'gone', stockNumber: 'S515324' }, dealers)).toBeNull()
+  })
+  it('pickDealer: with no selection, Sterling auto-detection works exactly as before', () => {
+    expect(pickDealer({ stockNumber: 'S515324' }, dealers)?.id).toBe('s')
+    expect(pickDealer({ dealershipId: null, stockNumber: 'TJ285137' }, dealers)?.id).toBe('t')
+    expect(pickDealer({ stockNumber: 'G0408509' }, dealers)).toBeNull()
+  })
+  it('accepts an 8-character VIN suffix as entered', () => {
+    expect(VIN_SUFFIX_STOCK_RE.test('G0408509')).toBe(true)
+    expect(VIN_SUFFIX_STOCK_RE.test('H0N85160')).toBe(true)
+    expect(VIN_SUFFIX_STOCK_RE.test('sn123456')).toBe(true)
+    expect(VIN_SUFFIX_STOCK_RE.test('G040850')).toBe(false)   // 7 chars
+    expect(VIN_SUFFIX_STOCK_RE.test('G04085091')).toBe(false) // 9 chars
+    expect(VIN_SUFFIX_STOCK_RE.test('GO408509')).toBe(false)  // O is not a VIN character
+  })
+  it('normalizeDealerPrefix: blank → null (never empty string), invalid → undefined', () => {
+    expect(normalizeDealerPrefix('')).toBeNull()
+    expect(normalizeDealerPrefix('   ')).toBeNull()
+    expect(normalizeDealerPrefix(null)).toBeNull()
+    expect(normalizeDealerPrefix(' ap ')).toBe('AP')
+    expect(normalizeDealerPrefix('A-P')).toBeUndefined()
+    expect(normalizeDealerPrefix('ABCDEFGHIJK')).toBeUndefined()
+  })
+  it('findPrefixConflict refuses a prefix that would steal another dealer\'s stocks', () => {
+    const newDealer = { qbCustomerId: '999' }
+    expect(findPrefixConflict('S1', newDealer, dealers)?.id).toBe('s')   // extends Sterling S
+    expect(findPrefixConflict('S', newDealer, dealers)?.id).toBe('s')    // same as Sterling S
+    expect(findPrefixConflict('A', newDealer, dealers)?.id).toBe('ap')   // contains Purdy AP
+    expect(findPrefixConflict('B', newDealer, dealers)).toBeNull()
+    expect(findPrefixConflict(null, newDealer, dealers)).toBeNull()      // no prefix is always safe
+  })
+  it('findPrefixConflict allows overlap within the same QuickBooks customer and ignores the row itself', () => {
+    expect(findPrefixConflict('T', { qbCustomerId: '6' }, dealers)).toBeNull()
+    expect(findPrefixConflict('AP', { id: 'ap', qbCustomerId: '1281' }, dealers)).toBeNull()
   })
 })
 

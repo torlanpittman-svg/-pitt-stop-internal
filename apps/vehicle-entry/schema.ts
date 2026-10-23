@@ -63,7 +63,9 @@ export const mockQbInvoices = pgTable('mock_qb_invoices', {
 export const dealerships = pgTable('dealerships', {
   id:          uuid('id').primaryKey().defaultRandom(),
   name:        varchar('name',         { length: 200 }).notNull(),
-  stockPrefix: varchar('stock_prefix', { length: 10  }).notNull(),
+  // NULL = no dealer prefix (e.g. BMW: stock = last 8 of VIN) → never auto-matched; picked manually.
+  // Never '' (CHECK in 0064): startsWith('') would match every stock number.
+  stockPrefix: varchar('stock_prefix', { length: 10  }),
   active:      boolean('active').notNull().default(true),
   createdAt:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 

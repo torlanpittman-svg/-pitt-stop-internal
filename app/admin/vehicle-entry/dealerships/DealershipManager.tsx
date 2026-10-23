@@ -2,15 +2,15 @@
 
 import { useState, useCallback } from 'react'
 import type { DealershipRow } from '@/apps/vehicle-entry/db'
+import AddDealerForm from '@/app/components/AddDealerForm'
 
 export default function DealershipManager({ initial }: { initial: DealershipRow[] }) {
   const [items,     setItems]     = useState<DealershipRow[]>(initial)
   const [editId,    setEditId]    = useState<string | null>(null)
   const [editName,  setEditName]  = useState('')
   const [editPfx,   setEditPfx]   = useState('')
-  const [addName,   setAddName]   = useState('')
-  const [addPfx,    setAddPfx]    = useState('')
-  const [busy,      setBusy]      = useState<string | null>(null)  // id or 'add'
+  const [adding,    setAdding]    = useState(false)
+  const [busy,      setBusy]      = useState<string | null>(null)  // row id
   const [error,     setError]     = useState<string | null>(null)
 
   const patch = useCallback(async (id: string, data: object) => {
@@ -32,47 +32,15 @@ export default function DealershipManager({ initial }: { initial: DealershipRow[
     }
   }, [])
 
-  const remove = useCallback(async (id: string) => {
-    if (!confirm('Delete this dealership? Existing entries will keep their data.')) return
-    setBusy(id); setError(null)
+  const reload = useCallback(async () => {
     try {
-      await fetch(`/api/vehicle-entry/dealerships/${id}`, { method: 'DELETE' })
-      setItems(prev => prev.filter(d => d.id !== id))
-    } catch {
-      setError('Network error')
-    } finally {
-      setBusy(null)
-    }
+      const res = await fetch('/api/vehicle-entry/dealerships?all=true')
+      if (res.ok) setItems(await res.json() as DealershipRow[])
+    } catch { /* keep the current list */ }
   }, [])
 
-  const add = useCallback(async () => {
-    if (!addName.trim() || !addPfx.trim()) return
-    setBusy('add'); setError(null)
-    try {
-      const res  = await fetch('/api/vehicle-entry/dealerships', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ name: addName.trim(), stockPrefix: addPfx.trim() }),
-      })
-      const data = await res.json() as { id?: string; error?: string }
-      if (!res.ok) { setError(data.error ?? 'Add failed'); return }
-      setItems(prev => [...prev, {
-        id:          data.id!,
-        name:        addName.trim(),
-        stockPrefix: addPfx.trim().toUpperCase(),
-        active:      true,
-        createdAt:   new Date(),
-      }])
-      setAddName(''); setAddPfx('')
-    } catch {
-      setError('Network error')
-    } finally {
-      setBusy(null)
-    }
-  }, [addName, addPfx])
-
   function startEdit(d: DealershipRow) {
-    setEditId(d.id); setEditName(d.name); setEditPfx(d.stockPrefix)
+    setEditId(d.id); setEditName(d.name); setEditPfx(d.stockPrefix ?? '')
   }
 
   return (
@@ -105,7 +73,7 @@ export default function DealershipManager({ initial }: { initial: DealershipRow[
                     <input
                       value={editPfx}
                       onChange={e => setEditPfx(e.target.value.toUpperCase())}
-                      placeholder="Prefix"
+                      placeholder="None"
                       maxLength={10}
                       className="w-24 bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
@@ -136,7 +104,10 @@ export default function DealershipManager({ initial }: { initial: DealershipRow[
                         )}
                       </div>
                       <div className="text-gray-400 text-xs font-mono mt-0.5">
-                        Prefix: {d.stockPrefix} → stock #{d.stockPrefix}XXXXXX
+                        {d.stockPrefix
+                          ? <>Prefix: {d.stockPrefix} → auto-detects stock #{d.stockPrefix}…</>
+                          : <>No prefix — picked manually at Dealer Check-In</>}
+                        {d.qbCustomerId ? <> · QuickBooks #{d.qbCustomerId}</> : <> · no QuickBooks customer (hidden at check-in)</>}
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
@@ -157,13 +128,6 @@ export default function DealershipManager({ initial }: { initial: DealershipRow[
                       >
                         Edit
                       </button>
-                      <button
-                        onClick={() => remove(d.id)}
-                        disabled={busy === d.id}
-                        className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-600 hover:border-red-700 hover:text-red-400 transition-colors disabled:opacity-40"
-                      >
-                        Delete
-                      </button>
                     </div>
                   </div>
                 )}
@@ -173,43 +137,23 @@ export default function DealershipManager({ initial }: { initial: DealershipRow[
         )}
       </div>
 
-      {/* Add new */}
+      {/* Add new — same manager form as Dealer Check-In */}
       <div>
         <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">
           Add Dealership
         </h2>
-        <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 flex items-end gap-3 flex-wrap">
-          <div className="flex-1 min-w-0 space-y-1">
-            <label className="text-gray-500 text-xs uppercase tracking-wide">Name</label>
-            <input
-              value={addName}
-              onChange={e => setAddName(e.target.value)}
-              placeholder="e.g. Riverside Imports"
-              onKeyDown={e => e.key === 'Enter' && add()}
-              className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          <div className="w-28 space-y-1">
-            <label className="text-gray-500 text-xs uppercase tracking-wide">Stock Prefix</label>
-            <input
-              value={addPfx}
-              onChange={e => setAddPfx(e.target.value.toUpperCase())}
-              placeholder="e.g. S"
-              maxLength={10}
-              onKeyDown={e => e.key === 'Enter' && add()}
-              className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
+        {adding ? (
+          <AddDealerForm onCancel={() => setAdding(false)} onAdded={() => { setAdding(false); void reload() }} />
+        ) : (
           <button
-            onClick={add}
-            disabled={!addName.trim() || !addPfx.trim() || busy === 'add'}
-            className="bg-blue-600 hover:bg-blue-500 text-white font-semibold px-5 py-2.5 rounded-lg text-sm disabled:opacity-40 transition-colors"
+            onClick={() => setAdding(true)}
+            className="bg-blue-600 hover:bg-blue-500 text-white font-semibold px-5 py-2.5 rounded-lg text-sm transition-colors"
           >
-            {busy === 'add' ? 'Adding…' : 'Add'}
+            + Add New Dealer
           </button>
-        </div>
+        )}
         <p className="text-gray-600 text-xs mt-2 px-1">
-          Stock numbers are constructed as: [Prefix] + last 6 characters of VIN.
+          Changes require a manager sign-in. Deactivate instead of deleting — past check-ins keep their dealer.
         </p>
       </div>
     </div>

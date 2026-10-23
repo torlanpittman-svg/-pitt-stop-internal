@@ -20,9 +20,9 @@ export default async function AdminDealershipsPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white">Source Dealerships</h1>
         <p className="text-gray-500 mt-1 text-sm">
-          Configure the dealerships that appear in the VIN fallback flow.
-          Each dealership has a stock prefix — stock numbers are built as{' '}
-          <span className="font-mono text-gray-400">[Prefix] + last 6 of VIN</span>.
+          Dealerships for Dealer Check-In and dealer invoicing. A stock prefix (e.g.{' '}
+          <span className="font-mono text-gray-400">K</span>) auto-detects the dealer from the stock number;
+          dealers without a prefix (stock = last 8 of VIN) are picked from the dealer list.
         </p>
       </div>
 

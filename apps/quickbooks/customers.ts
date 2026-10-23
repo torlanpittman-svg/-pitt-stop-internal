@@ -86,6 +86,16 @@ export async function findCustomerByName(displayName: string): Promise<QBCustome
   return match ? mapCustomer(match) : null
 }
 
+/** Read-only lookup by QuickBooks customer Id. Returns null if not found. */
+export async function getCustomerById(id: string): Promise<QBCustomer | null> {
+  if (!/^\d+$/.test(id)) return null
+  const res = await queryQBO<{ Customer?: RawCustomer[] }>(
+    `select * from Customer where Id = '${qboEscape(id)}'`
+  )
+  const match = res.Customer?.[0]
+  return match ? mapCustomer(match) : null
+}
+
 /** Fuzzy lookup (LIKE) — useful for discovering dealer variants. */
 export async function searchCustomers(term: string): Promise<QBCustomer[]> {
   const res = await queryQBO<{ Customer?: RawCustomer[] }>(

@@ -38,19 +38,21 @@ export function parseStockFromNotes(notes: string | null | undefined): string | 
 }
 
 /**
- * Resolve the dealership for a Job: prefer the stock-prefix match (identical to
- * normal intake), fall back to an exact customer-name match (the Work Board card
- * title is the dealer name). Returns null when neither resolves.
+ * Resolve the dealership for a Job. The Job's customer name is the dealer that was
+ * confirmed at check-in (the Work Board card title = dealer name), so an exact name
+ * match wins; the stock-prefix match is only the fallback for Jobs whose name is not
+ * a configured dealer. This keeps a manually chosen dealer (e.g. BMW, whose VIN-suffix
+ * stock may start with "S") from being re-attributed to Sterling. Sterling Jobs
+ * resolve to the same QuickBooks customer either way. Returns null when neither resolves.
  */
-export function resolveDealerForOrder<T extends { stockPrefix: string; name: string }>(
+export function resolveDealerForOrder<T extends { stockPrefix: string | null; name: string }>(
   opts: { stock: string | null | undefined; customerName: string | null | undefined },
   dealers: T[],
 ): T | null {
-  const byStock = matchDealershipByStock(opts.stock, dealers)
-  if (byStock) return byStock
   const name = (opts.customerName ?? '').trim().toLowerCase()
-  if (!name) return null
-  return dealers.find((d) => d.name.trim().toLowerCase() === name) ?? null
+  const byName = name ? dealers.find((d) => d.name.trim().toLowerCase() === name) : undefined
+  if (byName) return byName
+  return matchDealershipByStock(opts.stock, dealers)
 }
 
 export interface InvoiceLineView {

@@ -144,7 +144,7 @@ export default function InvoiceBatchManager({
               <option value="">Select dealership…</option>
               {dealerships.filter(d => d.active).map(d => (
                 <option key={d.id} value={d.id}>
-                  {d.name} ({d.stockPrefix})
+                  {d.name} ({d.stockPrefix ?? 'no prefix'})
                   {activeDealerIds.has(d.id) ? ' — has active batch' : ''}
                 </option>
               ))}

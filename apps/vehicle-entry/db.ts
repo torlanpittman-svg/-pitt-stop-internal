@@ -17,7 +17,8 @@ function isDemoMode(): boolean {
 export type DealershipRow = {
   id:          string
   name:        string
-  stockPrefix: string
+  /** null = no dealer prefix (manual pick only, never auto-matched by stock). */
+  stockPrefix: string | null
   active:      boolean
   createdAt:   Date
   qbCustomerId?:   string | null
@@ -54,7 +55,15 @@ export async function getDealership(id: string): Promise<DealershipRow | null> {
   return (row as DealershipRow) ?? null
 }
 
-export async function createDealership(data: { name: string; stockPrefix: string }): Promise<string> {
+export async function createDealership(data: {
+  name:            string
+  stockPrefix:     string | null
+  qbCustomerId?:   string | null
+  qbCustomerName?: string | null
+  billingEmail?:   string | null
+  taxExempt?:      boolean
+  rateDefault?:    number
+}): Promise<string> {
   if (isDemoMode()) {
     const id = crypto.randomUUID()
     demoStore.insert<DealershipRow>(DEALER_COL, { id, ...data, active: true, createdAt: new Date() })
@@ -67,7 +76,7 @@ export async function createDealership(data: { name: string; stockPrefix: string
 
 export async function updateDealership(
   id: string,
-  data: Partial<{ name: string; stockPrefix: string; active: boolean }>
+  data: Partial<{ name: string; stockPrefix: string | null; active: boolean }>
 ): Promise<DealershipRow | null> {
   if (isDemoMode()) {
     return demoStore.update<DealershipRow>(DEALER_COL, id, data)
@@ -103,7 +112,7 @@ export async function upsertDealershipByPrefix(data: {
   const prefixUpper = data.stockPrefix.toUpperCase()
 
   const existing = await db.select().from(dealerships)
-  const match = (existing as DealershipRow[]).find(d => d.stockPrefix.toUpperCase() === prefixUpper)
+  const match = (existing as DealershipRow[]).find(d => d.stockPrefix?.toUpperCase() === prefixUpper)
 
   if (match) {
     const [row] = await db.update(dealerships).set(set).where(eq(dealerships.id, match.id)).returning()
