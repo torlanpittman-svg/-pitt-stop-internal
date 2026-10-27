@@ -48,8 +48,8 @@ export function costBasisBucket(economicCategory: string): CostBasisBucket {
       return 'acquisition_related'
     case 'part': case 'recon_labor': case 'mechanic': case 'bodywork': case 'pdr': case 'paint':
       return 'reconditioning'
-    case 'floorplan_interest': case 'floorplan_fee':
-      return 'other_cost'
+    case 'floorplan_interest': case 'floorplan_fee': case 'other':
+      return 'other_cost' // misc vehicle spend (e.g. a Fuel/Other receipt) is still invested cost
     case 'return': case 'refund': case 'vendor_credit':
       return 'contra'
     default:

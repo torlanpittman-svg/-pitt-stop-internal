@@ -15,13 +15,13 @@ const ev = (o: Partial<Ev>): Ev => ({
 }) as unknown as Ev
 
 describe('isRemovableVehicleExpense — which expenses a manager may remove from a vehicle', () => {
-  it('includes exactly the receipt-attachable cost buckets', () => {
-    for (const c of ['part', 'recon_labor', 'mechanic', 'bodywork', 'pdr', 'paint', 'transport', 'title_tax', 'registration', 'auction_fee', 'buyer_fee'])
+  it('includes the receipt-attachable cost buckets, including a miscellaneous "other" expense', () => {
+    for (const c of ['part', 'recon_labor', 'mechanic', 'bodywork', 'pdr', 'paint', 'transport', 'title_tax', 'registration', 'auction_fee', 'buyer_fee', 'other'])
       expect(isRemovableVehicleExpense(c)).toBe(true)
-    expect(REMOVABLE_EXPENSE_CATEGORIES).toHaveLength(11)
+    expect(REMOVABLE_EXPENSE_CATEGORIES).toHaveLength(12)
   })
   it('EXCLUDES acquisition, sale/lifecycle, returns/credits, floor-plan financing and corrections', () => {
-    for (const c of ['acquisition', 'sale', 'deposit', 'commission', 'trade_allowance', 'return', 'refund', 'vendor_credit', 'floorplan_draw', 'floorplan_interest', 'floorplan_fee', 'curtailment', 'financing_settlement', 'adjustment', 'other'])
+    for (const c of ['acquisition', 'sale', 'deposit', 'commission', 'trade_allowance', 'return', 'refund', 'vendor_credit', 'floorplan_draw', 'floorplan_interest', 'floorplan_fee', 'curtailment', 'financing_settlement', 'adjustment'])
       expect(isRemovableVehicleExpense(c)).toBe(false)
   })
   it('every removable category is a real economic category (no typos)', () => {
@@ -70,5 +70,22 @@ describe('computeSummary — removing an expense nets it out of cost & profit (a
     const reversal = ev({ id: 'rev-1', economicCategory: 'adjustment', cashflowCategory: 'non_cash', amountCents: 25_000, reversesEventId: 'part-1' })
     const removed = computeSummary([acq, part, sale, reversal], 'complete')
     expect(removed.proceedsCents - removed.knownInvestmentCents).toBe(200_000)
+  })
+
+  // The dedicated expense list (VehicleFolderView) shows — and lets a manager remove — exactly the
+  // categories isRemovableVehicleExpense() accepts. So "other" being removable == it being VISIBLE there.
+  it('a verified "other" cost adds to known investment; its removal reversal nets it back out', () => {
+    const acq = ev({ id: 'acq', economicCategory: 'acquisition', amountCents: 1_000_000 })
+    const other = ev({ id: 'other-1', economicCategory: 'other', amountCents: 12_500 }) // e.g. a Fuel/Other receipt
+    const before = computeSummary([acq, other], 'complete')
+    expect(before.knownInvestmentCents).toBe(1_012_500)  // the other cost is real investment, not invisible
+    expect(before.verifiedAdditionalCents).toBe(12_500)
+    expect(before.acquisitionCostCents).toBe(1_000_000)  // acquisition untouched
+
+    // Existing mistaken-attachment removal appends an adjustment reversing it — no new mechanism needed.
+    const reversal = ev({ id: 'rev-1', economicCategory: 'adjustment', cashflowCategory: 'non_cash', amountCents: 12_500, reversesEventId: 'other-1' })
+    const after = computeSummary([acq, other, reversal], 'complete')
+    expect(after.knownInvestmentCents).toBe(1_000_000)
+    expect(after.verifiedAdditionalCents).toBe(0)
   })
 })

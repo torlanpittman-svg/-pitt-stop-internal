@@ -121,7 +121,10 @@ export function defaultCashflow(cat: EconomicCategory): CashflowCategory {
  *  - cost_contra : reduces it (returns, refunds, vendor/store credits)
  *  - proceeds    : sale/deposit inflow (revenue side — never part of cost)
  *  - financing   : floor-plan draw/curtailment/payoff (cash-movement, not a vehicle cost)
- *  - informational: adjustments/other with no cost effect
+ *  - informational: adjustments (corrections) with no cost effect
+ *
+ * `other` is money actually spent on the vehicle (e.g. a Fuel/Other receipt) → cost_add, so it shows
+ * in the expense list and counts toward invested cost/profit. Only `adjustment` stays informational.
  */
 export function costRelevance(cat: EconomicCategory): 'cost_add' | 'cost_contra' | 'selling_cost' | 'proceeds' | 'financing' | 'informational' {
   switch (cat) {
@@ -129,6 +132,7 @@ export function costRelevance(cat: EconomicCategory): 'cost_add' | 'cost_contra'
     case 'part': case 'recon_labor': case 'mechanic': case 'bodywork': case 'pdr': case 'paint':
     case 'transport': case 'title_tax': case 'registration': case 'auction_fee': case 'buyer_fee':
     case 'floorplan_interest': case 'floorplan_fee':
+    case 'other':
       return 'cost_add'
     case 'commission':                       // selling cost — separate from vehicle investment
       return 'selling_cost'
@@ -150,16 +154,17 @@ export function labelFor(cat: string): string {
 /**
  * The expense categories a manager may REMOVE from a vehicle when it was attached by mistake — the
  * receipt-attachable cost buckets (parts, recon labor, mechanic, body, PDR, paint, transport, title/tax,
- * registration, auction/buyer fees). Deliberately EXCLUDES acquisition (a lifecycle price, corrected via
- * the acquisition editor), sale/deposit/commission/trade (lifecycle), floor-plan draws/interest/fees
- * (financing, managed by the floor-plan system), returns/refunds/credits (a real-world contra, corrected
- * via the returns flow) and adjustment (a correction itself). Kept in sync with AddExpense's manual set
- * so the dedicated expense list shows exactly what can be removed. This is a mistaken-attachment fix, NOT
- * a return: it never touches money, QuickBooks or the acquisition price.
+ * registration, auction/buyer fees, and miscellaneous "other" — e.g. a Fuel/Other receipt). Deliberately
+ * EXCLUDES acquisition (a lifecycle price, corrected via the acquisition editor), sale/deposit/commission/
+ * trade (lifecycle), floor-plan draws/interest/fees (financing, managed by the floor-plan system),
+ * returns/refunds/credits (a real-world contra, corrected via the returns flow) and adjustment (a
+ * correction itself). Kept in sync with AddExpense's manual set so the dedicated expense list shows
+ * exactly what can be removed. This is a mistaken-attachment fix, NOT a return: it never touches money,
+ * QuickBooks or the acquisition price.
  */
 export const REMOVABLE_EXPENSE_CATEGORIES: EconomicCategory[] = [
   'part', 'recon_labor', 'mechanic', 'bodywork', 'pdr', 'paint',
-  'transport', 'title_tax', 'registration', 'auction_fee', 'buyer_fee',
+  'transport', 'title_tax', 'registration', 'auction_fee', 'buyer_fee', 'other',
 ]
 export function isRemovableVehicleExpense(cat: string): boolean {
   return (REMOVABLE_EXPENSE_CATEGORIES as string[]).includes(cat)

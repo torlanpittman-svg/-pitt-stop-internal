@@ -18,6 +18,8 @@ describe('costBasisBucket — separates purchase price from other costs', () => 
     expect(costBasisBucket('part')).toBe('reconditioning')
     expect(costBasisBucket('sale')).toBe('none')
     expect(costBasisBucket('commission')).toBe('none')
+    // A miscellaneous "other" cost (e.g. a Fuel/Other receipt) is still money spent on the vehicle.
+    expect(costBasisBucket('other')).toBe('other_cost')
   })
 })
 
@@ -74,6 +76,22 @@ describe('computeCostBasis — canonical invested cost', () => {
       e({ economicCategory: 'part', amountCents: 9999, status: 'void' }),
     ])
     expect(b.totalInvestedCents).toBe(500000)
+  })
+
+  it('a miscellaneous "other" cost is invested (other_cost bucket), not silently dropped', () => {
+    const b = computeCostBasis([
+      e({ economicCategory: 'acquisition', amountCents: 1_000_000 }),
+      e({ economicCategory: 'other', amountCents: 12_500 }),                        // verified misc cost → invested
+      e({ economicCategory: 'other', amountCents: 9_900, status: 'unverified' }),   // not yet verified → surfaced separately
+      e({ economicCategory: 'other', amountCents: 5_000, status: 'void' }),         // void → excluded
+      e({ id: 'o1', economicCategory: 'other', amountCents: 7_000 }),               // reversed pair → excluded
+      e({ economicCategory: 'adjustment', amountCents: 7_000, reversesEventId: 'o1' }),
+    ])
+    expect(b.acquisitionPriceCents).toBe(1_000_000)   // acquisition untouched
+    expect(b.otherCostCents).toBe(12_500)
+    expect(b.unverifiedCents).toBe(9_900)
+    expect(b.hasUnverified).toBe(true)
+    expect(b.totalInvestedCents).toBe(1_012_500)      // acquisition + the verified other cost
   })
 })
 

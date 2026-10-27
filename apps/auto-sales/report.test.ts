@@ -106,6 +106,29 @@ describe('buildMonthlyReport — missing/questionable data is flagged, not zeroe
   })
 })
 
+describe('buildMonthlyReport — a miscellaneous "other" cost counts toward invested value and profit', () => {
+  // Own small fixture (kept separate from the shared one above to avoid churning its totals/hashes).
+  const oRows: ReportInvRow[] = [
+    inv({ id: 'h1', acquiredAt: '2026-08-02' }),                                   // held at month end
+    inv({ id: 's1', acquiredAt: '2026-07-10', soldAt: '2026-08-18', saleFinalized: true, status: 'sold', salePriceCents: 900000 }),
+  ]
+  const oEvents = new Map<string, ReportEvent[]>([
+    ['h1', [ev('acquisition', 500000, '2026-08-02'), ev('other', 12500, '2026-08-06')]],
+    ['s1', [ev('acquisition', 700000, '2026-07-10'), ev('other', 20000, '2026-07-12'), ev('sale', 900000, '2026-08-18')]],
+  ])
+  const r = buildMonthlyReport(oRows, oEvents, MONTH, 'America/Chicago', '2026-09-01T00:00:00.000Z')
+
+  it('month-end inventory value includes the other cost', () => {
+    expect(r.endingInventory.find((x) => x.id === 'h1')!.totalInvestedCents).toBe(512500) // 500000 + 12500
+    expect(r.summary.endingInventoryValueCents).toBe(512500)
+  })
+  it('sold est gross profit is reduced by the other cost (invested includes it)', () => {
+    const soldRow = r.sold.find((x) => x.id === 's1')!
+    expect(soldRow.totalInvestedCents).toBe(720000)   // 700000 + 20000
+    expect(soldRow.estGrossProfitCents).toBe(180000)  // 900000 − 720000
+  })
+})
+
 describe('buildMonthlyReport — reproducibility + drift detection', () => {
   it('same source data ⇒ same content hash (generatedAt does not affect it)', () => {
     const a = buildMonthlyReport(rows, eventsByVehicle, MONTH, 'America/Chicago', '2026-09-01T00:00:00Z')
