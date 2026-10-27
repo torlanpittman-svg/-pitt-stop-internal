@@ -12,6 +12,7 @@ import { qbApiRequest } from '@/apps/quickbooks/client'
 import { buildRetailWorkPayload } from '@/apps/quickbooks/retail-invoice-service'
 import { resolveRetailCustomer, isPlaceholderEmail } from '@/apps/quickbooks/retail-customer'
 import { extractPsid } from '@/apps/quickbooks/retail-format'
+import { normalizeRecipients, recipientErrorMessage, sameRecipientSet } from './recipients'
 import type { RetailPayload } from '@/apps/quickbooks/retail-invoice'
 
 interface QBEstimate {
@@ -22,10 +23,11 @@ interface QBEstimate {
 }
 const fingerprint = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
-export function estimateBody(payload: RetailPayload, customerId: string, email: string) {
+// `billEmail` is the recipient SET as a single comma-separated address string (one address in the common case).
+export function estimateBody(payload: RetailPayload, customerId: string, billEmail: string) {
   return {
     CustomerRef: { value: customerId }, PrivateNote: payload.privateNote,
-    CustomerMemo: { value: payload.customerMemo }, BillEmail: { Address: email },
+    CustomerMemo: { value: payload.customerMemo }, BillEmail: { Address: billEmail },
     Line: payload.lines.map(l => ({ DetailType: 'SalesItemLineDetail', Description: l.description, Amount: l.amountCents / 100,
       SalesItemLineDetail: { ItemRef: { value: l.itemId }, Qty: 1, UnitPrice: l.amountCents / 100, TaxCodeRef: { value: 'NON' } } })),
   }
@@ -62,15 +64,45 @@ export async function intakeSummary(id: string) {
   return { intake, order, contact, full, draft, revision }
 }
 
+/**
+ * Resolve the explicit recipient SET for this one send. `recipientsInput === undefined` means an old
+ * client that doesn't choose recipients → default to the saved customer contact email. An explicit list
+ * is normalized/validated here (empty/invalid/too-many and placeholder addresses are all rejected BEFORE
+ * any QuickBooks side effect).
+ *
+ * Returns `list` (the canonical sorted, lowercased SET — used for confirmation and recipient-set
+ * verification) and `joined` (the exact string written to BillEmail.Address + sendTo, so it is part of the
+ * estimate hash / send identity). IDEMPOTENCY-PRESERVING CASE: when the set is exactly ONE address equal
+ * (case-insensitively) to the stored customer contact, `joined` keeps the stored TRIMMED ORIGINAL casing —
+ * so a revision already sent before this feature (whose body hash was computed from the trimmed-original
+ * contact email) keeps the same body hash and the same ambiguous-retry request id, and never re-emails.
+ * Any other explicit set uses the canonical lowercased join. The customer CONTACT email itself is passed
+ * through unchanged elsewhere — it is used only for customer identity, never replaced by a recipient.
+ */
+function resolveRecipients(recipientsInput: string[] | undefined, contactEmail: string): { list: string[]; joined: string } {
+  const isDefault = recipientsInput === undefined
+  const raw = recipientsInput ?? (contactEmail ? [contactEmail] : [])
+  const norm = normalizeRecipients(raw)
+  if (!norm.ok) throw new Error(isDefault ? 'Add a valid customer email before sending.' : recipientErrorMessage(norm.reason))
+  for (const address of norm.list) {
+    if (isPlaceholderEmail(address)) throw new Error(isDefault ? 'Add a valid customer email before sending.' : 'Remove placeholder email addresses before sending.')
+  }
+  const stored = contactEmail.trim()
+  const joined = norm.list.length === 1 && stored && norm.list[0] === stored.toLowerCase() ? stored : norm.joined
+  return { list: norm.list, joined }
+}
+
 // Caller holds the shared intake lock. Preview revision is checked before any QB write/email.
-export async function sendIntakeEstimate(id: string, actor: string, expectedRevision: string) {
+// `recipients` is this send's explicit address list; omit it to default to the saved customer email.
+export async function sendIntakeEstimate(id: string, actor: string, expectedRevision: string, recipients?: string[]) {
   const db = getDb()
   let state = await intakeSummary(id)
   if (state.order.status !== 'estimate') throw new Error('This estimate has already moved onto the Work Board.')
   if (state.revision !== expectedRevision) throw new Error('The estimate changed. Review the refreshed total before sending.')
   if (!state.draft.priced || !state.full?.services.some(s => s.source !== 'system')) throw new Error('Add services and a price first.')
-  const email = state.contact?.customerEmail?.trim() || ''
-  if (!email || isPlaceholderEmail(email)) throw new Error('Add a valid customer email before sending.')
+  const contactEmail = state.contact?.customerEmail?.trim() || ''
+  // Explicit recipients may send even when the customer has no stored email; the default path still requires one.
+  const { list: recipientList, joined: sendTo } = resolveRecipients(recipients, contactEmail)
   if (state.draft.tax.cents || state.draft.tax.needsReview) throw new Error('Review tax treatment before sending this estimate through QuickBooks.')
   // Parts labor review / unchosen odor or ambiguous-name services — resolved before any QB write or email.
   await assertEstimateReady(id, 'send')
@@ -79,9 +111,11 @@ export async function sendIntakeEstimate(id: string, actor: string, expectedRevi
     state = await intakeSummary(id)
   }
   const estimateId = state.full!.estimate.id
-  const customer = await resolveRetailCustomer({ name: state.contact!.customerName, email, phone: state.contact!.customerPhone })
+  // Customer identity is resolved from the CUSTOMER's own stored contact only (null allowed) — never
+  // from a recipient, so sending to an insurer/third party can't attach the work to someone else.
+  const customer = await resolveRetailCustomer({ name: state.contact!.customerName, email: contactEmail || null, phone: state.contact!.customerPhone })
   const { payload } = await buildRetailWorkPayload({ estimateId, order: state.order, full: state.full, draft: state.draft })
-  const body = estimateBody(payload, customer.qbCustomerId, email)
+  const body = estimateBody(payload, customer.qbCustomerId, sendTo)
   const hash = fingerprint(body)
   let intake = state.intake
   let raw: QBEstimate
@@ -112,16 +146,17 @@ export async function sendIntakeEstimate(id: string, actor: string, expectedRevi
   }
   if (!matchesEstimateContent(raw, body)) throw new Error('QuickBooks estimate details do not match the current quote. Nothing was emailed.')
   if (Math.round((raw.TotalAmt ?? 0) * 100) !== payload.totalCents) throw new Error('QuickBooks total differs from this estimate. Nothing was emailed. Review the estimate in QuickBooks.')
-  if (raw.BillEmail?.Address?.toLowerCase() !== email.toLowerCase()) throw new Error('QuickBooks recipient differs from this estimate. Nothing was emailed.')
+  // Compare the recipient SET (ignoring spacing/case/order), so a confirmed send goes exactly where shown.
+  if (!sameRecipientSet(raw.BillEmail?.Address, recipientList)) throw new Error('QuickBooks recipient differs from this estimate. Nothing was emailed.')
   await db.update(estimateIntakes).set({ qbHash: hash, qbEstimateNumber: raw.DocNumber ?? null }).where(eq(estimateIntakes.orderId, id))
   if (intake.sentHash === hash) return { alreadySent: true }
   // Request ID is tied to the exact revision, so a retry cannot send the same version twice.
   const response = await qbApiRequest<{ Estimate: QBEstimate }>({ method: 'POST', path: `/estimate/${encodeURIComponent(raw.Id)}/send`,
-    query: { sendTo: email, requestid: `s-${fingerprint({ id, hash }).slice(0, 40)}` }, headers: { 'Content-Type': 'application/octet-stream' },
+    query: { sendTo, requestid: `s-${fingerprint({ id, hash }).slice(0, 40)}` }, headers: { 'Content-Type': 'application/octet-stream' },
   })
   if (response.Estimate?.EmailStatus !== 'EmailSent') throw new Error('QuickBooks has not confirmed delivery. Retry to check the same send request.')
   await db.update(estimateIntakes).set({ sentHash: hash, sentAt: new Date() }).where(eq(estimateIntakes.orderId, id))
-  await logEvent({ serviceOrderId: id, eventType: 'qb_estimate_sent', employeeName: actor, note: `Estimate #${raw.DocNumber ?? raw.Id} → ${email}` })
+  await logEvent({ serviceOrderId: id, eventType: 'qb_estimate_sent', employeeName: actor, note: `Estimate #${raw.DocNumber ?? raw.Id} → ${sendTo}` })
   return { alreadySent: false }
 }
 

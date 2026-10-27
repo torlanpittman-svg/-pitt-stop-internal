@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import type { InvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { InvoiceTotals, type ChargeField } from '@/app/orders/[id]/InvoiceDraftPanel'
 import { createDraftSequencer, estimateActionsLocked, interpretDraftResponse } from '@/app/orders/[id]/invoice-draft-sync'
+import { normalizeRecipients, recipientErrorMessage, MAX_RECIPIENTS } from '@/apps/estimates/recipients'
 interface Summary { draft: InvoiceDraft; revision: string; email: string; phone: string; qbNumber: string | null; sentAt: string | null }
 const money = (c: number) => `$${(c / 100).toFixed(2)}`
 /**
@@ -13,13 +14,25 @@ const money = (c: number) => `$${(c / 100).toFixed(2)}`
  * estimate moves to the Work Board, and the QuickBooks estimate/invoice uses them). Removing or
  * restoring never sends anything.
  */
-export default function EstimateActions({ id, editorBusy, onBusyChange, subtotal, refreshKey }: {
+interface EstimateActionsProps {
   id: string; editorBusy: boolean; onBusyChange: (busy: boolean) => void
   /** The editable Subtotal row from the estimate editor. */
   subtotal?: ReactNode
   /** Changes after each confirmed item edit → re-read the summary (total + revision) in place. */
   refreshKey?: string
-}) {
+}
+
+/**
+ * Keyed by `id` so navigating to a DIFFERENT estimate fully remounts the inner component — every piece of
+ * state and every ref (seeded contact, recipient drafts, a frozen send confirmation) resets, so nothing
+ * leaks from one customer to the next. A `refreshKey` change does NOT change the key, so in-place edits and
+ * typed recipient drafts are preserved while the summary re-reads.
+ */
+export default function EstimateActions(props: EstimateActionsProps) {
+  return <EstimateActionsInner key={props.id} {...props} />
+}
+
+function EstimateActionsInner({ id, editorBusy, onBusyChange, subtotal, refreshKey }: EstimateActionsProps) {
   const router = useRouter()
   const [summary, setSummary] = useState<Summary | null>(null)
   const [busy, setBusy] = useState(false)
@@ -31,7 +44,14 @@ export default function EstimateActions({ id, editorBusy, onBusyChange, subtotal
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [contactOpen, setContactOpen] = useState(false)
-  // Contact fields are seeded once; later refreshes must not overwrite what is being typed.
+  // Explicit PER-SEND recipient drafts (the text being typed). Seeded once from the saved customer email;
+  // kept distinct from the contact email and NEVER silently overwritten by a refresh or a contact save.
+  const [recipients, setRecipients] = useState<string[]>([''])
+  const [recipientError, setRecipientError] = useState('')
+  // The recipient SET snapshotted when the send confirmation opened — the frozen list that is displayed and
+  // submitted. A refresh closes the confirmation (below), so a stale set can never be sent.
+  const [frozen, setFrozen] = useState<string[] | null>(null)
+  // Contact + recipient fields are seeded once; later refreshes must not overwrite what is being typed.
   const seededRef = useRef(false)
   // Only the most recently started read (initial load, refresh after an item edit, or a fee toggle's own
   // reload) may write `summary`, so an older response can't resurrect a stale total/revision.
@@ -46,7 +66,7 @@ export default function EstimateActions({ id, editorBusy, onBusyChange, subtotal
   // current read, so no request can strand a permanent refreshing state across id / key changes.
   const loadSummary = useCallback(async (mode: 'initial' | 'refresh') => {
     const token = seq.begin()
-    if (mode === 'refresh') { setRefreshing(true); setConfirm(null); setMessage('') }
+    if (mode === 'refresh') { setRefreshing(true); setConfirm(null); setMessage(''); setRecipientError('') }
     try {
       const r = await fetch(`/api/estimates/${id}`, { cache: 'no-store' })
       const d = await r.json().catch(() => null) as (Summary & { error?: string }) | null
@@ -56,7 +76,11 @@ export default function EstimateActions({ id, editorBusy, onBusyChange, subtotal
       const res = interpretDraftResponse(r.ok, d, 'Unable to load total.')
       if (!res.draft) { setError(res.error ?? 'Unable to load total.'); if (mode === 'refresh') setSummary(null); return }
       setSummary(d as Summary); setError('')
-      if (!seededRef.current) { setEmail((d as Summary).email); setPhone((d as Summary).phone); seededRef.current = true }
+      if (!seededRef.current) {
+        const s = d as Summary
+        setEmail(s.email); setPhone(s.phone); setRecipients(s.email ? [s.email] : [''])
+        seededRef.current = true
+      }
     } catch {
       if (!seq.isCurrent(token)) return
       setError('Unable to load total.')
@@ -72,12 +96,13 @@ export default function EstimateActions({ id, editorBusy, onBusyChange, subtotal
     void loadSummary(first ? 'initial' : 'refresh')
   }, [id, refreshKey, loadSummary])
 
-  const action = async (kind: 'contact' | 'send' | 'convert') => {
+  const action = async (kind: 'contact' | 'send' | 'convert', sendRecipients?: string[]) => {
     if (locked || !summary) return
     setBusy(true); onBusyChange(true); setError(''); setMessage('')
     try {
       const response = await fetch(`/api/estimates/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: kind, revision: summary.revision, email, phone }) })
+        // Send carries the frozen recipient SET; contact save never touches recipients.
+        body: JSON.stringify({ action: kind, revision: summary.revision, email, phone, ...(kind === 'send' && sendRecipients ? { recipients: sendRecipients } : {}) }) })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'Unable to complete action.')
       if (data.converted) { router.push(`/orders/${id}`); return }
@@ -86,6 +111,17 @@ export default function EstimateActions({ id, editorBusy, onBusyChange, subtotal
     } catch (e) { setError(e instanceof Error ? e.message : 'Unable to complete action.') }
     finally { setBusy(false); onBusyChange(false); setConfirm(null) }
   }
+  // Open the send confirmation only with a valid recipient SET — validated and FROZEN here so the dialog
+  // displays and submits exactly that normalized list. An invalid list surfaces an inline error instead.
+  const openSendConfirm = () => {
+    if (locked || !summary) return
+    const norm = normalizeRecipients(recipients)
+    if (!norm.ok) { setRecipientError(recipientErrorMessage(norm.reason)); return }
+    setRecipientError(''); setFrozen(norm.list); setConfirm('send')
+  }
+  const setRecipient = (i: number, value: string) => setRecipients(r => r.map((v, j) => (j === i ? value : v)))
+  const addRecipient = () => setRecipients(r => (r.length >= MAX_RECIPIENTS ? r : [...r, '']))
+  const removeRecipient = (i: number) => setRecipients(r => (r.length <= 1 ? r : r.filter((_, j) => j !== i)))
   // Remove / Restore shop supplies or the card charge — the Invoice Draft override (manager/admin,
   // audited, recomputed by the fee engine). Then re-read the summary: its total and revision changed.
   const toggleFee = async (field: ChargeField, removed: boolean) => {
@@ -110,21 +146,38 @@ export default function EstimateActions({ id, editorBusy, onBusyChange, subtotal
     <h2 className="sr-only">Customer estimate</h2>
     {summary && !refreshing ? <>
       <InvoiceTotals draft={summary.draft} subtotal={subtotal} canEdit={summary.draft.priced} busy={locked} onToggle={(f, r) => { void toggleFee(f, r) }} totalLabel="Estimate total" />
-      <p className="text-gray-400 text-sm">Send to: {summary.email || 'No email added'} <button disabled={locked} onClick={() => setContactOpen(!contactOpen)} className="text-blue-400 ml-1 min-h-11 px-1 inline-flex items-center">Edit contact</button></p>
+      <p className="text-gray-400 text-sm">Customer contact: {summary.email || 'No email added'} <button disabled={locked} onClick={() => setContactOpen(!contactOpen)} className="text-blue-400 ml-1 min-h-11 px-1 inline-flex items-center">Edit contact</button></p>
       {contactOpen && <form className="space-y-3" onSubmit={e => { e.preventDefault(); void action('contact') }}>
         <label className="block text-sm">Email<input type="email" value={email} onChange={e => setEmail(e.target.value)} className="block w-full rounded-lg bg-gray-900 border border-gray-700 p-3" /></label>
         <label className="block text-sm">Phone<input type="tel" value={phone} onChange={e => setPhone(e.target.value)} className="block w-full rounded-lg bg-gray-900 border border-gray-700 p-3" /></label>
         <button disabled={locked} className="rounded-lg bg-gray-800 px-4 py-2">Save contact</button>
       </form>}
+      {/* Explicit per-send recipients — distinct from the saved contact above; editing is hidden while a
+          confirmation is open so the frozen list is the only thing that can be sent. */}
+      {!confirm && <fieldset disabled={locked} className="space-y-2 border-0 p-0 m-0">
+        <legend className="text-sm text-gray-300">Email this estimate to</legend>
+        <p className="text-gray-500 text-xs">These addresses receive this estimate for this send only. The customer’s saved contact isn’t changed.</p>
+        {recipients.map((value, i) => <div key={i} className="flex items-center gap-2">
+          <label className="sr-only" htmlFor={`recipient-${id}-${i}`}>{`Recipient ${i + 1}`}</label>
+          <input id={`recipient-${id}-${i}`} type="email" inputMode="email" autoComplete="off" value={value} placeholder="name@example.com"
+            onChange={e => setRecipient(i, e.target.value)} className="flex-1 min-w-0 min-h-11 rounded-lg bg-gray-900 border border-gray-700 p-3" />
+          <button type="button" onClick={() => removeRecipient(i)} disabled={locked || recipients.length <= 1}
+            aria-label={`Remove recipient ${i + 1}`} className="min-h-11 min-w-11 rounded-lg border border-gray-700 text-gray-300 disabled:opacity-40">Remove</button>
+        </div>)}
+        <button type="button" onClick={addRecipient} disabled={locked || recipients.length >= MAX_RECIPIENTS} className="text-blue-400 min-h-11 px-1 inline-flex items-center disabled:opacity-40">+ Add recipient</button>
+        {recipientError && <p role="alert" className="text-red-400 text-sm">{recipientError}</p>}
+      </fieldset>}
       {summary.qbNumber && <p className="text-gray-500 text-xs">QuickBooks estimate #{summary.qbNumber}{summary.sentAt ? ` · Last sent ${new Date(summary.sentAt).toLocaleString()}` : ''}</p>}
       {/* While a confirmation is open it is the only way forward — the original buttons are hidden. */}
       {!confirm && <>
-        <button disabled={locked || !summary.draft.priced || !summary.email || contactOpen} onClick={() => setConfirm('send')} className="w-full bg-blue-600 rounded-xl py-3 font-semibold disabled:opacity-40">{busy ? 'Working…' : summary.qbNumber ? 'Send current estimate through QuickBooks' : 'Send estimate through QuickBooks'}</button>
+        <button disabled={locked || !summary.draft.priced || contactOpen || !recipients.some(r => r.trim())} onClick={openSendConfirm} className="w-full bg-blue-600 rounded-xl py-3 font-semibold disabled:opacity-40">{busy ? 'Working…' : summary.qbNumber ? 'Send current estimate through QuickBooks' : 'Send estimate through QuickBooks'}</button>
         <button disabled={locked || !summary.draft.priced || contactOpen} onClick={() => setConfirm('convert')} className="w-full border border-gray-600 rounded-xl py-3 font-semibold disabled:opacity-40">Move to Work Board</button>
       </>}
-      {confirm === 'send' && <div role="alertdialog" aria-label="Confirm estimate email" className="rounded-xl bg-gray-950 border border-blue-700 p-4 space-y-3">
-        <p>{`Send this ${money(summary.draft.totalCents)} estimate to ${summary.email} through QuickBooks? Any existing QuickBooks estimate will be updated to these prices.`}</p>
-        <button disabled={locked} onClick={() => action('send')} className="bg-blue-600 rounded-lg px-4 py-2 mr-3 disabled:opacity-40">Send estimate</button>
+      {confirm === 'send' && frozen && <div role="alertdialog" aria-label="Confirm estimate email" className="rounded-xl bg-gray-950 border border-blue-700 p-4 space-y-3">
+        <p>{`Send this ${money(summary.draft.totalCents)} estimate through QuickBooks to:`}</p>
+        <ul className="list-disc pl-5 text-sm">{frozen.map(a => <li key={a} className="break-words [overflow-wrap:anywhere]">{a}</li>)}</ul>
+        <p className="text-gray-400 text-sm">Any existing QuickBooks estimate will be updated to these prices.</p>
+        <button disabled={locked} onClick={() => action('send', frozen)} className="bg-blue-600 rounded-lg px-4 py-2 mr-3 disabled:opacity-40">Send estimate</button>
         <button disabled={busy} onClick={() => setConfirm(null)}>Cancel</button>
       </div>}
       {confirm === 'convert' && <div role="alertdialog" aria-labelledby={`move-${id}`} className="rounded-xl bg-gray-950 border border-blue-700 p-4">

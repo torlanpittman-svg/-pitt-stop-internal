@@ -11,7 +11,10 @@ import { renameOrderCustomer, CUSTOMER_NAME_MAX } from '@/apps/workflow/customer
 
 export const maxDuration = 120
 const actionInput = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('send'), revision: z.string().length(64) }),
+  // `recipients` is this send's explicit address list (per-send choice, not the stored contact). Omitted →
+  // default to the saved contact email. Raw strings are bounded here; normalize/dedupe/validate + placeholder
+  // + empty-list rejection happen in sendIntakeEstimate before any QuickBooks call.
+  z.object({ action: z.literal('send'), revision: z.string().length(64), recipients: z.array(z.string().max(254)).max(50).optional() }),
   z.object({ action: z.literal('convert'), revision: z.string().length(64) }),
   z.object({ action: z.literal('contact'), email: z.union([z.email().max(200), z.literal('')]), phone: z.string().max(40) }),
   z.object({ action: z.literal('customer_name'), name: z.string().trim().min(1).max(CUSTOMER_NAME_MAX) }),
@@ -57,7 +60,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         await renameOrderCustomer(id, body.name, actor.name)
       } else {
         if (state.revision !== body.revision) throw new Error('The estimate changed. Refresh and review it before continuing.')
-        if (body.action === 'send') await sendIntakeEstimate(id, actor.name, body.revision)
+        if (body.action === 'send') await sendIntakeEstimate(id, actor.name, body.revision, body.recipients)
         else {
           await moveIntakeToBoard(id, actor.name)
           return NextResponse.json({ ok: true, converted: true })
