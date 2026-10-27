@@ -119,6 +119,10 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   const invoiceable = !header.standalone && !header.quoteOnly && !cancelled
   // Bumped after a customer rename so EstimateActions reloads (the send/convert revision changed).
   const [customerRev, setCustomerRev] = useState(0)
+  // Standalone estimates attach selected photos to the QuickBooks email, so a photo change moves the send
+  // revision. Bump to re-read the summary (fresh revision) and flag upload activity to block a concurrent Send.
+  const [photoRev, setPhotoRev] = useState(0)
+  const [photoBusy, setPhotoBusy] = useState(false)
   // The Job's QuickBooks invoice state (from the Invoice Draft) — drives the page title.
   const [invoiceQb, setInvoiceQb] = useState<InvoiceDraftData['qb'] | null>(null)
   const onDraft = useCallback((d: InvoiceDraftData) => setInvoiceQb(d.qb), [])
@@ -448,7 +452,11 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
             </div>
             {header.vehicleDetails.bodyClass && <div><dt className="text-gray-400">Body style</dt><dd className="text-gray-200">{header.vehicleDetails.bodyClass}</dd></div>}
           </dl>
-          <div className="mt-4"><OrderPhotos orderId={header.id} /></div>
+          {/* Standalone estimates: a photo change moves the send snapshot (bump revision) and blocks Send
+              while uploading; photo mutations freeze while the estimate is sending. Other usages keep the
+              defaults (no coupling). */}
+          <div className="mt-4"><OrderPhotos orderId={header.id}
+            {...(standalone ? { onChanged: () => setPhotoRev((n) => n + 1), onBusyChange: setPhotoBusy, disabled: actionBusy } : {})} /></div>
         </div>
       </details>
       {header.notes && <p className="-mt-3 mb-5 text-gray-400 text-sm whitespace-pre-wrap">{header.notes}</p>}
@@ -549,7 +557,9 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
         )}
         {standalone && (
           <div hidden={pane.kind !== 'list'}>
-            <EstimateActions key={customerRev} id={header.id} editorBusy={editingBusy} onBusyChange={setActionBusy} subtotal={subtotalRow} refreshKey={viewKey} />
+            {/* photoBusy locks Send/Move while a photo uploads; photoRev re-reads the summary (the attachment
+                snapshot, and thus the send revision, changed) so a normal add-photo→Send needs no page reload. */}
+            <EstimateActions key={customerRev} id={header.id} editorBusy={editingBusy || photoBusy} onBusyChange={setActionBusy} subtotal={subtotalRow} refreshKey={`${viewKey}:${photoRev}`} />
           </div>
         )}
       </div>

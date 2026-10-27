@@ -83,6 +83,59 @@ export async function qbApiRequestBinary(opts: { path: string; accept: string })
   return res.arrayBuffer()
 }
 
+/**
+ * Upload one binary file and its metadata to QBO's multipart `/upload` endpoint (same auth, host and
+ * one-401-retry behavior as qbApiRequest). The ordinary client JSON-stringifies its body, which would
+ * corrupt binary bytes; this helper posts a real `multipart/form-data` request with the paired parts
+ * QBO expects — `file_metadata_0` (JSON) and `file_content_0` (the raw bytes, with filename + type) —
+ * letting `fetch` set the multipart boundary itself.
+ *
+ * Returns the parsed JSON unchanged: QBO reports per-file problems as a `Fault` inside
+ * `AttachableResponse` even on HTTP 200, so the CALLER must inspect the body, not just the status.
+ * Pass a deterministic `requestid` so a timed-out retry does not create a duplicate attachment.
+ */
+export async function qbUploadAttachment<T = unknown>(opts: {
+  metadata: unknown
+  content: Uint8Array
+  contentType: string
+  filename: string
+  query?: Record<string, string>
+  timeoutMs?: number
+}): Promise<T> {
+  const doCall = async (): Promise<Response> => {
+    const { accessToken, realmId, environment } = await getValidAccessToken()
+    const url = new URL(`${QB_API_BASE[environment]}/v3/company/${realmId}/upload`)
+    url.searchParams.set('minorversion', QB_MINOR_VERSION)
+    for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, v)
+
+    const form = new FormData()
+    form.append('file_metadata_0', new Blob([JSON.stringify(opts.metadata)], { type: 'application/json' }))
+    // Actual binary bytes (NOT JSON-stringified) with the declared content type + filename. Copy into a
+    // fresh ArrayBuffer-backed Uint8Array so the bytes are an unambiguous BlobPart (a shared-buffer view
+    // is not assignable to BlobPart under current lib types).
+    form.append('file_content_0', new Blob([new Uint8Array(opts.content)], { type: opts.contentType }), opts.filename)
+
+    return fetch(url.toString(), {
+      method: 'POST',
+      // Let fetch set `Content-Type: multipart/form-data; boundary=...` itself.
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+      body: form,
+      ...(opts.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
+    })
+  }
+
+  let res = await doCall()
+  if (res.status === 401) {
+    logger.warn(APP, 'retry_after_401', { path: '/upload' })
+    res = await doCall()
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new QBApiError(res.status, `QuickBooks API /upload failed (${res.status}): ${text}`)
+  }
+  return (await res.json()) as T
+}
+
 /** Escape a value for safe use inside a QBO query string literal. */
 export function qboEscape(value: string): string {
   return value.replace(/'/g, "\\'")

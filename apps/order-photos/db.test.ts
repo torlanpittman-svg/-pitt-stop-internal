@@ -6,7 +6,7 @@ import { drizzle } from 'drizzle-orm/pglite'
 
 vi.mock('@/platform/db', () => ({ getDb: vi.fn() }))
 import { getDb } from '@/platform/db'
-import { getOrderPhoto, listOrderPhotos, photoOrderExists, saveOrderPhoto, updateOrderPhoto } from './db'
+import { getOrderPhoto, listIncludedPhotoMeta, listOrderPhotos, photoOrderExists, saveOrderPhoto, updateOrderPhoto } from './db'
 
 const pg = new PGlite()
 const orderId = randomUUID()
@@ -71,6 +71,24 @@ describe('vehicle photo persistence', () => {
     await updateOrderPhoto(otherId, other.id, { caption: 'Separate record' })
     expect((await listOrderPhotos(orderId))[0].caption).toBe('')
     expect((await listOrderPhotos(otherId))[0].caption).toBe('Separate record')
+  })
+  it('lists only active, included photo metadata (with the storage path) for one order, in packet order', async () => {
+    const keep = await saveOrderPhoto({ ...input(), imageHash: 'h-keep', storagePath: 'order-photos/keep.jpg', filename: 'keep.jpg' })
+    const quote = await saveOrderPhoto({ ...input(), imageHash: 'h-quote', storagePath: 'order-photos/quote.png', filename: 'quote.png', contentType: 'image/png' })
+    const excluded = await saveOrderPhoto({ ...input(), imageHash: 'h-excl', storagePath: 'order-photos/excl.jpg', filename: 'excl.jpg' })
+    const removed = await saveOrderPhoto({ ...input(), imageHash: 'h-gone', storagePath: 'order-photos/gone.jpg', filename: 'gone.jpg' })
+    await saveOrderPhoto({ ...input(), serviceOrderId: otherId, imageHash: 'h-other', storagePath: 'order-photos/other.jpg', filename: 'other.jpg' })
+    await updateOrderPhoto(orderId, excluded.id, { included: false })
+    await updateOrderPhoto(orderId, removed.id, { removedAt: new Date() })
+    await updateOrderPhoto(orderId, quote.id, { caption: 'Parts quote p1' })
+    // Distinct timestamps: same-instant inserts tie, and the helper then falls back to the id (uuid) —
+    // so pin createdAt to assert the real packet order (createdAt, then id) deterministically.
+    await pg.query('UPDATE order_photos SET created_at=$1 WHERE id=$2', [new Date('2026-01-01T00:00:00Z'), keep.id])
+    await pg.query('UPDATE order_photos SET created_at=$1 WHERE id=$2', [new Date('2026-01-02T00:00:00Z'), quote.id])
+
+    const meta = await listIncludedPhotoMeta(orderId)
+    expect(meta.map(m => m.id)).toEqual([keep.id, quote.id])
+    expect(meta[1]).toMatchObject({ imageHash: 'h-quote', filename: 'quote.png', contentType: 'image/png', byteSize: 100, caption: 'Parts quote p1', storagePath: 'order-photos/quote.png' })
   })
   it('rejects orphan photos and detects missing orders', async () => {
     const missing = randomUUID()

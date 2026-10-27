@@ -13,7 +13,18 @@ async function responseData(response: Response) {
   return data
 }
 
-export default function OrderPhotos({ orderId }: { orderId: string }) {
+/**
+ * `onChanged` fires once per mutation that actually changed the stored set (a batch with ≥1 saved
+ * upload, or a successful removal) so a parent can refresh an attachment snapshot. `onBusyChange`
+ * reports upload/remove activity so the parent can block a concurrent Send. `disabled` lets the parent
+ * freeze photo mutations (e.g. while an estimate is sending). All optional — other usages are unchanged.
+ */
+export default function OrderPhotos({ orderId, onChanged, onBusyChange, disabled = false }: {
+  orderId: string
+  onChanged?: () => void
+  onBusyChange?: (busy: boolean) => void
+  disabled?: boolean
+}) {
   const [photos, setPhotos] = useState<OrderPhoto[]>([])
   const [loaded, setLoaded] = useState(false)
   const [reload, setReload] = useState(0)
@@ -24,6 +35,7 @@ export default function OrderPhotos({ orderId }: { orderId: string }) {
   const lock = useRef(false)
   const input = useRef<HTMLInputElement>(null)
   const base = `/api/workflow/orders/${orderId}/photos`
+  useEffect(() => { onBusyChange?.(busy) }, [busy, onBusyChange])
 
   useEffect(() => {
     let active = true
@@ -43,7 +55,7 @@ export default function OrderPhotos({ orderId }: { orderId: string }) {
     ? prior.map((p) => p.id === photo.id ? photo : p) : [...prior, photo])
 
   async function upload(files: File[]) {
-    if (!files.length || lock.current) return
+    if (!files.length || lock.current || disabled) return
     lock.current = true; setBusy(true); setError(''); setFailed([])
     const failures: File[] = []
     const errors: string[] = []
@@ -69,34 +81,36 @@ export default function OrderPhotos({ orderId }: { orderId: string }) {
       }
       setFailed(failures); setError(errors.join('\n'))
       setStatus(`${saved} photo${saved === 1 ? '' : 's'} added${failures.length ? `; ${failures.length} could not be added` : ''}.`)
+      if (saved > 0) onChanged?.() // Only a real change bumps the parent's snapshot — failures/no-ops don't.
     } finally { lock.current = false; setBusy(false) }
   }
 
   async function remove(photo: OrderPhoto) {
-    if (lock.current) return
+    if (lock.current || disabled) return
     lock.current = true; setBusy(true); setError(''); setStatus('')
     try {
       await responseData(await fetch(`${base}/${photo.id}`, { method: 'DELETE' }))
       setPhotos((prior) => prior.filter((p) => p.id !== photo.id))
       setStatus('Photo removed.')
+      onChanged?.()
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not remove the photo.') }
     finally { lock.current = false; setBusy(false) }
   }
 
   return (
     <section aria-label="Vehicle photos">
-      <button type="button" className={`${button} inline-flex items-center gap-2`} disabled={busy || !loaded} onClick={() => input.current?.click()}>
+      <button type="button" className={`${button} inline-flex items-center gap-2`} disabled={busy || !loaded || disabled} onClick={() => input.current?.click()}>
         <CameraIcon />
         Add photos
       </button>
       {/* Let the phone offer its native camera/library chooser in one tap. */}
-      <input ref={input} hidden type="file" accept="image/*" multiple disabled={busy || !loaded}
+      <input ref={input} hidden type="file" accept="image/*" multiple disabled={busy || !loaded || disabled}
         onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void upload(files) }} />
       {!loaded && error && <button type="button" className="ml-3 text-sm text-blue-400" onClick={() => setReload((value) => value + 1)}>Retry</button>}
       {status && <p role="status" className={busy ? 'mt-2 text-sm text-gray-400' : 'sr-only'}>{status}</p>}
       {error && <div role="alert" className="mt-3 rounded-xl border border-red-800 bg-red-950/30 p-3 text-sm text-red-300 whitespace-pre-wrap break-words">
         {error}
-        {failed.length > 0 && <button type="button" className={`${button} block mt-3`} disabled={busy} onClick={() => void upload(failed)}>Retry</button>}
+        {failed.length > 0 && <button type="button" className={`${button} block mt-3`} disabled={busy || disabled} onClick={() => void upload(failed)}>Retry</button>}
       </div>}
       {photos.length > 0 && <div className="mt-3 flex flex-wrap gap-2">
         {photos.map((photo, index) => <div key={photo.id} className="relative h-20 w-20">
@@ -105,7 +119,7 @@ export default function OrderPhotos({ orderId }: { orderId: string }) {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={photo.imageUrl} alt={`Vehicle photo ${index + 1}`} className="h-full w-full object-cover" />
           </a>
-          <button type="button" aria-label={`Remove vehicle photo ${index + 1}`} title="Remove photo" disabled={busy}
+          <button type="button" aria-label={`Remove vehicle photo ${index + 1}`} title="Remove photo" disabled={busy || disabled}
             onClick={() => void remove(photo)} className="absolute -right-1 -top-1 flex h-8 w-8 items-center justify-center rounded-full bg-gray-950/90 text-lg text-white disabled:opacity-40">×</button>
         </div>)}
       </div>}

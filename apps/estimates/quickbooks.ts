@@ -13,6 +13,8 @@ import { buildRetailWorkPayload } from '@/apps/quickbooks/retail-invoice-service
 import { resolveRetailCustomer, isPlaceholderEmail } from '@/apps/quickbooks/retail-customer'
 import { extractPsid } from '@/apps/quickbooks/retail-format'
 import { normalizeRecipients, recipientErrorMessage, sameRecipientSet } from './recipients'
+import { listIncludedPhotoMeta } from '@/apps/order-photos/db'
+import { prepareEstimateAttachments, reconcileEstimateAttachments, attachmentManifestFingerprint, attachmentSentIdentity } from './attachments'
 import type { RetailPayload } from '@/apps/quickbooks/retail-invoice'
 
 interface QBEstimate {
@@ -60,8 +62,12 @@ export async function intakeSummary(id: string) {
   const full = await getFullEstimate(id)
   const cfg = await getBusinessConfig()
   const draft = buildInvoiceDraft({ order, full, paymentLabel: cfg.paymentLabel, role: 'manager' })
-  const revision = fingerprint({ full: full && { estimate: { ...full.estimate, updatedAt: undefined, updatedBy: undefined }, services: full.services }, contact, notes: order.notes })
-  return { intake, order, contact, full, draft, revision }
+  // Selected photos join the preview revision ONLY when present, so a zero-photo estimate keeps the
+  // exact legacy revision (and body/send identity) it had before attachments existed.
+  const attachments = await listIncludedPhotoMeta(id)
+  const revision = fingerprint({ full: full && { estimate: { ...full.estimate, updatedAt: undefined, updatedBy: undefined }, services: full.services }, contact, notes: order.notes,
+    ...(attachments.length ? { attachments: attachmentManifestFingerprint(attachments) } : {}) })
+  return { intake, order, contact, full, draft, revision, attachments }
 }
 
 /**
@@ -118,6 +124,7 @@ export async function sendIntakeEstimate(id: string, actor: string, expectedRevi
   const body = estimateBody(payload, customer.qbCustomerId, sendTo)
   const hash = fingerprint(body)
   let intake = state.intake
+  const hadEstimateBefore = Boolean(intake.qbEstimateId)
   let raw: QBEstimate
   if (!intake.qbEstimateId) {
     const savedBody = intake.createBody ?? body
@@ -149,13 +156,34 @@ export async function sendIntakeEstimate(id: string, actor: string, expectedRevi
   // Compare the recipient SET (ignoring spacing/case/order), so a confirmed send goes exactly where shown.
   if (!sameRecipientSet(raw.BillEmail?.Address, recipientList)) throw new Error('QuickBooks recipient differs from this estimate. Nothing was emailed.')
   await db.update(estimateIntakes).set({ qbHash: hash, qbEstimateNumber: raw.DocNumber ?? null }).where(eq(estimateIntakes.orderId, id))
-  if (intake.sentHash === hash) return { alreadySent: true }
-  // Request ID is tied to the exact revision, so a retry cannot send the same version twice.
+  // Attachments: recheck the live manifest (a concurrent photo change aborts here), prepare email copies,
+  // then reconcile + verify them against THIS validated estimate before any email leaves. `qbHash` stays
+  // the BODY hash for the update logic above; the SEND identity folds in the prepared photo set so a
+  // changed selection is a distinct, non-duplicating send (empty selection keeps the legacy body hash).
+  const freshManifest = await listIncludedPhotoMeta(id)
+  if (attachmentManifestFingerprint(freshManifest) !== attachmentManifestFingerprint(state.attachments)) {
+    throw new Error('The attached photos changed. Review the refreshed estimate before sending.')
+  }
+  const prepared = await prepareEstimateAttachments(id, freshManifest)
+  // A brand-new estimate with no photos skips the attachable query entirely (pure legacy path); any
+  // existing estimate is reconciled so a deselected managed file is disabled and can't leak to email.
+  if (prepared.length || hadEstimateBefore) {
+    await reconcileEstimateAttachments({ orderId: id, qbEstimateId: raw.Id, prepared })
+    // Reconcile (read bytes + upload) can be slow. Re-read the live selection immediately before the
+    // send decision: if it changed during reconcile, stop — never carry a changed selection into /send.
+    const preSendManifest = await listIncludedPhotoMeta(id)
+    if (attachmentManifestFingerprint(preSendManifest) !== attachmentManifestFingerprint(freshManifest)) {
+      throw new Error('The attached photos changed. Review the refreshed estimate before sending.')
+    }
+  }
+  const sendIdentity = prepared.length ? fingerprint({ body: hash, attachments: attachmentSentIdentity(prepared) }) : hash
+  if (intake.sentHash === sendIdentity) return { alreadySent: true }
+  // Request ID is tied to the exact revision + attachment set, so a retry cannot send the same version twice.
   const response = await qbApiRequest<{ Estimate: QBEstimate }>({ method: 'POST', path: `/estimate/${encodeURIComponent(raw.Id)}/send`,
-    query: { sendTo, requestid: `s-${fingerprint({ id, hash }).slice(0, 40)}` }, headers: { 'Content-Type': 'application/octet-stream' },
+    query: { sendTo, requestid: `s-${fingerprint({ id, hash: sendIdentity }).slice(0, 40)}` }, headers: { 'Content-Type': 'application/octet-stream' },
   })
   if (response.Estimate?.EmailStatus !== 'EmailSent') throw new Error('QuickBooks has not confirmed delivery. Retry to check the same send request.')
-  await db.update(estimateIntakes).set({ sentHash: hash, sentAt: new Date() }).where(eq(estimateIntakes.orderId, id))
+  await db.update(estimateIntakes).set({ sentHash: sendIdentity, sentAt: new Date() }).where(eq(estimateIntakes.orderId, id))
   await logEvent({ serviceOrderId: id, eventType: 'qb_estimate_sent', employeeName: actor, note: `Estimate #${raw.DocNumber ?? raw.Id} → ${sendTo}` })
   return { alreadySent: false }
 }

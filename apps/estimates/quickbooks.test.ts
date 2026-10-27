@@ -6,6 +6,9 @@ const f = vi.hoisted(() => ({
   contact: { customerName: 'Test Customer', customerEmail: 'customer@realshop.net', customerPhone: '5125550123' },
   api: vi.fn(), ready: vi.fn(), resolveCustomer: vi.fn(), order: { id: 'order', status: 'estimate', notes: null },
   payload: { lines: [{ itemId: 'labor', description: 'Interior detail', amountCents: 10000 }], privateNote: 'PSID:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', customerMemo: '2020 Honda Civic', totalCents: 10000 },
+  // Attachments (own unit tests in apps/estimates/attachments.test.ts). Default: no selected photos.
+  photos: [] as { id: string; imageHash: string; filename: string; contentType: string; byteSize: number; caption: string; storagePath: string }[],
+  prepare: vi.fn(), reconcile: vi.fn(),
 }))
 vi.mock('@/platform/db', () => ({ getDb: () => ({
   select: () => ({ from: (table: { orderId?: unknown }) => ({ where: async () => [table.orderId ? { ...f.intake } : f.contact] }) }),
@@ -17,9 +20,18 @@ vi.mock('@/apps/workflow/invoice-draft', () => ({ buildInvoiceDraft: () => ({ pr
 vi.mock('@/apps/settings/db', () => ({ getBusinessConfig: async () => ({ paymentLabel: 'Card charge' }) }))
 vi.mock('@/apps/quickbooks/retail-invoice-service', () => ({ buildRetailWorkPayload: async () => ({ payload: f.payload }) }))
 vi.mock('@/apps/quickbooks/retail-customer', () => ({ resolveRetailCustomer: f.resolveCustomer, isPlaceholderEmail: (s: string) => !s || s === 'no@no.com' }))
-vi.mock('@/apps/quickbooks/client', () => ({ qbApiRequest: f.api }))
+vi.mock('@/apps/quickbooks/client', () => ({ qbApiRequest: f.api, queryQBO: async () => ({}), qbUploadAttachment: vi.fn(), qboEscape: (s: string) => s }))
 // Parts labor review / odor checks (own tests in apps/workflow/service-matching.test.ts).
 vi.mock('@/apps/workflow/estimate-review', () => ({ assertEstimateReady: f.ready }))
+vi.mock('@/apps/order-photos/db', () => ({ listIncludedPhotoMeta: async () => f.photos }))
+// Attachment prepare/reconcile are exercised in attachments.test.ts; here we assert the WIRING only.
+// Fingerprints are deterministic stand-ins so a zero-photo send keeps the legacy body/send identity.
+vi.mock('./attachments', () => ({
+  attachmentManifestFingerprint: (m: { id: string }[]) => `mf:${m.map((x) => x.id).join(',')}`,
+  attachmentSentIdentity: (p: { photoId: string }[]) => `si:${p.map((x) => x.photoId).join(',')}`,
+  prepareEstimateAttachments: f.prepare,
+  reconcileEstimateAttachments: f.reconcile,
+}))
 import { sendIntakeEstimate, intakeSummary, estimateBody, assertEstimateIdentity } from './quickbooks'
 
 const raw = () => ({ Id: 'qb-estimate', SyncToken: '1', ...estimateBody(f.payload, 'customer-id', f.contact.customerEmail), TotalAmt: 100, DocNumber: '1001' })
@@ -30,6 +42,9 @@ beforeEach(() => {
   f.contact.customerEmail = 'customer@realshop.net'
   f.ready.mockReset().mockResolvedValue(undefined)
   f.resolveCustomer.mockReset().mockResolvedValue({ qbCustomerId: 'customer-id' })
+  f.photos = []
+  f.prepare.mockReset().mockImplementation(async (_orderId: string, metas: { id: string }[]) => metas.map((m) => ({ photoId: m.id })))
+  f.reconcile.mockReset().mockResolvedValue(undefined)
   f.api.mockReset().mockImplementation(async (opts: { path: string }) => ({ Estimate: { ...raw(), ...(opts.path.endsWith('/send') ? { EmailStatus: 'EmailSent' } : {}) } }))
 })
 const send = async (recipients?: string[]) => sendIntakeEstimate('order', 'Manager', (await intakeSummary('order')).revision, recipients)
@@ -257,5 +272,81 @@ describe('standalone estimate — multiple send recipients', () => {
     await send(['customer@realshop.net', 'CUSTOMER@REALSHOP.NET'])
     expect(sendCalls()).toHaveLength(1)
     expect(f.contact.customerEmail).toBe('Customer@RealShop.NET')   // recipients never mutate the contact
+  })
+})
+
+describe('standalone estimate — photo/parts attachments (wiring)', () => {
+  const photo = (id: string) => ({ id, imageHash: `h-${id}`, filename: `${id}.jpg`, contentType: 'image/jpeg', byteSize: 1000, caption: '', storagePath: `order-photos/x/${id}.jpg` })
+
+  it('zero-photo estimate sends exactly as before — no reconcile/attachable query', async () => {
+    await send()
+    expect(f.reconcile).not.toHaveBeenCalled()
+    expect(sendCalls()).toHaveLength(1)
+    expect(f.intake.sentAt).toBeInstanceOf(Date)
+  })
+
+  it('selected photos are prepared and reconciled against THIS estimate before anything is emailed', async () => {
+    f.photos = [photo('p1'), photo('p2')]
+    await send()
+    expect(f.prepare).toHaveBeenCalledWith('order', f.photos)
+    const arg = f.reconcile.mock.calls[0][0]
+    expect(arg).toMatchObject({ orderId: 'order', qbEstimateId: 'qb-estimate' })
+    expect(arg.prepared.map((p: { photoId: string }) => p.photoId)).toEqual(['p1', 'p2'])
+    // reconcile fully precedes the /send call.
+    const sendIdx = f.api.mock.calls.findIndex((c) => (c[0] as ApiOpts).path.endsWith('/send'))
+    expect(f.reconcile.mock.invocationCallOrder[0]).toBeLessThan(f.api.mock.invocationCallOrder[sendIdx])
+    expect(sendCalls()).toHaveLength(1)
+  })
+
+  it('stops the send if the selection changes DURING reconcile — the changed set is not carried into /send', async () => {
+    f.photos = [photo('p1')]
+    f.reconcile.mockImplementationOnce(async () => { f.photos = [photo('p2')] })
+    await expect(send()).rejects.toThrow(/photos changed/)
+    expect(sendCalls()).toHaveLength(0)
+    expect(f.intake.sentAt).toBeUndefined()
+  })
+
+  it('a corrupt/missing/too-large photo fails BEFORE any email and before reconcile', async () => {
+    f.photos = [photo('p1')]
+    f.prepare.mockRejectedValueOnce(new Error('A selected photo failed its integrity check (p1.jpg). Nothing was emailed.'))
+    await expect(send()).rejects.toThrow(/integrity check/)
+    expect(f.reconcile).not.toHaveBeenCalled()
+    expect(sendCalls()).toHaveLength(0)
+    expect(f.intake.sentAt).toBeUndefined()
+  })
+
+  it('a reconcile/verify failure blocks the email', async () => {
+    f.photos = [photo('p1')]
+    f.reconcile.mockRejectedValueOnce(new Error('A photo attachment could not be verified in QuickBooks (p1.jpg). Nothing was emailed.'))
+    await expect(send()).rejects.toThrow(/could not be verified/)
+    expect(sendCalls()).toHaveLength(0)
+    expect(f.intake.sentAt).toBeUndefined()
+  })
+
+  it('photos are part of the send identity: a new selection on an already-sent body re-sends once, repeats do not', async () => {
+    // Legacy estimate already sent on its body hash (no photos); now the manager attaches a photo.
+    const bodyHash = legacyBodyHash(f.contact.customerEmail)
+    Object.assign(f.intake, { qbEstimateId: 'qb-estimate', qbHash: bodyHash, sentHash: bodyHash })
+    f.photos = [photo('p1')]
+    await send()
+    expect(sendCalls()).toHaveLength(1)   // new attachment set → a fresh, explicit send
+    await send()
+    expect(sendCalls()).toHaveLength(1)   // same body + same photo set → already sent, no duplicate
+    expect(f.reconcile.mock.calls.length).toBeGreaterThanOrEqual(2) // still reconciled/verified each time
+  })
+
+  it('removing all photos from a previously-managed estimate still reconciles (to disable leftovers)', async () => {
+    Object.assign(f.intake, { qbEstimateId: 'qb-estimate', qbHash: null, sentHash: null })
+    f.photos = []
+    await send()
+    // Existing estimate + empty selection → reconcile runs with an empty prepared set.
+    expect(f.reconcile).toHaveBeenCalledWith(expect.objectContaining({ orderId: 'order', qbEstimateId: 'qb-estimate', prepared: [] }))
+  })
+
+  it('selected photos change the preview revision (so a stale preview is rejected)', async () => {
+    const withNone = (await intakeSummary('order')).revision
+    f.photos = [photo('p1')]
+    const withOne = (await intakeSummary('order')).revision
+    expect(withOne).not.toBe(withNone)
   })
 })

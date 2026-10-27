@@ -2,7 +2,9 @@
 
 The estimate's vehicle information contains one optional **Add photos** button. It opens the phone's native photo picker, where the user can take a picture or choose existing pictures. Selected pictures save immediately and appear as small thumbnails. Tap a thumbnail to open it, or its × to remove it. There are no note fields, selection checkboxes, separate save steps, or packet controls in the estimate workflow.
 
-Photos remain on the same service order when a standalone estimate moves to the Work Board and through completion/invoicing. The job uses the same compact photo control. Added photos are appended to the existing estimate printout automatically. This does not automatically attach files to QuickBooks records or customer emails.
+Photos remain on the same service order when a standalone estimate moves to the Work Board and through completion/invoicing. The job uses the same compact photo control. Added photos are appended to the existing estimate printout automatically.
+
+When a manager sends a **standalone estimate** through QuickBooks, the photos the manager selected to include (vehicle photos and parts-quote page images) are now attached to that estimate's native QuickBooks email. Originals in storage are never altered: a deterministic, auto-oriented email copy is prepared in memory (JPEG/WebP become a ≤2000px JPEG; small PNG quote pages are kept byte-for-byte). See `apps/estimates/attachments.ts`. This does not change invoices, dealer records, or the job/Work Board flow.
 
 ## Release
 
@@ -27,3 +29,9 @@ The photo tests cover the real migration, order lifecycle retention, retry dedup
 The initial implementation passed all 103 photo/estimate/pricing/invoice-related tests and the production build. Existing unrelated catalog tests and six baseline `OrderDetail` lint errors remain. The user-facing workflow was subsequently simplified to the single Add photos button. This feature has not yet been migrated or deployed to production, and private Blob integration still needs the release smoke test above.
 
 The simplified UI was checked at 390px using the actual estimate editor: one Add photos button when empty, immediate multi-photo attachment, compact thumbnails, and one-tap removal. All 33 photo tests pass.
+
+## Status — QuickBooks estimate attachments (not yet deployed)
+
+Selected photos are uploaded to and emailed with the standalone QuickBooks **Estimate** on Send. No schema/migration or dependency change was required. The existing photo controls refresh the estimate snapshot after changes and prevent photo changes during Send. Scope is deliberately narrow: `apps/estimates/quickbooks.ts` (+ new `apps/estimates/attachments.ts`), the additive `qbUploadAttachment` multipart helper in `apps/quickbooks/client.ts`, and the `listIncludedPhotoMeta` read helper in `apps/order-photos/db.ts`, each with tests. Safeguards: email copies are prepared and hashed with a fixed, versioned recipe; only our own uploads (recognized by a Note marker bound to order + photo + source/prepared hash) are ever touched; manual QuickBooks attachments are left alone; a deselected managed file has its `IncludeOnSend` turned off (never deleted); every selected file is verified attached to the estimate with `IncludeOnSend = true` before any email; uploads use a deterministic `requestid` so a timed-out retry reconciles instead of duplicating; the send identity folds in the attachment set so a changed selection is a distinct, non-duplicating send while a zero-photo estimate keeps its exact legacy behavior. Not yet deployed; no real send/upload was exercised.
+
+Verification (2026-10-27, attachment fix candidate): all 197 test files / 2,443 tests passed; the production webpack build and scoped lint passed. Mocked browser checks verified upload blocks Send, a completed upload refreshes the submitted revision, and Add/Retry are disabled during Send. No live QuickBooks uploads or emails were performed. Deployment awaits owner approval. Existing parts quotes are stored as PNG page images and are included by this path; this does not introduce PDF upload support.
