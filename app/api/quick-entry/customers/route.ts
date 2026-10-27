@@ -57,5 +57,12 @@ export async function GET(req: Request) {
     ...((dir.rows ?? dir) as unknown as JobRow[]),
     ...((qe.rows ?? qe) as unknown as JobRow[]),
   ]
-  return NextResponse.json({ ok: true, customers: aggregateCustomers(list, 8) })
+  // Return up to RESULT_CAP people (the UI list is scrollable and matches the directory's budget,
+  // so a real customer isn't cut off at a tiny alphabetical head). Aggregate one past the cap so we
+  // can tell the UI to prompt "refine your search" when more than RESULT_CAP people match. This is a
+  // bounded list, NOT an exhaustive scan — the two source queries are still each capped at 200 rows.
+  const RESULT_CAP = 25
+  const aggregated = aggregateCustomers(list, RESULT_CAP + 1)
+  const capped = aggregated.length > RESULT_CAP
+  return NextResponse.json({ ok: true, customers: aggregated.slice(0, RESULT_CAP), capped })
 }

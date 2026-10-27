@@ -12,6 +12,7 @@ import { useRouter } from 'next/navigation'
 import { resolveBack } from '@/app/components/back-origin'
 import PhotoInput from '@/app/components/PhotoInput'
 import NavHeader from '@/app/components/NavHeader'
+import { useCustomerLookup } from '@/app/components/useCustomerLookup'
 import { useIdentity } from '@/app/components/IdentityBar'
 import { useSharedInvoiceDiscovery, SharedInvoiceOfferSheet } from '@/app/components/SharedInvoice'
 import { type JobLine, type InterpEntry, linesFromEntries, chooseCandidate, keepAsTyped, choosePart, chooseTires, reopenChoice } from '@/apps/quick-entry/job-lines'
@@ -104,14 +105,12 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
   const [vinStatus, setVinStatus] = useState<'idle' | 'reading' | 'ok' | 'error' | 'review'>('idle')
   const [vinPhotoUrl, setVinPhotoUrl] = useState<string | null>(null)  // original VIN photo preview
 
-  // Returning-customer autofill
-  const [matches, setMatches] = useState<CustomerMatch[]>([])
+  // Returning-customer autofill — shared debounced/abortable lookup (same as the detailed Estimator).
+  const { matches, status: custLookupStatus, error: custLookupError, capped: custLookupCapped, search: searchCustomers, clear: clearCustomerSearch } = useCustomerLookup()
   const [custVehicles, setCustVehicles] = useState<CustVehicle[]>([])
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null)
   const [vehicleMode, setVehicleMode] = useState<'new' | 'existing' | 'pick'>('new')
-  const customerSearchVersion = useRef(0)
   const vinVersion = useRef(0)
-  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Identification is VIN-photo only (camera or upload). Plate lookup / manual entry are
   // removed from the employee UI (provider code + DB kept, feature-flag disabled).
@@ -179,13 +178,13 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
   }, [])
   const selectCustomer = useCallback((m: CustomerMatch) => {
     vinVersion.current++; if (decodeTimer.current) clearTimeout(decodeTimer.current); setVinBusy(false)
-    customerSearchVersion.current++; if (searchTimer.current) clearTimeout(searchTimer.current)
+    clearCustomerSearch()
     setCust({ first: m.first, last: m.last, phone: m.phone ?? '', email: m.email ?? '' })
-    setCustVehicles(m.vehicles); setMatches([])
+    setCustVehicles(m.vehicles)
     if (m.vehicles.length === 1) selectVehicle(m.vehicles[0])
     else if (m.vehicles.length > 1) { setVehicleMode('pick'); setSelectedVehicleId(null); setVeh({ vin: '', year: '', make: '', model: '', color: '' }) }
     else addNewVehicle()
-  }, [selectVehicle, addNewVehicle])
+  }, [selectVehicle, addNewVehicle, clearCustomerSearch])
 
   // ── VIN photo → OCR → editable candidate → auto validate/decode ─────────────
   // Runs automatically the moment a photo is selected (Take or Upload) — no extra tap.
@@ -252,17 +251,6 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
     if (vin.length === 17) { decodeTimer.current = setTimeout(() => void decodeVinValue(vin), 550) }
     else { setVinStatus('idle'); setVinMsg(null) }
   }, [decodeVinValue])
-
-  // ── Returning-customer search + selection ──────────────────────────────────
-  const searchCustomers = useCallback((q: string) => {
-    const version = ++customerSearchVersion.current
-    if (searchTimer.current) clearTimeout(searchTimer.current)
-    if (q.trim().length < 2) { setMatches([]); return }
-    searchTimer.current = setTimeout(async () => {
-      try { const d = await (await fetch(`/api/quick-entry/customers?q=${encodeURIComponent(q.trim())}`)).json(); if (version === customerSearchVersion.current) setMatches(d.customers ?? []) }
-      catch { /* ignore */ }
-    }, 300)
-  }, [])
 
   // ── Service selection + intake pricing ───────────────────────────────────────
   // Each selected service carries an editable price. Presets prefill from the catalog; "Other" prefills
@@ -480,20 +468,33 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
               <input className={input} placeholder="Email" inputMode="email" autoCapitalize="off" value={cust.email} onChange={(e) => { setCust({ ...cust, email: e.target.value }); searchCustomers(e.target.value) }} />
             </div>
 
-            {/* Returning-customer matches */}
-            {matches.length > 0 && (
-              <div className="mt-2 rounded-2xl bg-gray-900 border border-gray-800 divide-y divide-gray-800 overflow-hidden">
-                <div className="flex items-center justify-between px-3 py-1.5">
+            {/* Returning-customer lookup — status + matches. Manual entry always stays available;
+                we never auto-select the first result. */}
+            {(custLookupStatus !== 'idle' || matches.length > 0) && (
+              <div role="region" aria-label="Returning customer matches" className="mt-2 rounded-2xl bg-gray-900 border border-gray-800 overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-800">
                   <span className="text-gray-500 text-[11px] uppercase tracking-widest">Returning customers</span>
-                  <button onClick={() => { customerSearchVersion.current++; setMatches([]) }} className="text-gray-600 text-xs">Dismiss</button>
+                  <button type="button" onClick={clearCustomerSearch} className="text-gray-600 text-xs min-h-11 px-1">Dismiss</button>
                 </div>
-                {matches.map((m, i) => (
-                  <button key={i} onClick={() => selectCustomer(m)} className="w-full text-left px-3 py-2.5 active:bg-gray-800">
-                    <p className="text-white text-sm font-semibold">{m.name || `${m.first} ${m.last}`.trim()}</p>
-                    <p className="text-gray-500 text-xs">{[m.phone, m.email].filter(Boolean).join(' · ') || 'no contact'}</p>
-                    {m.vehicles.length > 0 && <p className="text-gray-400 text-xs mt-0.5 truncate">{m.vehicles.map((v) => v.label).join(' · ')}</p>}
-                  </button>
-                ))}
+                <div role="status" aria-live="polite">
+                  {custLookupStatus === 'loading' && <p className="px-3 py-2.5 text-gray-500 text-xs">Searching…</p>}
+                  {custLookupStatus === 'error' && <p className="px-3 py-2.5 text-amber-300 text-xs">{custLookupError ?? 'Could not search customers.'} Keep entering the details manually.</p>}
+                  {custLookupStatus === 'ready' && matches.length === 0 && <p className="px-3 py-2.5 text-gray-500 text-xs">No matching customers. Keep typing or enter the details manually.</p>}
+                </div>
+                {matches.length > 0 && (
+                  <div className="divide-y divide-gray-800 max-h-72 overflow-y-auto overscroll-contain">
+                    {matches.map((m, i) => (
+                      <button type="button" key={i} onClick={() => selectCustomer(m)} className="w-full text-left px-3 py-2.5 active:bg-gray-800">
+                        <p className="text-white text-sm font-semibold">{m.name || `${m.first} ${m.last}`.trim()}</p>
+                        <p className="text-gray-500 text-xs">{[m.phone, m.email].filter(Boolean).join(' · ') || 'no contact'}</p>
+                        {m.vehicles.length > 0 && <p className="text-gray-400 text-xs mt-0.5 truncate">{m.vehicles.map((v) => v.label).join(' · ')}</p>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {custLookupStatus === 'ready' && custLookupCapped && matches.length > 0 && (
+                  <p className="px-3 py-2 text-gray-500 text-[11px] border-t border-gray-800">Showing the first {matches.length}. Add more of the name or phone to narrow it down.</p>
+                )}
               </div>
             )}
           </div>
@@ -870,7 +871,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
             <SharedInvoiceOfferSheet orderId={result.serviceOrderId} discovery={sharedOffer.result} onClose={() => setOfferDismissed(true)} />
           )}
           <button onClick={() => router.push(`/work-board?new=${result.serviceOrderId}`)} className="mt-3 w-full max-w-xs h-14 rounded-2xl bg-white text-black text-lg font-bold">View Work Board</button>
-          <button onClick={() => { setCust({ first: '', last: '', phone: '', email: '' }); setVeh({ vin: '', year: '', make: '', model: '', color: '' }); setLines([]); setTech(new Set()); setIsUrgent(false); setResult(null); setOfferDismissed(false); setVinMsg(null); setVinStatus('idle'); setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null }); setMatches([]); setCustVehicles([]); setSelectedVehicleId(null); setVehicleMode('new'); setError(null); setPhase('details') }}
+          <button onClick={() => { setCust({ first: '', last: '', phone: '', email: '' }); setVeh({ vin: '', year: '', make: '', model: '', color: '' }); setLines([]); setTech(new Set()); setIsUrgent(false); setResult(null); setOfferDismissed(false); setVinMsg(null); setVinStatus('idle'); setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null }); clearCustomerSearch(); setCustVehicles([]); setSelectedVehicleId(null); setVehicleMode('new'); setError(null); setPhase('details') }}
             className="w-full max-w-xs h-12 rounded-2xl border border-gray-700 text-gray-300">New Quick Entry</button>
         </div>
       )}

@@ -3,6 +3,8 @@
 import { useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import NavHeader from '@/app/components/NavHeader'
+import { useCustomerLookup } from '@/app/components/useCustomerLookup'
+import { type CustomerMatch } from '@/apps/quick-entry/customers'
 
 const SERVICE_OPTIONS = [
   { value: 'full_detail',      label: 'Full Detail',        hint: 'Interior + exterior' },
@@ -19,6 +21,17 @@ export default function EstimatorIntakePage() {
   const [focus,   setFocus]   = useState('full_detail')
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState<string | null>(null)
+
+  // Returning-customer lookup (shared with Quick Entry). Searches by name OR phone as typed.
+  const { matches, status: custStatus, error: custError, capped: custCapped, search: searchCustomers, clear: clearCustomerSearch } = useCustomerLookup()
+
+  // Selecting a suggestion fills BOTH name and phone. A match without a phone clears any stale
+  // phone so we never mix one customer's name with another's number; manual edits stay possible.
+  const selectCustomer = useCallback((m: CustomerMatch) => {
+    setName(m.name || `${m.first} ${m.last}`.trim())
+    setPhone(m.phone ?? '')
+    clearCustomerSearch()
+  }, [clearCustomerSearch])
 
   const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault()
@@ -67,13 +80,14 @@ export default function EstimatorIntakePage() {
 
           {/* Name */}
           <div className="space-y-1.5">
-            <label className="text-gray-400 text-xs uppercase tracking-wide">
+            <label htmlFor="customer-name" className="text-gray-400 text-xs uppercase tracking-wide">
               Customer Name <span className="text-red-400">*</span>
             </label>
             <input
+              id="customer-name"
               type="text"
               value={name}
-              onChange={e => setName(e.target.value)}
+              onChange={e => { setName(e.target.value); searchCustomers(e.target.value) }}
               placeholder="First and last name"
               autoComplete="name"
               className="w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3.5 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600"
@@ -82,18 +96,52 @@ export default function EstimatorIntakePage() {
 
           {/* Phone */}
           <div className="space-y-1.5">
-            <label className="text-gray-400 text-xs uppercase tracking-wide">
+            <label htmlFor="customer-phone" className="text-gray-400 text-xs uppercase tracking-wide">
               Phone Number <span className="text-gray-600 text-xs normal-case">(optional)</span>
             </label>
             <input
+              id="customer-phone"
               type="tel"
               value={phone}
-              onChange={e => setPhone(e.target.value)}
+              onChange={e => { setPhone(e.target.value); searchCustomers(e.target.value) }}
               placeholder="(555) 123-4567"
               autoComplete="tel"
               className="w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3.5 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600"
             />
           </div>
+
+          {/* Returning-customer suggestions — tap to fill name + phone. Manual entry stays available;
+              we never auto-select the first result. type="button" so Enter here never submits the form. */}
+          {(custStatus !== 'idle' || matches.length > 0) && (
+            <div role="region" aria-label="Matching customers" className="rounded-xl border border-gray-700 bg-gray-900 overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800">
+                <span className="text-gray-400 text-xs uppercase tracking-wide">Returning customers</span>
+                <button type="button" onClick={clearCustomerSearch} className="text-gray-500 text-xs underline underline-offset-2 min-h-11 px-1">Dismiss</button>
+              </div>
+              <div role="status" aria-live="polite">
+                {custStatus === 'loading' && <p className="px-4 py-3 text-gray-500 text-sm">Searching…</p>}
+                {custStatus === 'error' && <p className="px-4 py-3 text-amber-300 text-sm">{custError ?? 'Could not search customers.'} You can keep typing manually.</p>}
+                {custStatus === 'ready' && matches.length === 0 && <p className="px-4 py-3 text-gray-500 text-sm">No matching customers. Keep typing or enter the details manually.</p>}
+              </div>
+              {matches.length > 0 && (
+                <ul className="divide-y divide-gray-800 max-h-72 overflow-y-auto overscroll-contain">
+                  {matches.map((m, i) => (
+                    <li key={i}>
+                      <button type="button" onClick={() => selectCustomer(m)}
+                        className="w-full text-left px-4 py-3 active:bg-gray-800 hover:bg-gray-800/60 focus:outline-none focus:bg-gray-800">
+                        <p className="text-white text-sm font-semibold">{m.name || `${m.first} ${m.last}`.trim()}</p>
+                        <p className="text-gray-500 text-xs">{[m.phone, m.email].filter(Boolean).join(' · ') || 'no contact'}</p>
+                        {m.vehicles.length > 0 && <p className="text-gray-400 text-xs mt-0.5 truncate">{m.vehicles.map((v) => v.label).join(' · ')}</p>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {custStatus === 'ready' && custCapped && matches.length > 0 && (
+                <p className="px-4 py-2 text-gray-500 text-xs border-t border-gray-800">Showing the first {matches.length}. Add more of the name or phone to narrow it down.</p>
+              )}
+            </div>
+          )}
 
           {/* Service Focus */}
           <div className="space-y-2">
