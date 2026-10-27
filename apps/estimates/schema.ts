@@ -12,4 +12,9 @@ export const estimateIntakes = pgTable('estimate_intakes', {
   // Persist the exact first request before calling QB; retries cannot create a new estimate.
   createBody: jsonb('create_body').$type<Record<string, unknown>>(),
   lockedAt: timestamp('locked_at', { withTimezone: true }),
+  // Durable per-estimate SEND recipients (never the customer's identity/contact). Three states:
+  //   NULL  → legacy: no explicit list was ever saved; the send default falls back to the saved contact.
+  //   []    → explicitly cleared: the manager removed every recipient (a send stays blocked).
+  //   [a,…] → the normalized recipient SET to default a send to and to re-populate the editor on return.
+  savedRecipients: text('saved_recipients').array(),
 })

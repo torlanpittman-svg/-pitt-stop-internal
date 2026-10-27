@@ -5,6 +5,8 @@ import { managerFromRequest } from '@/apps/checks/authz'
 import { withIntakeLock, moveIntakeToBoard, cancelIntakeEstimate } from '@/apps/estimates/db'
 import { intakeSummary, refreshIntake, sendIntakeEstimate } from '@/apps/estimates/quickbooks'
 import { saveCustomerNotes } from '@/apps/estimates/notes-db'
+import { saveSavedRecipients } from '@/apps/estimates/recipients-db'
+import { normalizeRecipients, recipientErrorMessage } from '@/apps/estimates/recipients'
 import { validateCustomerNotes, customerNotesErrorMessage } from '@/apps/estimates/notes'
 import { quickEntryJobs } from '@/apps/quick-entry/schema'
 import { getDb } from '@/platform/db'
@@ -21,6 +23,10 @@ const actionInput = z.discriminatedUnion('action', [
   // Customer-visible notes (claim number etc.). Raw string is loosely bounded here; the real 700-char
   // bound + normalization + control-char rejection happen in validateCustomerNotes before any write.
   z.object({ action: z.literal('notes'), revision: z.string().length(64), notes: z.string().max(2000) }),
+  // Durable per-estimate SEND recipients (auto-saved as the manager edits them). Raw rows are loosely
+  // bounded here; blanks are dropped and the real normalize/dedupe/validate happens below. An all-blank list
+  // is the EXPLICIT cleared ([]) state. This never sends anything or touches QuickBooks / pricing / contact.
+  z.object({ action: z.literal('save_recipients'), revision: z.string().length(64), recipients: z.array(z.string().max(254)).max(50) }),
   z.object({ action: z.literal('contact'), email: z.union([z.email().max(200), z.literal('')]), phone: z.string().max(40) }),
   z.object({ action: z.literal('customer_name'), name: z.string().trim().min(1).max(CUSTOMER_NAME_MAX) }),
   z.object({ action: z.literal('cancel') }),
@@ -29,6 +35,7 @@ const safeSummary = (s: Awaited<ReturnType<typeof intakeSummary>>) => ({
   ok: true, draft: s.draft, revision: s.revision, status: s.order.status, customerName: s.order.customerName ?? '',
   email: s.contact?.customerEmail ?? '', phone: s.contact?.customerPhone ?? '',
   customerNotes: s.full?.estimate.customerNotes ?? '',
+  savedRecipients: s.savedRecipients ?? null,
   qbNumber: s.intake.qbEstimateNumber, sentAt: s.intake.sentAt,
 })
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -76,6 +83,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           // Notes never change pricing, so skip the recompute refreshIntake does — return a fresh summary
           // (which re-derives the revision, now reflecting the saved notes) without mutating totals.
           await saveCustomerNotes({ orderId: id, estimateId: state.full.estimate.id, notes: check.notes, actor: actor.name })
+          return NextResponse.json(safeSummary(await intakeSummary(id)))
+        }
+        else if (body.action === 'save_recipients') {
+          // Drop blanks (a half-filled row never blocks the rest), then normalize/validate the remainder with
+          // the SAME helper the send uses. All-blank → the explicit cleared [] state. An invalid/over-bound
+          // entry fails CLOSED (nothing persisted). No QuickBooks call, no send, no pricing/contact change.
+          const nonBlank = body.recipients.map((r) => r.trim()).filter((r) => r.length > 0)
+          let list: string[] = []
+          if (nonBlank.length > 0) {
+            const norm = normalizeRecipients(nonBlank)
+            if (!norm.ok) throw new Error(recipientErrorMessage(norm.reason))
+            list = norm.list
+          }
+          await saveSavedRecipients({ orderId: id, recipients: list, actor: actor.name })
           return NextResponse.json(safeSummary(await intakeSummary(id)))
         }
         else {

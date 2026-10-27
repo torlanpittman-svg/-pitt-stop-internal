@@ -66,16 +66,22 @@ export async function intakeSummary(id: string) {
   // Selected photos join the preview revision ONLY when present, so a zero-photo estimate keeps the
   // exact legacy revision (and body/send identity) it had before attachments existed.
   const attachments = await listIncludedPhotoMeta(id)
+  // Saved send recipients: NULL = legacy (no explicit list), [] = explicitly cleared, [a,…] = the saved set.
+  // Folded into the preview revision ONLY when non-null, so a legacy estimate keeps its exact prior revision
+  // (and body/send identity) until a list is first saved — and a later save then invalidates a stale preview.
+  const savedRecipients = intake.savedRecipients ?? null
   const revision = fingerprint({ full: full && { estimate: { ...full.estimate, updatedAt: undefined, updatedBy: undefined }, services: full.services }, contact, notes: order.notes,
-    ...(attachments.length ? { attachments: attachmentManifestFingerprint(attachments) } : {}) })
-  return { intake, order, contact, full, draft, revision, attachments }
+    ...(attachments.length ? { attachments: attachmentManifestFingerprint(attachments) } : {}),
+    ...(savedRecipients !== null ? { savedRecipients } : {}) })
+  return { intake, order, contact, full, draft, revision, attachments, savedRecipients }
 }
 
 /**
- * Resolve the explicit recipient SET for this one send. `recipientsInput === undefined` means an old
- * client that doesn't choose recipients → default to the saved customer contact email. An explicit list
- * is normalized/validated here (empty/invalid/too-many and placeholder addresses are all rejected BEFORE
- * any QuickBooks side effect).
+ * Resolve the explicit recipient SET for this one send. `recipientsInput === undefined` means the client
+ * didn't pass an explicit list → DEFAULT it: use the saved recipient list when one exists (non-null), else
+ * fall back to the saved customer contact email (the legacy NULL case). An explicit list — or a resolved
+ * default — is normalized/validated here (empty/invalid/too-many and placeholder addresses are all rejected
+ * BEFORE any QuickBooks side effect); an explicitly CLEARED saved list (`[]`) therefore blocks the send.
  *
  * Returns `list` (the canonical sorted, lowercased SET — used for confirmation and recipient-set
  * verification) and `joined` (the exact string written to BillEmail.Address + sendTo, so it is part of the
@@ -86,11 +92,17 @@ export async function intakeSummary(id: string) {
  * Any other explicit set uses the canonical lowercased join. The customer CONTACT email itself is passed
  * through unchanged elsewhere — it is used only for customer identity, never replaced by a recipient.
  */
-function resolveRecipients(recipientsInput: string[] | undefined, contactEmail: string): { list: string[]; joined: string } {
+function resolveRecipients(recipientsInput: string[] | undefined, contactEmail: string, savedRecipients: string[] | null): { list: string[]; joined: string } {
   const isDefault = recipientsInput === undefined
-  const raw = recipientsInput ?? (contactEmail ? [contactEmail] : [])
+  // Default precedence: an explicit saved list (even an empty, cleared one) wins over the contact fallback.
+  const fallback = savedRecipients !== null ? savedRecipients : (contactEmail ? [contactEmail] : [])
+  const raw = recipientsInput ?? fallback
   const norm = normalizeRecipients(raw)
-  if (!norm.ok) throw new Error(isDefault ? 'Add a valid customer email before sending.' : recipientErrorMessage(norm.reason))
+  if (!norm.ok) {
+    if (!isDefault) throw new Error(recipientErrorMessage(norm.reason))
+    const clearedSavedList = savedRecipients !== null && savedRecipients.length === 0
+    throw new Error(clearedSavedList ? 'Add a recipient before sending this estimate.' : 'Add a valid customer email before sending.')
+  }
   for (const address of norm.list) {
     if (isPlaceholderEmail(address)) throw new Error(isDefault ? 'Add a valid customer email before sending.' : 'Remove placeholder email addresses before sending.')
   }
@@ -108,8 +120,9 @@ export async function sendIntakeEstimate(id: string, actor: string, expectedRevi
   if (state.revision !== expectedRevision) throw new Error('The estimate changed. Review the refreshed total before sending.')
   if (!state.draft.priced || !state.full?.services.some(s => s.source !== 'system')) throw new Error('Add services and a price first.')
   const contactEmail = state.contact?.customerEmail?.trim() || ''
-  // Explicit recipients may send even when the customer has no stored email; the default path still requires one.
-  const { list: recipientList, joined: sendTo } = resolveRecipients(recipients, contactEmail)
+  // Explicit recipients may send even when the customer has no stored email; the default path uses the saved
+  // recipient list when one exists, otherwise the stored contact (legacy NULL) — and still requires one address.
+  const { list: recipientList, joined: sendTo } = resolveRecipients(recipients, contactEmail, state.savedRecipients)
   if (state.draft.tax.cents || state.draft.tax.needsReview) throw new Error('Review tax treatment before sending this estimate through QuickBooks.')
   // Parts labor review / unchosen odor or ambiguous-name services — resolved before any QB write or email.
   await assertEstimateReady(id, 'send')

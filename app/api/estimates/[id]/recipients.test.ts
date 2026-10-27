@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   manager: { name: 'Mgr' } as { name: string } | null,
   send: vi.fn(),
   saveNotes: vi.fn(),
+  saveRecipients: vi.fn(),
   summary: {} as Record<string, unknown>,
 }))
 vi.mock('@/apps/checks/authz', () => ({ managerFromRequest: async () => h.manager }))
@@ -25,6 +26,9 @@ vi.mock('@/apps/estimates/quickbooks', () => ({
 // The notes DB write is mocked; its own persistence/audit is covered in apps/estimates/notes-db.test.ts.
 // The pure notes validation (@/apps/estimates/notes) is left REAL so normalization/bounds run for real here.
 vi.mock('@/apps/estimates/notes-db', () => ({ saveCustomerNotes: h.saveNotes }))
+// The recipients DB write is mocked; its own persistence/audit is covered in apps/estimates/recipients-db.test.ts.
+// The pure recipient normalization (@/apps/estimates/recipients) is left REAL so validation/bounds run here.
+vi.mock('@/apps/estimates/recipients-db', () => ({ saveSavedRecipients: h.saveRecipients }))
 vi.mock('@/apps/quick-entry/schema', () => ({ quickEntryJobs: {} }))
 vi.mock('@/platform/db', () => ({ getDb: () => ({ update: () => ({ set: () => ({ where: async () => {} }) }) }) }))
 vi.mock('@/apps/workflow/estimate', () => ({ estimateEnabled: () => true }))
@@ -38,6 +42,7 @@ beforeEach(() => {
   h.manager = { name: 'Mgr' }
   h.send.mockReset().mockResolvedValue({ alreadySent: false })
   h.saveNotes.mockReset().mockResolvedValue(undefined)
+  h.saveRecipients.mockReset().mockResolvedValue(undefined)
   h.summary = {
     order: { status: 'estimate', customerName: 'Cust' }, revision: REV,
     draft: { priced: true, totalCents: 10000 }, contact: { customerEmail: 'c@x.com', customerPhone: '555' },
@@ -115,5 +120,53 @@ describe('POST /api/estimates/[id] — customer notes', () => {
     const res = await post({ action: 'notes', revision: REV, notes: 'Claim: A' })
     expect(res.status).toBe(409)
     expect(h.saveNotes).not.toHaveBeenCalled()
+  })
+})
+
+describe('POST /api/estimates/[id] — save recipients', () => {
+  it('forwards the NORMALIZED set (blanks dropped, trimmed/lowercased/deduped/sorted) to saveSavedRecipients', async () => {
+    const res = await post({ action: 'save_recipients', revision: REV, recipients: ['  B@x.com ', '', 'a@x.com', 'A@X.com'] })
+    expect(res.status).toBe(200)
+    expect(h.saveRecipients).toHaveBeenCalledWith({ orderId: ID, recipients: ['a@x.com', 'b@x.com'], actor: 'Mgr' })
+    // Saving recipients never sends — the QuickBooks send helper is not touched.
+    expect(h.send).not.toHaveBeenCalled()
+  })
+
+  it('persists the explicit empty (cleared) set when every row is blank', async () => {
+    const res = await post({ action: 'save_recipients', revision: REV, recipients: ['', '  '] })
+    expect(res.status).toBe(200)
+    expect(h.saveRecipients).toHaveBeenCalledWith({ orderId: ID, recipients: [], actor: 'Mgr' })
+  })
+
+  it('rejects an invalid address without persisting anything', async () => {
+    const res = await post({ action: 'save_recipients', revision: REV, recipients: ['a@x.com', 'not-an-email'] })
+    expect(res.status).toBe(409)
+    expect(h.saveRecipients).not.toHaveBeenCalled()
+  })
+
+  it('rejects a stale revision before writing anything', async () => {
+    const res = await post({ action: 'save_recipients', revision: 'b'.repeat(64), recipients: ['a@x.com'] })
+    expect(res.status).toBe(409)
+    expect(h.saveRecipients).not.toHaveBeenCalled()
+  })
+
+  it('rejects a raw payload past the schema cap before any handler work', async () => {
+    const res = await post({ action: 'save_recipients', revision: REV, recipients: Array.from({ length: 51 }, (_, i) => `u${i}@x.com`) })
+    expect(res.status).toBe(400)
+    expect(h.saveRecipients).not.toHaveBeenCalled()
+  })
+
+  it('stays manager-gated — a non-manager cannot save recipients', async () => {
+    h.manager = null
+    const res = await post({ action: 'save_recipients', revision: REV, recipients: ['a@x.com'] })
+    expect(res.status).toBe(403)
+    expect(h.saveRecipients).not.toHaveBeenCalled()
+  })
+
+  it('refuses to save recipients on a cancelled estimate', async () => {
+    ;(h.summary.order as { status: string }).status = 'cancelled'
+    const res = await post({ action: 'save_recipients', revision: REV, recipients: ['a@x.com'] })
+    expect(res.status).toBe(409)
+    expect(h.saveRecipients).not.toHaveBeenCalled()
   })
 })

@@ -290,6 +290,45 @@ describe('standalone estimate — multiple send recipients', () => {
   })
 })
 
+describe('standalone estimate — saved recipient list (persisted default)', () => {
+  it('defaults an omitted-recipient send to the SAVED list when one exists (not the contact)', async () => {
+    f.intake.savedRecipients = ['a@example.com', 'b@example.com']
+    echoRecipients()
+    await send()   // client omitted recipients → server defaults to the saved list
+    expect(sendCalls()[0][0].query.sendTo).toBe('a@example.com,b@example.com')
+  })
+
+  it('falls back to the stored contact when there is no saved list (legacy NULL)', async () => {
+    f.intake.savedRecipients = null
+    await send()
+    expect(sendCalls()[0][0].query.sendTo).toBe('customer@realshop.net')
+  })
+
+  it('an explicit recipient list still overrides the saved list', async () => {
+    f.intake.savedRecipients = ['saved@example.com']
+    echoRecipients()
+    await send(['override@example.com'])
+    expect(sendCalls()[0][0].query.sendTo).toBe('override@example.com')
+  })
+
+  it('refuses to send when the saved list is explicitly empty ([]) — before any QuickBooks call', async () => {
+    f.intake.savedRecipients = []
+    await expect(send()).rejects.toThrow(/add a recipient/i)
+    expect(f.api).not.toHaveBeenCalled()
+  })
+
+  it('folds saved recipients into the preview revision only when non-null (legacy stays identical)', async () => {
+    f.intake.savedRecipients = null
+    const legacyNull = (await intakeSummary('order')).revision
+    f.intake.savedRecipients = undefined   // legacy row with the column absent — must match NULL
+    const legacyAbsent = (await intakeSummary('order')).revision
+    expect(legacyAbsent).toBe(legacyNull)
+    f.intake.savedRecipients = ['a@example.com']
+    const withList = (await intakeSummary('order')).revision
+    expect(withList).not.toBe(legacyNull)
+  })
+})
+
 describe('standalone estimate — photo/parts attachments (wiring)', () => {
   const photo = (id: string) => ({ id, imageHash: `h-${id}`, filename: `${id}.jpg`, contentType: 'image/jpeg', byteSize: 1000, caption: '', storagePath: `order-photos/x/${id}.jpg` })
 
