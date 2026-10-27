@@ -11,10 +11,11 @@ import { quickEntryJobs } from '@/apps/quick-entry/schema'
 import { qbApiRequest } from '@/apps/quickbooks/client'
 import { buildRetailWorkPayload } from '@/apps/quickbooks/retail-invoice-service'
 import { resolveRetailCustomer, isPlaceholderEmail } from '@/apps/quickbooks/retail-customer'
-import { extractPsid } from '@/apps/quickbooks/retail-format'
+import { extractPsid, buildCustomerMemo } from '@/apps/quickbooks/retail-format'
 import { normalizeRecipients, recipientErrorMessage, sameRecipientSet } from './recipients'
 import { listIncludedPhotoMeta } from '@/apps/order-photos/db'
 import { prepareEstimateAttachments, reconcileEstimateAttachments, attachmentManifestFingerprint, attachmentSentIdentity } from './attachments'
+import { validateCustomerNotes, customerNotesErrorMessage, composeEstimateMemo } from './notes'
 import type { RetailPayload } from '@/apps/quickbooks/retail-invoice'
 
 interface QBEstimate {
@@ -117,11 +118,24 @@ export async function sendIntakeEstimate(id: string, actor: string, expectedRevi
     state = await intakeSummary(id)
   }
   const estimateId = state.full!.estimate.id
+  // Customer-visible notes (e.g. an insurance claim number) append, clearly labeled, to the vehicle
+  // CustomerMemo so they show on the estimate. Validate + compose BEFORE any QuickBooks side effect
+  // (item resolve/create in buildRetailWorkPayload, and the customer create below): bad/over-long notes and
+  // an over-long composed memo fail here, never truncated. The base memo is built with the SAME canonical
+  // helper and vehicle shape buildRetailWorkPayload uses, so a note-free estimate keeps a byte-identical
+  // memo (and therefore the same body/hash and idempotent retry identity).
+  const notesCheck = validateCustomerNotes(state.full!.estimate.customerNotes)
+  if (!notesCheck.ok) throw new Error(customerNotesErrorMessage(notesCheck.reason))
+  const v = state.order.vehicle
+  const customerMemo = composeEstimateMemo(
+    buildCustomerMemo({ year: v.year, make: v.make, model: v.model, vin: v.vin, licensePlate: v.licensePlate }),
+    notesCheck.notes,
+  )
   // Customer identity is resolved from the CUSTOMER's own stored contact only (null allowed) — never
   // from a recipient, so sending to an insurer/third party can't attach the work to someone else.
   const customer = await resolveRetailCustomer({ name: state.contact!.customerName, email: contactEmail || null, phone: state.contact!.customerPhone })
   const { payload } = await buildRetailWorkPayload({ estimateId, order: state.order, full: state.full, draft: state.draft })
-  const body = estimateBody(payload, customer.qbCustomerId, sendTo)
+  const body = estimateBody({ ...payload, customerMemo }, customer.qbCustomerId, sendTo)
   const hash = fingerprint(body)
   let intake = state.intake
   const hadEstimateBefore = Boolean(intake.qbEstimateId)

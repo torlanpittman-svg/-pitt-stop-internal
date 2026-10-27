@@ -4,7 +4,10 @@ import { createHash } from 'node:crypto'
 const f = vi.hoisted(() => ({
   intake: {} as Record<string, unknown>, full: {} as Record<string, unknown>,
   contact: { customerName: 'Test Customer', customerEmail: 'customer@realshop.net', customerPhone: '5125550123' },
-  api: vi.fn(), ready: vi.fn(), resolveCustomer: vi.fn(), order: { id: 'order', status: 'estimate', notes: null },
+  api: vi.fn(), ready: vi.fn(), resolveCustomer: vi.fn(),
+  // Vehicle drives the canonical CustomerMemo (buildCustomerMemo) the real send composes BEFORE the payload;
+  // no VIN/plate → memo is exactly "2020 Honda Civic", matching the mocked payload memo and raw() echo.
+  order: { id: 'order', status: 'estimate', notes: null, vehicle: { year: '2020', make: 'Honda', model: 'Civic', vin: null, licensePlate: null } },
   payload: { lines: [{ itemId: 'labor', description: 'Interior detail', amountCents: 10000 }], privateNote: 'PSID:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', customerMemo: '2020 Honda Civic', totalCents: 10000 },
   // Attachments (own unit tests in apps/estimates/attachments.test.ts). Default: no selected photos.
   photos: [] as { id: string; imageHash: string; filename: string; contentType: string; byteSize: number; caption: string; storagePath: string }[],
@@ -51,13 +54,25 @@ const send = async (recipients?: string[]) => sendIntakeEstimate('order', 'Manag
 
 // A QuickBooks stub that echoes the posted BillEmail back on create/update (and on GET), so recipient-set
 // verification runs against what we actually sent — the real QB would reflect the saved address list.
-type ApiOpts = { method?: string; path: string; query?: Record<string, string>; body?: { BillEmail?: { Address?: string } } }
+type ApiOpts = { method?: string; path: string; query?: Record<string, string>; body?: { BillEmail?: { Address?: string }; CustomerMemo?: { value?: string }; Id?: string } }
 const echoRecipients = () => {
   let current = raw()
   f.api.mockImplementation(async (opts: ApiOpts) => {
     if (opts.path.endsWith('/send')) return { Estimate: { ...current, EmailStatus: 'EmailSent' } }
     if (opts.method === 'POST' && opts.path === '/estimate') {
       current = { ...raw(), ...(opts.body?.BillEmail ? { BillEmail: opts.body.BillEmail } : {}) }
+    }
+    return { Estimate: current }
+  })
+}
+// Like echoRecipients but reflects the posted CustomerMemo back, so memo verification (matchesEstimateContent)
+// runs against what we actually sent — the real QB stores and returns the memo it was given.
+const echoMemo = () => {
+  let current = raw()
+  f.api.mockImplementation(async (opts: ApiOpts) => {
+    if (opts.path.endsWith('/send')) return { Estimate: { ...current, EmailStatus: 'EmailSent' } }
+    if (opts.method === 'POST' && opts.path === '/estimate') {
+      current = { ...raw(), ...(opts.body?.CustomerMemo ? { CustomerMemo: opts.body.CustomerMemo } : {}) }
     }
     return { Estimate: current }
   })
@@ -348,5 +363,85 @@ describe('standalone estimate — photo/parts attachments (wiring)', () => {
     f.photos = [photo('p1')]
     const withOne = (await intakeSummary('order')).revision
     expect(withOne).not.toBe(withNone)
+  })
+})
+
+describe('standalone estimate — customer-visible notes on the memo', () => {
+  const createBody = () => createOrUpdateBodies().find((b) => b && !b.Id)
+
+  it('sends the EXACT vehicle memo (no label, no change) when there are no notes', async () => {
+    await send()
+    expect(createBody()?.CustomerMemo?.value).toBe('2020 Honda Civic')
+  })
+
+  it('appends clearly-labeled multiline notes to the vehicle memo and still sends once', async () => {
+    f.full.estimate.customerNotes = 'Claim number: ABC-123\nAdjuster: Jane Doe'
+    echoMemo()
+    await send()
+    expect(createBody()?.CustomerMemo?.value).toBe('2020 Honda Civic\n\nNotes:\nClaim number: ABC-123\nAdjuster: Jane Doe')
+    expect(sendCalls()).toHaveLength(1)
+  })
+
+  it('normalizes stored notes before composing (trailing whitespace / CRLF do not leak)', async () => {
+    f.full.estimate.customerNotes = '  Claim number: ABC-123  \r\n'
+    echoMemo()
+    await send()
+    expect(createBody()?.CustomerMemo?.value).toBe('2020 Honda Civic\n\nNotes:\nClaim number: ABC-123')
+  })
+
+  it('a change to ONLY the notes is a new send identity; unchanged notes do not re-send', async () => {
+    echoMemo()
+    f.full.estimate.customerNotes = 'Claim number: A'
+    await send()
+    await send()                              // unchanged → already sent, no second email
+    expect(sendCalls()).toHaveLength(1)
+    f.full.estimate.customerNotes = 'Claim number: B'   // only the notes change
+    await send()
+    const sends = sendCalls()
+    expect(sends).toHaveLength(2)
+    expect(sends[0][0].query.requestid).not.toBe(sends[1][0].query.requestid)
+  })
+
+  it('blocks the send when QuickBooks drops the notes from the memo — nothing is emailed', async () => {
+    f.full.estimate.customerNotes = 'Claim number: ABC-123'
+    // QB echoes only the plain vehicle memo (notes missing) → memo mismatch before any email.
+    f.api.mockImplementation(async (opts: ApiOpts) => {
+      if (opts.path.endsWith('/send')) return { Estimate: { ...raw(), EmailStatus: 'EmailSent' } }
+      return { Estimate: { ...raw() } }
+    })
+    await expect(send()).rejects.toThrow(/do not match/)
+    expect(sendCalls()).toHaveLength(0)
+  })
+
+  it('rejects over-long stored notes before any QuickBooks call (never truncates)', async () => {
+    f.full.estimate.customerNotes = 'x'.repeat(800)
+    await expect(send()).rejects.toThrow(/too long/i)
+    expect(f.api).not.toHaveBeenCalled()
+  })
+
+  it('does not leak the notes into the PrivateNote (internal) — they go only on the customer memo', async () => {
+    f.full.estimate.customerNotes = 'Claim number: ABC-123'
+    echoMemo()
+    await send()
+    const body = createBody()
+    expect(body?.CustomerMemo?.value).toContain('Claim number: ABC-123')
+    expect(JSON.stringify((body as { PrivateNote?: string })?.PrivateNote ?? '')).not.toContain('Claim number')
+  })
+
+  // Combined feature path: a note AND a selected photo on the same send. The note rides the customer memo
+  // while the photo is prepared/reconciled against this estimate, and both coexist in one single send.
+  it('sends a note on the memo together with a reconciled photo attachment in one send', async () => {
+    f.full.estimate.customerNotes = 'Claim number: #062404763'
+    f.photos = [{ id: 'p1', imageHash: 'h-p1', filename: 'p1.jpg', contentType: 'image/jpeg', byteSize: 1000, caption: '', storagePath: 'order-photos/x/p1.jpg' }]
+    echoMemo()
+    await send()
+    // Note appended, clearly labeled, to the vehicle memo.
+    expect(createBody()?.CustomerMemo?.value).toBe('2020 Honda Civic\n\nNotes:\nClaim number: #062404763')
+    // Photo prepared + reconciled against THIS estimate before the one email.
+    expect(f.prepare).toHaveBeenCalledWith('order', f.photos)
+    expect(f.reconcile.mock.calls[0][0]).toMatchObject({ orderId: 'order', qbEstimateId: 'qb-estimate' })
+    expect(sendCalls()).toHaveLength(1)
+    // The single send request id is tied to the exact revision + attachment set.
+    expect(sendCalls()[0][0].query.requestid).toMatch(/^s-/)
   })
 })

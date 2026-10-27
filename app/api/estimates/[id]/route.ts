@@ -4,6 +4,8 @@ import { eq } from 'drizzle-orm'
 import { managerFromRequest } from '@/apps/checks/authz'
 import { withIntakeLock, moveIntakeToBoard, cancelIntakeEstimate } from '@/apps/estimates/db'
 import { intakeSummary, refreshIntake, sendIntakeEstimate } from '@/apps/estimates/quickbooks'
+import { saveCustomerNotes } from '@/apps/estimates/notes-db'
+import { validateCustomerNotes, customerNotesErrorMessage } from '@/apps/estimates/notes'
 import { quickEntryJobs } from '@/apps/quick-entry/schema'
 import { getDb } from '@/platform/db'
 import { estimateEnabled } from '@/apps/workflow/estimate'
@@ -16,6 +18,9 @@ const actionInput = z.discriminatedUnion('action', [
   // + empty-list rejection happen in sendIntakeEstimate before any QuickBooks call.
   z.object({ action: z.literal('send'), revision: z.string().length(64), recipients: z.array(z.string().max(254)).max(50).optional() }),
   z.object({ action: z.literal('convert'), revision: z.string().length(64) }),
+  // Customer-visible notes (claim number etc.). Raw string is loosely bounded here; the real 700-char
+  // bound + normalization + control-char rejection happen in validateCustomerNotes before any write.
+  z.object({ action: z.literal('notes'), revision: z.string().length(64), notes: z.string().max(2000) }),
   z.object({ action: z.literal('contact'), email: z.union([z.email().max(200), z.literal('')]), phone: z.string().max(40) }),
   z.object({ action: z.literal('customer_name'), name: z.string().trim().min(1).max(CUSTOMER_NAME_MAX) }),
   z.object({ action: z.literal('cancel') }),
@@ -23,6 +28,7 @@ const actionInput = z.discriminatedUnion('action', [
 const safeSummary = (s: Awaited<ReturnType<typeof intakeSummary>>) => ({
   ok: true, draft: s.draft, revision: s.revision, status: s.order.status, customerName: s.order.customerName ?? '',
   email: s.contact?.customerEmail ?? '', phone: s.contact?.customerPhone ?? '',
+  customerNotes: s.full?.estimate.customerNotes ?? '',
   qbNumber: s.intake.qbEstimateNumber, sentAt: s.intake.sentAt,
 })
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -59,8 +65,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         // Spelling correction in place: same customer/estimate ids and links (see customer-name.ts).
         await renameOrderCustomer(id, body.name, actor.name)
       } else {
+        // Revision-gated actions. The stale-revision guard runs under the intake lock, so a note save can
+        // never blindly overwrite an estimate someone else changed first (its revision would no longer match).
         if (state.revision !== body.revision) throw new Error('The estimate changed. Refresh and review it before continuing.')
         if (body.action === 'send') await sendIntakeEstimate(id, actor.name, body.revision, body.recipients)
+        else if (body.action === 'notes') {
+          if (!state.full) throw new Error('This estimate is not ready for notes yet.')
+          const check = validateCustomerNotes(body.notes)
+          if (!check.ok) throw new Error(customerNotesErrorMessage(check.reason))
+          // Notes never change pricing, so skip the recompute refreshIntake does — return a fresh summary
+          // (which re-derives the revision, now reflecting the saved notes) without mutating totals.
+          await saveCustomerNotes({ orderId: id, estimateId: state.full.estimate.id, notes: check.notes, actor: actor.name })
+          return NextResponse.json(safeSummary(await intakeSummary(id)))
+        }
         else {
           await moveIntakeToBoard(id, actor.name)
           return NextResponse.json({ ok: true, converted: true })
