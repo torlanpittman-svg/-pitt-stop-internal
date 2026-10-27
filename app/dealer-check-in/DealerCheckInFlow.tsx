@@ -502,9 +502,6 @@ export default function DealerCheckInFlow({ canManageDealers = false }: { canMan
                   <option value={ADD_DEALER} className="bg-gray-900 text-blue-300">+ Add New Dealer</option>
                 )}
               </select>
-              {!selectedDealerId && dealerOk && !resolving && (
-                <p className="text-gray-500 text-xs mt-1">Matched from the stock number — change it if this vehicle is from another dealer.</p>
-              )}
             </div>
             {addingDealer && (
               <div className="p-3">
