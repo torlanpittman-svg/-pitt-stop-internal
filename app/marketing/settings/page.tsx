@@ -83,7 +83,21 @@ export default async function MarketingSettings({ searchParams }: { searchParams
           </div>
           <ProviderRow label="Email" live={status.email} note="Set MARKETING_EMAIL_PROVIDER=resend + RESEND_API_KEY (or QB bridge)" />
           <ProviderRow label="Facebook" live={status.facebook} note="Set FACEBOOK_PAGE_ID / FACEBOOK_PAGE_ACCESS_TOKEN" />
-          <ProviderRow label="Google Ads" live={status.googleAds} note="Set GOOGLE_ADS_DEVELOPER_TOKEN / GOOGLE_ADS_CUSTOMER_ID (read-only)" />
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-950 px-3 py-2.5">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-white">Google Ads (reporting, read-only)</div>
+              <div className="text-xs text-gray-500">
+                {status.googleAds.state === 'configured'
+                  ? 'Service account + customer id are set. Not verified here — open the Google Ads page to confirm a live read.'
+                  : status.googleAds.state === 'invalid'
+                    ? `Reporting env is set but invalid (${status.googleAds.error ?? 'configuration error'}) — fix it before a live read. No manual data is shown for an invalid config.`
+                    : 'Set GOOGLE_ADS_SERVICE_ACCOUNT_JSON / GOOGLE_ADS_CUSTOMER_ID (read-only; no developer token).'}
+              </div>
+            </div>
+            <Badge tone={status.googleAds.state === 'configured' ? 'info' : status.googleAds.state === 'invalid' ? 'danger' : 'warn'}>
+              {status.googleAds.state === 'configured' ? 'Configured' : status.googleAds.state === 'invalid' ? 'Config error' : 'Not connected'}
+            </Badge>
+          </div>
         </div>
       </Section>
 

@@ -34,12 +34,21 @@ export interface AdRecommendationInput {
   searchTerms: SearchTerm[]
   /** Minimum spend (cents) before a category/term is considered material. */
   minSpendCents?: number
+  /**
+   * Source of `byCategory`. For LIVE Google data the per-category "revenue" is a Google-ASSIGNED
+   * conversion value, NOT verified shop revenue — so revenue/ROAS-based budget + underperformer
+   * advice is SUPPRESSED (it would be advising on unverified assigned values). Manual-entry data
+   * keeps the legacy owner-entered behavior. Search-term (negative-keyword) advice is manual either
+   * way and always runs.
+   */
+  source?: 'manual' | 'live'
 }
 
 export function buildAdRecommendations(input: AdRecommendationInput): Recommendation[] {
   const minSpend = input.minSpendCents ?? 5_000 // $50
+  const liveAssigned = input.source === 'live'
   const recs: Recommendation[] = []
-  const cats = input.byCategory.filter((c) => c.spendCents >= minSpend)
+  const cats = liveAssigned ? [] : input.byCategory.filter((c) => c.spendCents >= minSpend)
 
   // 1. Budget shift: best vs worst performer when the gap is real.
   const scored = cats

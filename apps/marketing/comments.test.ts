@@ -38,7 +38,8 @@ describe('comment assistant classification', () => {
 describe('providers are dry-run by default (no credentials in repo)', () => {
   it('returns non-live adapters', () => {
     const p = getProviders({} as NodeJS.ProcessEnv)
-    expect(providerStatus(p)).toEqual({ sms: false, email: false, facebook: false, googleAds: false })
+    // Google Ads is reporting-only: status describes the config STATE (absent/invalid/configured), not a send adapter.
+    expect(providerStatus(p, {} as NodeJS.ProcessEnv)).toEqual({ sms: false, email: false, facebook: false, googleAds: { state: 'absent', error: null } })
   })
 
   it('dry-run send never reports a real send', async () => {

@@ -1,6 +1,9 @@
 import { requireMarketingManager, MarketingShell, Section, StatTile, StatusChip, EmptyRow, FlashBanner } from '@/app/marketing/_components'
-import { money, bigMoney } from '@/app/lib/format'
-import { adMetricsByCategory, listSearchTerms } from '@/apps/marketing/ads'
+import { AdDataNotice } from '@/app/marketing/AdDataNotice'
+import { money } from '@/app/lib/format'
+import { listSearchTerms } from '@/apps/marketing/ads'
+import { loadAdReporting } from '@/apps/marketing/ads-reporting'
+import { ACCOUNT_TIME_ZONE, monthToDateRange } from '@/apps/marketing/ad-dates'
 import { buildAdRecommendations } from '@/apps/marketing/recommendations'
 import { importAdMetricAction, importSearchTermAction } from '@/app/marketing/actions'
 import { SERVICE_CATEGORIES, SERVICE_CATEGORY_LABELS } from '@/apps/marketing/types'
@@ -8,14 +11,9 @@ import { SERVICE_CATEGORIES, SERVICE_CATEGORY_LABELS } from '@/apps/marketing/ty
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-const ymd = (d: Date) => d.toISOString().slice(0, 10)
-function monthRange(now: Date) {
-  const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
-  const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59))
-  return { from, to }
-}
-
 const label = (cat: string) => SERVICE_CATEGORY_LABELS[cat as keyof typeof SERVICE_CATEGORY_LABELS] ?? cat
+/** Neutral numeric assigned value (up to 2 decimals), e.g. "6.54" — NOT dollars. */
+const assignedValue = (v: number | null | undefined) => (v == null ? '—' : v.toLocaleString('en-US', { maximumFractionDigits: 2 }))
 
 const inputClass = 'w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm'
 const primaryBtn = 'rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500'
@@ -23,35 +21,48 @@ const primaryBtn = 'rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold tex
 export default async function GoogleAdsPage({ searchParams }: { searchParams: Promise<{ err?: string }> }) {
   await requireMarketingManager('/marketing/google-ads')
   const { err } = await searchParams
-  const now = new Date()
-  const { from, to } = monthRange(now)
+  // Month-to-date in the ACCOUNT timezone, so the queried range equals the displayed range.
+  const { from, to } = monthToDateRange(new Date())
 
-  const cat = await adMetricsByCategory({ from: ymd(from), to: ymd(to) })
+  const ad = await loadAdReporting({ from, to })
+  const cat = ad.byCategory
+  const unavailable = ad.meta.status === 'unavailable'
+  const live = ad.meta.status === 'live'
+  const manual = ad.meta.status === 'manual'
   const terms = await listSearchTerms()
-  const recs = buildAdRecommendations({ byCategory: cat, searchTerms: terms })
+  const recs = buildAdRecommendations({ byCategory: cat, searchTerms: terms, source: live ? 'live' : 'manual' })
 
   const totalSpend = cat.reduce((s, r) => s + r.spendCents, 0)
-  const totalRevenue = cat.reduce((s, r) => s + r.revenueCents, 0)
-  const blendedRoas = totalSpend > 0 ? totalRevenue / totalSpend : null
+  // Live: Google-ASSIGNED conversion value shown as a NEUTRAL number. Manual: owner-entered dollars.
+  const totalConvValue = cat.reduce((s, r) => s + (r.conversionValue ?? r.revenueCents / 100), 0)
+  const totalRevenueCents = cat.reduce((s, r) => s + r.revenueCents, 0)
+  const ratioPerSpend = totalSpend > 0 ? totalRevenueCents / totalSpend : null
 
   return (
     <MarketingShell active="/marketing/google-ads" title="Google Ads">
       <FlashBanner err={err} />
-      <p className="mb-4 text-sm text-gray-500">This month ({ymd(from)} → {ymd(now)}). Spend/revenue/conversions here are what you enter from Google Ads (the platform&apos;s own reported numbers) — not Pitt Stop collected cash, and ad conversions are not counted as completed jobs.</p>
+      <p className="mb-4 text-sm text-gray-500">Month to date ({from} → {to}, {ACCOUNT_TIME_ZONE} time). These are Google Ads platform figures (spend + a Google-assigned conversion value) — not Pitt Stop collected cash, and ad conversions are not counted as completed jobs. The connection status below shows whether they are live or manually entered.</p>
 
       <Section title="Connection status">
-        <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm text-amber-200">
-          Google Ads API not connected — metrics are entered manually below. Set GOOGLE_ADS_DEVELOPER_TOKEN + GOOGLE_ADS_CUSTOMER_ID to enable read-only sync.
-        </div>
+        <AdDataNotice meta={ad.meta} />
+        {live && <p className="mt-2 text-xs text-gray-500">Live figures come straight from the Google Ads API for this account; the manual-entry form below is hidden while the API is connected (so data is never double-counted).</p>}
       </Section>
 
-      <Section title="Performance by service (this month)">
+      <Section title="Performance by service (month to date)">
         <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <StatTile label="Total spend" value={bigMoney(totalSpend)} />
-          <StatTile label="Total revenue" value={bigMoney(totalRevenue)} />
-          <StatTile label="Blended ROAS" value={blendedRoas == null ? '—' : `${blendedRoas.toFixed(1)}x`} />
+          <StatTile label="Total spend" value={unavailable ? 'Unavailable' : money(totalSpend)} />
+          <StatTile
+            label={live ? 'Conversion value' : 'Revenue'}
+            value={unavailable ? 'Unavailable' : live ? assignedValue(totalConvValue) : money(totalRevenueCents)}
+            note={live ? 'Google-assigned value, not revenue' : undefined}
+          />
+          <StatTile
+            label={live ? 'Value ÷ spend' : 'ROAS'}
+            value={unavailable ? 'Unavailable' : ratioPerSpend == null ? '—' : `${ratioPerSpend.toFixed(1)}x`}
+            note={live ? 'not verified ROAS' : undefined}
+          />
         </div>
-        {cat.length === 0 ? <EmptyRow>No metrics for this month yet. Import daily metrics below.</EmptyRow> : (
+        {unavailable ? <EmptyRow>Google Ads metrics are not available right now — see the connection status above.</EmptyRow> : cat.length === 0 ? <EmptyRow>No metrics for this period yet. {manual ? 'Import daily metrics below.' : 'Google Ads reported no campaign activity in this range.'}</EmptyRow> : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -64,8 +75,8 @@ export default async function GoogleAdsPage({ searchParams }: { searchParams: Pr
                   <th className="pb-2 text-right">CPC</th>
                   <th className="pb-2 text-right">Conv.</th>
                   <th className="pb-2 text-right">Cost / lead</th>
-                  <th className="pb-2 text-right">Revenue</th>
-                  <th className="pb-2 text-right">ROAS</th>
+                  <th className="pb-2 text-right">{live ? 'Conv. value' : 'Revenue'}</th>
+                  <th className="pb-2 text-right">{live ? 'Value ÷ spend' : 'ROAS'}</th>
                 </tr>
               </thead>
               <tbody>
@@ -73,7 +84,8 @@ export default async function GoogleAdsPage({ searchParams }: { searchParams: Pr
                   const ctr = r.impressions > 0 ? (r.clicks / r.impressions) * 100 : null
                   const cpc = r.clicks > 0 ? Math.round(r.spendCents / r.clicks) : null
                   const costPerLead = r.conversions > 0 ? Math.round(r.spendCents / r.conversions) : null
-                  const roas = r.spendCents > 0 ? r.revenueCents / r.spendCents : null
+                  const convValue = r.conversionValue ?? r.revenueCents / 100
+                  const ratio = r.spendCents > 0 ? r.revenueCents / r.spendCents : null
                   return (
                     <tr key={r.serviceCategory} className="border-t border-gray-800">
                       <td className="py-2">{label(r.serviceCategory)}</td>
@@ -82,10 +94,10 @@ export default async function GoogleAdsPage({ searchParams }: { searchParams: Pr
                       <td className="py-2 text-right">{r.clicks.toLocaleString('en-US')}</td>
                       <td className="py-2 text-right">{ctr == null ? '—' : `${ctr.toFixed(1)}%`}</td>
                       <td className="py-2 text-right">{cpc == null ? '—' : money(cpc)}</td>
-                      <td className="py-2 text-right">{r.conversions}</td>
+                      <td className="py-2 text-right">{r.conversions.toLocaleString('en-US', { maximumFractionDigits: 1 })}</td>
                       <td className="py-2 text-right">{costPerLead == null ? '—' : money(costPerLead)}</td>
-                      <td className="py-2 text-right text-emerald-400">{money(r.revenueCents)}</td>
-                      <td className="py-2 text-right">{roas == null ? '—' : `${roas.toFixed(1)}x`}</td>
+                      <td className={`py-2 text-right${live ? '' : ' text-emerald-400'}`}>{live ? assignedValue(convValue) : money(r.revenueCents)}</td>
+                      <td className="py-2 text-right">{ratio == null ? '—' : `${ratio.toFixed(1)}x`}</td>
                     </tr>
                   )
                 })}
@@ -93,10 +105,13 @@ export default async function GoogleAdsPage({ searchParams }: { searchParams: Pr
             </table>
           </div>
         )}
+        {live && (
+          <p className="mt-2 text-xs text-gray-500">&ldquo;Conversion value&rdquo; is a Google-assigned value (neutral units), not dollars of collected or invoiced revenue; &ldquo;value ÷ spend&rdquo; is a directional ratio, not verified ROAS.{cat.some((r) => r.serviceCategory === 'other') ? ' “Other” holds campaigns with no explicit service-category mapping — map campaign ids via GOOGLE_ADS_CAMPAIGN_CATEGORIES_JSON to split them out (categories are never guessed from names).' : ''}</p>
+        )}
       </Section>
 
       <Section title="Recommendations">
-        {recs.length === 0 ? <EmptyRow>No recommendations — import more Google Ads data to generate them.</EmptyRow> : (
+        {recs.length === 0 ? <EmptyRow>{manual ? 'No recommendations — import more Google Ads data to generate them.' : 'No negative-keyword suggestions from your manually-entered search terms right now. Budget/revenue advice is not generated from Google-assigned conversion values.'}</EmptyRow> : (
           <ul className="space-y-2">
             {recs.map((r) => (
               <li key={r.id} className="rounded-lg border border-gray-800 bg-gray-950 p-3">
@@ -113,6 +128,7 @@ export default async function GoogleAdsPage({ searchParams }: { searchParams: Pr
       </Section>
 
       <Section title="Search terms">
+        <p className="mb-3 text-xs text-gray-500">Search terms are <span className="text-gray-300">manually entered</span> below and drive the recommendations — they are not synced from the Google Ads API even when the reporting connection is live.</p>
         {terms.length === 0 ? <EmptyRow>No search terms imported yet.</EmptyRow> : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -141,6 +157,7 @@ export default async function GoogleAdsPage({ searchParams }: { searchParams: Pr
         )}
       </Section>
 
+      {manual && (
       <Section title="Import metrics (manual)">
         <form action={importAdMetricAction} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <label className="block">
@@ -179,6 +196,7 @@ export default async function GoogleAdsPage({ searchParams }: { searchParams: Pr
         </form>
         <p className="mt-2 text-xs text-gray-500">Idempotent per service category + date — re-importing the same day overwrites that row.</p>
       </Section>
+      )}
 
       <Section title="Add search term (manual)">
         <p className="mb-3 text-xs text-gray-500">Enter the search terms Google Ads shows are triggering your ads, with their spend/clicks/conversions, to feed the recommendations below. No budgets are changed — this is data entry only.</p>

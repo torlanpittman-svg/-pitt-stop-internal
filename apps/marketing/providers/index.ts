@@ -6,7 +6,12 @@
  *   • SMS   — no Twilio/number exists in this repo → DryRun adapter (nothing sends).
  *   • Email — the only real email channel in Pitt Stop is QuickBooks' native send (CLAUDE.md); there
  *             is no ESP. Marketing email is DryRun until an ESP (or a QB bridge) is configured.
- *   • Facebook / Google Ads — no Meta/Google credentials → DryRun + manual-import.
+ *   • Facebook — no Meta credentials → DryRun + manual-import.
+ *   • Google Ads — READ-ONLY reporting is live when a service account is configured, but it flows
+ *     through `../ads-reporting` (loadAdReporting) + `./google-ads`, NOT this send-style provider.
+ *     The GoogleAdsProvider interface below stays a dry-run no-op; `resolveGoogleAdsConfig` reports
+ *     whether the reporting connection is absent / invalid / configured (not whether a live fetch
+ *     has been verified).
  *
  * A DryRun send NEVER contacts an external service and is reported as status:'dry_run' (not 'sent'),
  * so the system never pretends a message went out. getProviders() inspects env for real credentials
@@ -14,6 +19,7 @@
  */
 
 import { TwilioSmsProvider, twilioConfigFromEnv } from './twilio'
+import { resolveGoogleAdsConfig, type GoogleAdsConfigState } from './google-ads'
 
 export type SendStatus = 'sent' | 'dry_run' | 'failed'
 export interface SendResult { status: SendStatus; providerMessageId?: string; error?: string }
@@ -94,7 +100,14 @@ export interface ProviderStatus {
   sms: boolean
   email: boolean
   facebook: boolean
-  googleAds: boolean
+  /**
+   * Google Ads is reporting-only. `state` is 'absent' (no reporting env → manual data),
+   * 'invalid' (reporting env present but malformed → configuration error; `error` is a sanitized
+   * `config_*` code), or 'configured' (valid env present). A valid env is NOT a VERIFIED connection —
+   * a successful live fetch is only known on the Google Ads page (loadAdReporting) — so Settings must
+   * never label mere env presence as verified.
+   */
+  googleAds: { state: GoogleAdsConfigState; error: string | null }
 }
 
 /**
@@ -115,15 +128,22 @@ export function getProviders(env: NodeJS.ProcessEnv = process.env): Providers {
     ? new DryRunFacebookProvider()
     : new DryRunFacebookProvider()
 
-  const googleAds: GoogleAdsProvider = env.GOOGLE_ADS_DEVELOPER_TOKEN && env.GOOGLE_ADS_CUSTOMER_ID
-    ? new DryRunGoogleAdsProvider()
-    : new DryRunGoogleAdsProvider()
+  // Google Ads reporting is read via ../ads-reporting (service-account JWT), NOT this provider —
+  // the send-style adapter stays a dry-run no-op regardless of configuration.
+  const googleAds: GoogleAdsProvider = new DryRunGoogleAdsProvider()
 
   return { sms, email, facebook, googleAds }
 }
 
-export function providerStatus(p: Providers): ProviderStatus {
-  return { sms: p.sms.live, email: p.email.live, facebook: p.facebook.live, googleAds: p.googleAds.live }
+export function providerStatus(p: Providers, env: NodeJS.ProcessEnv = process.env): ProviderStatus {
+  const ga = resolveGoogleAdsConfig(env)
+  return {
+    sms: p.sms.live,
+    email: p.email.live,
+    facebook: p.facebook.live,
+    // state = absent/invalid/configured; verified is only known after a live fetch on the Google Ads page.
+    googleAds: { state: ga.state, error: ga.error },
+  }
 }
 
 /** All-dry-run providers — used to FORCE a preview send even when live credentials exist. */

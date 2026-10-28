@@ -43,4 +43,16 @@ describe('ad recommendation engine', () => {
     const recs = buildAdRecommendations({ byCategory: [cat('brand', 100, 0)], searchTerms: [term('diy', 100)], minSpendCents: 5000 })
     expect(recs).toHaveLength(0)
   })
+
+  it('suppresses revenue/budget/underperformer advice for LIVE (Google-assigned) values, keeps manual search-term advice', () => {
+    const recs = buildAdRecommendations({
+      source: 'live',
+      byCategory: [cat('ceramic', 41000, 430000), cat('general', 39000, 0)],
+      searchTerms: [term('diy ceramic coating', 8200)],
+    })
+    expect(recs.some((r) => r.type === 'budget_shift')).toBe(false)
+    expect(recs.some((r) => r.type === 'underperformer')).toBe(false)
+    // negative-keyword suggestions come from manually-entered search terms and remain.
+    expect(recs.some((r) => r.type === 'negative_keyword' && r.title.includes('diy ceramic coating'))).toBe(true)
+  })
 })

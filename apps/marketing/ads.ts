@@ -65,6 +65,12 @@ export interface CategoryAdRollup {
   clicks: number
   conversions: number
   revenueCents: number
+  /**
+   * Raw Google-ASSIGNED conversion value (fractional, neutral units) — present only for LIVE API
+   * rollups. It is NOT dollars of collected/invoiced revenue; `revenueCents` is kept for internal
+   * compatibility (manual entry / legacy ROAS math) and must not be presented as money for live data.
+   */
+  conversionValue?: number
 }
 
 /** Spend/clicks/conversions/revenue rolled up per service category for a range. */
