@@ -43,7 +43,7 @@ export default function PartsLanding({ importEnabled, homeHref = '/', workBoardH
             <li><span className="font-semibold text-gray-100">1.</span> Open the job on the Work Board (tap <span className="text-gray-100">Copy VIN</span> there to paste into PartsTech if you need it).</li>
             <li><span className="font-semibold text-gray-100">2.</span> In PartsTech, screenshot the cart / quote / order — the screenshot carries the part numbers and cost.</li>
             <li><span className="font-semibold text-gray-100">3.</span> Back on the job, open <span className="text-gray-100">Parts → Import from screenshot</span> and upload up to 4 screenshots.</li>
-            <li><span className="font-semibold text-gray-100">4.</span> A manager reviews the parts and prices, then saves them to the job.</li>
+            <li><span className="font-semibold text-gray-100">4.</span> Review the parts and prices, then save them to the job.</li>
           </ol>
         ) : (
           <p className="text-[15px] leading-relaxed text-gray-300">

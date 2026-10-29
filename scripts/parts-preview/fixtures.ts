@@ -72,22 +72,23 @@ function seed(scenario: Scenario): Batch {
   return { id: id(), status: 'cancelled', aiStatus: 'extracted', revision: 1, documentKind: 'purchase', supplier: 'NAPA Sample Store', orderReference: 'DEMO-OLD', taxCents: null, shippingCents: null, coreCents: null, markOrdered: false, duplicateConfirmed: false, images: img, canMarkOrdered: false, rows: [row({ description: 'Brake rotor', partNumber: 'DEMO-ROT-02', quantity: 2, unitCostCents: 8400, ordinal: 0 }, imageId)] }
 }
 
-function view(b: Batch, manager: boolean) {
-  const redactRow = (r: Row): Row => manager ? r : { ...r, unitCostCents: null, listPriceCents: null, lineTotalCents: null }
+/** The full proposal view — EQUAL PERMISSIONS, so costs/totals/originals are returned to everyone (no
+ *  redaction; honest shared capability, never a faked role). */
+function view(b: Batch) {
   return {
     id: b.id, serviceOrderId: JOB.orderId, status: b.status, aiStatus: b.aiStatus, revision: b.revision,
     documentKind: b.documentKind, supplier: b.supplier, orderReference: b.orderReference,
-    taxCents: manager ? b.taxCents : null, shippingCents: manager ? b.shippingCents : null, coreCents: manager ? b.coreCents : null,
+    taxCents: b.taxCents, shippingCents: b.shippingCents, coreCents: b.coreCents,
     markOrdered: b.markOrdered, duplicateConfirmed: b.duplicateConfirmed,
     images: b.images.map((i) => ({ id: i.id, ordinal: i.ordinal, contentType: i.contentType })),
-    rows: b.rows.map(redactRow),
+    rows: b.rows,
     warnings: { mixedSupplier: false, suppliers: b.supplier ? [b.supplier] : [], duplicateSupplierOrder: false, overlappingImages: false, pageConflicts: { supplier: false, orderReference: false, documentKind: false }, unreadImages: b.status === 'failed' ? 1 : 0, truncated: false },
-    canMarkOrdered: b.canMarkOrdered, existingParts: manager ? EXISTING : [],
+    canMarkOrdered: b.canMarkOrdered, existingParts: EXISTING,
   }
 }
 
-/** Build a stateful in-memory transport seeded for a scenario. `manager=false` mimics an employee. */
-export function makeFixtureTransport(manager: boolean, scenario: Scenario = 'order'): ImportTransport {
+/** Build a stateful in-memory transport seeded for a scenario. One shared capability for every user. */
+export function makeFixtureTransport(scenario: Scenario = 'order'): ImportTransport {
   const batches: Batch[] = [seed(scenario)]
   const find = (bid: string) => batches.find((b) => b.id === bid)
   const summary = (b: Batch) => ({ id: b.id, status: b.status, documentKind: b.documentKind, supplier: b.supplier, orderReference: b.orderReference, rowCount: b.rows.length, appliedCount: b.rows.filter((r) => r.appliedPartId).length, createdAt: new Date().toISOString(), uploadedBy: 'Sample' })
@@ -96,9 +97,9 @@ export function makeFixtureTransport(manager: boolean, scenario: Scenario = 'ord
 
   return {
     get: async (path) => {
-      if (path === '') return delay({ ok: true, enabled: true, manager, job: JOB, batches: batches.map(summary) })
+      if (path === '') return delay({ ok: true, enabled: true, canReview: true, job: JOB, batches: batches.map(summary) })
       const b = find(path.slice(1))
-      return delay(b ? { ok: true, manager, batch: view(b, manager) } : { ok: false, error: 'Not found.' })
+      return delay(b ? { ok: true, canReview: true, batch: view(b) } : { ok: false, error: 'Not found.' })
     },
     post: async (path, body) => {
       const b = find(path.slice(1)); const action = (body as { action?: string })?.action
@@ -109,7 +110,7 @@ export function makeFixtureTransport(manager: boolean, scenario: Scenario = 'ord
           if (b.status === 'reading' && b.rows.length === 0) { const o = seed('order'); b.rows = o.rows; b.supplier = o.supplier; b.orderReference = o.orderReference; b.documentKind = o.documentKind; b.taxCents = o.taxCents; b.coreCents = o.coreCents; b.canMarkOrdered = o.canMarkOrdered }
           b.status = b.rows.length ? 'proposed' : 'failed'; b.aiStatus = b.rows.length ? 'extracted' : 'failed'; b.revision++
         }
-        return delay({ ok: true, manager, batch: view(b, manager), readStatus: b.status })
+        return delay({ ok: true, canReview: true, batch: view(b), readStatus: b.status })
       }
       if (action === 'review') {
         const p = body as { supplier?: string | null; orderReference?: string | null; documentKind?: Batch['documentKind']; markOrdered?: boolean; rows?: Array<Partial<Row> & { id: string }> }
@@ -120,7 +121,7 @@ export function makeFixtureTransport(manager: boolean, scenario: Scenario = 'ord
         b.canMarkOrdered = b.documentKind === 'purchase' && !!b.supplier && !!b.orderReference
         for (const pr of p.rows ?? []) { const r = b.rows.find((x) => x.id === pr.id); if (r) Object.assign(r, pr) }
         b.revision++
-        return delay({ ok: true, manager, batch: view(b, manager) })
+        return delay({ ok: true, canReview: true, batch: view(b) })
       }
       if (action === 'apply') {
         const opts = body as { duplicateConfirmed?: boolean; acknowledgeDuplicates?: boolean }
@@ -132,7 +133,7 @@ export function makeFixtureTransport(manager: boolean, scenario: Scenario = 'ord
         if (bad) return delay({ ok: false, error: `Fix "${bad.description || 'a part'}": description and quantity required (or Skip it).` })
         b.status = 'applied'; b.revision++
         for (const r of b.rows) if (r.linkDecision !== 'skip') r.appliedPartId = id()
-        return delay({ ok: true, manager, batch: view(b, manager) })
+        return delay({ ok: true, canReview: true, batch: view(b) })
       }
       if (action === 'cancel') { b.status = 'cancelled'; b.revision++; return delay({ ok: true }) }
       return delay({ ok: false, error: 'Unknown action.' })

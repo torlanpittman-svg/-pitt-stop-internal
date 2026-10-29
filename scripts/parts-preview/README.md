@@ -5,14 +5,14 @@ A **non-production, synthetic** preview of the Parts screenshot-import UI. It re
 OpenAI**, and **no production auth bypass**. Everything shown is clearly-labeled sample data.
 
 ## What it shows
-A simple **screen selector** renders ONE real component at a time:
+EQUAL PERMISSIONS — the import workflow is identical for every authorized shop user, so there is ONE shared
+job screen (no employee/manager split). A simple **screen selector** renders ONE real component at a time:
 - **Parts page** — the actual shared `PartsLanding` (Open PartsTech + guidance; nav is injected to stay in
   the sample).
-- **Employee job** — upload + a **money-redacted** proposal + **“Saved — manager review needed.”**
-- **Manager job** — a scenario selector: **Placed order / Quote (no cost) / Failed read / Reading… /
+- **Job parts** — a scenario selector: **Placed order / Quote (no cost) / Failed read / Reading… /
   Cancelled.** Review descriptions / numbers / quantities / **purchase costs**, per-row **New / Link / Skip**,
   link a row to the existing sample part (its saved cost is shown), the **“I placed this order”** toggle,
-  warnings, the **original source PNG**, and **Save parts to job**.
+  warnings, the **original source PNG**, and **Review & save parts to job**. Everyone sees costs and originals.
 
 The original screenshots are the **actual** synthetic PNGs in `assets/` (`sample-order.png`, `sample-quote.png`),
 served by a **dev-only** route (`/parts/preview/sample/order|quote`, fixed allowlist, production 404) so the
@@ -37,5 +37,6 @@ they can never mount on the live app. No extra dependencies; no auth/network byp
 - `app/parts/preview/sample/[name]/route.ts` — the dev-only, allowlisted sample-image server.
 
 ## Not covered by the preview
-Real auth/role gating, the private Blob storage, the AI reader, the atomic SQL apply, and the DB idempotency
-guards are exercised by the Vitest suites in `apps/parts/*.test.ts` (PGlite + mocked OpenAI), not here.
+Real auth gating, the private Blob storage, the AI reader, the atomic SQL apply, and the DB idempotency
+guards are exercised by the Vitest suites (`apps/parts/*.test.ts` with PGlite + mocked OpenAI, and the route
+`*.test.ts` files for the shared gate, equal-permission review/apply, and private image retrieval), not here.

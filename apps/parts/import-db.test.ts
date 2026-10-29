@@ -18,6 +18,7 @@ import {
   createBatchWithImages, listBatchImages, claimBatchReading, applyExtraction,
   getBatch, getBatchView, saveBatchReview, applyImport, cancelBatch, type MergedExtraction,
 } from './import-db'
+import { attachTestBatch } from './import-batch-test-adapter'
 import { serviceOrders, vehicles, jobParts, partImportBatches, partImportRows, serviceOrderEvents } from '@/drizzle/schema'
 
 let db: PgliteDatabase<typeof schema>
@@ -26,7 +27,9 @@ let hashSeq = 0
 const hash = () => String(++hashSeq).padStart(64, '0')
 
 beforeAll(async () => {
-  db = drizzle(new PGlite(), { schema })
+  const pg = new PGlite()
+  // The real per-job transaction (applyImport uses db.batch) needs a faithful batch on the PGlite driver.
+  db = attachTestBatch(drizzle(pg, { schema }), pg)
   holder.db = db
   const { apply } = await pushSchema(schema, db as unknown as Parameters<typeof pushSchema>[1])
   await apply()
@@ -359,5 +362,64 @@ describe('createBatchWithImages / saveBatchReview — conflict + duplicate-targe
     const rows = await db.select().from(partImportRows).where(eq(partImportRows.batchId, batchId))
     const r = await saveBatchReview(batchId, id, { rows: rows.map((x) => ({ id: x.id, linkDecision: 'link' as const, matchedPartId: p1.id })) }, 'Tester')
     expect(r.ok).toBe(false)
+  })
+})
+
+describe('applyImport — per-job transaction serializes concurrent DISTINCT imports (Dot race)', () => {
+  // Two DISTINCT proposed batches on the SAME job, same SKU, NO supplier order reference. Before the lock,
+  // both passed the per-batch guards; now the job row lock + fresh post-commit snapshot gates the loser.
+  it('parallel distinct imports of the same unreferenced SKU apply exactly once', async () => {
+    const id = await order()
+    const a = await propose(id, {}, { orderReference: null })
+    const b = await propose(id, {}, { orderReference: null })
+    const results = await Promise.all([applyImport(a, id, 'A'), applyImport(b, id, 'B')])
+    expect(results.filter((r) => r.ok)).toHaveLength(1)
+    expect(results.some((r) => !r.ok && r.needsDuplicateAck)).toBe(true)
+    expect(await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, id))).toHaveLength(1)
+    // No partial / duplicate audit — exactly one apply event for the winner.
+    expect(await db.select().from(serviceOrderEvents).where(eq(serviceOrderEvents.serviceOrderId, id))).toHaveLength(1)
+  })
+
+  it('the duplicate loser can then explicitly acknowledge and add the additional part', async () => {
+    const id = await order()
+    const a = await propose(id, {}, { orderReference: null })
+    const b = await propose(id, {}, { orderReference: null })
+    expect((await applyImport(a, id, 'A')).ok).toBe(true)
+    const blocked = await applyImport(b, id, 'B')
+    expect(blocked.ok).toBe(false); expect(blocked.needsDuplicateAck).toBe(true)
+    const ack = await applyImport(b, id, 'B', { acknowledgeDuplicates: true })
+    expect(ack.ok).toBe(true)
+    expect(await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, id))).toHaveLength(2)
+  })
+
+  it('distinct SKUs in parallel both apply (no false duplicate)', async () => {
+    const id = await order()
+    const a = await propose(id, { partNumber: 'SKU-A' }, { orderReference: null })
+    const b = await propose(id, { partNumber: 'SKU-B' }, { orderReference: null })
+    const results = await Promise.all([applyImport(a, id, 'A'), applyImport(b, id, 'B')])
+    expect(results.every((r) => r.ok)).toBe(true)
+    expect(await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, id))).toHaveLength(2)
+  })
+
+  it('parallel same supplier ORDER asks for CONFIRMATION (not acknowledgement) and applies once', async () => {
+    const id = await order()
+    const a = await propose(id) // supplier NAPA, orderReference REF-1 (same for both)
+    const b = await propose(id)
+    const results = await Promise.all([applyImport(a, id, 'A'), applyImport(b, id, 'B')])
+    expect(results.filter((r) => r.ok)).toHaveLength(1)
+    const loser = results.find((r) => !r.ok)!
+    expect(loser.needsDuplicateConfirm).toBe(true)
+    expect(loser.needsDuplicateAck).toBeFalsy()
+    expect(await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, id))).toHaveLength(1)
+  })
+
+  it('the SKU lock is per-job: the same SKU on two different jobs both apply', async () => {
+    const j1 = await order(); const j2 = await order()
+    const a = await propose(j1, {}, { orderReference: null })
+    const b = await propose(j2, {}, { orderReference: null })
+    const results = await Promise.all([applyImport(a, j1, 'A'), applyImport(b, j2, 'B')])
+    expect(results.every((r) => r.ok)).toBe(true)
+    expect(await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, j1))).toHaveLength(1)
+    expect(await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, j2))).toHaveLength(1)
   })
 })

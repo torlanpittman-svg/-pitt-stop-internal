@@ -4,8 +4,10 @@
  * PartImportPanel — import parts into THIS job from PartsTech screenshots.
  *
  * Flow: Open PartsTech (new tab) → optionally Copy VIN → screenshot the cart/quote/order → upload 1–4 here.
- * The screenshots are saved privately, read by AI into a PROPOSAL, a manager reviews prices/links and saves
- * them as tracked parts. Employees can upload and see a non-money proposal; managers review money + apply.
+ * The screenshots are saved privately, read by AI into a PROPOSAL, then the reviewer corrects prices/links and
+ * saves them as tracked parts. EQUAL PERMISSIONS: every authorized shop user has the SAME capability here —
+ * upload, read, see costs + the original screenshots, review, link/skip/new, acknowledge duplicates, mark
+ * ordered, save, and cancel. There is no manager handoff.
  *
  * Renders NOTHING when the feature flag is off, so the surrounding Parts section is unchanged until
  * PARTS_SCREENSHOT_IMPORT_ENABLED is set. Mount it keyed by orderId so job state never leaks between jobs.
@@ -75,7 +77,6 @@ type LoadPhase = 'loading' | 'off' | 'ready' | 'error'
 export default function PartImportPanel({ orderId, onApplied, transport }: { orderId: string; onApplied?: () => void; transport?: ImportTransport }) {
   const t = useMemo(() => transport ?? defaultTransport(orderId), [transport, orderId])
   const [phase, setPhase] = useState<LoadPhase>('loading')
-  const [manager, setManager] = useState(false)
   const [job, setJob] = useState<Job | null>(null)
   const [batches, setBatches] = useState<BatchSummary[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -86,10 +87,10 @@ export default function PartImportPanel({ orderId, onApplied, transport }: { ord
   const fileRef = useRef<HTMLInputElement>(null)
 
   const loadList = useCallback(async (): Promise<boolean> => {
-    const d = await t.get('') as { ok?: boolean; enabled?: boolean; manager?: boolean; job?: Job; batches?: BatchSummary[]; error?: string }
+    const d = await t.get('') as { ok?: boolean; enabled?: boolean; job?: Job; batches?: BatchSummary[]; error?: string }
     if (d.enabled === false) return false // feature dark
     if (!d.ok) { setErr(d.error || 'Could not load imports.'); return true }
-    setManager(!!d.manager); setJob(d.job ?? null); setBatches(d.batches ?? []); setErr(null)
+    setJob(d.job ?? null); setBatches(d.batches ?? []); setErr(null)
     return true
   }, [t])
 
@@ -98,10 +99,10 @@ export default function PartImportPanel({ orderId, onApplied, transport }: { ord
     t.get('')
       .then((raw) => {
         if (ignore) return
-        const d = raw as { ok?: boolean; enabled?: boolean; manager?: boolean; job?: Job; batches?: BatchSummary[]; error?: string }
+        const d = raw as { ok?: boolean; enabled?: boolean; job?: Job; batches?: BatchSummary[]; error?: string }
         if (d.enabled === false) { setPhase('off'); return }
         if (!d.ok) { setErr(d.error || 'Could not load imports.'); setPhase('ready'); return }
-        setManager(!!d.manager); setJob(d.job ?? null); setBatches(d.batches ?? []); setPhase('ready')
+        setJob(d.job ?? null); setBatches(d.batches ?? []); setPhase('ready')
       })
       .catch(() => { if (!ignore) { setErr('Could not load parts import — check your connection.'); setPhase('error') } })
     return () => { ignore = true }
@@ -202,7 +203,7 @@ export default function PartImportPanel({ orderId, onApplied, transport }: { ord
 
       {activeId && (
         <ReviewView
-          key={activeId} orderId={orderId} batchId={activeId} transport={t} manager={manager}
+          key={activeId} orderId={orderId} batchId={activeId} transport={t}
           onClose={() => { setActiveId(null); loadList().catch(() => {}) }}
           onApplied={() => { setActiveId(null); loadList().catch(() => {}); onApplied?.() }}
         />
@@ -232,8 +233,8 @@ function toEdit(r: Row): RowEdit {
   return { description: r.description ?? '', partNumber: r.partNumber ?? '', brand: r.brand ?? '', supplier: r.supplier ?? '', quantity: r.quantity == null ? '' : String(r.quantity), unitCost: centsToStr(r.unitCostCents), linkDecision: r.linkDecision, matchedPartId: r.matchedPartId }
 }
 
-function ReviewView({ orderId, batchId, transport: t, manager, onClose, onApplied }: {
-  orderId: string; batchId: string; transport: ImportTransport; manager: boolean; onClose: () => void; onApplied: () => void
+function ReviewView({ orderId, batchId, transport: t, onClose, onApplied }: {
+  orderId: string; batchId: string; transport: ImportTransport; onClose: () => void; onApplied: () => void
 }) {
   void orderId
   const [v, setV] = useState<BatchView | null>(null)
@@ -366,7 +367,8 @@ function ReviewView({ orderId, batchId, transport: t, manager, onClose, onApplie
   const applied = v.status === 'applied'
   const cancelled = v.status === 'cancelled'
   const reviewable = v.status === 'proposed' || v.status === 'failed' || v.status === 'uploaded'
-  const editable = manager && reviewable
+  // Equal permissions: any authorized shop user may edit while the import is still reviewable.
+  const editable = reviewable
   // A read can be (re)triggered from uploaded/failed AND a possibly-stuck 'reading' (the server reclaims a
   // stale read after a few minutes; a fresh one returns "busy").
   const canRetryRead = v.status === 'uploaded' || v.status === 'failed' || v.status === 'reading'
@@ -388,11 +390,11 @@ function ReviewView({ orderId, batchId, transport: t, manager, onClose, onApplie
       <div className="space-y-1.5">
         {mixedSupplier && <Warn>More than one supplier appears. One import is one supplier order — fix the suppliers before marking it ordered.</Warn>}
         {w.pageConflicts.supplier || w.pageConflicts.orderReference || w.pageConflicts.documentKind ? <Warn>The screenshots disagreed on the supplier / order # / type — confirm the correct values above.</Warn> : null}
-        {w.unreadImages > 0 && <Warn>{w.unreadImages} screenshot(s) could not be read. {manager ? 'Re-read or enter those parts manually.' : 'A manager will review them.'}</Warn>}
+        {w.unreadImages > 0 && <Warn>{w.unreadImages} screenshot(s) could not be read. Re-read or enter those parts manually.</Warn>}
         {w.truncated && <Warn>Only the first lines were read — add any missing parts manually.</Warn>}
         {w.duplicateSupplierOrder && <Warn>This supplier order looks already-imported to this job — applying will ask you to confirm.</Warn>}
         {w.overlappingImages && <Warn>A screenshot here was already used in another import on this job.</Warn>}
-        {v.aiStatus === 'failed' && !applied && !cancelled && <Warn>The screenshots could not be read automatically. {manager ? 'Add parts manually below or re-read.' : 'A manager will review them.'}</Warn>}
+        {v.aiStatus === 'failed' && !applied && !cancelled && <Warn>The screenshots could not be read automatically. Add parts manually below or re-read.</Warn>}
       </div>
 
       {/* Document metadata */}
@@ -421,21 +423,21 @@ function ReviewView({ orderId, batchId, transport: t, manager, onClose, onApplie
             <span>I placed this order — mark these parts “Ordered”.</span>
           </label>
         )}
-        {manager && (v.taxCents != null || v.shippingCents != null || v.coreCents != null) && (
+        {(v.taxCents != null || v.shippingCents != null || v.coreCents != null) && (
           <p className="text-[13px] text-gray-400">Document totals (not billed): {[v.taxCents != null && `tax ${money(v.taxCents)}`, v.shippingCents != null && `shipping ${money(v.shippingCents)}`, v.coreCents != null && `core ${money(v.coreCents)}`].filter(Boolean).join(' · ')}</p>
         )}
       </div>
 
       {/* Rows */}
       <div className="space-y-2">
-        {v.rows.length === 0 && <p className="text-sm italic text-gray-500">No parts were read. {manager ? 'Re-read, or add parts in the tracker below.' : 'A manager will review this.'}</p>}
+        {v.rows.length === 0 && <p className="text-sm italic text-gray-500">No parts were read. Re-read, or add parts in the tracker below.</p>}
         {v.rows.map((r) => (
-          <RowCard key={r.id} r={r} edit={edits[r.id]} manager={manager} editable={editable} existing={v.existingParts} invalid={invalid.has(r.id)} setEdit={(patch) => setEdit(r.id, patch)} />
+          <RowCard key={r.id} r={r} edit={edits[r.id]} editable={editable} existing={v.existingParts} invalid={invalid.has(r.id)} setEdit={(patch) => setEdit(r.id, patch)} />
         ))}
       </div>
 
-      {/* Original screenshots (manager only) */}
-      {manager && v.images.length > 0 && (
+      {/* Original screenshots — visible to any authorized reviewer */}
+      {v.images.length > 0 && (
         <details className="rounded-xl border border-gray-800 bg-gray-950 p-2">
           <summary className="cursor-pointer text-[13px] text-gray-300">View original screenshots ({v.images.length})</summary>
           <div className="mt-2 grid grid-cols-1 gap-2">
@@ -449,12 +451,12 @@ function ReviewView({ orderId, batchId, transport: t, manager, onClose, onApplie
         </details>
       )}
 
-      {/* Actions */}
+      {/* Actions — the same for every authorized reviewer */}
       {applied ? (
         <p className="text-sm text-emerald-400">Saved to the job. The parts are in the tracker above.</p>
       ) : cancelled ? (
         <p className="text-sm text-gray-400">This import was cancelled.</p>
-      ) : manager ? (
+      ) : (
         <div className="space-y-2">
           {confirm && (
             <div className="rounded-xl border border-amber-700/50 bg-amber-900/20 p-3 text-sm text-amber-200">
@@ -465,21 +467,16 @@ function ReviewView({ orderId, batchId, transport: t, manager, onClose, onApplie
           <div className="flex flex-wrap gap-2">
             <button type="button" disabled={busy || v.status === 'reading'} onClick={save} className="flex-1 min-h-[48px] rounded-xl border border-gray-700 bg-gray-800 px-4 text-sm font-semibold text-gray-100 active:bg-gray-700 disabled:opacity-50">Save draft</button>
             {canRetryRead && <button type="button" disabled={busy} onClick={reread} className="min-h-[48px] rounded-xl border border-gray-700 bg-gray-800 px-4 text-sm font-semibold text-gray-100 active:bg-gray-700 disabled:opacity-50">{readLabel}</button>}
-            <button type="button" disabled={busy || v.status !== 'proposed'} title={v.status !== 'proposed' ? 'Read the screenshots first' : undefined} onClick={() => apply()} className="flex-1 min-h-[48px] rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white active:bg-blue-700 disabled:opacity-50">Save parts to job</button>
+            <button type="button" disabled={busy || v.status !== 'proposed'} title={v.status !== 'proposed' ? 'Read the screenshots first' : undefined} onClick={() => apply()} className="flex-1 min-h-[48px] rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white active:bg-blue-700 disabled:opacity-50">Review &amp; save parts to job</button>
           </div>
           <button type="button" disabled={busy} onClick={cancel} className="min-h-[44px] w-full text-sm text-red-400 active:opacity-70 disabled:opacity-50">Cancel this import</button>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {canRetryRead && <button type="button" disabled={busy} onClick={reread} className="min-h-[48px] w-full rounded-xl border border-gray-700 bg-gray-800 px-4 text-sm font-semibold text-gray-100 active:bg-gray-700 disabled:opacity-50">{readLabel}</button>}
-          <p className="text-sm text-gray-300">Saved — manager review needed. A manager will check the prices and save these parts to the job.</p>
         </div>
       )}
     </div>
   )
 }
 
-function RowCard({ r, edit, manager, editable, existing, invalid, setEdit }: { r: Row; edit: RowEdit; manager: boolean; editable: boolean; existing: ExistingPart[]; invalid: boolean; setEdit: (patch: Partial<RowEdit>) => void }) {
+function RowCard({ r, edit, editable, existing, invalid, setEdit }: { r: Row; edit: RowEdit; editable: boolean; existing: ExistingPart[]; invalid: boolean; setEdit: (patch: Partial<RowEdit>) => void }) {
   const skipped = edit?.linkDecision === 'skip'
   if (editable && edit) {
     return (
@@ -539,7 +536,7 @@ function RowCard({ r, edit, manager, editable, existing, invalid, setEdit }: { r
     <div className={`rounded-xl border px-3 py-2 ${skipped ? 'border-gray-800 bg-gray-900/40 opacity-60' : 'border-gray-800 bg-gray-900'}`}>
       <p className="text-sm font-semibold text-gray-100">{r.description || '(no description read)'}</p>
       <p className="text-[13px] text-gray-400">{[r.partNumber && `#${r.partNumber}`, r.brand, r.supplier, r.quantity != null ? `qty ${r.quantity}` : 'qty ?'].filter(Boolean).join(' · ')}</p>
-      {manager && r.unitCostCents != null && <p className="text-[13px] text-gray-400">Unit cost {money(r.unitCostCents)}</p>}
+      {r.unitCostCents != null && <p className="text-[13px] text-gray-400">Unit cost {money(r.unitCostCents)}</p>}
       {r.appliedPartId && <p className="text-[13px] text-emerald-400">On job</p>}
       {!r.appliedPartId && r.linkDecision === 'skip' && <p className="text-[13px] text-gray-400">Skipped</p>}
       {!r.appliedPartId && r.linkDecision === 'link' && <p className="text-[13px] text-blue-300">Linking to an existing part</p>}

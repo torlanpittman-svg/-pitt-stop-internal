@@ -2,9 +2,8 @@
  * Reversible rollout gate for the parts UI — the Job-detail **Parts** controls and the Work Board
  * **WAITING ON PARTS** badge.
  *
- * Default OFF: only managers/admins see parts (so they can test it end-to-end), and the controls +
- * badge are HIDDEN from employees until the permanent PartsTech-backed "Find Parts" flow ships. This
- * deliberately avoids showing employees a manual-first parts workflow in the interim.
+ * With both rollout flags OFF, only managers/admins see parts. Employees gain visibility through
+ * this legacy flag or the shared screenshot-import flag below. Both flags default OFF.
  *
  * Flip with env `PARTS_EMPLOYEE_VISIBLE=true` (also accepts 1/on/yes). Fully reversible: it is a pure
  * env read with NO code change and NO data migration — parts rows are always preserved; this only
@@ -15,16 +14,23 @@ export function partsEmployeeVisible(): boolean {
   return v === 'true' || v === '1' || v === 'on' || v === 'yes'
 }
 
-/** Is the parts UI visible to a viewer with this manager status? Managers/admins: always. */
+/**
+ * Is the parts UI visible to a viewer with this manager status?
+ *   - managers/admins: always;
+ *   - the legacy employee rollout flag (`PARTS_EMPLOYEE_VISIBLE`) still reveals the manual tracker to employees;
+ *   - the shared screenshot-import workflow (`PARTS_SCREENSHOT_IMPORT_ENABLED`) is an EQUAL-permission feature,
+ *     so when it is on Parts is visible to every authorized shop user (employees included) even if the legacy
+ *     flag is off. With the import flag off, the old rollout behavior is preserved exactly.
+ */
 export function partsVisibleFor(manager: boolean): boolean {
-  return manager || partsEmployeeVisible()
+  return manager || partsEmployeeVisible() || partsScreenshotImportEnabled()
 }
 
 /**
- * Independent, DEFAULT-OFF gate for the NEW "import parts from a PartsTech screenshot" flow (upload a
- * gallery screenshot → AI reads the line items → manager reviews prices → saves tracked parts). It is
- * SEPARATE from {@link partsVisibleFor}: the mature manual parts tracker is unaffected by this flag, and
- * this flag never widens WHO sees parts — a viewer must already pass partsVisibleFor() AND this must be on.
+ * DEFAULT-OFF gate for "import parts from a PartsTech screenshot" (upload a gallery screenshot → AI reads
+ * the line items → the shop user reviews prices → saves tracked parts). Enabling this shared workflow also
+ * reveals Parts to authenticated employees through partsVisibleFor(). The manual tracker's existing
+ * billing/sell/credit permissions remain unchanged.
  *
  * Flip with env `PARTS_SCREENSHOT_IMPORT_ENABLED=true` (also accepts 1/on/yes). Fully reversible: a pure
  * env read, NO code change and NO data migration. It is read with no dependency on `app_settings`/the DB so

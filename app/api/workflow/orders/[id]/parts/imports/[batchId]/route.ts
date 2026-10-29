@@ -1,18 +1,18 @@
 /**
  * Parts screenshot import — one batch.
- *   GET  → the full proposal view (money + original-image ids are MANAGER-ONLY; employees get a redacted,
- *          non-money view so an upload never "feels lost").
- *   POST → actions. 'read' may be triggered by the uploader (employee or manager); for an already
- *          proposed/applied batch it returns the existing view WITHOUT rate-limits or AI, a cancelled batch
- *          cannot be read, and a stale 'reading' batch is reclaimable. review/apply/cancel require a resolved
- *          manager/admin AND the revision the client last saw; malformed edits are rejected (never coerced).
+ *   GET  → the full proposal view (costs, document totals, and the original-image ids). EQUAL PERMISSIONS:
+ *          every authorized shop user sees the SAME data — there is no money redaction and no manager handoff.
+ *   POST → actions. 'read' can be triggered by the uploader; for an already proposed/applied batch it returns
+ *          the existing view WITHOUT rate-limits or AI, a cancelled batch cannot be read, and a stale
+ *          'reading' batch is reclaimable. review/apply/cancel require the revision the client last saw;
+ *          malformed edits are rejected (never coerced). Any authorized shop user may do them.
  *          Never bills, never touches QuickBooks.
  */
 import { NextResponse } from 'next/server'
 import { consumeRateLimit, RATE_LIMITS } from '@/apps/expenses/db'
 import {
   getBatch, getBatchView, saveBatchReview, applyImport, cancelBatch,
-  type BatchView, type ReviewBatchInput, type ReviewRowInput,
+  type ReviewBatchInput, type ReviewRowInput,
 } from '@/apps/parts/import-db'
 import { readBatch } from '@/apps/parts/import-read'
 import { DOCUMENT_KINDS, LINK_DECISIONS, MAX_BATCH_ROWS, MAX_QUANTITY, MAX_MONEY_CENTS, type DocumentKind, type LinkDecision } from '@/apps/parts/import-normalize'
@@ -27,17 +27,6 @@ export const maxDuration = 60
 const APP = 'parts:import:batch'
 const MAX_BODY_BYTES = 512 * 1024
 
-/** Employees see descriptions/part#/qty/supplier/status — never costs, totals, or document money. */
-function redact(view: BatchView, manager: boolean): BatchView {
-  if (manager) return view
-  return {
-    ...view,
-    taxCents: null, shippingCents: null, coreCents: null,
-    rows: view.rows.map((r) => ({ ...r, unitCostCents: null, listPriceCents: null, lineTotalCents: null })),
-    existingParts: [],
-  }
-}
-
 export async function GET(req: Request, { params }: { params: Promise<{ id: string; batchId: string }> }) {
   const g = await importGate(req)
   if ('response' in g) return g.response
@@ -45,7 +34,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (!isUuid(id) || !isUuid(batchId)) return NextResponse.json({ ok: false, error: 'Bad id.' }, { status: 400 })
   const view = await getBatchView(batchId, id)
   if (!view) return NextResponse.json({ ok: false, error: 'Import not found on this order.' }, { status: 404 })
-  return NextResponse.json({ ok: true, manager: g.manager, batch: redact(view, g.manager) })
+  return NextResponse.json({ ok: true, canReview: true, batch: view })
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string; batchId: string }> }) {
@@ -72,7 +61,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (scoped.status === 'cancelled') return NextResponse.json({ ok: false, error: 'This import was cancelled.' }, { status: 409 })
     if (scoped.status === 'proposed' || scoped.status === 'applied') {
       const view = await getBatchView(batchId, id)
-      return NextResponse.json({ ok: true, readStatus: scoped.status, manager: g.manager, batch: view ? redact(view, g.manager) : null })
+      return NextResponse.json({ ok: true, readStatus: scoped.status, canReview: true, batch: view ?? null })
     }
     const perActor = await consumeRateLimit(`parts-import:read:actor:${g.actorKey ?? batchId}`, RATE_LIMITS.extractActor.limit, RATE_LIMITS.extractActor.windowMs)
     if (!perActor.ok) return NextResponse.json({ ok: false, error: `Too many reads — try again in ${perActor.retryAfterSec}s.` }, { status: 429 })
@@ -82,11 +71,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (!r.ok && 'busy' in r && r.busy) return NextResponse.json({ ok: false, busy: true, error: r.error }, { status: 409 })
     const view = await getBatchView(batchId, id)
     if (!view) return NextResponse.json({ ok: false, error: 'Import not found on this order.' }, { status: 404 })
-    return NextResponse.json({ ok: true, readStatus: r.ok ? r.status : 'failed', unreadImages: 'unreadImages' in r ? r.unreadImages : undefined, manager: g.manager, batch: redact(view, g.manager) })
+    return NextResponse.json({ ok: true, readStatus: r.ok ? r.status : 'failed', unreadImages: 'unreadImages' in r ? r.unreadImages : undefined, canReview: true, batch: view })
   }
 
-  // All other actions are manager-only AND require the revision the client last saw.
-  if (!g.manager) return NextResponse.json({ ok: false, error: 'A manager reviews and saves imported parts.' }, { status: 403 })
+  // review/apply/cancel: any authorized shop user may do them (equal permissions). They require the revision
+  // the client last saw (optimistic concurrency); malformed edits are rejected below (never coerced).
   const rev = revOf(body)
   if (rev === undefined) return NextResponse.json({ ok: false, error: 'Missing or invalid revision — reload the import and try again.' }, { status: 400 })
 
@@ -121,7 +110,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const view = await getBatchView(batchId, id)
   if (!view) return NextResponse.json({ ok: false, error: 'Import not found on this order.' }, { status: 404 })
-  return NextResponse.json({ ok: true, manager: g.manager, batch: view })
+  return NextResponse.json({ ok: true, canReview: true, batch: view })
 }
 
 /** A safe, non-negative integer revision, or undefined. */

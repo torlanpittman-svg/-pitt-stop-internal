@@ -1,17 +1,19 @@
 /**
  * PartsTech-screenshot import — data layer. Facts + orchestration only; the pure validation/normalization
  * lives in ./import-normalize. NO money policy, NO QuickBooks, NO billing. Applying a batch creates ordinary
- * `job_parts` rows (status 'needed', or 'ordered' only for a manager-confirmed purchase) in ONE atomic SQL
- * statement that also writes the append-only `service_order_events` audit — all-or-nothing.
+ * `job_parts` rows (status 'needed', or 'ordered' only for a reviewer-confirmed placed order) — the apply
+ * runs inside a per-job locked transaction that also writes the append-only `service_order_events` audit,
+ * all-or-nothing. Any authorized shop user may apply (equal permissions); "reviewer" = that user.
  *
- * Idempotency & safety are DB-enforced (the Neon HTTP driver has no interactive transaction):
+ * Idempotency & safety are DB-enforced:
  *   - creation dedups on (order, capture_id) and (order, batch_hash) partial-unique indexes;
  *   - the AI read is claimed with a processing token so a stale/late read can't clobber a newer one;
- *   - apply CLAIMS the batch (status proposed→applied) in the same statement, so a double-tap/retry/
- *     concurrent apply inserts nothing the second time (no duplicate parts);
+ *   - apply locks THIS job's service_orders row FOR UPDATE then CLAIMS the batch (status proposed→applied),
+ *     so a double-tap/retry/concurrent apply inserts nothing the second time (no duplicate parts) and two
+ *     DISTINCT imports of the same job are serialized and cross-checked on a fresh snapshot;
  *   - a per-import-row partial-unique index on job_parts guarantees one live part per source line;
  *   - a per-(order,supplier,order-ref) applied-dedup index blocks two different batches of the same
- *     supplier order from both applying unless a manager explicitly confirms the duplicate.
+ *     supplier order from both applying unless the reviewer explicitly confirms the duplicate.
  */
 import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
@@ -253,7 +255,7 @@ export interface BatchView {
   rows: ImportRowView[]
   warnings: {
     mixedSupplier: boolean; suppliers: string[]; duplicateSupplierOrder: boolean; overlappingImages: boolean
-    // Read-time page disagreements the manager must reconcile, how many screenshots could not be read, and
+    // Read-time page disagreements the reviewer must reconcile, how many screenshots could not be read, and
     // whether the line list was truncated at the cap.
     pageConflicts: { supplier: boolean; orderReference: boolean; documentKind: boolean }
     unreadImages: number; truncated: boolean
@@ -414,12 +416,12 @@ function clip(s: string | null | undefined, max: number): string | null { const 
 const centsFromCents = (v: number | null | undefined): number | null => (v == null ? null : parseCents(v / 100))
 
 /**
- * Persist a manager's review in ONE atomic statement: claim the batch (reviewable status + optional expected
+ * Persist the reviewer's review in ONE atomic statement: claim the batch (reviewable status + optional expected
  * revision), bump the revision, update the batch's document metadata, and apply the per-row edits — all or
  * nothing. Row edits are MERGED over the stored row (unspecified fields preserved), so a partial edit never
  * nulls other fields. Validates provenance (each row is in THIS batch; each link target is a LIVE part on
  * THIS order; no two rows link the same part) BEFORE the write. The optimistic revision guard means a
- * manager cannot overwrite — or later apply — edits they did not see. Only from a reviewable state.
+ * reviewer cannot overwrite — or later apply — edits they did not see. Only from a reviewable state.
  */
 export async function saveBatchReview(batchId: string, orderId: string, input: ReviewBatchInput, actor: string | null): Promise<{ ok: boolean; error?: string; conflict?: boolean }> {
   const db = getDb()
@@ -543,14 +545,18 @@ export interface ApplyResult {
 }
 export interface ApplyOpts { duplicateConfirmed?: boolean; acknowledgeDuplicates?: boolean; expectedRevision?: number }
 /**
- * Apply a reviewed batch into job_parts in ONE atomic statement that CLAIMS the batch (proposed→applied,
- * optional revision guard) AND fully validates every selected row inside the claim's WHERE — so if ANY
- * selected 'new' row is incomplete, or ANY 'link' target is ineligible (missing / wrong job / cancelled /
- * customer-supplied / already import-linked), the claim affects zero rows and NOTHING is applied (no silent
- * partial apply, no "applied" status). Valid 'new' rows become tracked parts; 'link' rows fill operational
- * fields WITHOUT clobbering billing/sell/received/labor (COALESCE), promoting only a still-'needed' part to
- * 'ordered'. Writes the append-only, money-free audit. A duplicate supplier order is blocked unless
- * `duplicateConfirmed` (also DB-guarded by a partial unique index). Never bills, never touches QuickBooks.
+ * Apply a reviewed batch into job_parts inside a REAL per-job transaction (`db.batch`): SET READ COMMITTED →
+ * lock this job's service_orders row FOR UPDATE → the apply CTE. The CTE CLAIMS the batch (proposed→applied,
+ * revision-guarded) AND fully validates every selected row inside the claim's WHERE — so if ANY selected
+ * 'new' row is incomplete, ANY 'link' target is ineligible (missing / wrong job / cancelled / customer-
+ * supplied / already import-linked / supplier-qty-order conflict), OR an unacknowledged cross-batch duplicate
+ * exists (same SKU already tracked on the job, a screenshot already imported here, or the same supplier order
+ * already applied), the claim affects zero rows and NOTHING is applied (no silent partial apply). Because the
+ * CTE is a separate statement after the lock, its snapshot sees a sibling import's just-committed parts, so
+ * two concurrent distinct imports can't both succeed — the loser returns `needsDuplicateAck`/
+ * `needsDuplicateConfirm`. Valid 'new' rows become tracked parts; 'link' rows fill operational fields WITHOUT
+ * clobbering billing/sell/received/labor (COALESCE), promoting only a still-'needed' part to 'ordered'.
+ * Writes the append-only, money-free audit. Any authorized shop user may apply. Never bills, never QB.
  */
 export async function applyImport(batchId: string, orderId: string, actor: string | null, opts?: ApplyOpts): Promise<ApplyResult> {
   const db = getDb()
@@ -618,14 +624,36 @@ export async function applyImport(batchId: string, orderId: string, actor: strin
     }
   }
 
+  const ackSkuOverlap = duplicateConfirmed || opts?.acknowledgeDuplicates === true
   const note = `Applied parts screenshot import${b.supplier ? ` · ${b.supplier}` : ''}${b.orderReference ? ` #${b.orderReference}` : ''}${effectiveMarkOrdered ? ' · marked ordered' : ''}`
-  // Always guard on a revision — the API supplies the one the manager saw; a direct service caller uses the
+  // Always guard on a revision — the API supplies the one the reviewer saw; a direct service caller uses the
   // revision we just read, so the SQL never applies based on a stale JS pre-read.
   const effectiveRevision = opts?.expectedRevision ?? b.revision
   const ordered = effectiveMarkOrdered // local alias for the SQL CASE branches
   const effSupplier = b.supplier // the batch supplier the link-eligibility check falls back to
-  try {
-    const res = await db.execute(sql`
+
+  // AUTHORITATIVE cross-batch duplicate detection — evaluated INSIDE the locked transaction on a FRESH
+  // snapshot (taken after the FOR UPDATE wait), so a DIFFERENT batch that already committed on this job is
+  // seen and gated here rather than racing past the per-batch JS precheck. These mirror the friendly
+  // prechecks above (new SKU already tracked on the job; a screenshot already imported here; the same
+  // supplier order already applied). Case-insensitive throughout.
+  const dupSkuSql = sql`EXISTS (SELECT 1 FROM part_import_rows r JOIN job_parts jp
+      ON jp.service_order_id = ${orderId} AND jp.status <> 'cancelled' AND jp.part_number IS NOT NULL AND lower(jp.part_number) = lower(r.part_number)
+      WHERE r.batch_id = ${batchId} AND r.link_decision = 'new' AND r.part_number IS NOT NULL)`
+  // Intra-batch: the SAME SKU repeated across this batch's own NEW rows (case-insensitive) — same semantics
+  // as the friendly precheck, now authoritative in-SQL and folded into the dup_sku acknowledgement gate.
+  const dupIntraSql = sql`EXISTS (SELECT 1 FROM part_import_rows r WHERE r.batch_id = ${batchId}
+      AND r.link_decision = 'new' AND r.part_number IS NOT NULL GROUP BY lower(r.part_number) HAVING count(*) > 1)`
+  const dupOverlapSql = sql`EXISTS (SELECT 1 FROM part_import_images i
+      JOIN part_import_images i2 ON lower(i2.image_hash) = lower(i.image_hash) AND i2.batch_id <> ${batchId}
+      JOIN part_import_batches b2 ON b2.id = i2.batch_id AND b2.service_order_id = ${orderId} AND b2.status <> 'cancelled'
+      WHERE i.batch_id = ${batchId})`
+  const dupOrderSql = sql`(${b.supplier}::text IS NOT NULL AND ${b.orderReference}::text IS NOT NULL AND EXISTS (
+      SELECT 1 FROM part_import_batches b2 WHERE b2.service_order_id = ${orderId} AND b2.status = 'applied' AND b2.id <> ${batchId}
+        AND b2.supplier IS NOT NULL AND b2.order_reference IS NOT NULL
+        AND lower(b2.supplier) = lower(${b.supplier}) AND lower(b2.order_reference) = lower(${b.orderReference})))`
+
+  const applyCte = sql`
       WITH claim AS (
         UPDATE part_import_batches
            SET status='applied', applied_by=${actor}, applied_at=now(), duplicate_confirmed=${duplicateConfirmed}, revision=revision+1, updated_at=now()
@@ -649,6 +677,11 @@ export async function applyImport(batchId: string, orderId: string, actor: strin
                      AND ${ordered
                        ? sql`(jp.supplier_order_number IS NULL OR ${b.orderReference}::text IS NULL OR lower(jp.supplier_order_number) = lower(${b.orderReference}))`
                        : sql`true`})))
+           -- Duplicate gates (skip only when explicitly acknowledged/confirmed). On the fresh post-lock
+           -- snapshot the cross-batch checks see a concurrent sibling batch's committed parts/screenshots/
+           -- order; the intra-batch check catches a SKU repeated within this import.
+           AND (${ackSkuOverlap} OR NOT (${dupSkuSql} OR ${dupIntraSql} OR ${dupOverlapSql}))
+           AND (${duplicateConfirmed} OR NOT ${dupOrderSql})
         RETURNING id, service_order_id, supplier, order_reference
       ),
       ins AS (
@@ -698,18 +731,41 @@ export async function applyImport(batchId: string, orderId: string, actor: strin
       SELECT (SELECT count(*) FROM claim)::int AS claimed,
              (SELECT count(*) FROM ins)::int AS inserted,
              (SELECT count(*) FROM lnk)::int AS linked,
+             (${dupSkuSql} OR ${dupIntraSql}) AS dup_sku,
+             (${dupOverlapSql}) AS dup_overlap,
+             (${dupOrderSql}) AS dup_order,
              -- ATOMIC assertion: every selected row must have produced exactly one insert/link, else a
              -- concurrent cancel/trigger silently skipped a write → force a rollback. The denominator is a
              -- RUNTIME value (0 only on mismatch) so Postgres cannot constant-fold it into an always-error.
              (SELECT 1 / CASE WHEN (SELECT n FROM selected) = (SELECT count(*) FROM ins) + (SELECT count(*) FROM lnk)
                               THEN 1 ELSE 0 END) AS assert_ok
-    `)
-    const out = rowsOf(res)[0] ?? {}
+  `
+
+  try {
+    // Real per-job transaction boundary (Neon HTTP has no interactive txn, but db.batch → client.transaction
+    // is noninteractive and guard-covered). THREE separate statements matter: (1) READ COMMITTED so each
+    // later command takes a NEW snapshot; (2) lock THIS job's service_orders row FOR UPDATE — different jobs
+    // never share a lock; (3) the apply CTE, whose snapshot is therefore taken AFTER the lock wait and sees
+    // the previous apply's commit. All-or-nothing: any error rolls the whole transaction back.
+    const results = await db.batch([
+      db.execute(sql`SET TRANSACTION ISOLATION LEVEL READ COMMITTED`),
+      db.execute(sql`SELECT ${serviceOrders.id} FROM ${serviceOrders} WHERE ${serviceOrders.id} = ${orderId} FOR UPDATE`),
+      db.execute(applyCte),
+    ])
+    const out = rowsOf(results[2])[0] ?? {}
     const claimed = Number(out.claimed ?? 0)
     if (claimed === 0) {
       const cur = await getBatch(batchId, orderId)
-      if (cur?.status === 'applied') return { ok: true, inserted: 0, linked: 0 }
-      // A guard filtered the claim out (stale revision, or a selected row became invalid under us).
+      if (cur?.status === 'applied') return { ok: true, inserted: 0, linked: 0 } // idempotent (same batch)
+      // Match the friendly-precheck order: a duplicate supplier ORDER asks for confirmation FIRST, so a
+      // same-order+same-SKU race doesn't ask for acknowledgement and then re-ask for confirmation.
+      if (!duplicateConfirmed && truthy(out.dup_order)) {
+        return { ok: false, needsDuplicateConfirm: true, error: 'This supplier order was already imported to this job. Confirm it is a legitimate additional import to continue.' }
+      }
+      if (!ackSkuOverlap && (truthy(out.dup_sku) || truthy(out.dup_overlap))) {
+        return { ok: false, needsDuplicateAck: true, error: 'Some parts are already on the job (or a screenshot was already imported here). Confirm you want to add them as additional parts (or link/skip them).' }
+      }
+      // Otherwise a guard filtered the claim out (stale revision, or a selected row became invalid under us).
       return { ok: false, conflict: true, error: 'This import can’t be applied as-is — it changed under you (a part or edit is out of date). Refresh and re-check.' }
     }
     return { ok: true, inserted: Number(out.inserted ?? 0), linked: Number(out.linked ?? 0) }
@@ -725,6 +781,9 @@ export async function applyImport(batchId: string, orderId: string, actor: strin
     throw err
   }
 }
+
+/** Postgres returns booleans across drivers as `true`/`'t'`/`'true'`; normalize for the dup flags. */
+function truthy(v: unknown): boolean { return v === true || v === 't' || v === 'true' }
 
 /** Postgres division-by-zero (22012) — our atomic apply assertion uses it to force a rollback on a skipped write. */
 function isDivisionByZero(err: unknown): boolean {

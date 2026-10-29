@@ -10,7 +10,8 @@ export const dynamic = 'force-dynamic'
 /**
  * Standalone Parts page — the quickest phone path to look up parts (opens PartsTech in another tab). Gated
  * BOTH on a valid shop session (employeeAuthorized) AND the existing parts visibility (managers always;
- * employees only when PARTS_EMPLOYEE_VISIBLE is on) so an unauthenticated viewer never reaches it.
+ * employees when either the legacy visibility flag or screenshot-import flag is on). Unauthenticated
+ * viewers never reach it.
  * `authorizedManager()` provides the same dev-open parity used by the other shop surfaces (no new bypass).
  */
 export default async function PartsPage() {

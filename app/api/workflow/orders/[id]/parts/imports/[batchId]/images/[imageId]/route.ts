@@ -1,24 +1,23 @@
 /**
- * Parts screenshot import — original screenshot retrieval (MANAGER-ONLY, job-scoped). Streams the preserved
- * private screenshot bytes so a reviewing manager can see the source during review. No public URL/token ever
- * leaves the server. Authorization is re-verified here (not just the UI): valid session + manager + the
- * feature flag, AND the image must belong to the given batch which must belong to the given order.
+ * Parts screenshot import — original screenshot retrieval (job-scoped). Streams the preserved PRIVATE
+ * screenshot bytes so ANY authorized shop user reviewing the import can see the source (equal permissions —
+ * same import gate as the rest of the workflow, no manager-only restriction). No public URL/token ever leaves
+ * the server; retrieval stays private and job-/batch-/image-scoped. Authorization is re-verified here (not
+ * just the UI) via the shared import gate (valid session + feature enabled + parts visible), AND the image
+ * must belong to the given batch which must belong to the given order.
  */
 import { NextResponse } from 'next/server'
-import { authenticatedActorFromRequest, isManagerRole } from '@/apps/auth/employee-guard'
-import { partsScreenshotImportEnabled } from '@/apps/parts/visibility'
 import { getBatch, listBatchImages } from '@/apps/parts/import-db'
 import { readImportImageBytes } from '@/apps/parts/import-storage'
+import { importGate, isUuid } from '../../../_gate'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string; batchId: string; imageId: string }> }) {
-  if (!partsScreenshotImportEnabled()) return NextResponse.json({ ok: false, error: 'Not enabled.' }, { status: 403 })
-  const actor = await authenticatedActorFromRequest(req)
-  if (!actor || !isManagerRole(actor.role)) return NextResponse.json({ ok: false, error: 'Manager access required.' }, { status: 403 })
+  const g = await importGate(req)
+  if ('response' in g) return g.response
   const { id, batchId, imageId } = await params
-  const isUuid = (s: string) => /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(s)
   if (!isUuid(id) || !isUuid(batchId) || !isUuid(imageId)) return NextResponse.json({ ok: false, error: 'Bad id.' }, { status: 400 })
   // Provenance: the batch must be on THIS order, and the image on THIS batch.
   const batch = await getBatch(batchId, id)

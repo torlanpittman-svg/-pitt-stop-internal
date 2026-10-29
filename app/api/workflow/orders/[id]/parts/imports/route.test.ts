@@ -12,7 +12,7 @@ vi.mock('@/apps/parts/import-db', () => ({ getImportJobContext: m.job, createBat
 vi.mock('@/apps/parts/import-storage', () => ({ importStorageKey: () => 'synthetic-private-key', storeImportImageBytes: m.store }))
 vi.mock('@/apps/expenses/db', () => ({ consumeRateLimit: vi.fn(async () => ({ ok: true })), RATE_LIMITS: { upload: { limit: 5, windowMs: 1000 } } }))
 vi.mock('@/platform/logger', () => ({ logger: { error: vi.fn(), info: vi.fn() } }))
-vi.mock('@/app/api/workflow/orders/[id]/parts/imports/_gate', () => ({ importGate: async () => ({ manager: true, actorName: 'Sample', actorKey: 'sample' }), isUuid: (s: string) => /^[a-f0-9-]{36}$/.test(s), sameOrigin: () => true }))
+vi.mock('@/app/api/workflow/orders/[id]/parts/imports/_gate', () => ({ importGate: async () => ({ actorName: 'Sample', actorKey: 'sample' }), isUuid: (s: string) => /^[a-f0-9-]{36}$/.test(s), sameOrigin: () => true }))
 
 import { POST } from '@/app/api/workflow/orders/[id]/parts/imports/route'
 const id = '11111111-1111-4111-8111-111111111111', batchId = '22222222-2222-4222-8222-222222222222'

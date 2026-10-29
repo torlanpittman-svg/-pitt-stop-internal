@@ -1,15 +1,16 @@
 /**
  * Parts screenshot import — collection route.
- *   GET  → job context (incl. VIN for "Copy VIN"), the feature flag, viewer role, and this order's imports.
+ *   GET  → job context (incl. VIN for "Copy VIN"), the feature flag, and this order's imports.
  *   POST → multipart upload of 1–4 PartsTech screenshots: bounded body read → validate EVERY screenshot
  *          (magic bytes + real raster decode + aggregate size) → preserve the ORIGINALS privately → create
  *          the batch (atomic, DB-idempotent) → return a FAST durable acknowledgement. The AI read runs as a
  *          SEPARATE action the uploader triggers afterward, so a slow/failed read can never make the upload
  *          "feel lost" or blow the function time budget.
  *
- * Gating (defense-in-depth; proxy.ts is the primary gate): a VALID employee session AND partsVisibleFor()
- * AND the PARTS_SCREENSHOT_IMPORT_ENABLED flag. Employees may upload + see non-money status; costs and the
- * original screenshots are manager-only (enforced on the detail + image routes). NEVER bills, never QB.
+ * Gating (defense-in-depth; proxy.ts is the primary gate): a VALID shop session AND partsVisibleFor() AND
+ * the PARTS_SCREENSHOT_IMPORT_ENABLED flag. EQUAL PERMISSIONS: every authorized shop user has the SAME import
+ * capability (upload, read, see costs + originals, review, save, cancel) — no manager handoff. NEVER bills,
+ * never QB.
  */
 import { NextResponse } from 'next/server'
 import { createHash } from 'node:crypto'
@@ -39,7 +40,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const job = await getImportJobContext(id)
   if (!job) return NextResponse.json({ ok: false, error: 'Job not found.' }, { status: 404 })
   const batches = await listBatchesForOrder(id)
-  return NextResponse.json({ ok: true, enabled: true, manager: g.manager, job, batches })
+  return NextResponse.json({ ok: true, enabled: true, canReview: true, job, batches })
 }
 
 /** Read the bounded body (HARD byte cap via the shared reader) then parse the multipart form. */
