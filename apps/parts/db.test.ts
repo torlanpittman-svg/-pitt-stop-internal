@@ -46,6 +46,7 @@ beforeAll(async () => {
       labor_status varchar(16) NOT NULL DEFAULT 'needs_review', labor_service_id uuid, labor_note text,
       labor_decided_by text, labor_decided_at timestamptz,
       clarifies_service_id uuid REFERENCES job_services(id) ON DELETE SET NULL,
+      import_row_id uuid,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );

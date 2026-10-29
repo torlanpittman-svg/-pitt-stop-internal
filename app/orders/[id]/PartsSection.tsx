@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { money } from '@/app/lib/format'
 import { Chevron } from './estimate/ItemRows'
+import PartImportPanel from './PartImportPanel'
 
 interface Part {
   id: string
@@ -58,6 +59,8 @@ export default function PartsSection({ orderId, hideTitle = false, onPartsChange
   const [busy, setBusy] = useState(false)
   const [adding, setAdding] = useState(false)
   const [mode, setMode] = useState<{ id: string; kind: 'order' | 'receive' | 'return' } | null>(null)
+  // Bumped after a screenshot import is applied so the tracker re-reads the newly-created parts.
+  const [importReload, setImportReload] = useState(0)
   // Latest callback without re-running the load effect when the parent re-renders.
   const onChangeRef = useRef(onPartsChange)
   useEffect(() => { onChangeRef.current = onPartsChange }, [onPartsChange])
@@ -76,7 +79,7 @@ export default function PartsSection({ orderId, hideTitle = false, onPartsChange
       .catch(() => { if (ok) setErr('Network error loading parts.') })
       .finally(() => { if (ok) setLoading(false) })
     return () => { ok = false }
-  }, [orderId, refreshKey])
+  }, [orderId, refreshKey, importReload])
 
   const post = useCallback(async (body: Record<string, unknown>): Promise<boolean> => {
     setBusy(true); setErr(null)
@@ -113,6 +116,10 @@ export default function PartsSection({ orderId, hideTitle = false, onPartsChange
       </div>
 
       {err && <p className="text-red-400 text-sm mb-2">{err}</p>}
+
+      {/* Screenshot import (renders nothing unless PARTS_SCREENSHOT_IMPORT_ENABLED is on). Keyed by orderId
+          so navigating between jobs never retains the prior job's import/review state. */}
+      <PartImportPanel key={orderId} orderId={orderId} onApplied={() => setImportReload((n) => n + 1)} />
 
       {adding && <AddPartForm manager={manager} busy={busy} onAdd={async (b) => { if (await post({ action: 'add', ...b })) setAdding(false) }} />}
 

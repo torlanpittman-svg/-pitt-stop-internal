@@ -19,3 +19,18 @@ export function partsEmployeeVisible(): boolean {
 export function partsVisibleFor(manager: boolean): boolean {
   return manager || partsEmployeeVisible()
 }
+
+/**
+ * Independent, DEFAULT-OFF gate for the NEW "import parts from a PartsTech screenshot" flow (upload a
+ * gallery screenshot → AI reads the line items → manager reviews prices → saves tracked parts). It is
+ * SEPARATE from {@link partsVisibleFor}: the mature manual parts tracker is unaffected by this flag, and
+ * this flag never widens WHO sees parts — a viewer must already pass partsVisibleFor() AND this must be on.
+ *
+ * Flip with env `PARTS_SCREENSHOT_IMPORT_ENABLED=true` (also accepts 1/on/yes). Fully reversible: a pure
+ * env read, NO code change and NO data migration. It is read with no dependency on `app_settings`/the DB so
+ * the kill-switch works even if the settings table is unreachable. Edge- and Node-safe.
+ */
+export function partsScreenshotImportEnabled(): boolean {
+  const v = (process.env.PARTS_SCREENSHOT_IMPORT_ENABLED ?? '').trim().toLowerCase()
+  return v === 'true' || v === '1' || v === 'on' || v === 'yes'
+}

@@ -6,12 +6,13 @@ import OilStickerQuickPrint from '@/app/components/OilStickerQuickPrint'
 import { PageContainer } from '@/app/components/ui/PageHeader'
 import { managerActor } from '@/apps/checks/authz'
 import { marketingEnabled } from '@/apps/settings/db'
+import { partsVisibleFor } from '@/apps/parts/visibility'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 type ModuleGroup = 'Operations' | 'Sales' | 'Money'
-type IconKey = 'quick' | 'dealer' | 'board' | 'auto' | 'receipt' | 'estimate' | 'check' | 'customers' | 'marketing' | 'calendar'
+type IconKey = 'quick' | 'dealer' | 'board' | 'auto' | 'receipt' | 'estimate' | 'check' | 'customers' | 'marketing' | 'calendar' | 'parts'
 
 interface Module {
   href: string
@@ -30,6 +31,7 @@ const MODULES: Module[] = [
   { href: '/dealer-check-in', label: 'Dealer Check-In', sub: 'Scan a tag → confirm → done. Invoice + Work Board, automatically.', group: 'Operations', icon: 'dealer' },
   { href: '/appointments', label: 'Appointments', sub: 'Online and phone drop-offs — today, upcoming, check in to the Work Board.', group: 'Operations', icon: 'calendar' },
   { href: '/work-board', label: 'Work Board', sub: 'Live vehicle workflow — check in, track status, assign techs.', group: 'Operations', icon: 'board' },
+  { href: '/parts', label: 'Parts', sub: 'Open PartsTech to look up parts, then import a screenshot into a job.', group: 'Operations', icon: 'parts' },
   { href: '/customers', label: 'Customers', sub: 'Search a customer — contact, vehicles, and repair-order history.', group: 'Operations', icon: 'customers' },
   { href: '/auto-sales', label: 'Auto Sales Inventory', sub: 'Owned vehicles — scan a VIN, track costs, record the sale.', group: 'Sales', icon: 'auto' },
   { href: '/estimates', label: 'Estimates', sub: 'Quote a customer, send through QuickBooks, move approved work to the board.', group: 'Sales', icon: 'estimate', manager: true },
@@ -45,7 +47,12 @@ export default async function Home() {
   const manager = await managerActor()
   // Marketing ships dark — its tile appears only when the feature flag is on (and for a manager).
   const mktEnabled = await marketingEnabled()
-  const visible = MODULES.filter((m) => (!m.manager || manager) && (m.href !== '/marketing' || mktEnabled))
+  // Parts uses the existing parts visibility gate (managers always; employees only when the rollout flag is on).
+  const partsVisible = partsVisibleFor(!!manager)
+  const visible = MODULES.filter((m) =>
+    (!m.manager || manager) &&
+    (m.href !== '/marketing' || mktEnabled) &&
+    (m.href !== '/parts' || partsVisible))
 
   return (
     <main className="flex min-h-screen flex-col bg-gray-950">
@@ -149,5 +156,7 @@ function ModuleIcon({ icon }: { icon: IconKey }): ReactNode {
       return <svg {...p}><rect x="3" y="4" width="18" height="17" rx="2" /><path d="M3 9h18M8 2v4M16 2v4" /></svg>
     case 'marketing':
       return <svg {...p}><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1z" /><path d="M15 8a4 4 0 0 1 0 8" /></svg>
+    case 'parts':
+      return <svg {...p}><path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 1 5.4-5.4l-2.6 2.6-2-2z" /></svg>
   }
 }
