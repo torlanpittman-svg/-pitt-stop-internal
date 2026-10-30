@@ -1,7 +1,54 @@
 # Parts screenshot import — review & status
 
-**Status:** built locally in the isolated worktree `pitt-parts-screenshot-preview` (from `origin/main`
-`0147090`). **Not deployed, not pushed, migration not applied, flag OFF.** Pending owner review.
+**Status: RELEASED 2026-10-30.** Live in production at commit `a918a7d` (deployment
+`dpl_Hre69iFZUyMiYNk8fRBuePqQQXCi`, alias `pitt-stop-internal.vercel.app`), migration **0067 applied**,
+`PARTS_SCREENSHOT_IMPORT_ENABLED=true` in the production environment. Rollback = set that flag off (no
+schema change). Previous production deployment for a code rollback: `dpl_6ubqwnvdXfhDdBsyJCAfFJJMMsdR`
+(same commit, flag off); the last pre-feature commit is `c5e8fac`.
+
+## Release record — 2026-10-30
+
+Integrated onto the then-current production branch (`origin/main` `c5e8fac`, which already contained the
+oil-sticker release) in the isolated release worktree `/private/tmp/pitt-parts-release` on branch
+`release/parts-screenshot-import`. The two reviewed commits cherry-picked cleanly; `app/page.tsx` was the
+only file also touched by newer work and kept BOTH the oil-sticker quick-print block and the new Parts tile.
+
+**Migration numbering reconciled:** the oil-sticker release took `0066_oil_stickers.sql` and that migration
+was already applied in production, so this one became **`0067_part_screenshot_imports.sql`** (content
+unchanged). It was applied to production BEFORE the code deploy, verified (3 tables, the nullable
+`job_parts.import_row_id`, 16 indexes, the FK and 8 check constraints), and re-run to prove idempotency —
+no existing row was modified.
+
+**Release blocker found and fixed.** The first production deploy FAILED: Vercel builds with Turbopack and
+`.vercelignore` excludes `scripts/`, so the local-only preview harness's static import of
+`@/scripts/parts-preview/fixtures` could not resolve. A local `next build --webpack` cannot catch this
+because `scripts/` exists on disk. Fixed by excluding `app/parts/preview` from the deployment — the harness
+was never meant to ship — and validated with a preview deployment before re-deploying production.
+
+### Live verification (production, synthetic data only)
+Run against a synthetic job `SO-20261030-0001` ("TEST ONLY — Parts screenshot import release 2026-10-30",
+no customer, no vehicle VIN), soft-cancelled afterwards. No real parts order was placed, no customer job was
+used, and no QuickBooks object was created or changed.
+
+| Check | Result |
+|---|---|
+| Real screenshot extraction (live OpenAI) | **Exact** on the synthetic order: NAPA / DEMO-24831 / purchase, tax 2368, shipping 0, core 2000; both lines' qty, unit cost, list and line total correct. |
+| Purchase cost ≠ list ≠ line total | Unit cost `5950` kept distinct from list `9200` and line total `11900`. On the quote fixture (list shown, purchase cost NOT shown) `unitCostCents` came back **null**, never the `28900` list price, and `canMarkOrdered` was false. |
+| Private image storage | Upload stored privately; authenticated retrieval returned the **byte-identical** original (120,104 B). Unauthenticated **401**; wrong job **404**; wrong image **404**. |
+| Authentication | Unauthenticated upload/read/image **401** before any flag check; flag-off authenticated **403** `enabled:false`; bad UUID **400**. |
+| Correct job linking | Both parts landed on the intended job only; the other 16 `job_parts` rows elsewhere were untouched. |
+| Prices / statuses | Saved with the extracted purchase costs; `markOrdered` honored for the confirmed purchase (status `ordered`), the unconfirmed second import saved as `needed`. |
+| Duplicate prevention | Identical re-upload **resumed** the same batch (no new batch/parts); same `captureId` with a different image set **409**; a distinct import of the same supplier order returned **409 `needsDuplicateConfirm`**, and `acknowledgeDuplicates` alone did not satisfy it (documented precedence); those blocked attempts wrote **zero** parts; explicit `duplicateConfirmed` then applied. |
+| Simultaneous saves | **Three parallel applies** of one proposed batch created **exactly 2** parts and **one** `parts_import_applied` audit event. This exercised the real Neon `FOR UPDATE` + READ COMMITTED path, which the PGlite tests could not. |
+| Optimistic concurrency / validation | Stale revision **409**; missing revision **400**; a string or negative `unitCostCents` **rejected, never coerced**; unknown action **400**. |
+| Equal permissions | An anonymous shared-PIN employee session (the weakest identity) could upload, trigger the read, see **full money** (unit cost, list, line total, tax/shipping/core), fetch the **original screenshot**, and cancel an unapplied import — identical to the manager path. |
+| No permission widening | The same employee session was still **403** on Work Board "Remove" (managers/admins only). |
+| QuickBooks untouched | Every `qb_*` field on the test job remained null/`none` — no invoice, payment, sync or send. |
+| Cleanup | Test job soft-cancelled (`status='cancelled'`, QB action `none`) and absent from the Work Board feed; `/`, `/work-board`, `/parts`, `/customers`, `/checks`, `/auto-sales` all 200. |
+
+**Not verified:** real PartsTech phone tab/checkout behavior, and multi-page (2–4 screenshot) imports — both
+need a real device and a real PartsTech session. Live extraction accuracy is now demonstrated on two
+synthetic fixtures, not on real NAPA/O'Reilly screenshots; spot-check the first real imports.
 
 > **Owner correction (current):** the manager/employee split for this workflow was removed — **the Parts
 > screenshot-import workflow has EQUAL PERMISSIONS for every authorized shop user** (upload, read, see costs +
