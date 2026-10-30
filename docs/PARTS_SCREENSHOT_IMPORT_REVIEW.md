@@ -71,7 +71,7 @@ preserved exactly. The import panel itself is hidden for everyone until `PARTS_S
 
 ## Enablement / rollback (pending owner approval — NOT done)
 **Order matters — migration BEFORE code deploy:**
-1. **Apply migration `drizzle/migrations/manual/0066_part_screenshot_imports.sql` FIRST**, before deploying
+1. **Apply migration `drizzle/migrations/manual/0067_part_screenshot_imports.sql` FIRST**, before deploying
    this code — even with the import flag off. The migration adds a `job_parts.import_row_id` column, and this
    code's existing `select(... job_parts ...)` reads every column; deploying the code against a pre-migration
    database would error on the missing column. (Additive only: 3 new tables + the one nullable column +
@@ -154,7 +154,7 @@ job_parts (needed, or ordered)  ──►  existing Parts tracker / Invoice Draf
   read step, atomic data layer (apply now wrapped in a per-job locked `db.batch` transaction).
   `apps/parts/import-batch-test-adapter.ts` — TEST-ONLY faithful `db.batch` over one PGlite transaction
   (never imported by runtime code; shared by the import-db tests + the coordinator's independent harness).
-- `drizzle/migrations/manual/0066_part_screenshot_imports.sql` — additive migration.
+- `drizzle/migrations/manual/0067_part_screenshot_imports.sql` — additive migration.
 - `app/api/workflow/orders/[id]/parts/imports/**` — scoped routes: `_gate.ts` (shared equal-permission gate +
   UUID/same-origin), `_body.ts` (bounded body reader), collection (fast-ack upload + validate-all-before-
   store), `[batchId]` (read/review/apply/cancel; mutations require the client's revision; full view to every

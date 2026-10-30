@@ -1,4 +1,4 @@
--- 0066_part_screenshot_imports.sql
+-- 0067_part_screenshot_imports.sql
 -- Additive, non-destructive. "Import parts from a PartsTech screenshot" — upload 1–4 screenshots of a
 -- NAPA/O'Reilly cart/quote/order against a specific Job, AI reads the line items into a PROPOSAL, a
 -- manager reviews prices and applies it into ordinary job_parts rows (status 'needed').
