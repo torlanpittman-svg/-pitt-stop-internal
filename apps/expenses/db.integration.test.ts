@@ -383,6 +383,28 @@ describe('monthly report — filed receipts + funding split, no double counting 
     // The personal receipt is surfaced as attention, NOT added to purchases or business cash.
     expect(rpt.needsReviewCount).toBe(1)
     expect(rpt.personalReimbursableCents).toBe(0) // it isn't complete, so not in the complete-set buckets
+    expect(rpt.businessCreditCardCents).toBe(0)   // nothing on the card this month
+  })
+
+  it('an Amex purchase is a business expense but NOT business cash out (credit settles later)', async () => {
+    const { id: card } = await createReceipt(baseReceipt({ imageHash: 'CC1' }))
+    const amex = resolveReceiptPayment('amex')
+    if (!amex.ok) throw new Error('fixture')
+    await fileReceipt(card, cleanFiling({ ...amex.payment, receiptDate: '2026-02-10', totalCents: 7901 }), { name: 'Sam', key: 'sam' })
+    const { id: debit } = await createReceipt(baseReceipt({ imageHash: 'CC2' }))
+    await fileReceipt(debit, cleanFiling({ paymentMethod: 'card', accountRef: '*2649', paymentLast4: '0022', receiptDate: '2026-02-11', totalCents: 5000 }), { name: 'Sam', key: 'sam' })
+
+    const rpt = await monthlyExpenseReport('2026-02')
+    expect(rpt.purchasesTotalCents).toBe(12901)        // both are real purchases
+    expect(rpt.businessCashOutflowCents).toBe(5000)    // only the debit card moved bank cash
+    expect(rpt.businessCreditCardCents).toBe(7901)     // the Amex is carried separately
+    // The buckets still partition the complete set exactly once (no double counting, nothing lost).
+    expect(rpt.businessCashOutflowCents + rpt.businessCreditCardCents + rpt.personalReimbursableCents
+      + rpt.unpaidCents + rpt.unknownFundingCents).toBe(rpt.purchasesTotalCents)
+    // Stored exactly as the approved source, round-tripping to the Amex choice.
+    const row = await getReceipt(card)
+    expect(row?.accountRef).toBe('amex'); expect(row?.paymentLast4).toBe('5008'); expect(row?.paymentMethod).toBe('card')
+    expect(receiptPaymentChoice({ funding: row!.funding, paymentMethod: row!.paymentMethod, accountRef: row!.accountRef, paymentLast4: row!.paymentLast4 })).toBe('amex')
   })
 })
 

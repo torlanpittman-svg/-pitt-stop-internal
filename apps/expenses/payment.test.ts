@@ -3,18 +3,18 @@ import { decideFiling } from './types'
 import {
   RECEIPT_PAYMENT_CHOICES, resolveReceiptPayment, receiptPaymentChoice, receiptPaymentLabel,
   matchPaymentSource, matchedAccountRef, matchedCardLast4, autoSelectPayment,
-  otherPaymentDescription, otherPaymentFunding, OTHER_PAYMENT_FUNDINGS,
+  otherPaymentDescription, otherPaymentFunding, OTHER_PAYMENT_FUNDINGS, isCreditSettledRef,
 } from './payment'
 
-// ── The five approved business sources + Cash/Personal/Other, defined ONCE and shared by both workflows. ──
-describe('payment registry — the five approved sources', () => {
-  it('lists exactly the five business sources (2 AMB debit cards, Extraco debit, 2 checks) + cash/personal/other', () => {
+// ── The six approved business sources + Cash/Personal/Other, defined ONCE and shared by both workflows. ──
+describe('payment registry — the six approved sources', () => {
+  it('lists exactly the six business sources (2 AMB debit cards, Extraco debit, 2 checks, the Amex) + cash/personal/other', () => {
     expect(RECEIPT_PAYMENT_CHOICES.map((p) => p.key)).toEqual([
-      'extraco_debit', 'amb_debit_0022', 'amb_debit_0320', 'amb_check', 'extraco_check', 'cash', 'personal', 'other',
+      'extraco_debit', 'amb_debit_0022', 'amb_debit_0320', 'amb_check', 'extraco_check', 'amex', 'cash', 'personal', 'other',
     ])
     // Card endings are stored SEPARATELY from checking-account endings — never conflated.
     const cards = RECEIPT_PAYMENT_CHOICES.filter((p) => p.method === 'card')
-    expect(cards.map((c) => c.cardLast4)).toEqual(['1068', '0022', '0320'])
+    expect(cards.map((c) => c.cardLast4)).toEqual(['1068', '0022', '0320', '5008'])
     expect(cards.every((c) => c.accountEnding === null)).toBe(true)
     const checks = RECEIPT_PAYMENT_CHOICES.filter((p) => p.method === 'check')
     expect(checks.map((c) => c.accountEnding)).toEqual(['2649', '5600'])
@@ -24,7 +24,7 @@ describe('payment registry — the five approved sources', () => {
   it.each([
     ['extraco_debit', '*5600', 'card', '1068'], ['amb_debit_0022', '*2649', 'card', '0022'],
     ['amb_debit_0320', '*2649', 'card', '0320'], ['amb_check', '*2649', 'check', null],
-    ['extraco_check', '*5600', 'check', null], ['cash', 'cash', 'cash', null],
+    ['extraco_check', '*5600', 'check', null], ['amex', 'amex', 'card', '5008'], ['cash', 'cash', 'cash', null],
   ])('%s resolves to the right source/instrument and round-trips (leading zeros preserved)', (key, accountRef, method, last4) => {
     const r = resolveReceiptPayment(key)
     expect(r).toEqual({ ok: true, payment: { funding: 'business', accountRef, paymentMethod: method, paymentLast4: last4 } })
@@ -60,7 +60,64 @@ describe('payment registry — the five approved sources', () => {
   })
 })
 
-// ── An "Other" source (e.g. the business Amex) is classified EXPLICITLY; the text is never parsed. ──
+// ── The business Amex is a first-class approved source, and it settles on CREDIT, not from a bank account. ──
+describe('business Amex ••5008 (Business Platinum)', () => {
+  const amex = () => {
+    const r = resolveReceiptPayment('amex')
+    if (!r.ok) throw new Error('fixture')
+    return r.payment
+  }
+
+  it('resolves to the business Amex, round-trips, and labels itself', () => {
+    expect(amex()).toEqual({ funding: 'business', paymentMethod: 'card', accountRef: 'amex', paymentLast4: '5008' })
+    expect(receiptPaymentChoice(amex())).toBe('amex')
+    expect(receiptPaymentLabel(amex())).toBe('Business Amex ••5008')
+  })
+
+  it('a complete Amex receipt FILES cleanly (it is an approved business source, not an exception)', () => {
+    const d = decideFiling({ ...amex(), entity: 'detail', category: { kind: 'single', key: 'parts' }, vendor: 'Batteries Plus Bulbs #428', receiptDate: '2026-10-06', totalCents: 7901 })
+    expect(d.status).toBe('filed')
+    expect(d.reasons).toEqual([])
+    expect(d.paymentMethod).toBe('card')
+  })
+
+  it('settles on CREDIT — it is NOT bank cash out (the other business sources are)', () => {
+    expect(isCreditSettledRef('amex')).toBe(true)
+    for (const ref of ['*2649', '*5600', 'cash', 'other:AMEX 5008', null, undefined, '']) {
+      expect(isCreditSettledRef(ref)).toBe(false)
+    }
+    const settlement = (k: string) => RECEIPT_PAYMENT_CHOICES.find((p) => p.key === k)!.settlement
+    expect(settlement('amex')).toBe('credit')
+    for (const k of ['extraco_debit', 'amb_debit_0022', 'amb_debit_0320', 'amb_check', 'extraco_check', 'cash']) {
+      expect(settlement(k)).toBe('bank')
+    }
+    expect(settlement('personal')).toBeNull()
+    expect(settlement('other')).toBeNull()
+  })
+
+  it('a receipt printing ending 5008 now auto-matches the Amex (brand-guarded)', () => {
+    expect(matchPaymentSource({ method: 'card', brand: 'Amex', cardLast4: '5008' })).toBe('amex')
+    expect(matchPaymentSource({ method: 'card', brand: 'American Express', cardLast4: '5008' })).toBe('amex')
+    expect(matchedAccountRef({ method: 'card', brand: null, cardLast4: '5008' })).toBe('amex')
+    expect(matchedCardLast4({ method: 'card', brand: null, cardLast4: '5008' })).toBe('5008')
+    // A contradicting printed brand leaves it unresolved rather than guessing.
+    expect(matchPaymentSource({ method: 'card', brand: 'VISA', cardLast4: '5008' })).toBeNull()
+    // "Amex" with no ending cannot pick a card on its own.
+    expect(matchPaymentSource({ method: 'card', brand: 'amex', cardLast4: null })).toBeNull()
+    // The other cards are unaffected.
+    expect(matchPaymentSource({ method: 'card', brand: null, cardLast4: '0022' })).toBe('amb_debit_0022')
+  })
+
+  it('an Amex receipt is distinct from the free-text "Other: AMEX 5008" it replaces', () => {
+    const typed = resolveReceiptPayment('other', 'AMEX 5008', { funding: 'business', paymentMethod: 'card' })
+    if (!typed.ok) throw new Error('fixture')
+    expect(receiptPaymentChoice(typed.payment)).toBe('other')      // historical rows keep their own shape
+    expect(receiptPaymentChoice(amex())).toBe('amex')
+    expect(isCreditSettledRef(typed.payment.accountRef)).toBe(false) // a free-text source makes no cash claim
+  })
+})
+
+// ── An "Other" source (anything NOT one of the six approved sources) is classified EXPLICITLY. ──
 describe('Other payment source — explicit business/personal classification', () => {
   const AMEX = 'AMEX 5008'
 

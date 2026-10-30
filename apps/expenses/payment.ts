@@ -6,15 +6,21 @@ import type { FundingSource, PaymentMethod } from './types'
 //   - Auto Sales per-vehicle expenses (apps/auto-sales)
 // A future payment-source change (new card, new ending, new bank) is edited here and takes effect in both.
 //
-// The FIVE approved BUSINESS payment sources, plus Cash / Personal / Other (and "unpaid" as a secondary):
+// The SIX approved BUSINESS payment sources, plus Cash / Personal / Other (and "unpaid" as a secondary):
 //   1. Extraco debit card       — Discover ending 1068   → Extraco checking *5600
 //   2. American Momentum debit  — Mastercard ending 0022 → AMB checking *2649
 //   3. American Momentum debit  — Mastercard ending 0320 → AMB checking *2649
 //   4. American Momentum check  — account ending 2649
 //   5. Extraco check            — account ending 5600
+//   6. Business Amex            — Amex ending 5008 (Business Platinum) → account_ref 'amex'
+//
+// SETTLEMENT is tracked because it changes what the money means: a debit card, a check and cash leave a
+// BANK account at purchase ('bank'), while the Amex is a CREDIT line ('credit') — the expense is real now,
+// but the cash leaves when the card bill is paid. Reporting keeps the two apart so "business cash out"
+// never silently includes card spend. Nothing here books the card payment itself.
 //
 // Persistence maps onto EXISTING columns (no migration): payment_method (card|check|cash), account_ref
-// (*2649|*5600|cash), and payment_last4 (the CARD ending — a string so leading zeros in 0022/0320 survive).
+// (*2649|*5600|amex|cash), and payment_last4 (the CARD ending — a string so leading zeros in 0022/0320 survive).
 // cardLast4 (the card's printed last four) is stored SEPARATELY from accountEnding (the checking-account
 // ending); the two are never conflated.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -52,21 +58,37 @@ export interface PaymentSource {
   readonly cardLast4: string | null      // the printed CARD last-4 (identifies a specific card; ≠ account)
   readonly accountEnding: string | null  // the CHECKING-ACCOUNT last-4 (identifies the account for a check)
   readonly accountRef: string | null     // existing operational bank ref used by review + CFO
+  // How the money actually leaves the business: 'bank' = at purchase (debit/check/cash); 'credit' = later,
+  // when the card bill is paid; null = not a business source (personal / unclassified Other).
+  readonly settlement: 'bank' | 'credit' | null
 }
 
 export const RECEIPT_PAYMENT_CHOICES: readonly PaymentSource[] = [
-  { key: 'extraco_debit',  label: 'Extraco debit ••1068', funding: 'business', method: 'card',  brand: 'discover',   cardLast4: '1068', accountEnding: null,   accountRef: '*5600' },
-  { key: 'amb_debit_0022', label: 'AMB debit ••0022',     funding: 'business', method: 'card',  brand: 'mastercard', cardLast4: '0022', accountEnding: null,   accountRef: '*2649' },
-  { key: 'amb_debit_0320', label: 'AMB debit ••0320',     funding: 'business', method: 'card',  brand: 'mastercard', cardLast4: '0320', accountEnding: null,   accountRef: '*2649' },
-  { key: 'amb_check',      label: 'AMB check ••2649',     funding: 'business', method: 'check', brand: null,         cardLast4: null,   accountEnding: '2649', accountRef: '*2649' },
-  { key: 'extraco_check',  label: 'Extraco check ••5600', funding: 'business', method: 'check', brand: null,         cardLast4: null,   accountEnding: '5600', accountRef: '*5600' },
-  { key: 'cash',           label: 'Cash',                 funding: 'business', method: 'cash',  brand: null,         cardLast4: null,   accountEnding: null,   accountRef: 'cash' },
-  { key: 'personal',       label: 'Personal',             funding: 'personal', method: null,    brand: null,         cardLast4: null,   accountEnding: null,   accountRef: null },
-  { key: 'other',          label: 'Other',                funding: 'unknown',  method: null,    brand: null,         cardLast4: null,   accountEnding: null,   accountRef: null },
+  { key: 'extraco_debit',  label: 'Extraco debit ••1068', funding: 'business', method: 'card',  brand: 'discover',   cardLast4: '1068', accountEnding: null,   accountRef: '*5600', settlement: 'bank' },
+  { key: 'amb_debit_0022', label: 'AMB debit ••0022',     funding: 'business', method: 'card',  brand: 'mastercard', cardLast4: '0022', accountEnding: null,   accountRef: '*2649', settlement: 'bank' },
+  { key: 'amb_debit_0320', label: 'AMB debit ••0320',     funding: 'business', method: 'card',  brand: 'mastercard', cardLast4: '0320', accountEnding: null,   accountRef: '*2649', settlement: 'bank' },
+  { key: 'amb_check',      label: 'AMB check ••2649',     funding: 'business', method: 'check', brand: null,         cardLast4: null,   accountEnding: '2649', accountRef: '*2649', settlement: 'bank' },
+  { key: 'extraco_check',  label: 'Extraco check ••5600', funding: 'business', method: 'check', brand: null,         cardLast4: null,   accountEnding: '5600', accountRef: '*5600', settlement: 'bank' },
+  { key: 'amex',           label: 'Business Amex ••5008', funding: 'business', method: 'card',  brand: 'amex',       cardLast4: '5008', accountEnding: null,   accountRef: 'amex',  settlement: 'credit' },
+  { key: 'cash',           label: 'Cash',                 funding: 'business', method: 'cash',  brand: null,         cardLast4: null,   accountEnding: null,   accountRef: 'cash',  settlement: 'bank' },
+  { key: 'personal',       label: 'Personal',             funding: 'personal', method: null,    brand: null,         cardLast4: null,   accountEnding: null,   accountRef: null,    settlement: null },
+  { key: 'other',          label: 'Other',                funding: 'unknown',  method: null,    brand: null,         cardLast4: null,   accountEnding: null,   accountRef: null,    settlement: null },
 ] as const
 
 /** The approved business sources only (for the deterministic match — never Cash/Personal/Other). */
 const BUSINESS_SOURCES = RECEIPT_PAYMENT_CHOICES.filter((p) => p.funding === 'business' && p.accountRef)
+
+/** The account refs that settle on CREDIT (the Amex today) — derived from the registry, never hard-coded. */
+const CREDIT_ACCOUNT_REFS: ReadonlySet<string> = new Set(
+  RECEIPT_PAYMENT_CHOICES.filter((p) => p.settlement === 'credit' && p.accountRef).map((p) => p.accountRef as string),
+)
+/**
+ * Does a stored receipt's account_ref name a CREDIT-settled source? Reporting uses this to keep business
+ * card spend out of "business cash out" — the expense is real at purchase, the cash leaves on the card bill.
+ */
+export function isCreditSettledRef(accountRef: string | null | undefined): boolean {
+  return !!accountRef && CREDIT_ACCOUNT_REFS.has(accountRef)
+}
 
 export interface ReceiptPayment {
   funding: FundingSource

@@ -13,6 +13,7 @@ import { getDb } from '@/platform/db'
 import { inventoryVehicles } from '@/apps/auto-sales/schema'
 import { vehicles } from '@/apps/workflow/schema'
 import { businessReceipts, expenseRateCounters } from './schema'
+import { isCreditSettledRef } from './payment'
 import {
   auditEntry, canAcknowledgeOutstanding, decideApproval, decideFiling, diffFields, inBusinessMonth,
   isBusinessEntity, isCompleteStatus, isExpenseCategory, isFundingSource, isPaymentMethod,
@@ -610,8 +611,10 @@ export interface MonthlyExpenseReport {
   byEntity: Record<string, { count: number; totalCents: number }>    // over the complete set
   byCategory: Record<string, { count: number; totalCents: number }>  // over the complete set
   // Funding split of the complete set — purchases are NOT the same as cash actually paid. Each complete
-  // receipt lands in exactly ONE bucket (no double counting); the four sum to purchasesTotalCents.
-  businessCashOutflowCents: number      // funding='business' → real business-account cash spent
+  // receipt lands in exactly ONE bucket (no double counting); the five sum to purchasesTotalCents.
+  businessCashOutflowCents: number      // business + BANK-settled (debit/check/cash) → cash already gone
+  businessCreditCardCents: number       // business + CREDIT-settled (the Amex) → a real expense now, but the
+                                        // cash leaves when the card bill is paid. NEVER counted as cash out.
   personalReimbursableCents: number     // funding='personal' → owed to an employee, NOT business cash
   unpaidCents: number                   // funding='unpaid'   → not yet cash spent
   unknownFundingCents: number           // funding='unknown'  → legacy/incomplete (needs a manager)
@@ -636,6 +639,7 @@ export async function monthlyExpenseReport(month: string): Promise<MonthlyExpens
   const byEntity: MonthlyExpenseReport['byEntity'] = {}
   const byCategory: MonthlyExpenseReport['byCategory'] = {}
   const funded = { business: 0, personal: 0, unpaid: 0, unknown: 0 }
+  let businessCreditCardCents = 0      // business spend on a credit line (split OUT of the cash figure)
   let purchasesTotalCents = 0, uncategorizedCount = 0, filedCount = 0, approvedCount = 0, approvedTotalCents = 0
   for (const r of complete) {
     const amt = r.totalCents ?? 0
@@ -649,13 +653,17 @@ export async function monthlyExpenseReport(month: string): Promise<MonthlyExpens
     if (r.category === 'uncategorized') uncategorizedCount++
     const f = (isFundingSource(r.funding) ? r.funding : 'unknown') as FundingSource
     funded[f] += amt
+    // A business purchase on the Amex is an expense now but NOT bank cash out — keep it apart so the
+    // "business cash out" figure stays literally true.
+    if (f === 'business' && isCreditSettledRef(r.accountRef)) businessCreditCardCents += amt
   }
   // Attention buckets are month-scoped by receipt date where known, else always surfaced (undated → shown).
   const inMonthOrUndated = (r: ReceiptRow) => r.receiptDate == null || inBusinessMonth(r.receiptDate, month)
   return {
     month, completeCount: complete.length, purchasesTotalCents, filedCount, approvedCount, approvedTotalCents,
     byEntity, byCategory,
-    businessCashOutflowCents: funded.business, personalReimbursableCents: funded.personal,
+    businessCashOutflowCents: funded.business - businessCreditCardCents, businessCreditCardCents,
+    personalReimbursableCents: funded.personal,
     unpaidCents: funded.unpaid, unknownFundingCents: funded.unknown, uncategorizedCount,
     needsReviewCount: rows.filter((r) => r.status === 'needs_review' && inMonthOrUndated(r)).length,
     processingFailedCount: rows.filter((r) => r.status === 'processing_failed' && inMonthOrUndated(r)).length,

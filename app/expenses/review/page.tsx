@@ -64,6 +64,7 @@ export default async function ReviewQueuePage({ searchParams }: { searchParams: 
         {/* Purchases are NOT the same as cash paid — split honestly. */}
         <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
           <div className="flex justify-between"><span className="text-gray-400">Business cash out</span><span className="text-gray-200">{formatMoney(report.businessCashOutflowCents)}</span></div>
+          {report.businessCreditCardCents > 0 && <div className="flex justify-between" title="Charged to the business Amex — a real expense now; the cash leaves when the card bill is paid."><span className="text-gray-400">Business card (Amex)</span><span className="text-gray-200">{formatMoney(report.businessCreditCardCents)}</span></div>}
           {report.personalReimbursableCents > 0 && <div className="flex justify-between"><span className="text-gray-400">Personal (reimburse?)</span><span className="text-amber-200">{formatMoney(report.personalReimbursableCents)}</span></div>}
           {report.unpaidCents > 0 && <div className="flex justify-between"><span className="text-gray-400">Not paid yet</span><span className="text-amber-200">{formatMoney(report.unpaidCents)}</span></div>}
           {report.unknownFundingCents > 0 && <div className="flex justify-between"><span className="text-gray-400">Unknown funding</span><span className="text-gray-300">{formatMoney(report.unknownFundingCents)}</span></div>}
