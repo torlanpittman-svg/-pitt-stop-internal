@@ -34,15 +34,42 @@ export interface StickerText {
 export interface StickerIcon { kind: 'calendar' | 'gauge'; xMm: number; yMm: number; sizeMm: number }
 export interface StickerLogo { xMm: number; yMm: number; wMm: number; hMm: number }
 
+/**
+ * A sticker printed from the homepage "quick print" entry — there is no job, customer, or
+ * vehicle record behind it, so the values it was printed from live HERE (the queue payload is
+ * the only durable record, by design: a quick sticker never invents a service order or a row
+ * in oil_change_stickers). `requestId` is the client's idempotency token and is ALSO the
+ * print_jobs primary key; `actorKey` is the signed-in person who asked, and the only person
+ * allowed to read the job back. Set only on quick jobs — order-based payloads omit it.
+ */
+export interface StickerQuickMeta {
+  source: 'quick'
+  requestId: string
+  actorKey: string
+  actorName: string | null
+  mileage: number
+  intervalMiles: number | null
+  intervalMonths: number | null
+  nextMileage: number
+  nextDate: string
+  nextDateText: string
+  nextMileageText: string
+}
+
 export interface StickerPrintPayload {
   kind: 'oil_sticker'
+  /** A real oil_change_stickers id for a job sticker; a namespaced 'quick:<requestId>' otherwise. */
   stickerId: string
+  /** A real service_orders id for a job sticker; a namespaced 'quick:<requestId>' otherwise.
+   *  Never a fabricated UUID — the namespace prefix makes a quick sticker unmistakable and
+   *  keeps it out of every order-scoped queue lookup. */
   orderId: string
   pageWidthMm: number
   pageHeightMm: number
   logo: StickerLogo
   texts: StickerText[]
   icons: StickerIcon[]
+  quick?: StickerQuickMeta
 }
 
 // ── Helvetica metrics (standard PDF base-14 AFM widths, 1/1000 em) ───────────────────────
@@ -89,6 +116,8 @@ export function buildStickerPayload(params: {
   stickerId: string
   orderId: string
   values: StickerValues
+  /** Quick-print provenance (homepage entry). Omitted for job stickers. */
+  quick?: StickerQuickMeta
 }): StickerPrintPayload {
   const { values } = params
 
@@ -148,6 +177,7 @@ export function buildStickerPayload(params: {
     logo,
     texts,
     icons,
+    ...(params.quick ? { quick: params.quick } : {}),
   }
 }
 

@@ -8,6 +8,12 @@
  * by a guarded insert AND the partial unique index print_jobs_one_waiting_sticker_per_order
  * (migration 0066) — a double-tap or two phones can never cut two stickers. Once a job is
  * submitted/failed/expired, printing again requires an explicit new request (reprint).
+ *
+ * QUICK (homepage) stickers have no order to key on, so they are keyed on the client's request
+ * token, which is used AS the print_jobs primary key (enqueueQuickStickerJob). That makes their
+ * idempotency permanent rather than only "while waiting", and their namespaced
+ * payload.orderId ('quick:<requestId>') is unique per request, so they can never collide with an
+ * order's sticker job in the partial unique index above — or with a check job.
  */
 import { getDb } from '@/platform/db'
 import { sql } from 'drizzle-orm'
@@ -86,5 +92,47 @@ export async function latestStickerJobForOrder(orderId: string): Promise<PrintJo
      WHERE kind = 'sticker' AND payload->>'orderId' = ${orderId}
      ORDER BY created_at DESC LIMIT 1
   `)
+  return toJob(rowsOf<Record<string, unknown>>(res)[0])
+}
+
+/**
+ * Enqueue a QUICK (homepage, no job/vehicle/customer) sticker job whose row id IS the client's
+ * request token. The primary key is therefore the idempotency key, which makes a repeated request
+ * PERMANENTLY a no-op — not just while the first job is still waiting. `created: false` means this
+ * exact request was already accepted, whatever became of it afterwards (submitted, failed, expired),
+ * so a network retry, a double-tap, or a reopened dialog can never cut a second sticker.
+ *
+ * The caller MUST verify ownership of a pre-existing row before showing it (see quick.ts): the id
+ * arrives from the client, so finding a row proves nothing about who it belongs to.
+ */
+export async function enqueueQuickStickerJob(params: {
+  requestId: string
+  payload: StickerPrintPayload
+  createdBy?: string | null
+}): Promise<{ job: PrintJobRow | null; created: boolean }> {
+  try {
+    const res = await getDb().execute(sql`
+      INSERT INTO print_jobs (id, check_id, kind, payload, printer_target, created_by)
+      VALUES (${params.requestId}::uuid, NULL, 'sticker', ${JSON.stringify(params.payload)}::jsonb,
+              ${LABEL_PRINTER_TARGET}, ${params.createdBy ?? null})
+      ON CONFLICT (id) DO NOTHING
+      RETURNING *
+    `)
+    const inserted = toJob(rowsOf<Record<string, unknown>>(res)[0])
+    if (inserted) return { job: inserted, created: true }
+  } catch (e) {
+    // A concurrent insert of the SAME token can surface as a unique violation rather than losing the
+    // ON CONFLICT race; either way the winner's row is authoritative and is read back below.
+    if (!isStickerUniqueViolation(e)) throw e
+  }
+  return { job: await printJobById(params.requestId), created: false }
+}
+
+/**
+ * One print job by id — ANY kind, so the caller can tell "no such job" from "that id belongs to a
+ * check/order job" and refuse the latter instead of answering about someone else's print.
+ */
+export async function printJobById(id: string): Promise<PrintJobRow | null> {
+  const res = await getDb().execute(sql`SELECT * FROM print_jobs WHERE id = ${id}::uuid LIMIT 1`)
   return toJob(rowsOf<Record<string, unknown>>(res)[0])
 }

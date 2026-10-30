@@ -34,7 +34,7 @@ export { PRINT_JOB_TTL_MINUTES }
  * longer reflect that outcome on the check (print_failed + the 'print_expired' event would be lost).
  * Checks reconcile their own queue (reconcileExpiredJobs), so nothing here needs to touch them.
  */
-const STICKER_KINDS = ['sticker'] as const
+export const STICKER_KINDS = ['sticker'] as const
 
 export class StickerValidationError extends Error {
   code: string
@@ -59,7 +59,13 @@ export interface StickerPrintInput {
 
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v)
 
-function validateInput(input: StickerPrintInput): { mileage: number; intervalMiles: number | null; intervalMonths: number | null; nextMileage: number; nextDate: string } {
+export interface ValidatedStickerInput { mileage: number; intervalMiles: number | null; intervalMonths: number | null; nextMileage: number; nextDate: string }
+
+/**
+ * THE sticker validation — shared by the job sticker and the homepage quick sticker so the two
+ * entry points can never drift apart on what is printable. Pure except for `businessToday()`.
+ */
+export function validateStickerInput(input: StickerPrintInput): ValidatedStickerInput {
   if (!isInt(input.mileage) || input.mileage < 0 || input.mileage > 2_000_000) {
     throw new StickerValidationError('Enter the vehicle’s current mileage (whole number).', 'bad_mileage')
   }
@@ -96,7 +102,8 @@ export interface StickerJobView {
   createdAt: string
 }
 
-function jobView(job: PrintJobRow, now: Date = new Date()): StickerJobView {
+/** The honest, UI-facing view of a print job (shared with the quick-print path). */
+export function jobView(job: PrintJobRow, now: Date = new Date()): StickerJobView {
   const uncertain = job.status === 'claimed' && !!job.claimedAt
     && now.getTime() - new Date(job.claimedAt).getTime() > CLAIM_UNCERTAIN_AFTER_SECONDS * 1000
   return {
@@ -155,7 +162,7 @@ export interface QueueStickerResult { stickerId: string; job: StickerJobView; al
  * second print). Never touches the order's status, QuickBooks, or anything financial.
  */
 export async function queueStickerPrint(orderId: string, input: StickerPrintInput, actor: { name: string | null }): Promise<QueueStickerResult> {
-  const v = validateInput(input)
+  const v = validateStickerInput(input)
   const db = getDb()
   const [order] = await db.select({ id: serviceOrders.id, vehicleId: serviceOrders.vehicleId, status: serviceOrders.status }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
   if (!order) throw new StickerValidationError('Job not found.', 'not_found')

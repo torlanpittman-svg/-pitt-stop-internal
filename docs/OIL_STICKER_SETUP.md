@@ -6,13 +6,27 @@ Release verification: 2,636 tests / 212 files pass; webpack production build pas
 regression fails on the original code and passes after scoping sticker sweeps. Deployment and
 physical QL-800 verification remain pending at this commit.
 
+**Added after that (homepage quick print, local only):** a second entry point that needs **no
+migration and no new schema** — it stores nothing of its own, keying everything on the shared
+`print_jobs` row. Not deployed; no physical print.
+
 ## What it is
 
-"Print Oil Change Sticker" on the Job detail screen (all signed-in staff). A form prefills the
-vehicle and the vehicle's last sticker mileage, takes current mileage + an editable interval
-(miles and months, with manual overrides of the computed next-service values), shows an exact
-print preview, and queues the sticker to the shop through the **existing cloud print queue**
-(`print_jobs`, kind `sticker`). The Windows shop computer's print bridge claims it and prints on
+Two entry points, **one** sticker design, **one** calculation, **one** print queue:
+
+1. **Job sticker** — "Print Oil Change Sticker" on the Job detail screen (all signed-in staff). A
+   form prefills the vehicle and the vehicle's last sticker mileage, takes current mileage + an
+   editable interval (miles and months, with manual overrides of the computed next-service values),
+   shows an exact print preview, and queues the sticker. Records a row in `oil_change_stickers`
+   (which is also the per-vehicle mileage history used for prefill).
+2. **Quick sticker** — "Print Oil Change Sticker" on the **homepage**, for the common case where a
+   car gets an oil change and nobody is going to open or create a job for it. Same form, same
+   preview, same printer. It creates **no** job, customer, vehicle, or `oil_change_stickers` row —
+   there is nothing to attach it to, and inventing one would put fiction in the Work Board and in
+   the sticker history. Its print request *is* the record (see "Quick stickers" below).
+
+Both queue the sticker to the shop through the **existing cloud print queue** (`print_jobs`, kind
+`sticker`, printer target `label`). The Windows shop computer's print bridge claims it and prints on
 the **Brother QL-800** over USB. Phones never talk to the printer.
 
 Sticker layout (owner-approved mockup `docs/assets/oil-sticker-approved-mockup.png`): centered
@@ -32,13 +46,40 @@ speedometer icon + large bold mileage. No vehicle details on the sticker (owner 
   sticker job reaching a bridge without a label printer is reported **failed**, never redirected.
 - **No duplicates.** One waiting (queued/claimed) sticker job per order, enforced by a guarded
   insert AND the partial unique index `print_jobs_one_waiting_sticker_per_order` (migration 0066).
-  Reprints are a separate explicit button.
+  Reprints are a separate explicit button. Quick stickers have no order to key on and use a
+  stronger rule instead — see below.
 - **No stale prints.** Queued jobs expire after 10 minutes (shared queue TTL) — a sticker sent
   while the shop computer is offline never pops out hours later; the app shows it as expired and
   it must be sent again deliberately.
 - **Check printing untouched.** All check/MICR rendering, safeguards, and the CheckPrintPanel are
   unchanged; the claim route only gained kind dispatch, and `claimNextJob` defaults to the
   check-family kinds.
+
+## Quick stickers (homepage entry) — no job, and no way to double-print
+
+- **No invented records.** No service order, customer, vehicle, or `oil_change_stickers` row. The
+  queue payload carries the provenance explicitly: `quick.source = 'quick'`, the request token, the
+  actor who asked, and the exact values printed. Its `payload.orderId` / `payload.stickerId` are the
+  namespaced string `quick:<requestId>` — deliberately **not** a fabricated UUID — so a quick
+  sticker is unmistakable and can never match an order-scoped queue lookup or the partial unique
+  index above.
+- **The request token is the print job's primary key.** The phone mints a UUID *before* the first
+  attempt; the server inserts `print_jobs` with `id = <token> … ON CONFLICT (id) DO NOTHING`. So
+  idempotency is **permanent**, not just "while the job is waiting": re-sending a token after the
+  job reached submitted / failed / expired reports the ORIGINAL outcome and prints nothing.
+- **Ownership.** The token comes from the client, so finding a row proves nothing: every read and
+  every repeat verifies the job is a quick sticker belonging to the signed-in actor. Anything else
+  (another person's quick sticker, a check job, an order's sticker job) answers a plain 404.
+- **Uncertain dispatch never prints twice.** The request is written to `sessionStorage` *before* it
+  is sent, with its resolved values and an explicit state. A lost response / reload / reopened
+  dialog comes back as "outcome unknown", and the only action offered is a **status check of the
+  same token**. A new token can only be minted from a resolved request. A 404 from the status route
+  is not treated as proof that nothing printed — its retry re-sends the **same** token, which the
+  server can accept only once. That logic is a pure, unit-tested module
+  (`app/components/oil-sticker-quick-state.ts`).
+- **Auth.** `/api/oil-sticker` and `/api/oil-sticker/status` are not in `proxy.ts`'s matcher (same
+  as the job-sticker routes), so the handlers are the gate: `authenticatedActorFromRequest`,
+  fail-closed 401. The homepage *button* is visible like the other module tiles.
 
 ## Label stock (owner-confirmed 2026-10-30)
 
@@ -78,23 +119,33 @@ the table and column are additive and inert without the app.
    print to it.)
 3. **Load the DK-2212 roll** and feed/cut once so the printer detects it.
 4. In **Printing Preferences** for the QL-800 driver set the paper to an **exact 62 mm × 50 mm**
-   format (create/select a 62 × 50 mm custom size if the list only offers "62mm × 100mm"), with
-   **Auto Cut ON** and priority **Quality**.
+   format in **Portrait** orientation (create/select a 62 × 50 mm custom size if the list only
+   offers "62mm × 100mm"), with **Auto Cut ON** and priority **Quality**.
    ⚠️ This form size is not cosmetic: the shop laptop runs **SumatraPDF 3.6.1**, which does **not**
    support `paper=auto`, so the printed page lands on **whatever form the driver has selected**.
    `noscale` keeps the content at true size, but a 62 × 100 mm form means the roll is cut long
    (blank film below the sticker). Match the form to the page and the cut matches too.
+
+   ✅ **This is the configuration the shop laptop is actually set to, and it is correct —
+   Portrait, 62 × 50 mm. Do not "re-calibrate" it, change the form size, or change the print
+   settings in step 5.** The PDF geometry (62 mm page width, computed cut length, logo and text
+   positions in `apps/stickers/render.ts` / `pdf.ts`) is matched to exactly these settings; changing
+   either side alone will put the sticker off the label.
 5. **Edit the bridge config** `C:\pittstop\print-bridge.config.json`:
    - **Back the file up first** (copy it to `print-bridge.config.json.bak` in the same folder).
    - Add these two lines inside the braces, keeping every existing field exactly as it is (use the
      printer name exactly as Windows shows it, usually `Brother QL-800`):
      ```json
      "LABEL_PRINTER_NAME": "Brother QL-800",
-     "LABEL_PRINT_SETTINGS": "noscale"
+     "LABEL_PRINT_SETTINGS": "noscale,disable-auto-rotation"
      ```
    - `LABEL_PRINT_SETTINGS` overrides the bridge's built-in default of `noscale,paper=auto`, which
      SumatraPDF 3.6.1 does not understand. **No change to the bridge binary is needed** — the bridge
      reads this value from the config file.
+   - ✅ **`noscale,disable-auto-rotation` is the setting the shop laptop is actually running, and it
+     is correct — keep it verbatim.** `noscale` prints at true size; `disable-auto-rotation` stops
+     SumatraPDF from turning the tall 62 × 50 mm page sideways to "fit" the Portrait form, which is
+     what lands the design square on the label.
    - Every line inside the braces except the last one needs a trailing comma.
    ⚠️ **Malformed JSON here takes CHECK printing down too**: the bridge logs `bad config json`,
    continues with an empty config, finds no base URL or token, exits, and the supervisor relaunches it
@@ -112,25 +163,36 @@ the table and column are additive and inert without the app.
 
 ## What still needs a REAL printer to verify
 
-Everything below is verified in code/tests only, not on hardware:
+The Windows side (driver form Portrait 62 × 50 mm + `noscale,disable-auto-rotation`) is settled and
+must be left alone — see steps 4–5. Still **not** verified on hardware:
 
-- SumatraPDF 3.6.1 `-print-settings "noscale"` handing the 62 × 50 mm page to the QL-800 driver at
-  actual size (no scaling/clipping) with the driver's form set to 62 × 50 mm, and the auto-cut
-  landing at the page edge. Watch for a long cut (extra blank film) — that means the driver form is
-  still 62 × 100 mm, fixable in Printing Preferences alone.
 - Darkness/legibility of the logo + icons on DK-2212 film at 300 dpi.
-- First physical test: owner approval required (use a real job's sticker with test values, or
-  we add a VOID-style test print if wanted).
+- A physical sticker from the **homepage quick-print** path specifically (its PDF is byte-for-byte
+  the same geometry as the job sticker — same `buildStickerPayload`/`renderStickerPdf` — so this is
+  a confirmation, not a new calibration).
+- Any further physical test needs owner approval. Nothing in the quick-print work printed
+  physically: the browser/API checks were run against mocked routes with no database and no bridge.
+  If a long cut (extra blank film) or a sideways sticker ever appears, it is the driver form or the
+  `LABEL_PRINT_SETTINGS` line drifting from steps 4–5 — fix it there, never in the layout code.
 
 ## Code map
 
 - `apps/stickers/` — `calc.ts` (dates/miles math), `render.ts` (positioned layout, shared by
-  preview + PDF), `pdf.ts` (hand-rolled PDF, embedded logo, vector icons), `logo-data.ts`
-  (generated logo master), `queue.ts` (guarded enqueue on shared `print_jobs`), `service.ts`
-  (validation, sticker rows, job status, render-at-claim), `schema.ts` (`oil_change_stickers`).
-- Routes: `app/api/workflow/orders/[id]/oil-sticker` (+ `/status`); claim dispatch in
-  `app/api/print-bridge/claim/route.ts`.
-- UI: `app/orders/[id]/OilStickerSheet.tsx`, button in `OrderDetail.tsx`.
+  preview + PDF; optional `quick` provenance block), `pdf.ts` (hand-rolled PDF, embedded logo,
+  vector icons), `logo-data.ts` (generated logo master), `queue.ts` (guarded enqueue + the
+  token-keyed quick enqueue on shared `print_jobs`), `service.ts` (THE validation
+  `validateStickerInput`, sticker rows, job status, render-at-claim), `quick.ts` (quick-sticker
+  service: token idempotency + ownership), `schema.ts` (`oil_change_stickers`).
+- Routes: `app/api/workflow/orders/[id]/oil-sticker` (+ `/status`) for a job;
+  `app/api/oil-sticker` (+ `/status`) for a quick sticker; claim dispatch in
+  `app/api/print-bridge/claim/route.ts` (unchanged — it is entirely payload-driven).
+- UI: `app/components/OilStickerForm.tsx` (shared form, preview, status wording),
+  `app/components/OilStickerQuickPrint.tsx` + `oil-sticker-quick-state.ts` (homepage entry and its
+  tested request lifecycle), `app/orders/[id]/OilStickerSheet.tsx`, buttons in `OrderDetail.tsx`
+  and `app/page.tsx`.
+- Tests: `apps/stickers/quick.test.ts` (real Postgres via PGlite — idempotency, concurrency,
+  ownership, check-queue isolation), `app/api/oil-sticker/route.test.ts` (auth + body contract),
+  `app/components/oil-sticker-quick-state.test.ts` (recovery/duplicate-print rules).
 - Bridge: `scripts/print-bridge.mjs` **v2.1.0**; updater built by `scripts/build-bridge-update.mjs`.
 - Migration: `drizzle/migrations/manual/0066_oil_stickers.sql` (additive).
 - Assets: `apps/stickers/assets/` (original color logo preserved + print master + conversion

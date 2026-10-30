@@ -3,7 +3,7 @@ import { vi, describe, it, expect, beforeEach } from 'vitest'
 const h = vi.hoisted(() => ({ execute: vi.fn() }))
 vi.mock('@/platform/db', () => ({ getDb: () => ({ execute: h.execute }) }))
 
-import { enqueueStickerJob, waitingStickerJobForOrder, toJob, isStickerUniqueViolation } from './queue'
+import { enqueueStickerJob, enqueueQuickStickerJob, printJobById, waitingStickerJobForOrder, toJob, isStickerUniqueViolation } from './queue'
 import { claimNextJob } from '@/apps/checks/print-queue'
 import type { StickerPrintPayload } from './render'
 
@@ -14,7 +14,7 @@ const snakeRow = {
   error: null, created_by: 'Tech', created_at: '2026-10-30T12:00:00Z', updated_at: '2026-10-30T12:00:00Z',
 }
 
-beforeEach(() => h.execute.mockReset())
+beforeEach(() => { h.execute.mockReset() })
 
 describe('enqueueStickerJob', () => {
   it('returns the inserted job, normalised from snake_case', async () => {
@@ -41,6 +41,51 @@ describe('enqueueStickerJob', () => {
     expect(sqlText).toContain('WHERE NOT EXISTS')
     expect(sqlText).toContain("'queued', 'claimed'")
     expect(sqlText).toContain("payload->>'orderId'")
+  })
+})
+
+describe('enqueueQuickStickerJob', () => {
+  const REQ = '11111111-1111-4111-8111-111111111111'
+
+  it('uses the request token AS the primary key, with ON CONFLICT so a repeat cannot insert', async () => {
+    h.execute.mockResolvedValue({ rows: [{ ...snakeRow, id: REQ }] })
+    const { job, created } = await enqueueQuickStickerJob({ requestId: REQ, payload, createdBy: 'Tony' })
+    expect(created).toBe(true)
+    expect(job?.id).toBe(REQ)
+    const sqlText = JSON.stringify(h.execute.mock.calls[0][0])
+    expect(sqlText).toContain('ON CONFLICT (id) DO NOTHING')
+    expect(sqlText).toContain('label')
+  })
+
+  it('a conflict reads the existing row back instead of printing (created: false)', async () => {
+    h.execute.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ ...snakeRow, id: REQ, status: 'submitted' }] })
+    const { job, created } = await enqueueQuickStickerJob({ requestId: REQ, payload })
+    expect(created).toBe(false)
+    expect(job?.status).toBe('submitted')
+  })
+
+  // A synchronous driver failure exercises the same unique-conflict recovery path.
+  it('a concurrent unique violation is also resolved by reading the winner, not by erroring', async () => {
+    h.execute
+      .mockImplementationOnce(() => { throw Object.assign(new Error('duplicate key'), { code: '23505' }) })
+      .mockImplementationOnce(() => ({ rows: [{ ...snakeRow, id: REQ }] }))
+    const { job, created } = await enqueueQuickStickerJob({ requestId: REQ, payload })
+    expect(created).toBe(false)
+    expect(job?.id).toBe(REQ)
+  })
+
+  it('a real database error is not swallowed as "already queued"', async () => {
+    h.execute.mockImplementation(() => { throw new Error('connection refused') })
+    await expect(enqueueQuickStickerJob({ requestId: REQ, payload })).rejects.toThrow('connection refused')
+  })
+})
+
+describe('printJobById', () => {
+  it('looks up by id across every kind, so a check job can be recognised and refused', async () => {
+    h.execute.mockResolvedValue({ rows: [{ ...snakeRow, kind: 'check' }] })
+    expect((await printJobById('11111111-1111-4111-8111-111111111111'))?.kind).toBe('check')
+    const sqlText = JSON.stringify(h.execute.mock.calls[0][0])
+    expect(sqlText).not.toContain("kind = 'sticker'")
   })
 })
 

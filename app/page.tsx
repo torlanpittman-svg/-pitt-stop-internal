@@ -2,6 +2,7 @@ import Link from 'next/link'
 import type { ReactNode } from 'react'
 import IdentityBar, { AdminLink } from '@/app/components/IdentityBar'
 import GlobalSearch from '@/app/components/GlobalSearch'
+import OilStickerQuickPrint from '@/app/components/OilStickerQuickPrint'
 import { PageContainer } from '@/app/components/ui/PageHeader'
 import { managerActor } from '@/apps/checks/authz'
 import { marketingEnabled } from '@/apps/settings/db'
@@ -81,6 +82,10 @@ export default async function Home() {
                   {items.map((mod) => (
                     <ModuleRow key={mod.href} module={mod} />
                   ))}
+                  {/* Oil-change sticker: an action, not a module — it opens the form right here
+                      instead of navigating, and creates no job/customer/vehicle record. Visible to
+                      everyone like the other tiles; its APIs gate themselves server-side. */}
+                  {group === 'Operations' && <OilStickerQuickPrint />}
                 </div>
               </section>
             )

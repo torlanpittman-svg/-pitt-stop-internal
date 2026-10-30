@@ -69,6 +69,31 @@ describe('buildStickerPayload', () => {
   })
 })
 
+describe('quick-print provenance', () => {
+  const quick = {
+    source: 'quick' as const, requestId: 'r1', actorKey: 'tony', actorName: 'Tony',
+    mileage: 187781, intervalMiles: 5000, intervalMonths: 6,
+    nextMileage: 192781, nextDate: '2027-04-30', nextDateText: 'Apr 30, 2027', nextMileageText: '192,781 mi',
+  }
+
+  it('a job sticker carries NO quick block (the two entry points stay distinguishable)', () => {
+    expect(build()).not.toHaveProperty('quick')
+  })
+
+  it('a quick sticker carries its request, actor, and values — and prints identically', () => {
+    const p = buildStickerPayload({ stickerId: 'quick:r1', orderId: 'quick:r1', values: { nextDateText: 'Feb 25, 2027', nextMileageText: '192,781 mi' }, quick })
+    expect(p.quick).toEqual(quick)
+    expect(isStickerPayload(p)).toBe(true)
+    // Same layout as the job sticker: provenance never changes a single printed position.
+    const job = build()
+    expect(p.pageWidthMm).toBe(job.pageWidthMm)
+    expect(p.pageHeightMm).toBe(job.pageHeightMm)
+    expect(p.logo).toEqual(job.logo)
+    expect(p.texts).toEqual(job.texts)
+    expect(p.icons).toEqual(job.icons)
+  })
+})
+
 describe('isStickerPayload', () => {
   it('accepts a built payload and rejects a check-shaped one', () => {
     expect(isStickerPayload(build())).toBe(true)
