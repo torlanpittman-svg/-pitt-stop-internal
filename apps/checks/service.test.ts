@@ -52,6 +52,7 @@ beforeAll(async () => {
   await pg.exec(migration('0032_checks.sql'))
   await pg.exec(migration('0050_check_print_safety.sql'))
   await pg.exec(migration('0055_check_payee_entity_type.sql'))
+  await pg.exec(migration('0066_oil_stickers.sql')) // print_bridges.label_printer + sticker dedup index
   // app_settings exactly as migration 0016 creates it (the bank-specimen slot lives there)
   await pg.exec(/CREATE TABLE IF NOT EXISTS app_settings \([\s\S]*?\n\);/.exec(migration('0016_fees_and_settings.sql'))![0])
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)

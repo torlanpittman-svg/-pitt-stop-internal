@@ -15,6 +15,7 @@ import { countJobParts } from '@/apps/parts/status'
 import DealerInvoicePanel from './DealerInvoicePanel'
 import OrderPhotos from '@/app/components/OrderPhotos'
 import PhotoInput from '@/app/components/PhotoInput'
+import OilStickerSheet from './OilStickerSheet'
 import { interpretVinScan } from './vin-scan'
 import { useJobItems } from './JobItems'
 import { PartRow, ServiceRow, Row } from './estimate/ItemRows'
@@ -1116,6 +1117,7 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
   const [vehToast,    setVehToast]    = useState<string | null>(null)
   const [showInvoice, setShowInvoice] = useState(false)   // Invoice Draft (manager/admin)
   const [showContact, setShowContact] = useState(false)   // customer contact popup (all staff)
+  const [showSticker, setShowSticker] = useState(false)   // oil-change sticker sheet (all staff)
   const [summaryOpen, setSummaryOpen] = useState(false)   // Phase A: post-Finish billing handoff
   const [confirmMove, setConfirmMove] = useState(false)      // move-to-estimates confirm sheet
   const [moveBusy, setMoveBusy] = useState(false)
@@ -1517,6 +1519,17 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
         </div>
       )}
 
+      {/* Oil-change reminder sticker — all staff. Prints on the shop's QL-800 label printer
+          through the cloud print queue. Non-financial: no QuickBooks, never blocks completion. */}
+      {order.status !== 'cancelled' && (
+        <div className="px-6 mb-8">
+          <button onClick={() => setShowSticker(true)}
+            className="w-full text-amber-300 font-semibold text-base py-3.5 rounded-2xl border border-amber-800/60 bg-amber-950/30 active:opacity-80">
+            🛢️ Print Oil Change Sticker
+          </button>
+        </div>
+      )}
+
       {/* ── Job Management (manager/admin only) — the USEFUL controls, without the old clutter ──
           Restores Invoice Draft, Estimate, Production Date, Reopen + Activity (all reusing the existing
           components/state/APIs). INTENTIONALLY still hidden: the old "Manager controls" heading, the
@@ -1592,6 +1605,9 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
           )}
         </div>
       )}
+
+      {/* Oil-change sticker sheet */}
+      {showSticker && <OilStickerSheet orderId={order.id} onClose={() => setShowSticker(false)} />}
 
       {/* Employee picker */}
       {picking && (

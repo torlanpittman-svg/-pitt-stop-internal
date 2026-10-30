@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Pitt Stop PRINT BRIDGE agent — the permanent, always-on link between the Pitt Stop OS cloud print
- * queue and the shop's Brother HL-L2420DW. Runs unattended on the always-on shop laptop (macOS or
+ * queue and the shop's printers: the Brother HL-L2420DW (checks) and, when configured, the
+ * Brother QL-800 label printer (oil-change stickers). Runs unattended on the always-on shop laptop (macOS or
  * Windows). The same script runs on the MacBook TODAY as a temporary bridge — no code changes to move it.
  *
  * Loop:  POST /api/print-bridge/claim  → if a job, decode its PDF, print it, POST /api/print-bridge/result.
@@ -17,6 +18,10 @@
  *   - Queued jobs expire server-side, so an outage never causes a late, unattended print.
  *   - It logs once when the server accepts its token ("connected"), and again after any outage, so the
  *     log shows whether it is really talking to Pitt Stop OS (the Windows updater reads this line).
+ *   - PRINTER ROUTING IS EXPLICIT, NEVER THE WINDOWS DEFAULT: check-family jobs always print to
+ *     PRINTER_NAME; 'sticker' jobs always print to LABEL_PRINTER_NAME. The server only hands this
+ *     bridge sticker jobs when it declares a label printer, and the bridge double-checks: a sticker
+ *     job with no label printer configured is reported failed, never printed elsewhere.
  *   - No business logic, no arbitrary commands — it prints bytes and reports status.
  *
  * Config (env OR a print-bridge.config.json next to this script; env wins):
@@ -27,6 +32,10 @@
  *   POLL_SECONDS        idle poll interval         (default: 5)
  *   SUMATRA_PATH        Windows only: path to SumatraPDF.exe for silent PDF printing
  *   SPOOL_WAIT_SECONDS  Windows only: how long to wait for the printer to take a job (default: 75)
+ *   LABEL_PRINTER_NAME  OPTIONAL: exact Windows/CUPS name of the label printer (e.g. "Brother QL-800").
+ *                       Unset = this bridge never receives sticker jobs.
+ *   LABEL_PRINT_SETTINGS SumatraPDF -print-settings for labels (default: "noscale,paper=auto" — the
+ *                       PDF page IS the label size, so the driver cuts the continuous roll to match)
  *
  * Usage:  node scripts/print-bridge.mjs
  */
@@ -37,7 +46,7 @@ import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const BRIDGE_VERSION = '2.0.1'
+const BRIDGE_VERSION = '2.1.0'
 const STARTED_AT = new Date().toISOString()
 const TMP_PREFIX = 'pittstop-check-'
 
@@ -56,6 +65,8 @@ function loadConfig() {
     pollMs: Math.max(2, parseInt(get('POLL_SECONDS', '5'), 10) || 5) * 1000,
     sumatra: get('SUMATRA_PATH', 'C:\\Program Files\\SumatraPDF\\SumatraPDF.exe'),
     spoolWaitSeconds: get('SPOOL_WAIT_SECONDS', '75'),
+    labelPrinter: get('LABEL_PRINTER_NAME', '') || null,
+    labelSettings: get('LABEL_PRINT_SETTINGS', 'noscale,paper=auto'),
   }
 }
 
@@ -73,17 +84,29 @@ function execP(cmd, args, timeoutMs = 120000) {
   })
 }
 
-/** Print a PDF file to the configured printer on this OS. */
-async function printPdf(pdfPath) {
+/**
+ * Print a PDF file to an EXPLICITLY NAMED printer on this OS — never the system default.
+ * Checks use `noscale` (actual size on the check stock); stickers use `noscale,paper=auto`
+ * so the driver takes the paper size from the PDF page (the exact label dimensions) and the
+ * QL-800 cuts the continuous roll at the page edge.
+ */
+async function printPdf(pdfPath, printer, settings) {
   if (isWin) {
     if (!existsSync(C.sumatra)) throw new Error(`SumatraPDF not found at ${C.sumatra}. Install it (free) or set SUMATRA_PATH.`)
-    // Silent, no UI. -print-to selects the dedicated Brother. `noscale` forces ACTUAL SIZE (100%) —
-    // never Fit/Shrink — so the check geometry prints at true inches on the check stock.
-    await execP(C.sumatra, ['-print-to', C.printer, '-print-settings', 'noscale', '-silent', '-exit-when-done', pdfPath])
+    await execP(C.sumatra, ['-print-to', printer, '-print-settings', settings, '-silent', '-exit-when-done', pdfPath])
   } else {
     // macOS / Linux: CUPS. lp is built in on macOS. -o fit-to-page=false / scaling=100 keep actual size.
-    await execP('lp', ['-d', C.printer, '-o', 'fit-to-page=false', '-o', 'scaling=100', pdfPath])
+    await execP('lp', ['-d', printer, '-o', 'fit-to-page=false', '-o', 'scaling=100', pdfPath])
   }
+}
+
+/** Which printer + settings a job prints with. Sticker jobs REQUIRE the label printer. */
+function routeJob(job) {
+  if (job.kind === 'sticker') {
+    if (!C.labelPrinter) return { error: 'This bridge has no LABEL_PRINTER_NAME configured — sticker refused (never printed on the check printer).' }
+    return { printer: C.labelPrinter, settings: C.labelSettings }
+  }
+  return { printer: C.printer, settings: 'noscale' }
 }
 
 async function api(path, body) {
@@ -110,17 +133,17 @@ function sweepTemp() {
 }
 
 const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`
-/** How many spooler jobs on our printer belong to this document (Windows). Throws if it cannot tell. */
-async function spoolCount(docTag) {
+/** How many spooler jobs on the given printer belong to this document (Windows). Throws if it cannot tell. */
+async function spoolCount(printer, docTag) {
   const out = await execP('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    `@(Get-PrintJob -PrinterName ${psQuote(C.printer)} -ErrorAction Stop | Where-Object { $_.DocumentName -like ${psQuote('*' + docTag + '*')} }).Count`], 20000)
+    `@(Get-PrintJob -PrinterName ${psQuote(printer)} -ErrorAction Stop | Where-Object { $_.DocumentName -like ${psQuote('*' + docTag + '*')} }).Count`], 20000)
   const n = parseInt(String(out).trim(), 10)
   if (!Number.isFinite(n)) throw new Error('unreadable spooler answer')
   return n
 }
-async function spoolCancel(docTag) {
+async function spoolCancel(printer, docTag) {
   await execP('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    `Get-PrintJob -PrinterName ${psQuote(C.printer)} -ErrorAction Stop | Where-Object { $_.DocumentName -like ${psQuote('*' + docTag + '*')} } | Remove-PrintJob -ErrorAction Stop`], 20000)
+    `Get-PrintJob -PrinterName ${psQuote(printer)} -ErrorAction Stop | Where-Object { $_.DocumentName -like ${psQuote('*' + docTag + '*')} } | Remove-PrintJob -ErrorAction Stop`], 20000)
 }
 
 /**
@@ -130,13 +153,13 @@ async function spoolCancel(docTag) {
  *                                  later), otherwise → 'uncertain' (a person must look)
  *   spooler cannot be queried    → 'submitted' with a note (a manager confirms paper either way)
  */
-async function watchSpooler(docTag) {
+async function watchSpooler(printer, docTag) {
   if (!isWin) return { outcome: 'submitted' }
   const waitMs = Math.max(15, parseInt(C.spoolWaitSeconds, 10) || 75) * 1000
   const deadline = Date.now() + waitMs
   try {
     for (;;) {
-      if ((await spoolCount(docTag)) === 0) return { outcome: 'submitted' }
+      if ((await spoolCount(printer, docTag)) === 0) return { outcome: 'submitted' }
       if (Date.now() >= deadline) break
       await sleep(3000)
     }
@@ -144,9 +167,9 @@ async function watchSpooler(docTag) {
     return { outcome: 'submitted', note: `spooler not readable (${e.message})` }
   }
   try {
-    await spoolCancel(docTag)
+    await spoolCancel(printer, docTag)
     await sleep(2000)
-    if ((await spoolCount(docTag)) === 0) return { outcome: 'failed', error: 'The printer did not take the job (offline, out of paper, or jammed?). It was cancelled and will not print later.' }
+    if ((await spoolCount(printer, docTag)) === 0) return { outcome: 'failed', error: 'The printer did not take the job (offline, out of paper, or jammed?). It was cancelled and will not print later.' }
   } catch { /* fall through to uncertain */ }
   return { outcome: 'uncertain', error: 'The job is stuck in the Windows print queue and could not be cancelled. Check the printer before sending again.' }
 }
@@ -168,7 +191,7 @@ async function report(jobId, outcome, error) {
 let connected = false // logged once per (re)connection, never per poll
 
 async function processOne() {
-  const claim = await api('/api/print-bridge/claim', { bridgeId: C.bridgeId, version: BRIDGE_VERSION, platform: process.platform, printer: C.printer, startedAt: STARTED_AT })
+  const claim = await api('/api/print-bridge/claim', { bridgeId: C.bridgeId, version: BRIDGE_VERSION, platform: process.platform, printer: C.printer, labelPrinter: C.labelPrinter, startedAt: STARTED_AT })
   if (claim.status === 401) throw new Error('unauthorized — check PRINT_BRIDGE_TOKEN')
   if (claim.status === 503) { return false } // bridge not configured on server yet
   if (claim.status !== 200) throw new Error(`claim failed: HTTP ${claim.status}`)
@@ -177,14 +200,20 @@ async function processOne() {
   if (!job) return false // queue empty (or the server refused the job)
 
   log(`claimed job ${job.id} (${job.kind})`)
+  const route = routeJob(job)
+  if (route.error) {
+    log(`job ${job.id}: refused — ${route.error}`)
+    await report(job.id, 'failed', route.error)
+    return true
+  }
   let dir = null
   try {
     if (!claim.json.pdfBase64) throw new Error('claim carried no PDF')
     dir = mkdtempSync(join(tmpdir(), TMP_PREFIX))
     const pdfPath = join(dir, `${job.id}.pdf`)
     writeFileSync(pdfPath, Buffer.from(claim.json.pdfBase64, 'base64'))
-    await printPdf(pdfPath)
-    const spool = await watchSpooler(job.id)
+    await printPdf(pdfPath, route.printer, route.settings)
+    const spool = await watchSpooler(route.printer, job.id)
     log(`job ${job.id}: ${spool.outcome}${spool.error ? ' — ' + spool.error : ''}${spool.note ? ' (' + spool.note + ')' : ''}`)
     await report(job.id, spool.outcome, spool.error || spool.note)
   } catch (e) {
@@ -204,7 +233,7 @@ async function main() {
     process.exit(1)
   }
   sweepTemp()
-  log(`Pitt Stop print bridge v${BRIDGE_VERSION} starting — ${C.bridgeId} → ${C.printer} (${isWin ? 'windows' : process.platform}) → ${C.baseUrl}`)
+  log(`Pitt Stop print bridge v${BRIDGE_VERSION} starting — ${C.bridgeId} → ${C.printer}${C.labelPrinter ? ` + labels → ${C.labelPrinter}` : ' (no label printer)'} (${isWin ? 'windows' : process.platform}) → ${C.baseUrl}`)
   // Forever loop; never crashes on transient errors (outage-safe).
   for (;;) {
     try {

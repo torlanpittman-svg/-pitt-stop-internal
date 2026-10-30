@@ -27,6 +27,10 @@ export type PrintJobRow = typeof printJobs.$inferSelect
 export type PrintBridgeRow = typeof printBridges.$inferSelect
 
 export const ACTIVE_JOB_STATUSES = ['queued', 'claimed', 'submitted', 'stuck'] as const
+/** Job kinds every bridge can print (the check paper path). A bridge is handed 'sticker'
+ * jobs ONLY when it declares a configured label printer — an older bridge that doesn't
+ * must never claim one, or it would print a label on the check printer. */
+export const CHECK_JOB_KINDS = ['check', 'reprint', 'specimen'] as const
 /** A queued job the bridge has not picked up within this window is expired instead of printing late. */
 export const PRINT_JOB_TTL_MINUTES = 10
 /** A claimed job with no report after this long is treated as an uncertain outcome (manager decides). */
@@ -138,10 +142,13 @@ export async function expireStaleJobs(): Promise<PrintJobRow[]> {
 }
 
 /**
- * Atomically claim the oldest queued, unexpired job for a bridge. Single statement with FOR UPDATE SKIP
- * LOCKED so concurrent bridges never double-print. Returns the claimed row or null when the queue is empty.
+ * Atomically claim the oldest queued, unexpired job OF A KIND THE BRIDGE SUPPORTS. Single statement
+ * with FOR UPDATE SKIP LOCKED so concurrent bridges never double-print. Returns the claimed row or
+ * null when the queue is empty. `kinds` defaults to the check-paper kinds, so a bridge that doesn't
+ * declare a label printer is never handed a sticker job.
  */
-export async function claimNextJob(bridgeId: string): Promise<PrintJobRow | null> {
+export async function claimNextJob(bridgeId: string, kinds: readonly string[] = CHECK_JOB_KINDS): Promise<PrintJobRow | null> {
+  if (kinds.length === 0) return null
   const res = await getDb().execute(sql`
     UPDATE print_jobs
        SET status = 'claimed', claimed_by = ${bridgeId}, claimed_at = now(),
@@ -149,6 +156,7 @@ export async function claimNextJob(bridgeId: string): Promise<PrintJobRow | null
      WHERE id = (
        SELECT id FROM print_jobs
         WHERE status = 'queued' AND created_at >= now() - interval '${sql.raw(String(PRINT_JOB_TTL_MINUTES))} minutes'
+          AND kind IN (${sql.join(kinds.map((k) => sql`${k}`), sql`, `)})
         ORDER BY created_at ASC
         FOR UPDATE SKIP LOCKED
         LIMIT 1
@@ -199,7 +207,7 @@ export function isUncertain(job: Pick<PrintJobRow, 'status' | 'claimedAt'>, now:
 }
 
 // ── Bridge heartbeat ────────────────────────────────────────────────────────────────────────────────
-export interface BridgeHello { bridgeId: string; version?: string | null; platform?: string | null; printer?: string | null; startedAt?: string | null }
+export interface BridgeHello { bridgeId: string; version?: string | null; platform?: string | null; printer?: string | null; labelPrinter?: string | null; startedAt?: string | null }
 
 /**
  * Record that a bridge polled. Throttled in SQL (at most one write per bridge every 15 s) so a 5-second
@@ -208,17 +216,18 @@ export interface BridgeHello { bridgeId: string; version?: string | null; platfo
 export async function recordBridgeHeartbeat(h: BridgeHello): Promise<void> {
   const started = h.startedAt && !Number.isNaN(Date.parse(h.startedAt)) ? new Date(h.startedAt).toISOString() : null
   await getDb().execute(sql`
-    INSERT INTO print_bridges (bridge_id, last_seen_at, started_at, version, platform, printer)
-    VALUES (${h.bridgeId}, now(), ${started}::timestamptz, ${h.version ?? null}, ${h.platform ?? null}, ${h.printer ?? null})
+    INSERT INTO print_bridges (bridge_id, last_seen_at, started_at, version, platform, printer, label_printer)
+    VALUES (${h.bridgeId}, now(), ${started}::timestamptz, ${h.version ?? null}, ${h.platform ?? null}, ${h.printer ?? null}, ${h.labelPrinter ?? null})
     ON CONFLICT (bridge_id) DO UPDATE
        SET last_seen_at = now(), started_at = COALESCE(EXCLUDED.started_at, print_bridges.started_at),
-           version = EXCLUDED.version, platform = EXCLUDED.platform, printer = EXCLUDED.printer
+           version = EXCLUDED.version, platform = EXCLUDED.platform, printer = EXCLUDED.printer,
+           label_printer = EXCLUDED.label_printer
      WHERE print_bridges.last_seen_at < now() - interval '15 seconds'
         OR print_bridges.started_at IS DISTINCT FROM COALESCE(EXCLUDED.started_at, print_bridges.started_at)
   `)
 }
 
-export interface BridgeStatus { online: boolean; bridges: { bridgeId: string; online: boolean; lastSeenAt: string; startedAt: string | null; version: string | null; platform: string | null; printer: string | null }[] }
+export interface BridgeStatus { online: boolean; bridges: { bridgeId: string; online: boolean; lastSeenAt: string; startedAt: string | null; version: string | null; platform: string | null; printer: string | null; labelPrinter: string | null }[] }
 
 /** Which bridges have polled recently. `online` = at least one polled within BRIDGE_ONLINE_WITHIN_SECONDS. */
 export async function getBridgeStatus(now: Date = new Date()): Promise<BridgeStatus> {
@@ -226,7 +235,7 @@ export async function getBridgeStatus(now: Date = new Date()): Promise<BridgeSta
   const bridges = rows.map((b) => ({
     bridgeId: b.bridgeId, online: now.getTime() - b.lastSeenAt.getTime() <= BRIDGE_ONLINE_WITHIN_SECONDS * 1000,
     lastSeenAt: b.lastSeenAt.toISOString(), startedAt: b.startedAt ? b.startedAt.toISOString() : null,
-    version: b.version, platform: b.platform, printer: b.printer,
+    version: b.version, platform: b.platform, printer: b.printer, labelPrinter: b.labelPrinter,
   }))
   return { online: bridges.some((b) => b.online), bridges }
 }

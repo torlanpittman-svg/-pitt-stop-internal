@@ -135,6 +135,9 @@ export const printBridges = pgTable('print_bridges', {
   version:    varchar('version', { length: 32 }),
   platform:   varchar('platform', { length: 32 }),
   printer:    varchar('printer', { length: 120 }),
+  // Label (sticker) printer the bridge declares, if configured (e.g. the Brother QL-800).
+  // NULL = this bridge cannot print stickers and is never handed a sticker job.
+  labelPrinter: varchar('label_printer', { length: 120 }),
 })
 
 // One row per bank's physical check sequence. `nextNumber` is the number of the NEXT blank check in
