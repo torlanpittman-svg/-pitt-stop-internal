@@ -7,3 +7,7 @@ node_modules
 .env*
 .git
 scripts
+# Local-only parts screenshot-import preview harness (synthetic fixtures, non-production).
+# Its fixtures live under the already-excluded scripts/, so it cannot resolve in a Vercel build
+# and must not ship: /parts/preview is a local review tool only.
+app/parts/preview
