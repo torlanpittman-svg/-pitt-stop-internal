@@ -28,6 +28,14 @@ import { logger } from '@/platform/logger'
 
 export { PRINT_JOB_TTL_MINUTES }
 
+/**
+ * Expiry sweeps started from THIS module only ever expire sticker jobs. The queue is shared, and
+ * expiring a job consumes it: if a sticker code path swept a stale CHECK job, apps/checks could no
+ * longer reflect that outcome on the check (print_failed + the 'print_expired' event would be lost).
+ * Checks reconcile their own queue (reconcileExpiredJobs), so nothing here needs to touch them.
+ */
+const STICKER_KINDS = ['sticker'] as const
+
 export class StickerValidationError extends Error {
   code: string
   constructor(message: string, code: string) { super(message); this.code = code }
@@ -125,7 +133,7 @@ export async function stickerPrefill(orderId: string): Promise<StickerPrefill> {
   const [last] = vehicle
     ? await db.select().from(oilChangeStickers).where(eq(oilChangeStickers.vehicleId, vehicle.id)).orderBy(desc(oilChangeStickers.createdAt)).limit(1)
     : []
-  await expireStaleJobs().catch(() => {}) // reflect expiry before reporting a stale "queued"
+  await expireStaleJobs(STICKER_KINDS).catch(() => {}) // reflect expiry before reporting a stale "queued"
   const active = await waitingStickerJobForOrder(orderId)
   const latest = active ?? await latestStickerJobForOrder(orderId)
   return {
@@ -153,7 +161,7 @@ export async function queueStickerPrint(orderId: string, input: StickerPrintInpu
   if (!order) throw new StickerValidationError('Job not found.', 'not_found')
   if (order.status === 'cancelled') throw new StickerValidationError('This job was cancelled — no sticker can be printed for it.', 'order_cancelled')
 
-  await expireStaleJobs().catch(() => {})
+  await expireStaleJobs(STICKER_KINDS).catch(() => {})
   const existing = await waitingStickerJobForOrder(orderId)
   if (existing) {
     const payload = existing.payload as unknown as StickerPrintPayload
@@ -194,7 +202,7 @@ export async function reprintSticker(orderId: string, stickerId: string, actor: 
   const db = getDb()
   const [row] = await db.select().from(oilChangeStickers).where(eq(oilChangeStickers.id, stickerId)).limit(1)
   if (!row || row.orderId !== orderId) throw new StickerValidationError('Sticker not found for this job.', 'not_found')
-  await expireStaleJobs().catch(() => {})
+  await expireStaleJobs(STICKER_KINDS).catch(() => {})
   const existing = await waitingStickerJobForOrder(orderId)
   if (existing) return { stickerId, job: jobView(existing), alreadyQueued: true }
   const payload = buildStickerPayload({
@@ -213,7 +221,7 @@ export async function reprintSticker(orderId: string, stickerId: string, actor: 
 
 /** Current status of a sticker print job (for polling), with expiry reflected first. */
 export async function stickerJobStatus(orderId: string, jobId: string): Promise<StickerJobView> {
-  await expireStaleJobs().catch(() => {})
+  await expireStaleJobs(STICKER_KINDS).catch(() => {})
   const job = await getJob(jobId)
   if (!job || job.kind !== 'sticker') throw new StickerValidationError('Print job not found.', 'job_not_found')
   const payload = job.payload as unknown as StickerPrintPayload

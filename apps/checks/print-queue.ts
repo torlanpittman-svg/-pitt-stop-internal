@@ -129,13 +129,22 @@ export async function activeJobForCheck(checkId: string): Promise<PrintJobRow | 
 /**
  * Expire queued jobs older than the TTL so a check never prints unattended long after it was sent (e.g.
  * the bridge comes back hours later). Returns the expired jobs so the caller can reflect them on checks.
+ *
+ * `kinds` (optional) RESTRICTS the sweep to those job kinds; the default sweeps every kind, exactly as
+ * before. It exists because expiring a job CONSUMES it (the UPDATE only matches status 'queued', so a
+ * second sweep finds nothing): whoever expires a check job is the only one who can still reflect the
+ * outcome on the check row. A caller that does not own check reconciliation — i.e. anything outside
+ * apps/checks — must scope its sweep to its own kinds, or the check's 'print_failed' status and
+ * 'print_expired' event would be silently lost. See reconcileExpiredJobs in ./service.ts.
  */
-export async function expireStaleJobs(): Promise<PrintJobRow[]> {
+export async function expireStaleJobs(kinds?: readonly string[]): Promise<PrintJobRow[]> {
+  if (kinds && kinds.length === 0) return []
+  const kindFilter = kinds ? sql` AND kind IN (${sql.join(kinds.map((k) => sql`${k}`), sql`, `)})` : sql``
   const res = await getDb().execute(sql`
     UPDATE print_jobs
        SET status = 'expired', failed_at = now(), updated_at = now(),
            error = ${`Not picked up by the shop printer within ${PRINT_JOB_TTL_MINUTES} minutes — expired without printing.`}
-     WHERE status = 'queued' AND created_at < now() - interval '${sql.raw(String(PRINT_JOB_TTL_MINUTES))} minutes'
+     WHERE status = 'queued' AND created_at < now() - interval '${sql.raw(String(PRINT_JOB_TTL_MINUTES))} minutes'${kindFilter}
     RETURNING *
   `)
   return rowsOf<Record<string, unknown>>(res).map((r) => toJob(r)!).filter(Boolean)

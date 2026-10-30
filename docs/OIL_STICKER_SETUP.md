@@ -1,7 +1,10 @@
 # Oil-Change Sticker Printing — Setup & Status
 
-Last updated: **2026-10-30**. Feature implemented, NOT yet deployed; no physical QL-800 print has
-been made yet.
+Last updated: **2026-10-30**. Owner approved preview, migration 0066, deployment, and proceeding to
+one sticker test. Migration 0066 is applied to verified production endpoint `ep-morning-base-adq5h6rq`.
+Release verification: 2,636 tests / 212 files pass; webpack production build passes. The expiry
+regression fails on the original code and passes after scoping sticker sweeps. Deployment and
+physical QL-800 verification remain pending at this commit.
 
 ## What it is
 
@@ -48,6 +51,24 @@ DK-4205). On the inside of a windshield it will hold up well; expect it to need 
 possibly adhesive residue on removal. If easy removal matters more than durability, switch to
 DK-4205 removable paper — the layout needs no change (same 62 mm width).
 
+## Release order — migration 0066 BEFORE the code deploy
+
+**Apply `drizzle/migrations/manual/0066_oil_stickers.sql` to production first, then deploy.** The code
+declares `print_bridges.label_printer` (`apps/checks/schema.ts`), and `getBridgeStatus()` selects the
+whole row — so if the code goes live before the column exists:
+
+- `recordBridgeHeartbeat` fails on every bridge poll. The claim route swallows that error, so **checks
+  still print**, but `last_seen_at` stops updating.
+- `/api/checks/bridge-status` falls into its catch and answers `{ online: false, unknown: true }`.
+- Net effect: **the checks screen reports the shop printer OFFLINE while it is actually working** — the
+  wrong signal in the middle of a check run.
+- The sticker form itself returns 500 (`labelBridgeStatus` has no catch).
+
+0066 is additive and idempotent (`IF NOT EXISTS` throughout), 0066 is the next free number after 0065,
+and the new partial unique index cannot collide with existing rows (its predicate needs `kind =
+'sticker'`, which does not exist in production yet). The index build briefly blocks writes to `print_jobs` — apply it when no check is printing. Rolling the code back afterwards is safe:
+the table and column are additive and inert without the app.
+
 ## Shop-computer (Windows laptop `LAPTOP-RF8IO1H2`) setup — one-time, needs the owner
 
 1. **Install the QL-800 Windows driver** (Brother support → QL-800 → "Printer Driver"; choose a
@@ -56,22 +77,36 @@ DK-4205 removable paper — the layout needs no change (same 62 mm width).
    goes out. (In Editor Lite mode the printer mounts as a USB drive and the Windows driver cannot
    print to it.)
 3. **Load the DK-2212 roll** and feed/cut once so the printer detects it.
-4. In **Printing Preferences** for the QL-800 driver set: paper **62 mm continuous**
-   ("62mm x 100mm" / continuous tape format), **Auto Cut ON**, priority **Quality**. These are
-   fallback defaults; each job also carries its exact 62 × 50 mm page size
-   (SumatraPDF `noscale,paper=auto`).
-5. **Add the label printer to the bridge config**: edit `C:\pittstop\print-bridge.config.json`
-   and add one line inside the braces (the exact printer name as Windows shows it, usually
-   `"Brother QL-800"`):
-   ```json
-   "LABEL_PRINTER_NAME": "Brother QL-800"
-   ```
-   Nothing else in the config changes. Without this line the bridge keeps working for checks and
-   simply never receives sticker jobs.
-6. **Run the bridge update** `PittStop-Bridge-Update-R3.cmd` (on the owner's Mac Desktop; embeds
-   bridge **v2.1.0**, SHA-256 `d1706241a2911b…`). Same safety behaviour as R2: checks first,
-   backup, stop supervisor+bridge together, replace one file, restart through the task, rollback
-   on failure, token never shown. Expect `UPDATED OK`.
+4. In **Printing Preferences** for the QL-800 driver set the paper to an **exact 62 mm × 50 mm**
+   format (create/select a 62 × 50 mm custom size if the list only offers "62mm × 100mm"), with
+   **Auto Cut ON** and priority **Quality**.
+   ⚠️ This form size is not cosmetic: the shop laptop runs **SumatraPDF 3.6.1**, which does **not**
+   support `paper=auto`, so the printed page lands on **whatever form the driver has selected**.
+   `noscale` keeps the content at true size, but a 62 × 100 mm form means the roll is cut long
+   (blank film below the sticker). Match the form to the page and the cut matches too.
+5. **Edit the bridge config** `C:\pittstop\print-bridge.config.json`:
+   - **Back the file up first** (copy it to `print-bridge.config.json.bak` in the same folder).
+   - Add these two lines inside the braces, keeping every existing field exactly as it is (use the
+     printer name exactly as Windows shows it, usually `Brother QL-800`):
+     ```json
+     "LABEL_PRINTER_NAME": "Brother QL-800",
+     "LABEL_PRINT_SETTINGS": "noscale"
+     ```
+   - `LABEL_PRINT_SETTINGS` overrides the bridge's built-in default of `noscale,paper=auto`, which
+     SumatraPDF 3.6.1 does not understand. **No change to the bridge binary is needed** — the bridge
+     reads this value from the config file.
+   - Every line inside the braces except the last one needs a trailing comma.
+   ⚠️ **Malformed JSON here takes CHECK printing down too**: the bridge logs `bad config json`,
+   continues with an empty config, finds no base URL or token, exits, and the supervisor relaunches it
+   in a loop. The config is read **only at process start**, which is why this step comes BEFORE the
+   updater (the update is what restarts the bridge). Without these lines the bridge keeps printing
+   checks normally and simply never receives sticker jobs.
+6. **Run the bridge update** `PittStop-Bridge-Update-R3.cmd` — download it from the app:
+   <https://pitt-stop-internal.vercel.app/downloads/PittStop-Bridge-Update-R3.cmd> (embeds bridge
+   **v2.1.0**). Same safety behaviour as R2: checks first, backup, stop supervisor+bridge together,
+   replace one file, restart through the task, rollback on failure, token never shown. Expect
+   `UPDATED OK`. If it reports *"the bridge could not read its config"*, the JSON edit in step 5 is
+   broken — restore the `.bak` and redo it.
 7. Verify in the app (checks screen or sticker form): bridge online, **v2.1.0**, and the sticker
    form shows "Label printer link online".
 
@@ -79,8 +114,10 @@ DK-4205 removable paper — the layout needs no change (same 62 mm width).
 
 Everything below is verified in code/tests only, not on hardware:
 
-- SumatraPDF `-print-settings "noscale,paper=auto"` handing the 62 × 50 mm page to the QL-800
-  driver at actual size (no scaling/clipping), and the auto-cut at the page edge.
+- SumatraPDF 3.6.1 `-print-settings "noscale"` handing the 62 × 50 mm page to the QL-800 driver at
+  actual size (no scaling/clipping) with the driver's form set to 62 × 50 mm, and the auto-cut
+  landing at the page edge. Watch for a long cut (extra blank film) — that means the driver form is
+  still 62 × 100 mm, fixable in Printing Preferences alone.
 - Darkness/legibility of the logo + icons on DK-2212 film at 300 dpi.
 - First physical test: owner approval required (use a real job's sticker with test values, or
   we add a VOID-style test print if wanted).

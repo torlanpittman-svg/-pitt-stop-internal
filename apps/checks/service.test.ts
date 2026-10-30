@@ -34,7 +34,7 @@ import {
   createAndRecordCheck, retryQbWrite, queueCheckPrint, recordPrintResult, applyBridgeResult, resolvePrintJob,
   enqueueTestPrint, enqueueBankSpecimen, renderClaimedJob, reconcileExpiredJobs, assertCheckRealm, qbRequestId, CheckValidationError,
 } from './service'
-import { claimNextJob, getJob, enqueuePrintJob, recordBridgeHeartbeat, getBridgeStatus, jobsForCheck, PRINT_JOB_TTL_MINUTES } from './print-queue'
+import { claimNextJob, getJob, enqueuePrintJob, recordBridgeHeartbeat, getBridgeStatus, jobsForCheck, expireStaleJobs, PRINT_JOB_TTL_MINUTES } from './print-queue'
 import { getCheckRow, acquireQbWriteLock, checkEventHistory } from './db'
 import { PayeeLookupError, PayeeExistsError, PayeeBlockedError, PayeeNotFoundError, AmbiguousPayeeError } from './payee'
 import { initCheckSequence, peekNextNumber } from './numbering'
@@ -511,6 +511,49 @@ describe('queue expiry — nothing prints late and unattended', () => {
   it('a fresh job is not expired', async () => {
     const c = await recorded(); await queueCheckPrint(c.id, actor)
     expect(await reconcileExpiredJobs()).toBe(0)
+  })
+
+  /**
+   * REGRESSION: the sticker module shares this queue and sweeps expiry on its own code paths. Expiring a
+   * job CONSUMES it (the UPDATE only matches 'queued'), so an unscoped sweep from outside apps/checks
+   * would silently eat a stale CHECK job and the check would never be marked print_failed / logged
+   * print_expired — the paper outcome would be lost. A sticker-scoped sweep must leave checks alone.
+   */
+  it('a sticker-scoped sweep expires the stale sticker and leaves a stale CHECK job queued for its own reconciliation', async () => {
+    const c = await recorded()
+    const { jobId } = await queueCheckPrint(c.id, actor)
+    const inserted = await pg.query(
+      `INSERT INTO print_jobs (check_id, kind, payload, printer_target) VALUES (NULL, 'sticker', $1::jsonb, 'label') RETURNING id`,
+      [JSON.stringify({ kind: 'oil_sticker', stickerId: 'S1', orderId: '11111111-1111-4111-8111-111111111111' })],
+    )
+    const stickerJobId = (inserted.rows[0] as { id: string }).id
+    await pg.query(`UPDATE print_jobs SET created_at = now() - make_interval(mins => $1)`, [PRINT_JOB_TTL_MINUTES + 1])
+
+    // Scoped sweep: the sticker expires, the check job is untouched and nothing is written to the check.
+    const swept = await expireStaleJobs(['sticker'])
+    expect(swept.map((j) => j.id)).toEqual([stickerJobId])
+    expect((await getJob(stickerJobId))!.status).toBe('expired')
+    expect((await getJob(jobId))!.status).toBe('queued')
+    expect((await getCheckRow(c.id))!.printStatus).not.toBe('print_failed')
+    expect(await events(c.id)).not.toContain('print_expired')
+
+    // The check's own reconciliation still runs later and still records the outcome (nothing was lost).
+    expect(await reconcileExpiredJobs()).toBe(1)
+    expect((await getJob(jobId))!.status).toBe('expired')
+    expect((await getCheckRow(c.id))!.printStatus).toBe('print_failed')
+    expect(await events(c.id)).toContain('print_expired')
+  })
+
+  it('the default sweep is unchanged — it still expires every kind, checks included', async () => {
+    const c = await recorded()
+    const { jobId } = await queueCheckPrint(c.id, actor)
+    await pg.query(
+      `INSERT INTO print_jobs (check_id, kind, payload, printer_target) VALUES (NULL, 'sticker', $1::jsonb, 'label')`,
+      [JSON.stringify({ kind: 'oil_sticker', stickerId: 'S1', orderId: '22222222-2222-4222-8222-222222222222' })],
+    )
+    await pg.query(`UPDATE print_jobs SET created_at = now() - make_interval(mins => $1)`, [PRINT_JOB_TTL_MINUTES + 1])
+    expect((await expireStaleJobs()).map((j) => j.kind).sort()).toEqual(['check', 'sticker'])
+    expect((await getJob(jobId))!.status).toBe('expired')
   })
 })
 

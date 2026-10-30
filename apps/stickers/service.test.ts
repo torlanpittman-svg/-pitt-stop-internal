@@ -147,7 +147,7 @@ describe('stickerJobStatus', () => {
   it('reflects expiry first, then reports the job', async () => {
     h.getJob.mockResolvedValue(job({ status: 'expired' }))
     const res = await stickerJobStatus('O1', 'J1')
-    expect(h.expire).toHaveBeenCalled()
+    expect(h.expire).toHaveBeenCalledWith(['sticker'])
     expect(res.status).toBe('expired')
   })
   it('never leaks a job that belongs to another order or kind', async () => {
@@ -174,6 +174,25 @@ describe('renderStickerJob', () => {
     const res = await renderStickerJob(job({ payload: { pageWidthIn: 8.5 } as unknown as PrintJobRow['payload'] }))
     expect(res).toHaveProperty('refused')
     expect(h.transition).toHaveBeenCalledWith('J1', ['claimed'], 'failed', expect.stringContaining('malformed'))
+  })
+})
+
+describe('shared print queue — sticker code paths never expire a check job', () => {
+  /**
+   * The queue is shared with checks and expiring a job CONSUMES it, so an unscoped sweep here would eat a
+   * stale CHECK job and apps/checks could no longer record print_failed / 'print_expired' on the check.
+   * Every expiry sweep this module starts must be scoped to sticker kinds.
+   */
+  it('scopes every expiry sweep to sticker jobs', async () => {
+    const ROW = { id: 'S1', orderId: 'O1', vehicleId: 'V1', mileage: 187781, intervalMiles: 5000, intervalMonths: 6, nextMileage: 192781, nextDate: '2027-04-30', nextDateText: 'Apr 30, 2027', createdBy: 'Tech', createdAt: new Date() }
+    await queueStickerPrint('O1', INPUT, ACTOR)
+    h.select.mockImplementation((table: unknown) => (table === oilChangeStickers ? [ROW] : [ORDER]))
+    await reprintSticker('O1', 'S1', ACTOR)
+    h.getJob.mockResolvedValue(job({ status: 'expired' }))
+    await stickerJobStatus('O1', 'J1')
+
+    expect(h.expire).toHaveBeenCalledTimes(3)
+    for (const call of h.expire.mock.calls) expect(call).toEqual([['sticker']])
   })
 })
 
