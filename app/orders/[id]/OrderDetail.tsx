@@ -1198,8 +1198,8 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
   const editablePartIds = new Set((itemsView?.parts ?? []).map((p) => p.id))
   const partsKey = JSON.stringify(itemsView?.parts ?? [])
 
-  // Parts tracker changes update the collapsed summary immediately; a change also refetches the Job so
-  // the Services/Parts split follows. The <details> stays mounted, so its open/closed state is kept.
+  // Parts tracker changes update the heading's counts immediately; a change also refetches the Job so
+  // the Services/Parts split follows. The section is always open, so nothing unmounts on a change.
   const onPartsChange = useCallback((parts: ReadonlyArray<{ description: string; status: string }>, mutated: boolean) => {
     setLiveParts(parts)
     if (mutated) { void reload(); refreshItems() }
@@ -1456,18 +1456,17 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
         )}
       </div>
 
-      {/* Parts — collapsed by default with a count (and outstanding count where tracked). Expanded: the
-          existing parts tracker (name, qty, part #, ordering/receiving status) for viewers it is rolled
-          out to; otherwise the part names only. Same records as the estimate/invoice — nothing duplicated. */}
+      {/* Parts — ALWAYS open (no collapsible row): the parts controls (+ Add Part, Import from screenshot)
+          must be visible without a tap, including on a Job with no parts yet. The heading keeps the part
+          count (and outstanding count where tracked). Below it: the existing parts tracker (name, qty,
+          part #, ordering/receiving status) for viewers it is rolled out to; otherwise the part names
+          only. Same records as the estimate/invoice — nothing duplicated. */}
       {(partCount > 0 || identity.partsVisible) && (
-        <details className="group px-6 mb-6">
-          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 [&::-webkit-details-marker]:hidden">
-            <span className="text-gray-500 text-xs font-semibold uppercase tracking-wider">
-              Parts{partCount > 0 && <span className="text-gray-400 normal-case"> · {partCount}</span>}
-              {identity.partsVisible && partsWaitingCount > 0 && <span className="text-amber-400 normal-case"> · {partsWaitingCount} waiting</span>}
-            </span>
-            <span aria-hidden className="text-gray-500 transition-transform group-open:rotate-90">›</span>
-          </summary>
+        <div className="px-6 mb-6">
+          <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider">
+            Parts{partCount > 0 && <span className="text-gray-400 normal-case"> · {partCount}</span>}
+            {identity.partsVisible && partsWaitingCount > 0 && <span className="text-amber-400 normal-case"> · {partsWaitingCount} waiting</span>}
+          </h2>
           <div className="mt-2">
             {identity.partsVisible
               ? <PartsSection orderId={order.id} hideTitle onPartsChange={onPartsChange}
@@ -1484,7 +1483,7 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
                 </ul>
               )}
           </div>
-        </details>
+        </div>
       )}
 
       {isManager && <div className="px-6 mb-6"><OrderPhotos orderId={order.id} /></div>}
