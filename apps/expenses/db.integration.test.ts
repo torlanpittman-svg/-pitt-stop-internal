@@ -23,7 +23,8 @@ import {
   createPendingReceipt, findReceiptByCaptureId, possibleDuplicateFor,
 } from './db'
 import type { CategoryChoice } from './types'
-import { receiptPaymentChoice } from './payment'
+import { otherPaymentDescription, otherPaymentFunding, receiptPaymentChoice, resolveReceiptPayment } from './payment'
+import { displayAttentionReasons } from './types'
 
 const single = (key: string): CategoryChoice => ({ kind: 'single', key: key as never })
 const cleanFiling = (over: Record<string, unknown> = {}) => ({
@@ -547,6 +548,78 @@ describe('payment-source persistence — card ending stored separately from the 
     const row = await getReceipt(id)
     expect(row?.paymentMethod).toBe('check'); expect(row?.accountRef).toBe('*5600'); expect(row?.paymentLast4).toBeNull()
     expect(receiptPaymentChoice({ funding: row!.funding, paymentMethod: row!.paymentMethod, accountRef: row!.accountRef, paymentLast4: row!.paymentLast4 })).toBe('extraco_check')
+  })
+})
+
+// ── An "Other" source (the reported AMEX 5008 case) persists its description AND its explicit
+// classification, so reopening the receipt shows the same answers the filer gave. ──
+describe('Other payment source persists + survives reopening (real Postgres)', () => {
+  const filer = { name: 'Sam', key: 'sam' }
+  const batteries = { vendor: 'Batteries Plus Bulbs #428', receiptDate: '2026-10-06', totalCents: 7901 }
+  const other = (answers: Record<string, unknown>) => {
+    const p = resolveReceiptPayment('other', 'AMEX 5008', answers)
+    if (!p.ok) throw new Error(p.error)
+    return p.payment
+  }
+
+  it('business Other FILES cleanly and reopens as the same classified source', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'OTH1' }))
+    const r = await fileReceipt(id, cleanFiling({ ...batteries, ...other({ funding: 'business', paymentMethod: 'card' }) }), filer)
+    expect(r.status).toBe('filed')
+    expect(r.reasons).toEqual([])
+    const row = await getReceipt(id)
+    expect(row?.funding).toBe('business'); expect(row?.paymentMethod).toBe('card')
+    expect(row?.accountRef).toBe('other:AMEX 5008'); expect(row?.paymentLast4).toBeNull()
+    const stored = { funding: row!.funding, paymentMethod: row!.paymentMethod, accountRef: row!.accountRef, paymentLast4: row!.paymentLast4 }
+    expect(receiptPaymentChoice(stored)).toBe('other')
+    expect(otherPaymentDescription(stored)).toBe('AMEX 5008')
+    expect(otherPaymentFunding(stored)).toBe('business')
+  })
+
+  it('personal Other stays a reimbursement exception, keeps the description, and is not business cash', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'OTH2' }))
+    const r = await fileReceipt(id, cleanFiling({ ...batteries, ...other({ funding: 'personal' }) }), filer)
+    expect(r.status).toBe('needs_review')
+    expect(r.reasons).toEqual(['personal_reimbursement'])
+    const row = await getReceipt(id)
+    expect(row?.funding).toBe('personal'); expect(row?.paymentMethod).toBeNull()
+    expect(otherPaymentDescription({ funding: row!.funding, paymentMethod: row!.paymentMethod, accountRef: row!.accountRef })).toBe('AMEX 5008')
+  })
+
+  it('an unclassified Other is flagged for payment clarification — never "missing vendor, date, or total"', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'OTH3' }))
+    const r = await fileReceipt(id, cleanFiling({ ...batteries, ...other({}) }), filer)
+    expect(r.reasons).toEqual(['unresolved_payment'])
+    const row = await getReceipt(id)
+    expect(row?.attentionReasons).toEqual(['unresolved_payment'])
+    expect(row?.vendor).toBe('Batteries Plus Bulbs #428'); expect(row?.totalCents).toBe(7901)
+  })
+
+  it('CORRECTING an already-flagged receipt replaces the warning with a clean filing (audit kept)', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'OTH4' }))
+    // 1. Employee files it unclassified → flagged with the accurate payment reason.
+    await fileReceipt(id, cleanFiling({ ...batteries, ...other({}) }), filer)
+    const flagged = await getReceipt(id)
+    expect(flagged?.status).toBe('needs_review')
+    expect(displayAttentionReasons(flagged!.attentionReasons as string[], flagged!)).toEqual(['unresolved_payment'])
+    // 2. Manager classifies it as business + card through the SAME filing path → clean, warning gone.
+    const fixed = await fileReceipt(id, cleanFiling({ ...batteries, ...other({ funding: 'business', paymentMethod: 'card' }) }), { name: 'Darryl', key: 'darryl' })
+    expect(fixed.status).toBe('filed')
+    const row = await getReceipt(id)
+    expect(row?.attentionReasons).toEqual([])
+    expect(row?.accountRef).toBe('other:AMEX 5008')   // the description is preserved through the correction
+    const audit = row!.auditLog as { action: string }[]
+    expect(audit.map((a) => a.action)).toEqual(expect.arrayContaining(['flagged', 'filed']))   // append-only history
+  })
+
+  it('a LEGACY row stored with the generic reason stops showing the misleading warning', async () => {
+    const { id } = await createReceipt(baseReceipt({ imageHash: 'OTH5' }))
+    await fileReceipt(id, cleanFiling({ ...batteries, ...other({}) }), filer)
+    // Simulate a pre-existing row whose stored reason is the old generic 'missing_info'.
+    await client.query(`UPDATE business_receipts SET attention_reasons = '["missing_info"]'::jsonb WHERE id = $1`, [id])
+    const row = await getReceipt(id)
+    expect(row?.attentionReasons).toEqual(['missing_info'])                       // stored history untouched
+    expect(displayAttentionReasons(row!.attentionReasons as string[], row!)).toEqual(['unresolved_payment'])
   })
 })
 

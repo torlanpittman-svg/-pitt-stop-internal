@@ -13,11 +13,15 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   BUSINESS_ENTITIES, EXPENSE_CATEGORIES, PAYMENT_METHODS, FUNDING_SOURCES,
-  attentionReasonLabel, canAcknowledgeOutstanding, outstandingKindLabel, centsToDollars, formatMoney,
+  attentionReasonLabel, canAcknowledgeOutstanding, displayAttentionReasons, outstandingKindLabel,
+  centsToDollars, formatMoney,
 } from '@/apps/expenses/types'
 import { fileReceiptAction, rejectReceiptAction, reopenReceiptAction, retryExtractionAction } from '@/apps/expenses/actions'
 import type { ReviewCardData } from '@/apps/expenses/view'
-import { OTHER_PAYMENT_MAX_LENGTH, RECEIPT_PAYMENT_CHOICES, receiptPaymentChoice, receiptPaymentLabel } from '@/apps/expenses/payment'
+import {
+  OTHER_PAYMENT_MAX_LENGTH, OTHER_PAYMENT_FUNDINGS, OTHER_PAYMENT_METHODS, RECEIPT_PAYMENT_CHOICES,
+  otherPaymentDescription, otherPaymentFunding, receiptPaymentChoice, receiptPaymentLabel,
+} from '@/apps/expenses/payment'
 
 export type { ReviewCardData }
 export interface VehicleOption { id: string; label: string }
@@ -36,7 +40,11 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
   const [total, setTotal] = useState(centsToDollars(r.totalCents))
   const [paymentMethod, setPaymentMethod] = useState(r.paymentMethod ?? '')
   const [paymentChoice, setPaymentChoice] = useState(receiptPaymentChoice(r))
-  const [otherPayment, setOtherPayment] = useState(r.accountRef?.startsWith('other:') ? r.accountRef.slice(6) : '')
+  const [otherPayment, setOtherPayment] = useState(otherPaymentDescription(r) ?? '')
+  // A stored Other source reopens with its existing classification (from the row's funding/method, not its text).
+  const storedOther = otherPaymentDescription(r) !== null
+  const [otherFunding, setOtherFunding] = useState(storedOther ? otherPaymentFunding(r) : '')
+  const [otherPaymentMethod, setOtherPaymentMethod] = useState(storedOther && r.funding === 'business' ? (r.paymentMethod ?? '') : '')
   const [inventoryVehicleId, setInventoryVehicleId] = useState(r.inventoryVehicleId ?? '')
   const [memo, setMemo] = useState(r.memo ?? '')
   const [busy, setBusy] = useState(false)
@@ -67,6 +75,7 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
   const formFields = () => ({
     id: r.id, entity, category, categoryMode: 'single', funding, paymentMethod: paymentMethod || undefined,
     paymentChoice: paymentChoice || undefined, otherPayment,
+    otherFunding: otherFunding || undefined, otherPaymentMethod: otherPaymentMethod || undefined,
     vendor, receiptDate, subtotal, tax, total, memo, inventoryVehicleId,
   })
   // Manager files via the SAME operational path as the employee (categoryMode 'single' with the chosen key).
@@ -76,9 +85,13 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
   const acknowledgeNow = () => run(() => fileReceiptAction({ ...formFields(), acknowledge: true }), 'Reviewed.')
 
   const decided = r.status === 'filed' || r.status === 'approved' || r.status === 'rejected'
-  // Offer "Mark reviewed" when the stored reasons are all real-world outstanding items (never for a receipt
-  // that just needs a field supplied — that must be fixed, not acknowledged).
-  const acknowledgeable = r.status === 'needs_review' && canAcknowledgeOutstanding(r.attentionReasons)
+  // What to SHOW: a receipt flagged before the payment reasons existed stored the generic 'missing_info'.
+  // Re-derive what it actually means from this row's facts so the queue never claims a missing vendor/date/
+  // total on a complete receipt. The stored history is untouched; the server recomputes on the next filing.
+  const shownReasons = displayAttentionReasons(r.attentionReasons, r)
+  // Offer "Mark reviewed" when the remaining reasons are all real-world outstanding items (never for a
+  // receipt that just needs a field supplied — that must be fixed, not acknowledged). The server re-checks.
+  const acknowledgeable = r.status === 'needs_review' && canAcknowledgeOutstanding(shownReasons)
 
   return (
     <div className="rounded-2xl bg-gray-900 border border-gray-800 overflow-hidden">
@@ -104,11 +117,11 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
           </div>
 
           {/* Why it needs attention (or, once reviewed, what remains outstanding) */}
-          {r.status === 'needs_review' && r.attentionReasons.length > 0 && (
+          {r.status === 'needs_review' && shownReasons.length > 0 && (
             <div className="rounded-xl border border-amber-900/50 bg-amber-950/20 px-3 py-2">
-              <p className="text-amber-300 text-xs font-semibold">{r.clarifiedAt ? `Reviewed — still outstanding: ${outstandingKindLabel(r.attentionReasons)}` : 'Needs attention'}</p>
+              <p className="text-amber-300 text-xs font-semibold">{r.clarifiedAt ? `Reviewed — still outstanding: ${outstandingKindLabel(shownReasons)}` : 'Needs attention'}</p>
               <ul className="text-amber-200/80 text-xs mt-1 list-disc list-inside">
-                {r.attentionReasons.map((k) => <li key={k}>{attentionReasonLabel(k)}</li>)}
+                {shownReasons.map((k) => <li key={k}>{attentionReasonLabel(k)}</li>)}
               </ul>
               {r.clarifiedAt && <p className="text-gray-500 text-[11px] mt-1">Reviewed by {r.clarifiedBy ?? 'manager'} — the receipt info is confirmed; the payment/allocation is still open.</p>}
             </div>
@@ -136,15 +149,35 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
           </div>
 
           <label className={lbl}>Paid with<br />
-            <select value={paymentChoice} onChange={(e) => { setPaymentChoice(e.target.value); if (e.target.value !== 'other') setOtherPayment('') }} disabled={decided} className={box}>
+            <select value={paymentChoice} onChange={(e) => {
+              setPaymentChoice(e.target.value)
+              if (e.target.value !== 'other') { setOtherPayment(''); setOtherFunding(''); setOtherPaymentMethod('') }
+              else if (!otherFunding) setOtherFunding('unclassified') // explicit default — the select never implies a classification nobody made
+            }} disabled={decided} className={box}>
               <option value="">{receiptPaymentLabel(r)} (existing details)</option>
               {RECEIPT_PAYMENT_CHOICES.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
               <option value="unpaid">Not paid yet</option>
             </select>
           </label>
-          {paymentChoice === 'other' && <label className={lbl}>Other payment source<br />
-            <input value={otherPayment} onChange={(e) => setOtherPayment(e.target.value)} maxLength={OTHER_PAYMENT_MAX_LENGTH} disabled={decided} className={box} />
-          </label>}
+          {paymentChoice === 'other' && <div className="grid grid-cols-1 gap-3">
+            <label className={lbl}>Other payment source (kept as entered)<br />
+              <input value={otherPayment} onChange={(e) => setOtherPayment(e.target.value)} maxLength={OTHER_PAYMENT_MAX_LENGTH} disabled={decided} className={box} />
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              {/* Explicit classification — the description is never read to decide funding. */}
+              <label className={lbl}>Whose money{!otherFunding || otherFunding === 'unclassified' ? <span className="text-amber-400"> · needs classifying</span> : null}<br />
+                <select value={otherFunding} onChange={(e) => { setOtherFunding(e.target.value); if (e.target.value !== 'business') setOtherPaymentMethod('') }} disabled={decided} className={box}>
+                  {OTHER_PAYMENT_FUNDINGS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
+                </select></label>
+              {otherFunding === 'business' && (
+                <label className={lbl}>Method{!otherPaymentMethod && <span className="text-amber-400"> · required</span>}<br />
+                  <select value={otherPaymentMethod} onChange={(e) => setOtherPaymentMethod(e.target.value)} disabled={decided} className={box}>
+                    <option value="">—</option>
+                    {OTHER_PAYMENT_METHODS.map((m) => <option key={m} value={m}>{m === 'ach' ? 'ACH / bank transfer' : m}</option>)}
+                  </select></label>
+              )}
+            </div>
+          </div>}
           {!paymentChoice && <div className="grid grid-cols-2 gap-3">
             <label className={lbl}>Funding<br />
               <select value={funding} onChange={(e) => setFunding(e.target.value)} disabled={decided} className={box}>

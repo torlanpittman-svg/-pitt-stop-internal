@@ -77,6 +77,9 @@ export async function saveReviewAction(f: ReviewForm): Promise<{ ok: boolean; er
 export interface FileForm {
   id: string; token?: string
   paymentChoice?: string; otherPayment?: string
+  // Explicit classification of an "Other" payment source (whose money, and — for business money — the
+  // instrument). Validated against the server-side allowlist; never derived from the description text.
+  otherFunding?: string; otherPaymentMethod?: string
   entity?: string; category?: string; categoryMode?: string; funding?: string; paymentMethod?: string
   vendor?: string; receiptDate?: string; subtotal?: string; tax?: string; total?: string
   memo?: string; filingNote?: string; inventoryVehicleId?: string; duplicate?: boolean
@@ -114,7 +117,7 @@ export async function fileReceiptAction(f: FileForm): Promise<FileResult> {
     totalCents: total,
   }
   if (f.paymentChoice !== undefined) {
-    const payment = resolveReceiptPayment(f.paymentChoice, f.otherPayment)
+    const payment = resolveReceiptPayment(f.paymentChoice, f.otherPayment, { funding: f.otherFunding, paymentMethod: f.otherPaymentMethod })
     if (!payment.ok) return { ok: false, error: payment.error }
     // Derive instrument, funding and account together on the server, never from client-supplied mappings.
     Object.assign(input, payment.payment)

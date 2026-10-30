@@ -6,7 +6,10 @@
  * vehicle; the capture token authorizes only its own receipt; ownership fails closed for a foreign id.
  */
 import { describe, it, expect } from 'vitest'
-import { decideFiling, categoryChoiceFrom, canAcknowledgeOutstanding, isOutstandingReason, outstandingKindLabel, type FilingAnswers } from './types'
+import {
+  decideFiling, categoryChoiceFrom, canAcknowledgeOutstanding, isOutstandingReason, outstandingKindLabel,
+  displayAttentionReasons, paymentAttentionReasons, purchaseFactsMissing, attentionReasonLabel, type FilingAnswers,
+} from './types'
 import { signCaptureToken, verifyCaptureToken } from './capture-token'
 import { canFileReceipt } from './authz'
 import type { AuthedActor } from '@/apps/auth/employee-session'
@@ -80,10 +83,21 @@ describe('decideFiling — exceptions save but flag (never trap)', () => {
     expect(d.reasons).toContain('unpaid')
     expect(d.paymentMethod).toBeNull()
   })
-  it('business chosen without a method → missing_info (never inferred)', () => {
+  it('business chosen without a method → missing_payment_method (never inferred, never "missing vendor/date/total")', () => {
     const d = decideFiling(complete({ funding: 'business', paymentMethod: null }))
     expect(d.status).toBe('needs_review')
-    expect(d.reasons).toContain('missing_info')
+    expect(d.reasons).toContain('missing_payment_method')
+    expect(d.reasons).not.toContain('missing_info')   // the purchase facts are all present
+  })
+  it('unclassified funding → unresolved_payment, NOT the missing vendor/date/total warning', () => {
+    const d = decideFiling(complete({ funding: 'unknown', paymentMethod: null }))
+    expect(d.status).toBe('needs_review')
+    expect(d.reasons).toEqual(['unresolved_payment'])
+    expect(attentionReasonLabel('unresolved_payment')).toMatch(/business or personal/i)
+  })
+  it('a receipt missing BOTH purchase facts and a payment classification shows both reasons distinctly', () => {
+    const d = decideFiling(complete({ funding: 'unknown', paymentMethod: null, totalCents: null }))
+    expect(d.reasons).toEqual(['missing_info', 'unresolved_payment'])
   })
   it('business not chosen → missing_business', () => {
     const d = decideFiling(complete({ entity: 'unassigned' }))
@@ -100,12 +114,90 @@ describe('decideFiling — exceptions save but flag (never trap)', () => {
   })
 })
 
+// ── The reported case: vendor/date/total all present, payment source "Other — AMEX 5008". ──
+describe('decideFiling — an Other payment source, explicitly classified', () => {
+  const batteriesPlus = (over: Partial<FilingAnswers> = {}): FilingAnswers => complete({
+    vendor: 'Batteries Plus Bulbs #428', receiptDate: '2026-10-06', totalCents: 7901, ...over,
+  })
+
+  it('business Other with an explicit method FILES cleanly (no warning at all)', () => {
+    const d = decideFiling(batteriesPlus({ funding: 'business', paymentMethod: 'card' }))
+    expect(d.status).toBe('filed')
+    expect(d.reasons).toEqual([])
+    expect(d.paymentMethod).toBe('card')
+  })
+  it('business Other with no method is flagged for the METHOD only — the facts are complete', () => {
+    const d = decideFiling(batteriesPlus({ funding: 'business', paymentMethod: null }))
+    expect(d.reasons).toEqual(['missing_payment_method'])
+  })
+  it('personal Other keeps the existing reimbursement handling and its accurate warning', () => {
+    const d = decideFiling(batteriesPlus({ funding: 'personal', paymentMethod: null }))
+    expect(d.status).toBe('needs_review')
+    expect(d.reasons).toEqual(['personal_reimbursement'])
+    expect(d.paymentMethod).toBeNull()               // never booked as business cash
+  })
+  it('an unclassified Other stays flagged for payment clarification', () => {
+    const d = decideFiling(batteriesPlus({ funding: 'unknown', paymentMethod: null }))
+    expect(d.status).toBe('needs_review')
+    expect(d.reasons).toEqual(['unresolved_payment'])
+  })
+  it('genuinely missing purchase facts still say so', () => {
+    const d = decideFiling(batteriesPlus({ vendor: '', receiptDate: null, totalCents: null, paymentMethod: 'card' }))
+    expect(d.reasons).toEqual(['missing_info'])
+    expect(attentionReasonLabel('missing_info')).toBe('Missing vendor, date, or total')
+  })
+})
+
+// ── Existing rows stored the generic 'missing_info' before the payment reasons existed. ──
+describe('legacy stored reasons are reconciled for display (never rewritten)', () => {
+  const facts = { vendor: 'Batteries Plus Bulbs #428', receiptDate: '2026-10-06', totalCents: 7901 }
+
+  it('a complete receipt with unresolved funding stops claiming a missing vendor/date/total', () => {
+    const shown = displayAttentionReasons(['missing_info'], { ...facts, funding: 'unknown', paymentMethod: null })
+    expect(shown).toEqual(['unresolved_payment'])
+  })
+  it('a complete business receipt with no recorded method shows the method gap', () => {
+    expect(displayAttentionReasons(['missing_info'], { ...facts, funding: 'business', paymentMethod: null })).toEqual(['missing_payment_method'])
+  })
+  it('once corrected (business + method) the stale warning disappears entirely', () => {
+    expect(displayAttentionReasons(['missing_info'], { ...facts, funding: 'business', paymentMethod: 'card' })).toEqual([])
+  })
+  it('a receipt that really is missing a total keeps the warning', () => {
+    const shown = displayAttentionReasons(['missing_info'], { ...facts, totalCents: null, funding: 'business', paymentMethod: 'card' })
+    expect(shown).toEqual(['missing_info'])
+  })
+  it('both gaps at once are reported separately, in stable order', () => {
+    const shown = displayAttentionReasons(['missing_info'], { vendor: null, receiptDate: null, totalCents: null, funding: 'unknown', paymentMethod: null })
+    expect(shown).toEqual(['missing_info', 'unresolved_payment'])
+  })
+  it('other stored reasons pass through untouched (and unknown keys are preserved)', () => {
+    expect(displayAttentionReasons(['personal_reimbursement'], { ...facts, funding: 'personal', paymentMethod: null })).toEqual(['personal_reimbursement'])
+    expect(displayAttentionReasons(['duplicate', 'missing_info'], { ...facts, funding: 'business', paymentMethod: 'cash' })).toEqual(['duplicate'])
+    expect(displayAttentionReasons(['future_reason_x'], facts)).toEqual(['future_reason_x'])
+  })
+  it('a stale missing_info no longer blocks acknowledging a real outstanding item', () => {
+    const stored = ['personal_reimbursement', 'missing_info']
+    expect(canAcknowledgeOutstanding(stored)).toBe(false)                                  // as stored
+    const shown = displayAttentionReasons(stored, { ...facts, funding: 'personal', paymentMethod: null })
+    expect(canAcknowledgeOutstanding(shown)).toBe(true)                                    // nothing fixable remains
+  })
+  it('the helpers are honest about each half', () => {
+    expect(purchaseFactsMissing(facts)).toBe(false)
+    expect(purchaseFactsMissing({ ...facts, totalCents: 0 })).toBe(true)
+    expect(paymentAttentionReasons({ funding: 'business', paymentMethod: 'check' })).toEqual([])
+    expect(paymentAttentionReasons({ funding: 'unpaid' })).toEqual([])                      // already its own reason
+    expect(paymentAttentionReasons({ funding: null })).toEqual(['unresolved_payment'])
+  })
+})
+
 describe('acknowledge-outstanding classification (manager resolution)', () => {
   it('personal / unpaid / mixed are the only acknowledgeable outstanding reasons', () => {
     expect(isOutstandingReason('personal_reimbursement')).toBe(true)
     expect(isOutstandingReason('unpaid')).toBe(true)
     expect(isOutstandingReason('mixed_category')).toBe(true)
     expect(isOutstandingReason('missing_info')).toBe(false)
+    expect(isOutstandingReason('unresolved_payment')).toBe(false)       // must be classified, not acknowledged
+    expect(isOutstandingReason('missing_payment_method')).toBe(false)
     expect(isOutstandingReason('unclear_category')).toBe(false)
     expect(isOutstandingReason('duplicate')).toBe(false)
   })

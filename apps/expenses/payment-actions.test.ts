@@ -26,6 +26,22 @@ it('validates Other text before filing', async () => {
   expect((await fileReceiptAction({ id: 'r1', paymentChoice: 'other', otherPayment: ' ' })).ok).toBe(false)
   expect(fileReceipt).not.toHaveBeenCalled()
 })
+it('an Other source is classified from the explicit answers, server-side', async () => {
+  await fileReceiptAction({ id: 'r1', paymentChoice: 'other', otherPayment: 'AMEX 5008', otherFunding: 'business', otherPaymentMethod: 'card' })
+  expect(vi.mocked(fileReceipt).mock.calls[0][1]).toMatchObject({ funding: 'business', paymentMethod: 'card', accountRef: 'other:AMEX 5008', paymentLast4: null })
+})
+it('an Other source with no classification stays unknown funding (never inferred from the text)', async () => {
+  await fileReceiptAction({ id: 'r1', paymentChoice: 'other', otherPayment: 'business amex', funding: 'business', paymentMethod: 'card' })
+  expect(vi.mocked(fileReceipt).mock.calls[0][1]).toMatchObject({ funding: 'unknown', paymentMethod: null, accountRef: 'other:business amex' })
+})
+it('a personal Other keeps the description and the personal funding', async () => {
+  await fileReceiptAction({ id: 'r1', paymentChoice: 'other', otherPayment: 'AMEX 5008', otherFunding: 'personal', otherPaymentMethod: 'card' })
+  expect(vi.mocked(fileReceipt).mock.calls[0][1]).toMatchObject({ funding: 'personal', paymentMethod: null, accountRef: 'other:AMEX 5008' })
+})
+it('a forged Other classification cannot assert business funding', async () => {
+  await fileReceiptAction({ id: 'r1', paymentChoice: 'other', otherPayment: 'AMEX 5008', otherFunding: 'definitely-business' })
+  expect(vi.mocked(fileReceipt).mock.calls[0][1]).toMatchObject({ funding: 'unknown', paymentMethod: null })
+})
 it('cannot change another uploader’s receipt', async () => {
   vi.mocked(canFileReceipt).mockReturnValue(false)
   expect((await fileReceiptAction({ id: 'r1', paymentChoice: 'amb_debit' })).ok).toBe(false)

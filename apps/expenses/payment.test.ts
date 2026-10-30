@@ -3,6 +3,7 @@ import { decideFiling } from './types'
 import {
   RECEIPT_PAYMENT_CHOICES, resolveReceiptPayment, receiptPaymentChoice, receiptPaymentLabel,
   matchPaymentSource, matchedAccountRef, matchedCardLast4, autoSelectPayment,
+  otherPaymentDescription, otherPaymentFunding, OTHER_PAYMENT_FUNDINGS,
 } from './payment'
 
 // ── The five approved business sources + Cash/Personal/Other, defined ONCE and shared by both workflows. ──
@@ -50,12 +51,84 @@ describe('payment registry — the five approved sources', () => {
   it('Other preserves text without guessing funding; unpaid is a distinct secondary path', () => {
     const r = resolveReceiptPayment('other', '  Company Amex  ')
     expect(r).toEqual({ ok: true, payment: { funding: 'unknown', paymentMethod: null, accountRef: 'other:Company Amex', paymentLast4: null } })
-    if (r.ok) expect(receiptPaymentLabel(r.payment)).toBe('Other: Company Amex')
+    if (r.ok) expect(receiptPaymentLabel(r.payment)).toBe('Other: Company Amex · not yet classified')
     expect(resolveReceiptPayment('unpaid')).toEqual({ ok: true, payment: { funding: 'unpaid', paymentMethod: null, accountRef: null, paymentLast4: null } })
     expect(resolveReceiptPayment('forged-account').ok).toBe(false)
   })
   it.each(['', '   ', 'x'.repeat(35), 'card\nnumber'])('rejects invalid Other text', (text) => {
     expect(resolveReceiptPayment('other', text).ok).toBe(false)
+  })
+})
+
+// ── An "Other" source (e.g. the business Amex) is classified EXPLICITLY; the text is never parsed. ──
+describe('Other payment source — explicit business/personal classification', () => {
+  const AMEX = 'AMEX 5008'
+
+  it('business + method → business funding, the instrument, and the description preserved', () => {
+    const r = resolveReceiptPayment('other', AMEX, { funding: 'business', paymentMethod: 'card' })
+    expect(r).toEqual({ ok: true, payment: { funding: 'business', paymentMethod: 'card', accountRef: 'other:AMEX 5008', paymentLast4: null } })
+    if (!r.ok) throw new Error('fixture')
+    expect(receiptPaymentChoice(r.payment)).toBe('other')              // reopens as Other, not as a bank source
+    expect(otherPaymentDescription(r.payment)).toBe(AMEX)              // survives save → reopen
+    expect(otherPaymentFunding(r.payment)).toBe('business')
+    expect(receiptPaymentLabel(r.payment)).toBe('Other: AMEX 5008 · business card')
+  })
+
+  it('business with a missing/forged method is flagged, never guessed', () => {
+    for (const m of [undefined, '', 'unknown', 'bitcoin', 42]) {
+      const r = resolveReceiptPayment('other', AMEX, { funding: 'business', paymentMethod: m })
+      expect(r.ok).toBe(true)
+      if (r.ok) expect(r.payment).toMatchObject({ funding: 'business', paymentMethod: null, accountRef: 'other:AMEX 5008' })
+    }
+    const r = resolveReceiptPayment('other', AMEX, { funding: 'business' })
+    if (!r.ok) throw new Error('fixture')
+    expect(decideFiling({ ...r.payment, entity: 'detail', category: { kind: 'single', key: 'parts' }, vendor: 'Batteries Plus Bulbs #428', receiptDate: '2026-10-06', totalCents: 7901 }).reasons)
+      .toEqual(['missing_payment_method'])
+  })
+
+  it('personal Other keeps the reimbursement path AND the description', () => {
+    const r = resolveReceiptPayment('other', AMEX, { funding: 'personal', paymentMethod: 'card' })
+    expect(r).toEqual({ ok: true, payment: { funding: 'personal', paymentMethod: null, accountRef: 'other:AMEX 5008', paymentLast4: null } })
+    if (!r.ok) throw new Error('fixture')
+    expect(receiptPaymentChoice(r.payment)).toBe('other')              // NOT collapsed into the generic Personal choice
+    expect(otherPaymentFunding(r.payment)).toBe('personal')
+    expect(receiptPaymentLabel(r.payment)).toBe('Other: AMEX 5008 · personal money')
+    expect(decideFiling({ ...r.payment, entity: 'detail', category: { kind: 'single', key: 'parts' }, vendor: 'Batteries Plus Bulbs #428', receiptDate: '2026-10-06', totalCents: 7901 }).reasons)
+      .toEqual(['personal_reimbursement'])
+  })
+
+  it('unclassified (or a forged classification) stays unknown funding and flagged', () => {
+    for (const f of [undefined, '', 'unclassified', 'business-ish', 7]) {
+      const r = resolveReceiptPayment('other', AMEX, { funding: f })
+      expect(r.ok).toBe(true)
+      if (r.ok) expect(r.payment).toMatchObject({ funding: 'unknown', paymentMethod: null, accountRef: 'other:AMEX 5008' })
+    }
+    const r = resolveReceiptPayment('other', AMEX)
+    if (!r.ok) throw new Error('fixture')
+    expect(decideFiling({ ...r.payment, entity: 'detail', category: { kind: 'single', key: 'parts' }, vendor: 'Batteries Plus Bulbs #428', receiptDate: '2026-10-06', totalCents: 7901 }).reasons)
+      .toEqual(['unresolved_payment'])
+  })
+
+  it('a classification is never inferred from the description text', () => {
+    const r = resolveReceiptPayment('other', 'business debit card')   // says "business" — still unclassified
+    expect(r.ok && r.payment.funding).toBe('unknown')
+    expect(OTHER_PAYMENT_FUNDINGS.map((f) => f.key)).toEqual(['business', 'personal', 'unclassified'])
+  })
+
+  it('an invalid description is still rejected whatever the classification', () => {
+    expect(resolveReceiptPayment('other', '  ', { funding: 'business', paymentMethod: 'card' }).ok).toBe(false)
+    expect(resolveReceiptPayment('other', 'x'.repeat(35), { funding: 'personal' }).ok).toBe(false)
+  })
+
+  it('the classification answers are ignored for a real approved source', () => {
+    const r = resolveReceiptPayment('amb_check', '', { funding: 'personal', paymentMethod: 'card' })
+    expect(r).toEqual({ ok: true, payment: { funding: 'business', paymentMethod: 'check', accountRef: '*2649', paymentLast4: null } })
+  })
+
+  it('a plain Personal choice (no Other text) is unchanged', () => {
+    const r = resolveReceiptPayment('personal')
+    expect(r.ok && r.payment.accountRef).toBeNull()
+    expect(receiptPaymentChoice({ funding: 'personal', paymentMethod: null, accountRef: null })).toBe('personal')
   })
 })
 

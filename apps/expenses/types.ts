@@ -118,6 +118,8 @@ export function isFundingSource(f: unknown): f is FundingSource {
 export const ATTENTION_REASONS = [
   { key: 'missing_business',       label: 'Business not chosen' },
   { key: 'missing_info',           label: 'Missing vendor, date, or total' },
+  { key: 'unresolved_payment',     label: 'Payment source not classified — business or personal?' },
+  { key: 'missing_payment_method', label: 'Payment method not recorded (card, check, cash, ACH)' },
   { key: 'mixed_category',         label: 'More than one category — needs splitting' },
   { key: 'unclear_category',       label: 'Category unclear (“Other / Not sure”)' },
   { key: 'personal_reimbursement', label: 'Paid with personal money — reimbursement review' },
@@ -142,6 +144,50 @@ export function isOutstandingReason(k: string): k is AttentionReason { return (O
 export function canAcknowledgeOutstanding(reasons: readonly string[]): boolean {
   return reasons.length > 0 && reasons.every(isOutstandingReason)
 }
+// ── Legacy reason reconciliation (DISPLAY ONLY) ─────────────────────────────────────────────────────
+// Receipts filed BEFORE the payment reasons existed stored the generic 'missing_info' for an unresolved
+// payment source or a missing instrument. The stored array is append-only history and is NEVER rewritten;
+// instead the queue re-derives what that generic reason actually means from the receipt's CURRENT facts, so
+// a receipt with a vendor, a date and a total never keeps showing "Missing vendor, date, or total".
+// A receipt refiled through the normal workflow gets accurate reasons from decideFiling() anyway.
+export interface AttentionFacts {
+  vendor?: string | null
+  receiptDate?: string | null
+  totalCents?: number | null
+  funding?: string | null
+  paymentMethod?: string | null
+}
+/** Are the purchase facts (vendor / date / total) genuinely incomplete? */
+export function purchaseFactsMissing(f: AttentionFacts): boolean {
+  const vendorOk = typeof f.vendor === 'string' && f.vendor.trim().length > 0
+  const dateOk = isBusinessDate(f.receiptDate)
+  const totalOk = typeof f.totalCents === 'number' && f.totalCents > 0
+  return !vendorOk || !dateOk || !totalOk
+}
+/** The payment-side reason(s) implied by a row's stored funding/method (same rules as decideFiling). */
+export function paymentAttentionReasons(f: AttentionFacts): AttentionReason[] {
+  if (f.funding === 'business') {
+    return f.paymentMethod && f.paymentMethod !== 'unknown' ? [] : ['missing_payment_method']
+  }
+  if (f.funding === 'personal' || f.funding === 'unpaid') return [] // already its own stored reason
+  return ['unresolved_payment']
+}
+/**
+ * The reasons to SHOW for a stored row: every stored reason as-is, except a generic 'missing_info', which is
+ * re-derived from the row's facts (kept when vendor/date/total really are missing, and replaced by the
+ * accurate payment reason when the real gap is the payment source). Pure, order-stable, never persisted.
+ */
+export function displayAttentionReasons(stored: readonly string[], facts: AttentionFacts): string[] {
+  const shown = new Set<string>(stored.filter((k) => k !== 'missing_info'))
+  if (stored.includes('missing_info')) {
+    if (purchaseFactsMissing(facts)) shown.add('missing_info')
+    for (const r of paymentAttentionReasons(facts)) shown.add(r)
+  }
+  const known = ATTENTION_REASONS.map((r) => r.key).filter((k) => shown.has(k)) as string[]
+  const unknown = [...shown].filter((k) => !known.includes(k)) // forward-compatible: keep anything unrecognized
+  return [...known, ...unknown]
+}
+
 /** Short human label for the outstanding action still pending on a clarified receipt. */
 export function outstandingKindLabel(reasons: readonly string[]): string {
   const parts: string[] = []
@@ -300,19 +346,24 @@ export function decideFiling(a: FilingAnswers): FilingOutcome {
   if (!(a.entity === 'detail' || a.entity === 'auto_sales' || a.entity === 'shared')) reasons.add('missing_business')
 
   // Q3 → funding. Only business-funding carries a real payment instrument; personal/unpaid are flagged.
+  // The two payment gaps are their OWN reasons — never 'missing_info' (which means vendor/date/total):
+  //   unresolved_payment     = funding not classified (e.g. an "Other" source nobody called business or personal).
+  //   missing_payment_method = business money, but the instrument (card/check/cash/ACH) was never recorded.
+  // Funding is NEVER inferred here — an unanswered source stays unresolved and visible.
   let paymentMethod: PaymentMethod | null = null
   if (a.funding === 'business') {
     paymentMethod = a.paymentMethod && a.paymentMethod !== 'unknown' ? a.paymentMethod : null
-    if (!paymentMethod) reasons.add('missing_info')
+    if (!paymentMethod) reasons.add('missing_payment_method')
   } else if (a.funding === 'personal') {
     reasons.add('personal_reimbursement')
   } else if (a.funding === 'unpaid') {
     reasons.add('unpaid')
   } else {
-    reasons.add('missing_info') // funding unknown/unanswered
+    reasons.add('unresolved_payment') // funding unknown/unanswered
   }
 
   // Confirmed purchase facts required for a clean filing (never coerce a blank into $0 / today).
+  // 'missing_info' now means EXACTLY this — a missing vendor, date, or total — and nothing else.
   const vendorOk = typeof a.vendor === 'string' && a.vendor.trim().length > 0
   const dateOk = isBusinessDate(a.receiptDate)
   const totalOk = typeof a.totalCents === 'number' && a.totalCents > 0

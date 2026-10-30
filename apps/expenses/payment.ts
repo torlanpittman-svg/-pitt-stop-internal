@@ -21,6 +21,28 @@ import type { FundingSource, PaymentMethod } from './types'
 
 export const OTHER_PAYMENT_MAX_LENGTH = 34
 
+// ── "Other" payment source (a real card/account that is not one of the five approved sources — e.g. the
+// business Amex). The DESCRIPTION is free text and is preserved verbatim, but funding is NEVER inferred from
+// it: the person says explicitly whose money it was, and, for business money, which instrument was used.
+// 'unclassified' is a legitimate answer ("not sure") — it saves the receipt and leaves it clearly flagged.
+export const OTHER_PAYMENT_FUNDINGS = [
+  { key: 'business', label: 'Business money' },
+  { key: 'personal', label: 'Personal money (reimbursement)' },
+  { key: 'unclassified', label: 'Not sure — a manager will classify it' },
+] as const
+export type OtherPaymentFunding = (typeof OTHER_PAYMENT_FUNDINGS)[number]['key']
+export function isOtherPaymentFunding(v: unknown): v is OtherPaymentFunding {
+  return typeof v === 'string' && OTHER_PAYMENT_FUNDINGS.some((f) => f.key === v)
+}
+/** The instruments an Other BUSINESS source can be paid with (the real ones; never 'unknown'). */
+export const OTHER_PAYMENT_METHODS: readonly PaymentMethod[] = ['card', 'check', 'cash', 'ach', 'other']
+export function isOtherPaymentMethod(v: unknown): v is PaymentMethod {
+  return typeof v === 'string' && (OTHER_PAYMENT_METHODS as readonly string[]).includes(v)
+}
+/** The explicit answers that accompany an 'other' choice (both optional → stays unclassified). */
+export interface OtherPaymentAnswers { funding?: unknown; paymentMethod?: unknown }
+const OTHER_PREFIX = 'other:'
+
 export interface PaymentSource {
   readonly key: string
   readonly label: string
@@ -53,7 +75,7 @@ export interface ReceiptPayment {
   paymentLast4: string | null    // the CARD ending for a card source (null for check/cash/other)
 }
 
-export function resolveReceiptPayment(choice: unknown, other: unknown = ''):
+export function resolveReceiptPayment(choice: unknown, other: unknown = '', answers: OtherPaymentAnswers = {}):
   { ok: true; payment: ReceiptPayment } | { ok: false; error: string } {
   // Preserve unpaid as an explicit secondary option; it is not a bank or a payment method.
   if (choice === 'unpaid') return { ok: true, payment: { funding: 'unpaid', paymentMethod: null, accountRef: null, paymentLast4: null } }
@@ -64,8 +86,22 @@ export function resolveReceiptPayment(choice: unknown, other: unknown = ''):
     if (!description || description.length > OTHER_PAYMENT_MAX_LENGTH || /[\x00-\x1f\x7f]/.test(description)) {
       return { ok: false, error: `Describe the payment source in 1–${OTHER_PAYMENT_MAX_LENGTH} characters.` }
     }
-    // Unknown funding requires clarification; free text must never assert business-account cash flow.
-    return { ok: true, payment: { funding: 'unknown', paymentMethod: null, accountRef: `other:${description}`, paymentLast4: null } }
+    // The description is preserved verbatim in every case. Funding comes ONLY from the explicit answer —
+    // the free text is never parsed to assert business-account cash flow.
+    const accountRef = `${OTHER_PREFIX}${description}`
+    const funding = isOtherPaymentFunding(answers.funding) ? answers.funding : 'unclassified'
+    if (funding === 'business') {
+      // Business money: the instrument is captured explicitly. A missing one is NOT guessed — it is left
+      // null so decideFiling() flags 'missing_payment_method' (the receipt still saves).
+      const method = isOtherPaymentMethod(answers.paymentMethod) ? answers.paymentMethod : null
+      return { ok: true, payment: { funding: 'business', paymentMethod: method, accountRef, paymentLast4: null } }
+    }
+    if (funding === 'personal') {
+      // Personal money keeps the existing reimbursement-review handling; the source text is kept for context.
+      return { ok: true, payment: { funding: 'personal', paymentMethod: null, accountRef, paymentLast4: null } }
+    }
+    // Unclassified → unknown funding, which stays flagged for a clear payment clarification.
+    return { ok: true, payment: { funding: 'unknown', paymentMethod: null, accountRef, paymentLast4: null } }
   }
   return { ok: true, payment: { funding: selected.funding, paymentMethod: selected.method, accountRef: selected.accountRef, paymentLast4: selected.cardLast4 } }
 }
@@ -76,17 +112,36 @@ interface StoredPayment { funding: string; paymentMethod: string | null; account
 /** Reverse: which choice key a stored receipt corresponds to ('' when it maps to no current source — e.g. a
  *  historical generic *2649 card with no recorded card ending, which we must NOT retro-assign to 0022/0320). */
 export function receiptPaymentChoice(r: StoredPayment): string {
+  // An 'other:' account ref is checked FIRST: a classified Other source (business OR personal) must still
+  // reopen as "Other" with its description intact, not collapse into the generic Personal choice.
+  if (r.accountRef?.startsWith(OTHER_PREFIX)) return 'other'
   if (r.funding === 'personal' || r.funding === 'unpaid') return r.funding
-  if (r.accountRef?.startsWith('other:')) return 'other'
   const last4 = r.paymentLast4 ?? null
   return RECEIPT_PAYMENT_CHOICES.find((p) =>
     p.key !== 'other' && p.funding === r.funding && p.method === r.paymentMethod && p.accountRef === r.accountRef && (p.cardLast4 ?? null) === last4,
   )?.key ?? ''
 }
 
+/** The preserved description of an 'Other' source, or null when the row is not an Other source. */
+export function otherPaymentDescription(r: StoredPayment): string | null {
+  return r.accountRef?.startsWith(OTHER_PREFIX) ? r.accountRef.slice(OTHER_PREFIX.length) : null
+}
+/** How a stored 'Other' source is classified (from the row's funding — never from its description). */
+export function otherPaymentFunding(r: StoredPayment): OtherPaymentFunding {
+  if (r.funding === 'business') return 'business'
+  if (r.funding === 'personal') return 'personal'
+  return 'unclassified'
+}
+
 export function receiptPaymentLabel(r: StoredPayment): string {
   const choice = receiptPaymentChoice(r)
-  if (choice === 'other') return `Other: ${r.accountRef!.slice(6)}`
+  if (choice === 'other') {
+    const kind = otherPaymentFunding(r)
+    const detail = kind === 'business' ? ['business', r.paymentMethod].filter(Boolean).join(' ')
+      : kind === 'personal' ? 'personal money'
+      : 'not yet classified'
+    return `Other: ${otherPaymentDescription(r)} · ${detail}`
+  }
   if (choice === 'unpaid') return 'Not paid yet'
   const selected = RECEIPT_PAYMENT_CHOICES.find((p) => p.key === choice)
   if (selected) return selected.label
