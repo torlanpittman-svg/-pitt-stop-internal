@@ -17,6 +17,20 @@ import { useIdentity } from '@/app/components/IdentityBar'
 import { useSharedInvoiceDiscovery, SharedInvoiceOfferSheet } from '@/app/components/SharedInvoice'
 import { type JobLine, type InterpEntry, linesFromEntries, chooseCandidate, keepAsTyped, choosePart, chooseTires, reopenChoice } from '@/apps/quick-entry/job-lines'
 import { type CustomerMatch, type CustVehicle } from '@/apps/quick-entry/customers'
+import { draftKey as draftKeyFor, saveDraft, loadDraftEntry, clearDraft, draftAgeLabel } from '@/app/lib/draft'
+
+type DraftShape = {
+  cust?: { first: string; last: string; phone: string; email: string }
+  veh?: { vin: string; year: string; make: string; model: string; color: string }
+  vehicleMode?: 'new' | 'existing' | 'pick'
+  selectedVehicleId?: string | null
+  lines?: JobLine[]
+  workPrice?: string
+  nlText?: string
+  nlNote?: string
+  isUrgent?: boolean
+  tech?: string[]
+}
 
 type Phase = 'details' | 'services' | 'review' | 'submitting' | 'done'
 interface Tier { size: string; condition: string; startPriceCents: number }
@@ -124,6 +138,55 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
   const [suggByKey, setSuggByKey] = useState<Record<string, ServiceMatch | null>>({})
   const [isUrgent, setIsUrgent] = useState(false)
   const [tech, setTech] = useState<Set<string>>(new Set())
+
+  // -- Draft autosave (per-user, per-mode) ---------------------------------------------------
+  // The intake form is the longest on a phone; a back-swipe, lock, reload, force-quit, or reboot
+  // must not lose it (localStorage + TTL -- see app/lib/draft.ts). Drafts NEVER submit: only the
+  // explicit Create Job / Save Estimate tap does. Keyed by the signed-in user so a shared shop
+  // phone never restores one person's draft for another. Gated on a settled actor id (skip until
+  // identity resolves) so a draft is never split across anon -> user.
+  const draftK = identity.actor?.id ? draftKeyFor(`intake:${mode}`, identity.actor.id) : null
+  const draftKeyRef = useRef<string | null>(null)
+  useEffect(() => { draftKeyRef.current = draftK }, [draftK])
+  const draftHydrated = useRef(false)
+  const [draftRestored, setDraftRestored] = useState(false)
+  const [draftAge, setDraftAge] = useState('')
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (!draftK || draftHydrated.current) return
+    const entry = loadDraftEntry<DraftShape>(draftK)
+    const d = entry?.data
+    if (d) {
+      if (d.cust) setCust(d.cust)
+      if (d.veh) setVeh(d.veh)
+      if (d.vehicleMode) setVehicleMode(d.vehicleMode)
+      if ('selectedVehicleId' in d) setSelectedVehicleId(d.selectedVehicleId ?? null)
+      if (Array.isArray(d.lines)) setLines(d.lines)
+      if (typeof d.workPrice === 'string') setWorkPrice(d.workPrice)
+      if (typeof d.nlText === 'string') setNlText(d.nlText)
+      if (typeof d.nlNote === 'string') setNlNote(d.nlNote)
+      if (typeof d.isUrgent === 'boolean') setIsUrgent(d.isUrgent)
+      if (Array.isArray(d.tech)) setTech(new Set(d.tech))
+      const hasContent = !!(d.cust?.first || d.cust?.phone || d.veh?.vin || d.nlText || d.nlNote || (d.lines && d.lines.length))
+      if (hasContent) { setDraftRestored(true); setDraftAge(draftAgeLabel(entry!.at)) }
+    }
+    draftHydrated.current = true
+  }, [draftK])
+  /* eslint-enable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (!draftK || !draftHydrated.current) return
+    saveDraft(draftK, { cust, veh, vehicleMode, selectedVehicleId, lines, workPrice, nlText, nlNote, isUrgent, tech: [...tech] })
+  }, [draftK, cust, veh, vehicleMode, selectedVehicleId, lines, workPrice, nlText, nlNote, isUrgent, tech])
+  const discardDraft = () => {
+    if (draftKeyRef.current) clearDraft(draftKeyRef.current)
+    setDraftRestored(false)
+    setDraftAge('')
+    clearCustomerSearch()  // drop any pending lookup/response so a discard can't repopulate matches
+    setCust({ first: '', last: '', phone: '', email: '' }); setVeh({ vin: '', year: '', make: '', model: '', color: '' })
+    setVehicleMode('new'); setSelectedVehicleId(null); setLines([]); setWorkPrice(''); setNlText(''); setNlNote(''); setNlMsg(null); setIsUrgent(false); setTech(new Set())
+    setPhase('details')
+  }
+
   const [result, setResult] = useState<{ orderNumber: string; serviceOrderId: string } | null>(null)
   // After a RETAIL Job is saved (manager/admin only): offer to add it to the same customer's open invoice.
   // Read-only lookup; the saved Job never depends on it. Dealer/no-identity Jobs are skipped server-side.
@@ -403,6 +466,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
         })
         const data = await res.json()
         if (!res.ok) throw new Error(data.error || 'Could not save estimate')
+        if (draftKeyRef.current) clearDraft(draftKeyRef.current)  // success -> discard the draft
         router.push(`/orders/${data.id}/estimate`)
         return
       }
@@ -440,6 +504,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
       })
       const d = await res.json()
       if (!res.ok || !d.ok) throw new Error(d.error || 'Could not create the Job')
+      if (draftKeyRef.current) clearDraft(draftKeyRef.current)  // success -> discard the draft
       setResult({ orderNumber: d.orderNumber, serviceOrderId: d.serviceOrderId }); setPhase('done')
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); setPhase('review') }
     // workPrice + nlNote MUST be deps: otherwise the create closure reads their stale
@@ -453,6 +518,13 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
       <NavHeader back={backTarget} title={`${isEstimate ? 'New Estimate' : 'Quick Entry'}${phase === 'details' ? ' · Details' : phase === 'services' ? ' · Services' : phase === 'review' ? ' · Review' : ''}`} />
 
       {error && <p className="text-red-400 text-sm text-center px-5 py-2">{error}</p>}
+
+      {draftRestored && phase !== 'submitting' && phase !== 'done' && (
+        <div role="status" className="mx-4 mt-2 flex items-center justify-between gap-3 rounded-xl border border-sky-900/60 bg-sky-950/30 px-3 py-2 text-sm text-sky-200">
+          <span>Restored your unsaved {isEstimate ? 'estimate' : 'intake'} draft{draftAge ? ` from ${draftAge}` : ''}.</span>
+          <button type="button" onClick={discardDraft} className="shrink-0 min-h-11 px-2 text-sky-300 underline underline-offset-2">Start fresh</button>
+        </div>
+      )}
 
       {/* STEP 1 — customer + vehicle */}
       {phase === 'details' && (
