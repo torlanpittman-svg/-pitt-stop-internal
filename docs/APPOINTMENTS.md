@@ -159,12 +159,22 @@ imports. Verified on Neon dev: 8 simultaneous requests for a 2-capacity time →
 
 Outbox `appointment_notifications` (confirmation / reminder / reschedule / cancellation), written in the
 same transaction as the change, sent by `dispatchDue` (right after the request via `after()`, and by
-`/api/cron/appointment-notifications` daily). A notice is `sent` only when a provider accepted it. **No
-transactional email provider is configured**, so today notices are recorded `not_configured` and the
-appointment page says so. To turn email on: owner picks a provider; set `APPOINTMENT_EMAIL_PROVIDER=postmark`,
-`POSTMARK_SERVER_TOKEN`, `APPOINTMENT_EMAIL_FROM` (authenticated sending domain), then staff can **Retry
-customer messages**. SMS is not used (no approved A2P registration). Vehicle-ready and invoice messages
-remain the existing QuickBooks invoice email.
+`/api/cron/appointment-notifications` daily). A notice is `sent` only when a provider accepted it. Until the
+provider env below is set, notices are recorded `not_configured`; the appointment page's **Customer email**
+panel shows that per notice, with a manager-only "Send again" for provably un-sent ones (never for an
+`uncertain` one — it may already have been delivered). To turn email on, see *Customer email (Postmark)*.
+SMS is not used (no approved A2P registration). Vehicle-ready and invoice messages remain the existing
+QuickBooks invoice email — **booking email is a separate channel and never touches QuickBooks.**
+
+Three rules the dispatcher enforces, so switching a provider on cannot misfire:
+- **A test-mode allowlist HOLDS, it does not discard.** A blocked recipient returns the notice to `pending`
+  with the reason recorded and the attempt undone, so a controlled owner-only test can never silently consume
+  a real customer's confirmation or reminder. It goes out once the allowlist is removed.
+- **No backdated confirmations.** `staleReason` treats a confirmation/reschedule as stale once its drop-off
+  time has passed (as well as when cancelled), so notices that sat un-sent cannot later mail "your drop-off
+  is confirmed" about a past date. A cancellation notice is still always allowed.
+- **Replies go to a human.** `APPOINTMENT_EMAIL_REPLY_TO` sets Reply-To on every customer notice; the sending
+  address itself is unattended.
 
 ## Security
 
@@ -249,15 +259,40 @@ to ~10 minutes to a few days to show; check the live profile's Book button after
 
 Code is complete (outbox → `PostmarkEmailProvider`, `MessageStream: outbound`, branded HTML + plain-text). Notices are recorded
 `not_configured` until all of this is done; nothing is reported as sent before a provider accepts it.
+
+**The sending domain is `pittstopbcs.com`, NOT either Pitt Stop web domain.** Verified 2026-11-02 against both
+authoritative nameservers: `pittstopdetailandautosales.com` and `pittstopdetail.com` each have **zero MX and zero
+TXT** — no mail is received at either, and no address exists on them. Company email lives on `pittstopbcs.com`:
+Google Workspace Business Starter (3 seats, paid from 2026-10-29), DNS on **Cloudflare**
+(`delilah`/`ray.ns.cloudflare.com`), `MX 1 smtp.google.com`, SPF `include:_spf.google.com ~all`, Google DKIM at
+`google._domainkey`. Mailboxes `torlan@` / `darryl@` / `tony@` plus the shared **`service@pittstopbcs.com`** group
+all three monitor. **DMARC is still unpublished** — start at `p=none` once Postmark DKIM has settled.
+→ **The old "blocked on GoDaddy" note no longer applies to email**: the records Postmark needs go in Cloudflare.
+
 1. Create a Postmark account; create a Server (e.g. "Pitt Stop appointments"); request account approval (new accounts can
-   only send to their own domain until approved).
-2. Sender domain: `pittstopdetailandautosales.com` has **no MX, SPF, DKIM or DMARC** today and its DNS is at GoDaddy, so
-   Postmark's Domain verification needs GoDaddy: one DKIM TXT record + one Return-Path CNAME (`pm-bounces` →
-   `pm.mtasv.net`), values shown by Postmark. A single-address Sender Signature is not possible because the domain
-   receives no mail. → **email is blocked on GoDaddy recovery, like the booking host.**
-3. Vercel (Production) env: `APPOINTMENT_EMAIL_PROVIDER=postmark`, `POSTMARK_SERVER_TOKEN=<server API token>`,
-   `APPOINTMENT_EMAIL_FROM="Pitt Stop Detail & Auto Sales <appointments@pittstopdetailandautosales.com>"`, then redeploy.
-4. Send one test to an owner address via a staff-created appointment; then **Retry customer messages** on real ones.
+   only send to their own domain until approved). The free tier is enough for the controlled test.
+2. Sender domain verification for `pittstopbcs.com` — in **Cloudflare**, add only the two records Postmark shows:
+   its **DKIM TXT** (on Postmark's own selector) and the **Return-Path CNAME** (`pm-bounces` → `pm.mtasv.net`).
+   **Do not touch the existing MX, SPF or `google._domainkey` records.** Postmark signs with its own selector and
+   bounces via its own return-path, so the Google SPF record needs no edit and live Workspace mail is unaffected.
+3. In Google Workspace, add `appointments@pittstopbcs.com` as a free alias on the `service@` group, so a customer
+   who replies straight to the From address still reaches a monitored inbox.
+4. Vercel (Production) env, then redeploy:
+   - `APPOINTMENT_EMAIL_PROVIDER=postmark`
+   - `POSTMARK_SERVER_TOKEN=<server API token>`
+   - `APPOINTMENT_EMAIL_FROM="Pitt Stop Detail & Auto Sales <appointments@pittstopbcs.com>"`
+   - `APPOINTMENT_EMAIL_REPLY_TO=service@pittstopbcs.com`
+   - `BOOKING_PUBLIC_BASE_URL=https://book.pittstopdetailandautosales.com` (customer-facing links + the email logo)
+   - `APPOINTMENT_EMAIL_ALLOWLIST=<owner addresses>` for the controlled test — **set it in the same change as the
+     token**, never afterwards, so no real customer notice is attempted first.
+5. Book once online with an allowlisted address; confirm the notice reaches `sent` with a provider message ID on the
+   appointment's **Customer email** panel, and that the mail itself is correct. Then remove the allowlist (owner
+   approval) — that deletion is the moment real customer email goes live.
+
+One provider serves **all four** notice kinds. With `confirmationEnabled` and `reminderEnabled` both true in
+production, removing the allowlist activates confirmations, reminders, cancellations and reschedules together;
+unfinished-booking follow-ups stay off separately (`draftFollowUpEnabled`).
+
 Email never blocks booking: the shop alert is the `/appointments` "New online bookings" list.
 
 Delivery certainty: a notice is `sent` only on a readable acceptance and `failed` only when non-delivery is established
