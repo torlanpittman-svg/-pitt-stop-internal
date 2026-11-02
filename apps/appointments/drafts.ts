@@ -363,7 +363,8 @@ export async function dispatchDraftFollowUps(opts: {
         followUpStatus: 'pending', followUpProvider: provider.name, followUpError: res.reason,
         followUpAttempts: sql`greatest(${bookingDrafts.followUpAttempts} - 1, 0)`,
       }).where(mine)
-      await db.insert(bookingDraftEvents).values({ draftId: id, eventType: 'follow_up_deferred', actor: 'system', meta: { reason: res.reason } })
+      // No event row here: the unconditional `follow_up_${res.status}` insert below already records this
+      // pass as 'follow_up_blocked'. Adding a 'follow_up_deferred' row as well logged every held run twice.
       tally.deferred++
     } else if (res.status === 'not_configured') {
       await db.update(bookingDrafts).set({ followUpStatus: 'not_configured', followUpProvider: provider.name, followUpError: 'No transactional email provider is configured.' }).where(mine)

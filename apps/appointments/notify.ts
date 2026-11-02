@@ -45,6 +45,13 @@ export type DeliveryResult =
 
 export const UNCERTAIN_NOTE = 'Delivery uncertain — the email may have been delivered, so it is not resent automatically.'
 
+/** Stable marker for a test-mode hold. A held notice and a retryable failure are BOTH 'pending' with an
+ *  error, so the two are only distinguishable by this prefix — staff must never read a real delivery
+ *  failure as a harmless test artefact. */
+export const TEST_MODE_HOLD_PREFIX = 'Test mode:'
+export const isTestModeHold = (n: { status: string; error: string | null }): boolean =>
+  n.status === 'pending' && !!n.error && n.error.startsWith(TEST_MODE_HOLD_PREFIX)
+
 /** Network error codes that mean the connection never opened, so the request cannot have reached the provider. */
 const NEVER_CONNECTED = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT'])
 function errorCodes(err: unknown): string[] {
@@ -109,7 +116,7 @@ export class AllowlistEmailProvider implements TransactionalEmailProvider {
     return this.allow.some((a) => (a.startsWith('@') ? addr.endsWith(a) : addr === a))
   }
   async send(msg: EmailMessage): Promise<DeliveryResult> {
-    if (!this.allows(msg.to)) return { status: 'blocked', reason: 'Test mode: recipient is not on APPOINTMENT_EMAIL_ALLOWLIST, so nothing was sent.' }
+    if (!this.allows(msg.to)) return { status: 'blocked', reason: `${TEST_MODE_HOLD_PREFIX} recipient is not on APPOINTMENT_EMAIL_ALLOWLIST, so nothing was sent.` }
     return this.inner.send(msg)
   }
 }
@@ -218,7 +225,13 @@ export function renderMessage(kind: string, a: Appointment, cfg: BookingConfig, 
 // ── Outbox dispatch ───────────────────────────────────────────────────────────
 
 /** Why a due notice should no longer go out (appointment changed since it was queued). */
+/** How long after a drop-off a cancellation notice is still worth sending. */
+const CANCELLATION_GRACE_MS = 2 * 24 * 3_600_000
+
 export function staleReason(kind: string, a: Appointment, now: Date): string | null {
+  // A cancellation is the one notice that stays true after the fact, so it has no drop-off rule — but it
+  // still must not arrive long afterwards (e.g. released from a long test-mode hold weeks later).
+  if (kind === 'cancellation' && now.getTime() - a.startsAt.getTime() > CANCELLATION_GRACE_MS) return 'too late to be useful'
   if (kind === 'reminder' && a.status !== 'confirmed') return `appointment ${a.status}`
   if (kind === 'reminder' && a.startsAt.getTime() <= now.getTime()) return 'drop-off time passed'
   if ((kind === 'confirmation' || kind === 'reschedule') && a.status === 'cancelled') return 'appointment cancelled'
@@ -231,8 +244,18 @@ export function staleReason(kind: string, a: Appointment, now: Date): string | n
 }
 
 const MAX_ATTEMPTS = 3
-/** How long a test-mode HELD notice waits before the next dispatch looks at it again. */
-const HOLD_RETRY_MINUTES = 15
+
+/**
+ * Does this skip mean the customer never got told something they should have been told?
+ * A reminder dropped because the appointment was cancelled is deliberate housekeeping. A CONFIRMATION
+ * dropped because the drop-off has already passed is a MISS: that customer booked and was never confirmed.
+ * Misses get an appointment_events row so they show in History and cannot pass as routine.
+ */
+const ANOMALY_REASONS = new Set(['appointment missing', 'no email address'])
+export function isMissedSend(kind: string, reason: string): boolean {
+  if (ANOMALY_REASONS.has(reason)) return true
+  return reason === 'drop-off time passed' && (kind === 'confirmation' || kind === 'reschedule')
+}
 
 /** Send due notices. Safe to run concurrently: each row is claimed with a conditional update. */
 export async function dispatchDue(opts: { now?: Date; limit?: number; appointmentId?: string; provider?: TransactionalEmailProvider } = {}): Promise<{ sent: number; notConfigured: number; failed: number; uncertain: number; skipped: number; held: number }> {
@@ -246,14 +269,33 @@ export async function dispatchDue(opts: { now?: Date; limit?: number; appointmen
     ...(opts.appointmentId ? [eq(appointmentNotifications.appointmentId, opts.appointmentId)] : []),
   )).limit(opts.limit ?? 50)
   const tally = { sent: 0, notConfigured: 0, failed: 0, uncertain: 0, skipped: 0, held: 0 }
+  /** Only write an outcome onto the row we are still holding. If something else moved it on while the
+   *  provider call was in flight (a reschedule superseding this notice), our write must not resurrect it. */
+  const sending = (id: string) => and(eq(appointmentNotifications.id, id), eq(appointmentNotifications.status, 'sending'))
   for (const n of due) {
     const [claimed] = await db.update(appointmentNotifications).set({ status: 'sending', attempts: sql`${appointmentNotifications.attempts} + 1` })
       .where(and(eq(appointmentNotifications.id, n.id), eq(appointmentNotifications.status, 'pending'))).returning()
     if (!claimed) continue
     const [appt] = await db.select().from(appointments).where(eq(appointments.id, n.appointmentId)).limit(1)
-    const stale = !appt ? 'appointment missing' : !n.toAddress ? 'no email address' : staleReason(n.kind, appt, now)
+    // A reminder names a specific drop-off time in its dedupe key. If the appointment has since moved, THIS
+    // row is the superseded one — the reschedule queued a fresh reminder for the new time. Detecting it here
+    // (rather than only by the reschedule's "skip pending" sweep) is what makes it safe for a reschedule to
+    // land while this very row is in flight: the sweep cannot touch a 'sending' row, but this check can.
+    const reminderKey = appt ? `${n.appointmentId}:reminder:` : ''
+    const superseded = !!appt && n.kind === 'reminder' && n.dedupeKey.startsWith(reminderKey)
+      && n.dedupeKey !== `${reminderKey}${appt.startsAt.toISOString()}`
+    const stale = !appt ? 'appointment missing'
+      : !n.toAddress ? 'no email address'
+      : superseded ? 'superseded by a reschedule'
+      : staleReason(n.kind, appt, now)
     if (stale || !appt) {
-      await db.update(appointmentNotifications).set({ status: 'skipped', error: stale }).where(eq(appointmentNotifications.id, n.id))
+      const reason = stale ?? 'appointment missing'
+      await db.update(appointmentNotifications).set({ status: 'skipped', error: reason }).where(sending(n.id))
+      // A miss is never silent: without this, a confirmation held through its own drop-off ended up
+      // labelled "Not needed" on the staff screen with nothing in History to show the customer was missed.
+      if (appt && isMissedSend(n.kind, reason)) {
+        await db.insert(appointmentEvents).values({ appointmentId: n.appointmentId, eventType: 'email_not_sent', actor: 'system', meta: { kind: n.kind, notificationId: n.id, reason } })
+      }
       tally.skipped++
       continue
     }
@@ -268,20 +310,21 @@ export async function dispatchDue(opts: { now?: Date; limit?: number; appointmen
       // legitimate customer message that must still go out once the allowlist is removed. So it returns to
       // 'pending' rather than a terminal 'skipped', and the claim's attempt is undone so a held notice never
       // burns a real delivery attempt. Nothing was sent, so there is no duplicate risk in sending it later.
+      // sendAfter is left ALONE: the notice becomes due again immediately, so lifting the allowlist releases
+      // it on the very next dispatch instead of leaving it to expire against its own drop-off.
       await db.update(appointmentNotifications).set({
         status: 'pending', provider: provider.name, error: res.reason,
         attempts: sql`greatest(${appointmentNotifications.attempts} - 1, 0)`,
-        sendAfter: new Date(now.getTime() + HOLD_RETRY_MINUTES * 60_000),
-      }).where(eq(appointmentNotifications.id, n.id))
+      }).where(sending(n.id))
       tally.held++
     } else if (res.status === 'not_configured') {
       await db.update(appointmentNotifications).set({ status: 'not_configured', provider: provider.name, error: 'No transactional email provider is configured.' })
-        .where(eq(appointmentNotifications.id, n.id))
+        .where(sending(n.id))
       tally.notConfigured++
     } else if (res.status === 'uncertain') {
       // It may have been delivered: never resent automatically, and requeueNotification refuses it.
       await db.update(appointmentNotifications).set({ status: 'uncertain', provider: provider.name, error: res.error })
-        .where(eq(appointmentNotifications.id, n.id))
+        .where(sending(n.id))
       await db.insert(appointmentEvents).values({ appointmentId: n.appointmentId, eventType: 'email_uncertain', actor: 'system', meta: { kind: n.kind, notificationId: n.id, provider: provider.name } })
       tally.uncertain++
     } else {
@@ -290,7 +333,7 @@ export async function dispatchDue(opts: { now?: Date; limit?: number; appointmen
       await db.update(appointmentNotifications).set({
         status: retry ? 'pending' : 'failed', provider: provider.name, error: res.error,
         sendAfter: retry ? new Date(now.getTime() + 15 * 60_000) : n.sendAfter,
-      }).where(eq(appointmentNotifications.id, n.id))
+      }).where(sending(n.id))
       if (!retry) await db.insert(appointmentEvents).values({ appointmentId: n.appointmentId, eventType: 'email_failed', actor: 'system', meta: { kind: n.kind, notificationId: n.id, provider: provider.name } })
       tally.failed++
     }

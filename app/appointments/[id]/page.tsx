@@ -9,6 +9,7 @@ import { serviceOrders } from '@/apps/workflow/schema'
 import { authorizedManager } from '@/apps/auth/employee-guard'
 import { getAppointment, listEvents, listNotifications } from '@/apps/appointments/db'
 import { formatDateLabel, formatTimeLabel } from '@/apps/appointments/policy'
+import { isTestModeHold } from '@/apps/appointments/notify'
 import { isFuture } from '@/apps/appointments/public'
 import { STATUS_LABEL, STATUS_TONE, SOURCE_LABEL } from '../labels'
 import AppointmentActions from './AppointmentActions'
@@ -92,6 +93,9 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
             appointmentId={a.id} isManager={!!mgr}
             notices={notices.map((n) => ({
               id: n.id, kind: n.kind, status: n.status, error: n.error,
+              // Decided server-side with the real predicate: a held notice and a retryable failure are both
+              // 'pending' with an error, and the client must not have to guess between them.
+              held: isTestModeHold(n),
               providerMessageId: n.providerMessageId, sentAt: n.sentAt ? n.sentAt.toISOString() : null,
               sendAfter: n.sendAfter.toISOString(),
             }))}

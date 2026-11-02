@@ -16,6 +16,8 @@ export interface NoticeView {
   kind: string
   status: string
   error: string | null
+  /** True only for a test-mode hold. Decided on the server — never inferred from status+error here. */
+  held: boolean
   providerMessageId: string | null
   sentAt: string | null
   sendAfter: string
@@ -25,9 +27,6 @@ const KIND: Record<string, string> = {
   confirmation: 'Confirmation', reminder: 'Reminder', reschedule: 'Reschedule', cancellation: 'Cancellation',
 }
 
-/** A test-mode hold is a 'pending' row the allowlist refused — queued, not lost, and not a failure. */
-const isHeld = (n: NoticeView) => n.status === 'pending' && !!n.error
-
 function describe(n: NoticeView): { label: string; tone: BadgeTone; detail: string } {
   switch (n.status) {
     case 'sent':
@@ -35,9 +34,11 @@ function describe(n: NoticeView): { label: string; tone: BadgeTone; detail: stri
     case 'sending':
       return { label: 'Sending…', tone: 'info', detail: '' }
     case 'pending':
-      return isHeld(n)
-        ? { label: 'Held (test mode)', tone: 'warn', detail: `${n.error} It is still queued and will go out once testing restrictions are removed.` }
-        : { label: 'Queued', tone: 'info', detail: '' }
+      if (n.held) return { label: 'Held (test mode)', tone: 'warn', detail: `${n.error} It is still queued and will go out once testing restrictions are removed.` }
+      // Also 'pending': a temporary delivery failure waiting on its retry. That is a real problem and must
+      // not read as a harmless test artefact.
+      if (n.error) return { label: 'Retrying', tone: 'danger', detail: `Delivery failed and will be retried: ${n.error}` }
+      return { label: 'Queued', tone: 'info', detail: '' }
     case 'not_configured':
       return { label: 'Not sent', tone: 'warn', detail: 'No email provider is set up, so nothing was sent.' }
     case 'failed':
@@ -45,7 +46,11 @@ function describe(n: NoticeView): { label: string; tone: BadgeTone; detail: stri
     case 'uncertain':
       return { label: 'May have been delivered', tone: 'warn', detail: n.error ?? 'Not resent automatically, to avoid a duplicate.' }
     case 'skipped':
-      return { label: 'Not needed', tone: 'neutral', detail: n.error ?? '' }
+      // 'skipped' covers both deliberate housekeeping (a reminder for a cancelled booking) and a genuine
+      // miss (a confirmation that outlived its own drop-off). Those must not look the same.
+      return n.error === 'drop-off time passed' && (n.kind === 'confirmation' || n.kind === 'reschedule')
+        ? { label: 'Not sent — drop-off passed', tone: 'danger', detail: 'This customer was never confirmed. Contact them directly; it is too late for this email to be accurate.' }
+        : { label: 'Not needed', tone: 'neutral', detail: n.error ?? '' }
     default:
       return { label: n.status, tone: 'neutral', detail: n.error ?? '' }
   }
@@ -78,7 +83,7 @@ export default function NotificationList({ appointmentId, notices, isManager }: 
                     onClick={() => start(async () => {
                       setMsg(null)
                       const r = await requeueAction(n.id, appointmentId)
-                      setMsg(r.ok ? 'Queued — it will send on the next run.' : r.error)
+                      setMsg(r.ok ? 'Queued — the next run will re-check it and send if it is still valid.' : r.error)
                     })}
                     className="ml-auto min-h-9 rounded-lg border border-emerald-800 px-3 text-xs text-emerald-200 disabled:opacity-60">
                     {pending ? 'Working…' : 'Send again'}

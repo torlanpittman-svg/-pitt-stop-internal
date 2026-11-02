@@ -299,12 +299,10 @@ describe('transactional notices: test-mode allowlist is a hold, not a discard', 
     expect(afterHold.attempts).toBe(0)                // a hold never burns a real delivery attempt
     expect(afterHold.error).toMatch(/allowlist/i)     // and says why, for the staff screen
 
-    // The allowlist is removed (owner approves real email): it goes out, once. A held notice waits out a
-    // short backoff first, so it is picked up by the next run rather than spun on within the same minute.
-    const AFTER_HOLD = new Date(NOW.getTime() + 16 * 60_000)
+    // The allowlist is removed (owner approves real email): it goes out on the very NEXT dispatch, with no
+    // artificial delay — a held notice must not be left to expire against its own drop-off.
+    expect((await dispatchDue({ provider: inner, now: NOW, appointmentId: a.id })).sent).toBe(1)
     expect((await dispatchDue({ provider: inner, now: NOW, appointmentId: a.id })).sent).toBe(0)
-    expect((await dispatchDue({ provider: inner, now: AFTER_HOLD, appointmentId: a.id })).sent).toBe(1)
-    expect((await dispatchDue({ provider: inner, now: AFTER_HOLD, appointmentId: a.id })).sent).toBe(0)
     expect(box).toHaveLength(1)
     expect(box[0].to).toBe('real.customer@gmail.com')
     expect((await row()).status).toBe('sent')
@@ -321,9 +319,10 @@ describe('transactional notices: test-mode allowlist is a hold, not a discard', 
     box.length = 0
     const a = await book({ email: 'real.customer@gmail.com' })
     await dispatchDue({ provider: allowOwnerOnly, now: NOW, appointmentId: a.id })   // confirmation held
+    // NOTE: cancelAppointment's own "skip pending" sweep is what retires the held confirmation here, so this
+    // case does not exercise staleReason — the drop-off-passed path is covered in notify-review.regression.
     await cancelAppointment(a.id, { actor: 'Tony', by: 'staff' })
-    await dispatchDue({ provider: inner, now: new Date(NOW.getTime() + 16 * 60_000), appointmentId: a.id })
-    // The staleness re-check still applies to a held notice: a cancelled booking gets no "confirmed" email.
+    await dispatchDue({ provider: inner, now: NOW, appointmentId: a.id })
     expect(box.map((m) => m.subject.split(' ')[0])).toEqual(['Appointment'])
     expect(box[0].subject).toMatch(/cancelled/)
   })
