@@ -10,6 +10,13 @@ This module replaces the one AutoLeap function Pitt Stop still relied on day to 
 **"Schedule a Drop-Off!" / Google "Book online"** link (`https://myalp.io/bhhjcb`). It is not a rebuild
 of AutoLeap. Everything else in the retail flow already runs in Pitt Stop OS (see "Replacement matrix").
 
+## Staff alerts for new online bookings
+A new ONLINE booking also writes a `staff_alerts` row inside the booking statement and, separately,
+pushes a notification to enrolled manager/admin phones (standard Web Push, no third-party service).
+The in-app home-screen banner is the half that cannot fail. **See `docs/BOOKING_ALERTS.md`** for the
+design, the duplicate-prevention rules, the migration/env/deploy steps and the phone acceptance test.
+Not deployed as of 2026-11-02.
+
 ## Flows
 
 **Public booking.** Website or Google button → `/book` (public, no login) → service → vehicle → drop-off

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import IdentityBar, { AdminLink } from '@/app/components/IdentityBar'
 import GlobalSearch from '@/app/components/GlobalSearch'
 import OilStickerQuickPrint from '@/app/components/OilStickerQuickPrint'
+import NewBookingAlert from '@/app/components/NewBookingAlert'
 import { PageContainer } from '@/app/components/ui/PageHeader'
 import { managerActor } from '@/apps/checks/authz'
 import { marketingEnabled } from '@/apps/settings/db'
@@ -77,6 +78,10 @@ export default async function Home() {
             <p className="text-xs text-gray-500">Automotive operations</p>
           </div>
         </div>
+
+        {/* The in-app half of booking alerts: always here when a website booking is unacknowledged,
+            whether or not a phone notification got through. */}
+        <NewBookingAlert />
 
         <div className="space-y-5 sm:space-y-8">
           {GROUP_ORDER.map((group) => {

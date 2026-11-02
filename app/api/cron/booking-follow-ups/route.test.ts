@@ -7,6 +7,10 @@ vi.mock('@/apps/appointments/drafts', () => ({
   dispatchDraftFollowUps: vi.fn(async () => { calls.push('dispatch'); return { enabled: true, sent: 0, notConfigured: 0, failed: 0, suppressed: 0, deferred: 0, recovered: 0 } }),
 }))
 
+vi.mock('@/apps/staff-alerts/db', () => ({
+  dispatchStaffAlerts: vi.fn(async () => { calls.push('staff-alerts'); return { sent: 0, retrying: 0, failed: 0, expired: 0, skipped: 0, staleAlerts: 0, notConfigured: true } }),
+}))
+
 import { GET } from './route'
 
 function req(auth?: string): Request {
@@ -33,6 +37,16 @@ describe('booking-follow-ups cron (fail-closed)', () => {
     process.env.CRON_SECRET = 's3cret'
     const res = await GET(req('Bearer s3cret'))
     expect(res.status).toBe(200)
-    expect(calls).toEqual(['purge', 'dispatch'])
+    // Customer-facing jobs first; the staff push retry runs last and can never delay or block them.
+    expect(calls).toEqual(['purge', 'dispatch', 'staff-alerts'])
+  })
+
+  it('still reports success when the staff push retry itself fails', async () => {
+    process.env.CRON_SECRET = 's3cret'
+    const { dispatchStaffAlerts } = await import('@/apps/staff-alerts/db')
+    vi.mocked(dispatchStaffAlerts).mockRejectedValueOnce(new Error('push service unreachable'))
+    const res = await GET(req('Bearer s3cret'))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ ok: true, staffAlerts: { error: 'dispatch failed' } })
   })
 })

@@ -9,6 +9,7 @@
 import { NextResponse } from 'next/server'
 import { dispatchDue } from '@/apps/appointments/notify'
 import { dispatchDraftFollowUps, purgeExpiredDrafts } from '@/apps/appointments/drafts'
+import { dispatchStaffAlerts } from '@/apps/staff-alerts/db'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
@@ -25,9 +26,18 @@ export async function GET(req: Request) {
     // Daily backstop for the hourly /api/cron/booking-follow-ups. Retention first, so expired drafts are never emailed.
     const retention = await purgeExpiredDrafts()
     const followUps = await dispatchDraftFollowUps({ limit: 100 })
+    // The GUARANTEED retry pass for staff new-booking push alerts (the hourly GitHub schedule is
+    // optional): fans out and retries any new-booking push that has not reached a manager's phone,
+    // and ages out anything too old to still be useful.
+    // A push problem must never turn a successful run of the customer-facing jobs above into a
+    // failure (and a failed retry stays queued for the next run either way).
+    const staffAlerts = await dispatchStaffAlerts({ limit: 50 }).catch((err) => {
+      logger.error('cron:appointment-notifications', 'staff_alerts_failed', { error: err instanceof Error ? err.message : String(err) })
+      return { error: 'dispatch failed' }
+    })
     // Counts only — never customer details.
-    logger.info('cron:appointment-notifications', 'dispatched', { ...tally, followUps, retention })
-    return NextResponse.json({ ok: true, ...tally, followUps, retention })
+    logger.info('cron:appointment-notifications', 'dispatched', { ...tally, followUps, retention, staffAlerts })
+    return NextResponse.json({ ok: true, ...tally, followUps, retention, staffAlerts })
   } catch (err) {
     logger.error('cron:appointment-notifications', 'failed', { error: err instanceof Error ? err.message : String(err) })
     return NextResponse.json({ ok: false, error: 'dispatch failed' }, { status: 500 })

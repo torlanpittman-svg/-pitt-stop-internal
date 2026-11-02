@@ -76,7 +76,25 @@ export default function IdentityBar() {
 
   const signOut = async () => {
     setBusy(true)
-    try { await fetch('/api/auto-sales/session', { method: 'DELETE' }) } catch { /* ignore */ }
+    // Release this device's booking notifications first: the next person to sign in on a shared
+    // shop phone must not keep receiving alerts addressed to whoever just left. Best-effort — a
+    // failure here must never stop someone signing out.
+    try {
+      const reg = await navigator.serviceWorker?.getRegistration()
+      const sub = await reg?.pushManager?.getSubscription()
+      if (sub) {
+        // Bounded: signing out must not wait on the network. Any valid employee session may release
+        // the endpoint its own device holds, so this succeeds even for a plain employee; and the
+        // local subscription is dropped either way so the next person cannot inherit the alerts.
+        await fetch('/api/appointments/push', {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint: sub.endpoint, reason: 'signed_out' }),
+          signal: AbortSignal.timeout(4000),
+        }).catch(() => {})
+        await sub.unsubscribe().catch(() => {})
+      }
+    } catch { /* ignore */ }
+    try { await fetch('/api/auto-sales/session', { method: 'DELETE', signal: AbortSignal.timeout(4000) }) } catch { /* ignore */ }
     window.location.href = '/auto-sales/login'
   }
 

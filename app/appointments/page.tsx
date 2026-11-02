@@ -40,6 +40,7 @@ export default async function AppointmentsPage({ searchParams }: { searchParams:
           actions={<>
             <Link href="/appointments/new" className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-gray-950">+ New appointment</Link>
             {leadMgr && <Link href="/appointments/leads" className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-200">Unfinished bookings{openLeads ? ` (${openLeads} new)` : ''}</Link>}
+            {mgr && <Link href="/appointments/notifications" className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-200">Notifications</Link>}
             {mgr && <Link href="/appointments/settings" className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-200">Settings</Link>}
           </>}
         />

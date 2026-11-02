@@ -8,11 +8,15 @@ import { createAppointment, BookingError, hashIp, type BookingInput } from '@/ap
 import { dispatchDue, transactionalEmailProvider, AllowlistEmailProvider } from '@/apps/appointments/notify'
 import { getBookingConfig } from '@/apps/appointments/db'
 import { publicSummary } from '@/apps/appointments/public'
+import { dispatchStaffAlerts, recordNewBookingAlert } from '@/apps/staff-alerts/db'
 import { getMarketingConfig } from '@/apps/settings/db'
 import { a2pProfile, smsDisclosureText, SMS_OPT_IN_VERSION } from '@/apps/marketing/compliance'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
+// The post-response work (customer confirmation email + the staff push) talks to third parties.
+// Without headroom the invocation can be torn down mid-send, which burns a delivery attempt.
+export const maxDuration = 60
 
 const STATUS: Record<BookingError['code'], number> = { invalid: 400, closed: 409, full: 409, rate_limited: 429, not_found: 404, conflict: 409, too_late: 409 }
 
@@ -36,6 +40,19 @@ export async function POST(req: Request) {
       smsConsent: { text: smsDisclosureText(p), version: SMS_OPT_IN_VERSION, ip, userAgent: req.headers.get('user-agent') },
     })
     if (!replayed) after(() => dispatchDue({ appointmentId: appointment.id }).catch((e) => console.error('[book] dispatch failed:', e)))
+    // Staff alert. The booking is already committed, so neither of these can undo it:
+    //   1. record the alert now, while we are certainly still running (an `after` callback can be
+    //      dropped if the invocation is torn down). A failure is swallowed — the next dispatch
+    //      recreates the alert from the appointment, and the in-app banner never needed it.
+    //   2. deliver only THAT alert after the response, so one slow phone cannot eat the whole
+    //      invocation and so the customer never waits on a push service.
+    if (!replayed) {
+      const alertId = await recordNewBookingAlert(appointment.id).catch((e) => {
+        console.error('[book] staff alert not recorded (booking kept; cron will recreate it):', e)
+        return null
+      })
+      if (alertId) after(() => dispatchStaffAlerts({ alertId }).catch((e) => console.error('[book] staff alert dispatch failed:', e)))
+    }
     // 'queued' only when a live provider will actually attempt this address — the page then says "sending",
     // never "sent". Otherwise the page itself is the confirmation.
     const provider = transactionalEmailProvider()

@@ -26,7 +26,7 @@ function adminOk(request: NextRequest): boolean {
 function isEmployeeSurface(pathname: string): boolean {
   const pages = ['/auto-sales', '/work-board', '/check-in', '/quick-entry', '/dealer-check-in', '/orders', '/production', '/estimator', '/checks', '/expenses', '/customers', '/marketing', '/appointments']
   if (pages.some((p) => pathname === p || pathname.startsWith(p + '/'))) return true
-  const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/', '/api/checks/', '/api/search', '/api/expenses/', '/api/customers/', '/api/marketing/']
+  const apis = ['/api/auto-sales/', '/api/dealer-checkin', '/api/quick-entry/', '/api/checks/', '/api/search', '/api/expenses/', '/api/customers/', '/api/marketing/', '/api/appointments/']
   if (apis.some((p) => pathname.startsWith(p)) || pathname === '/api/dealer-checkin' || pathname === '/api/checks') return true
   if (pathname === '/api/estimator/vin' || pathname === '/api/workflow/vin') return true
   return false
@@ -125,6 +125,9 @@ export const config = {
     // Appointments (staff view of drop-off bookings). The PUBLIC booking page /book and /api/book/* are
     // intentionally NOT gated — customers book without signing in.
     '/appointments/:path*',
+    // Staff push-notification enrolment for new-booking alerts (manager/admin re-checked in every
+    // handler). NOT /api/book/* — that stays public so customers can book without signing in.
+    '/api/appointments/:path*',
     '/api/marketing/:path*',
     '/api/dealer-checkin/:path*',
     '/api/quick-entry/:path*',
