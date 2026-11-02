@@ -18,7 +18,7 @@ vi.mock('@/platform/db', () => ({ getDb: vi.fn() }))
 import { getDb } from '@/platform/db'
 import { createAppointment, cancelAppointment, rescheduleAppointment, type BookingInput } from './db'
 import { fakeVpic } from './test-vpic'
-import { dispatchDue, AllowlistEmailProvider, isTestModeHold, type EmailMessage, type TransactionalEmailProvider } from './notify'
+import { dispatchDue, AllowlistEmailProvider, isMissedSend, isTestModeHold, type EmailMessage, type TransactionalEmailProvider } from './notify'
 import { DEFAULT_BOOKING_CONFIG, zonedToUtc, addDays, localParts, weekdayOf, holidayName, type BookingConfig } from './policy'
 
 const pg = new PGlite()
@@ -176,5 +176,58 @@ describe('FIXED 4 — an outcome write cannot resurrect a notice a reschedule su
     )).rows as { status: string; error: string }[]
     expect(retired).toHaveLength(1)
     expect(retired[0].error).toBe('superseded by a reschedule')
+  })
+})
+
+
+// ── Second review pass: two more defects of the same family, found by re-reviewing the fixes ────────
+describe('FIXED 5 — a reschedule notice cannot be sent twice either', () => {
+  it('retires a superseded "Appointment moved" notice instead of mailing it again', async () => {
+    box.length = 0
+    const a = await book()
+    await pg.exec(`DELETE FROM appointment_notifications`)
+    // First move: queues a reschedule notice keyed to the NEW time.
+    await rescheduleAppointment(a.id, { date: addDays(TUE, 1), time: '09:00' }, { actor: 'Tony', override: true, now: NOW, cfg: CFG })
+    await pg.exec(`UPDATE appointment_notifications SET send_after = now() - interval '1 minute'`)
+
+    // A SECOND move lands while that notice is in flight — the same race as the reminder, and the reschedule
+    // notice is keyed by drop-off time in exactly the same way, so it must be caught the same way.
+    const racing: TransactionalEmailProvider = {
+      name: 'fake', live: true,
+      async send() {
+        await rescheduleAppointment(a.id, { date: addDays(TUE, 2), time: '10:00' }, { actor: 'Tony', override: true, now: NOW, cfg: CFG })
+        return { status: 'blocked', reason: 'Test mode: recipient is not on APPOINTMENT_EMAIL_ALLOWLIST, so nothing was sent.' }
+      },
+    }
+    await dispatchDue({ provider: racing, now: NOW, appointmentId: a.id })
+    const LATER = zonedToUtc(addDays(TUE, 2), '08:00', 'America/Chicago')
+    await dispatchDue({ provider: inner, now: LATER, appointmentId: a.id })
+    expect(box.filter((m) => /^Appointment moved/.test(m.subject))).toHaveLength(1)
+    const retired = (await pg.query(
+      `SELECT error FROM appointment_notifications WHERE appointment_id = $1 AND kind = 'reschedule' AND status = 'skipped'`, [a.id],
+    )).rows as { error: string }[]
+    expect(retired.some((r) => r.error === 'superseded by a reschedule')).toBe(true)
+  })
+})
+
+describe('FIXED 6 — a cancellation the customer was never told about is not filed as routine', () => {
+  it('records the miss so it cannot read as "Not needed" on the staff screen', async () => {
+    box.length = 0
+    const a = await book()
+    await pg.exec(`DELETE FROM appointment_notifications`)
+    // Cancelled well after the drop-off: outside the grace window, so it is correctly not emailed…
+    const LATE = new Date(zonedToUtc(TUE, '08:00', 'America/Chicago').getTime() + 5 * 24 * 3_600_000)
+    await cancelAppointment(a.id, { actor: 'Tony', by: 'staff', now: LATE, cfg: CFG })
+    const tally = await dispatchDue({ provider: inner, now: LATE, appointmentId: a.id })
+    expect(tally.sent).toBe(0)
+    expect(box).toHaveLength(0)
+    const row = await noticeRow(a.id, 'cancellation')
+    expect(row.status).toBe('skipped')
+    expect(row.error).toBe('too late to be useful')
+    // …but it is NOT silent: isMissedSend covers it, so History carries the miss and the panel reds it.
+    expect(isMissedSend('cancellation', 'too late to be useful')).toBe(true)
+    expect((await pg.query(
+      `SELECT count(*)::int n FROM appointment_events WHERE appointment_id = $1 AND event_type = 'email_not_sent'`, [a.id],
+    )).rows[0]).toEqual({ n: 1 })
   })
 })

@@ -26,7 +26,7 @@
  * REPLIES: APPOINTMENT_EMAIL_REPLY_TO sets Reply-To on every customer notice, so replies reach a monitored human
  * inbox instead of the unattended sending address. Unset = no Reply-To header (replies go to APPOINTMENT_EMAIL_FROM).
  */
-import { and, eq, lte, sql } from 'drizzle-orm'
+import { and, asc, eq, lte, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { appointments, appointmentEvents, appointmentNotifications } from './schema'
 import { type BookingConfig, formatDateLabel, formatTimeLabel } from './policy'
@@ -251,7 +251,11 @@ const MAX_ATTEMPTS = 3
  * dropped because the drop-off has already passed is a MISS: that customer booked and was never confirmed.
  * Misses get an appointment_events row so they show in History and cannot pass as routine.
  */
-const ANOMALY_REASONS = new Set(['appointment missing', 'no email address'])
+/** Kinds whose dedupe key embeds the drop-off time they were queued for. */
+const TIMED_KEY_KINDS = new Set(['reminder', 'reschedule'])
+
+// 'too late to be useful' belongs here: it means a cancellation the customer was never actually told about.
+const ANOMALY_REASONS = new Set(['appointment missing', 'no email address', 'too late to be useful'])
 export function isMissedSend(kind: string, reason: string): boolean {
   if (ANOMALY_REASONS.has(reason)) return true
   return reason === 'drop-off time passed' && (kind === 'confirmation' || kind === 'reschedule')
@@ -267,7 +271,7 @@ export async function dispatchDue(opts: { now?: Date; limit?: number; appointmen
   const due = await db.select().from(appointmentNotifications).where(and(
     eq(appointmentNotifications.status, 'pending'), lte(appointmentNotifications.sendAfter, now),
     ...(opts.appointmentId ? [eq(appointmentNotifications.appointmentId, opts.appointmentId)] : []),
-  )).limit(opts.limit ?? 50)
+  )).orderBy(asc(appointmentNotifications.sendAfter)).limit(opts.limit ?? 50)
   const tally = { sent: 0, notConfigured: 0, failed: 0, uncertain: 0, skipped: 0, held: 0 }
   /** Only write an outcome onto the row we are still holding. If something else moved it on while the
    *  provider call was in flight (a reschedule superseding this notice), our write must not resurrect it. */
@@ -277,13 +281,15 @@ export async function dispatchDue(opts: { now?: Date; limit?: number; appointmen
       .where(and(eq(appointmentNotifications.id, n.id), eq(appointmentNotifications.status, 'pending'))).returning()
     if (!claimed) continue
     const [appt] = await db.select().from(appointments).where(eq(appointments.id, n.appointmentId)).limit(1)
-    // A reminder names a specific drop-off time in its dedupe key. If the appointment has since moved, THIS
-    // row is the superseded one — the reschedule queued a fresh reminder for the new time. Detecting it here
-    // (rather than only by the reschedule's "skip pending" sweep) is what makes it safe for a reschedule to
-    // land while this very row is in flight: the sweep cannot touch a 'sending' row, but this check can.
-    const reminderKey = appt ? `${n.appointmentId}:reminder:` : ''
-    const superseded = !!appt && n.kind === 'reminder' && n.dedupeKey.startsWith(reminderKey)
-      && n.dedupeKey !== `${reminderKey}${appt.startsAt.toISOString()}`
+    // A reminder and a reschedule notice both name a specific drop-off time in their dedupe key
+    // (db.ts: `${id}:${kind}:${startsAt}`). If the appointment has since moved, THIS row is the superseded
+    // one — the reschedule queued a fresh notice for the new time. Detecting it here, rather than relying
+    // only on the reschedule's "skip pending" sweep, is what makes it safe for a reschedule to land while
+    // this very row is in flight: the sweep cannot touch a 'sending' row, but this check can. An unexpected
+    // key shape fails OPEN (the notice still sends) rather than retiring a live notice.
+    const timedKey = appt && TIMED_KEY_KINDS.has(n.kind) ? `${n.appointmentId}:${n.kind}:` : ''
+    const superseded = !!appt && !!timedKey && n.dedupeKey.startsWith(timedKey)
+      && n.dedupeKey !== `${timedKey}${appt.startsAt.toISOString()}`
     const stale = !appt ? 'appointment missing'
       : !n.toAddress ? 'no email address'
       : superseded ? 'superseded by a reschedule'

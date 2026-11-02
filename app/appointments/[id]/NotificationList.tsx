@@ -9,7 +9,7 @@
  */
 import { useState, useTransition } from 'react'
 import { Badge, type BadgeTone } from '@/app/components/ui/Badge'
-import { requeueAction } from '../actions'
+import { dispatchNowAction, requeueAction } from '../actions'
 
 export interface NoticeView {
   id: string
@@ -18,6 +18,8 @@ export interface NoticeView {
   error: string | null
   /** True only for a test-mode hold. Decided on the server — never inferred from status+error here. */
   held: boolean
+  /** True when this skip means the customer was never told. Also decided on the server. */
+  missed: boolean
   providerMessageId: string | null
   sentAt: string | null
   sendAfter: string
@@ -47,9 +49,9 @@ function describe(n: NoticeView): { label: string; tone: BadgeTone; detail: stri
       return { label: 'May have been delivered', tone: 'warn', detail: n.error ?? 'Not resent automatically, to avoid a duplicate.' }
     case 'skipped':
       // 'skipped' covers both deliberate housekeeping (a reminder for a cancelled booking) and a genuine
-      // miss (a confirmation that outlived its own drop-off). Those must not look the same.
-      return n.error === 'drop-off time passed' && (n.kind === 'confirmation' || n.kind === 'reschedule')
-        ? { label: 'Not sent — drop-off passed', tone: 'danger', detail: 'This customer was never confirmed. Contact them directly; it is too late for this email to be accurate.' }
+      // miss (a notice that outlived the moment it was true). Those must not look the same.
+      return n.missed
+        ? { label: 'Not sent', tone: 'danger', detail: `This customer was never told (${n.error}). Contact them directly — it is too late for this email to be accurate.` }
         : { label: 'Not needed', tone: 'neutral', detail: n.error ?? '' }
     default:
       return { label: n.status, tone: 'neutral', detail: n.error ?? '' }
@@ -73,11 +75,24 @@ export default function NotificationList({ appointmentId, notices, isManager }: 
           const d = describe(n)
           // Matches requeueNotification's SQL exactly: only provably un-sent notices can be re-queued.
           const canRetry = isManager && (n.status === 'failed' || n.status === 'not_configured')
+          // A held notice needs no re-queue — it is already pending and due. It needs a dispatcher.
+          const canRelease = isManager && n.held
           return (
             <li key={n.id} className="px-4 py-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-medium text-gray-200">{KIND[n.kind] ?? n.kind}</span>
                 <Badge tone={d.tone}>{d.label}</Badge>
+                {canRelease && (
+                  <button type="button" disabled={pending}
+                    onClick={() => start(async () => {
+                      setMsg(null)
+                      const r = await dispatchNowAction(appointmentId)
+                      setMsg(r.ok ? 'Attempted now — refresh to see the result.' : r.error)
+                    })}
+                    className="ml-auto min-h-9 rounded-lg border border-amber-800 px-3 text-xs text-amber-200 disabled:opacity-60">
+                    {pending ? 'Working…' : 'Try now'}
+                  </button>
+                )}
                 {canRetry && (
                   <button type="button" disabled={pending}
                     onClick={() => start(async () => {

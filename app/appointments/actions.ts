@@ -101,6 +101,16 @@ export async function requeueAction(notificationId: string, appointmentId: strin
   try { await manager(); await requeueNotification(notificationId); dispatchLater(appointmentId); revalidatePath(`/appointments/${appointmentId}`); return { ok: true } } catch (e) { return fail(e) }
 }
 
+/**
+ * Run this appointment's due notices now. For a notice HELD by a test-mode allowlist there is nothing to
+ * re-queue — it is already pending and already due — it simply needs a dispatcher, and the only automatic
+ * one is the daily cron. Without this, lifting the allowlist left a real customer's confirmation waiting up
+ * to a day, long enough for a next-morning drop-off to pass and the notice to be abandoned.
+ */
+export async function dispatchNowAction(appointmentId: string): Promise<ActionResult> {
+  try { await manager(); dispatchLater(appointmentId); revalidatePath(`/appointments/${appointmentId}`); return { ok: true } } catch (e) { return fail(e) }
+}
+
 const num = (v: FormDataEntryValue | null) => (v == null || String(v).trim() === '' ? null : Number(v))
 
 export async function saveSettingsAction(_prev: ActionResult | null, form: FormData): Promise<ActionResult> {

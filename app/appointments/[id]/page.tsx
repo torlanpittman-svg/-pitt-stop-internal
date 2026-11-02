@@ -9,7 +9,7 @@ import { serviceOrders } from '@/apps/workflow/schema'
 import { authorizedManager } from '@/apps/auth/employee-guard'
 import { getAppointment, listEvents, listNotifications } from '@/apps/appointments/db'
 import { formatDateLabel, formatTimeLabel } from '@/apps/appointments/policy'
-import { isTestModeHold } from '@/apps/appointments/notify'
+import { isMissedSend, isTestModeHold } from '@/apps/appointments/notify'
 import { isFuture } from '@/apps/appointments/public'
 import { STATUS_LABEL, STATUS_TONE, SOURCE_LABEL } from '../labels'
 import AppointmentActions from './AppointmentActions'
@@ -96,6 +96,9 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
               // Decided server-side with the real predicate: a held notice and a retryable failure are both
               // 'pending' with an error, and the client must not have to guess between them.
               held: isTestModeHold(n),
+              // Likewise server-side: 'skipped' covers both routine housekeeping and a customer who was
+              // never told. Only the dispatcher knows which, so it decides, not the screen.
+              missed: n.status === 'skipped' && !!n.error && isMissedSend(n.kind, n.error),
               providerMessageId: n.providerMessageId, sentAt: n.sentAt ? n.sentAt.toISOString() : null,
               sendAfter: n.sendAfter.toISOString(),
             }))}
