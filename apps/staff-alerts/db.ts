@@ -2,14 +2,22 @@
  * Staff booking alerts — enrolment, durable outbox, delivery.
  *
  * SHAPE OF THE GUARANTEE
- *  • NOTHING here is inside the booking transaction. The booking statement in apps/appointments/db.ts
- *    is untouched by this feature, so no notification table, bug or missing migration can fail, delay
- *    or undo a customer's booking — and migration 0068 can be rolled back while this code is live.
- *  • The alert is recorded right after the booking commits (recordNewBookingAlert), best-effort; if
- *    even that is lost, the next dispatch recreates it from the appointment itself (see 1b below).
+ *  • NOTHING here is inside the booking transaction, and nothing here runs before the booking
+ *    response. The booking statement in apps/appointments/db.ts is untouched by this feature and the
+ *    public route records the alert from its post-response `after()` callback, so no notification
+ *    table, bug, stall or missing migration can fail, delay or undo a customer's booking — and
+ *    migration 0068 can be rolled back while this code is live.
+ *  • If that post-response write is lost entirely (a dropped `after` callback), the next dispatch
+ *    recreates the alert from the appointment itself (see 1b below).
  *  • A replayed booking submission reuses the same dedupe_key, so it produces no second alert.
  *  • Fan-out is claimed in one atomic statement and each (alert, device) pair is unique, so a retry,
- *    a double-tap or two workers running at once can never notify the same phone twice.
+ *    a double-tap or two workers running at once never produce a second delivery for the same phone.
+ *    (That bounds what WE send. No server can promise what a phone's OS displays.)
+ *  • A device is only ever told about a booking that arrived at or after its CURRENT enrolment
+ *    started (staff_push_subscriptions.enrolled_at vs the APPOINTMENT's created_at), so turning
+ *    notifications on — or taking over a shared phone — never replays yesterday's bookings. The
+ *    rule is applied at fan-out AND re-applied, against a fresh read, immediately before sending:
+ *    a queued delivery can go out of date while it waits.
  *  • Nothing in a notification identifies the customer — the lock screen only ever shows the
  *    drop-off time and "tap to open". The details live behind the PIN-gated appointment screen.
  *
@@ -25,7 +33,7 @@ import { isManagerRole } from '@/apps/auth/employee-guard'
 import { appointments } from '@/apps/appointments/schema'
 import { formatDateLabel, formatTimeLabel } from '@/apps/appointments/policy'
 import { staffAlertDeliveries, staffAlerts, staffPushSubscriptions } from './schema'
-import { endpointHash, pushConfig, sendPush, type PushConfig, type PushOutcome } from './web-push'
+import { PUSH_SEND_TIMEOUT_MS, endpointHash, pushConfig, sendPush, type PushConfig, type PushOutcome } from './web-push'
 
 export type StaffPushSubscription = typeof staffPushSubscriptions.$inferSelect
 export type StaffAlert = typeof staffAlerts.$inferSelect
@@ -37,11 +45,18 @@ export const MAX_ALERT_AGE_HOURS = 24
 export const MAX_DELIVERY_ATTEMPTS = 5
 const RETRY_BACKOFF_MS = 5 * 60_000
 /**
- * How many devices one dispatch run will try. Sends are serial inside a serverless invocation with a
- * 60 s budget, so this is deliberately far below what the budget allows: anything not reached is
- * still pending and goes out on the next run, whereas a run killed mid-list burns attempts.
+ * How many devices one dispatch run will even consider. A row-count cap alone does NOT bound the
+ * run — sends are serial and an unreachable endpoint takes the full PUSH_SEND_TIMEOUT_MS, so 25
+ * dead endpoints is ~200 s inside a 60 s invocation. DEFAULT_DISPATCH_BUDGET_MS is the real bound.
  */
 const DEFAULT_SEND_LIMIT = 25
+/**
+ * Wall-clock budget for one dispatch run, under the routes' `maxDuration = 60`. Headroom is left for
+ * the fan-out statements before the loop and the resolve sweep after it. Nothing is STARTED unless a
+ * whole send timeout still fits: a delivery we never touch stays `pending` with its attempts intact
+ * and goes out on the next run, whereas a run torn down mid-send burns an attempt for nothing.
+ */
+export const DEFAULT_DISPATCH_BUDGET_MS = 45_000
 /**
  * A claim older than this means the worker that took it never came back (killed mid-invocation).
  * Such a delivery IS retried: the notification carries the alert id as its `tag`, so a phone that
@@ -77,10 +92,10 @@ export function mayEnrol(actor: AuthedActor | null): actor is AuthedActor {
 /**
  * Record "a new online booking arrived", once, for an appointment that is ALREADY SAVED.
  *
- * Called from the public booking route after the booking has committed, so it is structurally
- * incapable of affecting the booking. Callers treat a rejection as nothing more than a missing
- * alert: the next dispatch recreates it from the appointment row (step 1b), and the in-app banner
- * on Home never depended on this table at all.
+ * Called from the public booking route's post-response `after()` callback, so it is structurally
+ * incapable of affecting the booking — not even by being slow. Callers treat a rejection as nothing
+ * more than a missing alert: the next dispatch recreates it from the appointment row (step 1b), and
+ * the in-app banner on Home never depended on this table at all.
  *
  * Returns the alert id — the existing one if this booking already had an alert (a replayed
  * submission, or a retry of this call), so no caller can create a second one.
@@ -105,6 +120,19 @@ export interface SubscriptionInput { endpoint: string; p256dh: string; auth: str
  * Record (or re-record) one device for one person. Keyed on the endpoint, so re-enabling on the same
  * device updates the existing row instead of stacking duplicates — including when a DIFFERENT person
  * signs in on a shared shop phone: the row is re-pointed at whoever enrolled it last, and re-enabled.
+ *
+ * This is the EXPLICIT path only — somebody tapped Enable. The automatic refresh the screen performs
+ * on load must use refreshSubscription instead, which cannot insert, re-enable or transfer.
+ *
+ * The one thing this is careful NOT to overwrite blindly is `enrolled_at`. It decides which bookings
+ * the device may be told about, and the two cases genuinely differ:
+ *   • ROUTINE REFRESH (same person, device still enabled — the notifications screen does this on
+ *     every visit): enrolled_at is PRESERVED. A phone that merely re-opened the app must not lose
+ *     the alerts it was already owed.
+ *   • FRESH ENROLMENT (the device had been disabled, or a different person is enrolling it now):
+ *     enrolled_at moves to the present, so the new enrolment is not alerted about bookings that
+ *     arrived while nobody was listening or while it belonged to somebody else.
+ * `created_at` is left alone in both cases — it stays the audit record of the row itself.
  */
 export async function saveSubscription(input: SubscriptionInput, actor: AuthedActor): Promise<StaffPushSubscription> {
   const [row] = await getDb()
@@ -120,11 +148,49 @@ export async function saveSubscription(input: SubscriptionInput, actor: AuthedAc
         endpoint: input.endpoint, p256dh: input.p256dh, auth: input.auth,
         employeeKey: actor.key, employeeName: actor.name, employeeRole: actor.role,
         deviceLabel: input.deviceLabel?.slice(0, 120) || null,
+        // Unqualified column references are the EXISTING row; `excluded` is the row being enrolled.
+        // Kept on the database clock, the same clock appointments.created_at is written with.
+        enrolledAt: sql`CASE
+          WHEN ${staffPushSubscriptions.disabledAt} IS NOT NULL
+            OR ${staffPushSubscriptions.employeeKey} <> excluded.employee_key
+          THEN now() ELSE ${staffPushSubscriptions.enrolledAt} END`,
         lastSeenAt: new Date(), disabledAt: null, disabledReason: null,
       },
     })
     .returning()
   return row
+}
+
+/**
+ * Keep an ALREADY-ACTIVE enrolment current, and do nothing else.
+ *
+ * The notification screen re-registers the device on every visit. That refresh must never be able to
+ * create, re-enable or re-point an enrolment, because it happens WITHOUT anyone asking for it:
+ *   • a device whose server row was disabled (the off switch, or Sign out) would otherwise be
+ *     silently re-enabled by merely opening the screen, undoing the person's opt-out — the browser
+ *     subscription can easily still exist, e.g. when the local unsubscribe failed;
+ *   • a device enrolled by somebody else would otherwise be silently transferred to whoever opened
+ *     the screen on it.
+ * So this is ONE conditional UPDATE — matched on the endpoint AND still enabled AND still owned by
+ * this actor — rather than a read followed by an upsert. No match means no mutation and `null`; the
+ * screen then shows "off" with the Enable button, and only an explicit Enable (saveSubscription)
+ * may insert, re-enable or transfer. `enrolled_at`, `employee_key` and `disabled_at` are untouched.
+ */
+export async function refreshSubscription(input: SubscriptionInput, actor: AuthedActor): Promise<StaffPushSubscription | null> {
+  const [row] = await getDb().update(staffPushSubscriptions)
+    .set({
+      endpoint: input.endpoint, p256dh: input.p256dh, auth: input.auth,
+      employeeName: actor.name, employeeRole: actor.role,
+      deviceLabel: input.deviceLabel?.slice(0, 120) || null,
+      lastSeenAt: new Date(),
+    })
+    .where(and(
+      eq(staffPushSubscriptions.endpointHash, endpointHash(input.endpoint)),
+      isNull(staffPushSubscriptions.disabledAt),
+      eq(staffPushSubscriptions.employeeKey, actor.key),
+    ))
+    .returning()
+  return row ?? null
 }
 
 export type DisableReason = 'signed_out' | 'expired' | 'revoked' | 'replaced' | 'disabled_by_staff'
@@ -202,11 +268,16 @@ export interface DispatchTally {
   skipped: number
   /** Alerts retired unsent because nothing could carry them in time. */
   staleAlerts: number
+  /**
+   * Due deliveries this run ran out of time to START. They were not claimed and no attempt was
+   * spent; the next run sends them. A number that is never 0 means the budget is too tight.
+   */
+  deferred: number
   /** True when VAPID keys are not configured, so nothing was attempted. */
   notConfigured: boolean
 }
 
-const EMPTY: DispatchTally = { sent: 0, retrying: 0, failed: 0, expired: 0, skipped: 0, staleAlerts: 0, notConfigured: false }
+const EMPTY: DispatchTally = { sent: 0, retrying: 0, failed: 0, expired: 0, skipped: 0, staleAlerts: 0, deferred: 0, notConfigured: false }
 
 export interface DispatchOptions {
   now?: Date
@@ -216,6 +287,13 @@ export interface DispatchOptions {
   config?: PushConfig | null
   fetchImpl?: typeof fetch
   recipientKeys?: string[]
+  /** Wall-clock budget for the whole run; see DEFAULT_DISPATCH_BUDGET_MS. */
+  budgetMs?: number
+  /**
+   * Elapsed-time source, injectable so the budget can be tested with a fake clock instead of by
+   * actually waiting. Must be monotonic-ish; only differences are used.
+   */
+  monotonicNow?: () => number
 }
 
 /**
@@ -227,6 +305,11 @@ export async function dispatchStaffAlerts(opts: DispatchOptions = {}): Promise<D
   const now = opts.now ?? new Date()
   const staleBefore = new Date(now.getTime() - MAX_ALERT_AGE_HOURS * 3_600_000)
   const tally: DispatchTally = { ...EMPTY }
+  const elapsed = opts.monotonicNow ?? (() => Date.now())
+  const startedAt = elapsed()
+  const budgetMs = opts.budgetMs ?? DEFAULT_DISPATCH_BUDGET_MS
+  /** Is there room for a whole send, worst case, before the invocation's budget is gone? */
+  const roomForOneMoreSend = () => elapsed() - startedAt + PUSH_SEND_TIMEOUT_MS <= budgetMs
 
   // 1. Revoked people first — a device must never be woken for someone who has lost access.
   await revokeUnauthorizedDevices(opts.recipientKeys ?? allowedRecipientKeys())
@@ -237,8 +320,12 @@ export async function dispatchStaffAlerts(opts: DispatchOptions = {}): Promise<D
   //         actor, even when a manager picks "website booking" as its source);
   //       • still unseen: acknowledged_at IS NULL, the same rule the Appointments list uses, so a
   //         booking staff already marked seen is never pushed;
-  //       • newer than the oldest enrolled device, so turning notifications on does not immediately
-  //         replay the last day of bookings onto a phone that was not enrolled when they arrived.
+  //       • a booking at least one currently-enrolled device is entitled to hear about. The test is
+  //         the device's own enrolled_at against the APPOINTMENT's created_at — never "now", and
+  //         never the alert's own created_at, which for a recovered alert is hours after the
+  //         booking. Without this, a phone enabled today would be told about yesterday evening's
+  //         bookings the first time the cron ran. Fan-out (step 3) then applies the same test PER
+  //         DEVICE, so an alert created for one entitled device is not delivered to a newer one.
   await db.execute(sql`
     INSERT INTO staff_alerts (appointment_id, kind, dedupe_key)
     SELECT a.id, ${ALERT_KIND_NEW_BOOKING}, a.id::text || ':' || ${ALERT_KIND_NEW_BOOKING}
@@ -246,7 +333,10 @@ export async function dispatchStaffAlerts(opts: DispatchOptions = {}): Promise<D
     WHERE a.source = 'website_booking' AND a.created_by IS NULL AND a.status = 'confirmed'
       AND a.acknowledged_at IS NULL
       AND a.created_at >= ${staleBefore}
-      AND a.created_at >= COALESCE((SELECT min(created_at) FROM staff_push_subscriptions WHERE disabled_at IS NULL), '-infinity'::timestamptz)
+      AND EXISTS (
+        SELECT 1 FROM staff_push_subscriptions s
+        WHERE s.disabled_at IS NULL AND s.enrolled_at <= a.created_at
+      )
     ON CONFLICT (dedupe_key) DO NOTHING`)
 
   // 1c. Recover claims abandoned by a worker that was killed mid-send, so an alert is not simply
@@ -272,18 +362,30 @@ export async function dispatchStaffAlerts(opts: DispatchOptions = {}): Promise<D
 
   // 3. Fan out: claiming the alert and creating its per-device rows is ONE statement, so a worker
   //    that dies mid-way cannot leave an alert marked fanned-out with nobody to deliver it.
+  //
+  //    WHICH devices: only those whose CURRENT enrolment started at or before the booking itself
+  //    (s.enrolled_at <= a.created_at). The comparison is deliberately against the APPOINTMENT's
+  //    created_at and not the alert's: a recovered or retried alert is created long after its
+  //    booking, and comparing against alert creation would hand yesterday's booking to a phone
+  //    enrolled this morning. The appointment is LEFT JOINed and falls back to the alert's own
+  //    created_at only for the degenerate case of an alert with no appointment_id.
   await db.execute(sql`
     WITH claimed AS (
       UPDATE staff_alerts SET fanned_out_at = ${now}
       WHERE fanned_out_at IS NULL AND created_at >= ${staleBefore}
       ${opts.alertId ? sql`AND id = ${opts.alertId}::uuid` : sql``}
-      RETURNING id
+      RETURNING id, appointment_id, created_at
     )
     INSERT INTO staff_alert_deliveries (alert_id, subscription_id, send_after)
     -- send_after is THIS run's clock, not the database's: a default of now() lands a few
     -- milliseconds after the clock this same run compares against, and the brand-new alert would
     -- sit unsent until the next cron — exactly the alert that most needs to go out immediately.
-    SELECT c.id, s.id, ${now} FROM claimed c CROSS JOIN staff_push_subscriptions s WHERE s.disabled_at IS NULL
+    SELECT c.id, s.id, ${now}
+    FROM claimed c
+    LEFT JOIN appointments a ON a.id = c.appointment_id
+    JOIN staff_push_subscriptions s
+      ON s.disabled_at IS NULL
+     AND s.enrolled_at <= COALESCE(a.created_at, c.created_at)
     ON CONFLICT (alert_id, subscription_id) DO NOTHING`)
   await db.execute(sql`
     UPDATE staff_alerts SET resolved_at = ${now}, resolution = 'no_devices'
@@ -301,6 +403,8 @@ export async function dispatchStaffAlerts(opts: DispatchOptions = {}): Promise<D
   const due = await db.select({
     delivery: staffAlertDeliveries, sub: staffPushSubscriptions, alert: staffAlerts,
     localDate: appointments.localDate, localTime: appointments.localTime,
+    /** When the BOOKING arrived — the clock every entitlement decision is made against. */
+    bookedAt: appointments.createdAt,
   })
     .from(staffAlertDeliveries)
     .innerJoin(staffPushSubscriptions, eq(staffPushSubscriptions.id, staffAlertDeliveries.subscriptionId))
@@ -314,7 +418,16 @@ export async function dispatchStaffAlerts(opts: DispatchOptions = {}): Promise<D
     .orderBy(asc(staffAlertDeliveries.sendAfter))
     .limit(opts.limit ?? DEFAULT_SEND_LIMIT)
 
-  for (const row of due) {
+  for (const [index, row] of due.entries()) {
+    // Out of time. Stop BEFORE claiming anything: everything left is still `pending` with its
+    // attempts untouched, so the next run (or the hourly/daily cron) sends it rather than the
+    // invocation being torn down mid-send and burning an attempt on a delivery nobody heard about.
+    if (!roomForOneMoreSend()) {
+      tally.deferred = due.length - index
+      logger.warn('staff-alerts', 'dispatch_budget_exhausted', { deferred: tally.deferred, budgetMs })
+      break
+    }
+
     // Conditional claim: whoever flips pending → sending owns this one send.
     const [claimed] = await db.update(staffAlertDeliveries)
       .set({ status: 'sending', attempts: sql`${staffAlertDeliveries.attempts} + 1`, claimedAt: now })
@@ -322,21 +435,38 @@ export async function dispatchStaffAlerts(opts: DispatchOptions = {}): Promise<D
       .returning()
     if (!claimed) continue
 
-    if (row.sub.disabledAt) {
+    // Re-read the DEVICE after claiming it, and judge it again. Fan-out decided this device was
+    // entitled to this booking, but that decision can go out of date while the delivery sits
+    // pending — above all when a shared shop phone is handed to a different person, who re-enrols
+    // the SAME endpoint without signing out first. Nothing before this point would notice: the row
+    // is not disabled, and the fan-out already happened. Re-reading here (rather than trusting the
+    // row selected a moment ago) also closes the window between selection and claim.
+    const [sub] = await db.select().from(staffPushSubscriptions)
+      .where(eq(staffPushSubscriptions.id, row.sub.id)).limit(1)
+    // The booking's own clock — never the alert's, which for a recovered alert is hours later.
+    // (An alert with no appointment falls back to the alert row; only reachable for a kind that
+    // does not exist yet.)
+    const bookedAt = row.bookedAt ?? row.alert.createdAt
+    if (!sub || sub.disabledAt) {
       await settle(row.delivery.id, { status: 'skipped', error: 'device disabled' })
+      tally.skipped++
+      continue
+    }
+    if (sub.enrolledAt.getTime() > bookedAt.getTime()) {
+      await settle(row.delivery.id, { status: 'skipped', error: 'device re-enrolled after this booking arrived' })
       tally.skipped++
       continue
     }
 
     const msg = renderAlert(row.alert, row.localDate ? { localDate: row.localDate, localTime: row.localTime! } : null)
     const outcome = await sendPush({
-      endpoint: row.sub.endpoint, keys: { p256dh: row.sub.p256dh, auth: row.sub.auth },
+      endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth },
       payload: JSON.stringify(msg), vapid: cfg.vapid, subject: cfg.subject,
       // TTL: the push service itself holds the message for an offline/asleep phone and keeps trying,
       // which is what actually covers "the phone was off", not our own retry pass.
       topic: msg.tag.replace(/-/g, '').slice(0, 32), ttl: MAX_ALERT_AGE_HOURS * 3600, now, fetchImpl: opts.fetchImpl,
     })
-    await applyOutcome(row.delivery.id, row.sub.id, claimed.attempts, outcome, now, tally)
+    await applyOutcome(row.delivery.id, sub.id, claimed.attempts, outcome, now, tally)
   }
 
   await resolveFinishedAlerts(now)

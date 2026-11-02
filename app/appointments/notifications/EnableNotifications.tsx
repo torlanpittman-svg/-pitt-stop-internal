@@ -12,12 +12,20 @@
  * so the honest thing is to detect that and show the install steps rather than a button that cannot
  * work. Permission is also requested as the FIRST thing the tap does — Safari ignores a permission
  * prompt that comes after an await.
+ *
+ * HONESTY RULES (enforced in ./enrollment.ts, which is where they are tested):
+ *  • "Notifications are ON" is shown only after the server CONFIRMS the enrolment. Every failure
+ *    path — not a manager, no server keys, server error, no connection — leaves the switch off with
+ *    a reason the reader can act on.
+ *  • Every await is bounded, so the screen can never be left saying "Checking this device…".
  */
 import { useCallback, useEffect, useState } from 'react'
+import {
+  WAIT_MS, enrollDevice, fetchPushStatus, refreshDevice, stopDevice, withTimeout,
+  type PushDevice, type PushServerStatus,
+} from './enrollment'
 
 type Phase = 'checking' | 'unsupported' | 'needs-install' | 'not-configured' | 'blocked' | 'off' | 'on'
-
-interface Device { id: string; label: string | null; enrolledAt: string; lastSuccessAt: string | null }
 
 /** The browser wants the VAPID public key as raw bytes, not base64url. */
 function keyBytes(base64url: string): Uint8Array {
@@ -52,51 +60,72 @@ export default function EnableNotifications() {
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [publicKey, setPublicKey] = useState<string | null>(null)
-  const [devices, setDevices] = useState<Device[]>([])
+  const [devices, setDevices] = useState<PushDevice[]>([])
 
-  const loadServer = useCallback(async (): Promise<{ configured: boolean; publicKey: string | null } | null> => {
-    try {
-      const res = await fetch('/api/appointments/push', { cache: 'no-store' })
-      if (!res.ok) return null
-      const data = await res.json() as { configured: boolean; publicKey: string | null; devices: Device[] }
-      setPublicKey(data.publicKey)
-      setDevices(data.devices ?? [])
-      return data
-    } catch { return null }
+  const loadServer = useCallback(async (): Promise<PushServerStatus | null> => {
+    const data = await fetchPushStatus()
+    if (data) { setPublicKey(data.publicKey); setDevices(data.devices) }
+    return data
   }, [])
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const supported = typeof navigator !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
-      if (!supported) {
-        // On an iPhone this almost always means "opened in a Safari tab, not the installed app".
-        if (!cancelled) setPhase(isApple() && !isStandalone() ? 'needs-install' : 'unsupported')
-        return
-      }
-      const server = await loadServer()
-      if (cancelled) return
-      if (!server?.configured || !server.publicKey) { setPhase('not-configured'); return }
-      if (Notification.permission === 'denied') { setPhase('blocked'); return }
+      try {
+        const supported = typeof navigator !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
+        if (!supported) {
+          // On an iPhone this almost always means "opened in a Safari tab, not the installed app".
+          if (!cancelled) setPhase(isApple() && !isStandalone() ? 'needs-install' : 'unsupported')
+          return
+        }
+        const server = await loadServer()
+        if (cancelled) return
+        // null is "we could not find out", which is NOT "nothing is enrolled" — say so instead of
+        // guessing, and leave the Enable button available.
+        if (!server) {
+          setPhase('off')
+          setError('Could not check this device with the server. Reload, or tap Enable to try again.')
+          return
+        }
+        if (!server.configured || !server.publicKey) { setPhase('not-configured'); return }
+        if (Notification.permission === 'denied') { setPhase('blocked'); return }
 
-      const reg = await navigator.serviceWorker.ready
-      const sub = await reg.pushManager.getSubscription()
-      if (cancelled) return
-      // A subscription made against an older VAPID key can never be delivered to. Reporting it as
-      // "on" would be the worst outcome: the phone looks covered, every push comes back rejected and
-      // there is no Enable button left to repair it. Treat it as off so the fix is one tap.
-      const staleKey = !!sub && toBase64Url(sub.options.applicationServerKey) !== server.publicKey
-      if (sub && !staleKey && Notification.permission === 'granted') {
-        // Refresh the server's copy: it keeps last-seen current and re-points a shared shop phone at
-        // whoever is signed in now.
-        void fetch('/api/appointments/push', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...subscriptionFields(sub), label: deviceLabel() }),
-        }).then(() => loadServer())
-        setPhase('on')
-      } else {
-        if (staleKey) setError('This device was set up with an older notification key. Tap Enable to reconnect it.')
+        const reg = await withTimeout(navigator.serviceWorker.ready, WAIT_MS, 'the app’s background worker')
+        const sub = await withTimeout(reg.pushManager.getSubscription(), WAIT_MS, 'this device’s notification setup')
+        if (cancelled) return
+        // A subscription made against an older VAPID key can never be delivered to. Reporting it as
+        // "on" would be the worst outcome: the phone looks covered, every push comes back rejected and
+        // there is no Enable button left to repair it. Treat it as off so the fix is one tap.
+        const staleKey = !!sub && toBase64Url(sub.options.applicationServerKey) !== server.publicKey
+        if (sub && !staleKey && Notification.permission === 'granted') {
+          // REFRESH-ONLY, and awaited. A browser subscription on its own proves nothing about the
+          // server, so this is the only thing that can report "ON" — but because it happens
+          // automatically, with nobody asking, it is explicitly not allowed to create, re-enable or
+          // take over an enrolment. A device somebody turned off therefore stays off when this
+          // screen is opened, and a colleague's device is not quietly moved to whoever is signed in.
+          // Either way the answer here is the state: refused → "off" with the Enable button.
+          const refreshed = await refreshDevice({ ...subscriptionFields(sub), label: deviceLabel() })
+          if (cancelled) return
+          if (!refreshed.ok) {
+            setPhase(refreshed.reason === 'not_configured' ? 'not-configured' : 'off')
+            // 'not_refreshable' is an ordinary state (turned off, or not this person's device): the
+            // "Notifications are off on this device" note plus Enable says it without alarm.
+            if (refreshed.reason !== 'not_refreshable') setError(refreshed.error)
+            await loadServer()
+            return
+          }
+          setPhase('on')
+          await loadServer()
+        } else {
+          if (staleKey) setError('This device was set up with an older notification key. Tap Enable to reconnect it.')
+          setPhase('off')
+        }
+      } catch (err) {
+        // Anything unexpected (including a bounded wait that timed out) is REPORTED. Leaving the
+        // screen on "Checking this device…" would look like an app that is still working on it.
+        if (cancelled) return
         setPhase('off')
+        setError(err instanceof Error ? err.message : 'Could not check this device.')
       }
     })()
     return () => { cancelled = true }
@@ -115,25 +144,32 @@ export default function EnableNotifications() {
       const key = publicKey ?? (await loadServer())?.publicKey
       if (!key) { setPhase('not-configured'); return }
 
-      const reg = await navigator.serviceWorker.ready
-      let sub = await reg.pushManager.getSubscription()
+      const reg = await withTimeout(navigator.serviceWorker.ready, WAIT_MS, 'the app’s background worker')
+      let sub = await withTimeout(reg.pushManager.getSubscription(), WAIT_MS, 'this device’s notification setup')
       // A subscription made against an older VAPID key can never be sent to — replace it.
       if (sub && toBase64Url(sub.options.applicationServerKey) !== key) {
         await sub.unsubscribe().catch(() => {})
         sub = null
       }
-      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) as BufferSource })
+      if (!sub) {
+        sub = await withTimeout(
+          reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) as BufferSource }),
+          WAIT_MS, 'the browser’s notification service',
+        )
+      }
 
-      const res = await fetch('/api/appointments/push', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...subscriptionFields(sub), label: deviceLabel() }),
-      })
-      const data = await res.json().catch(() => ({})) as { ok?: boolean; error?: string }
-      if (!res.ok || !data.ok) { setError(data.error ?? 'Could not register this device.'); return }
+      // The server's confirmation is the ONLY thing that turns this ON.
+      const result = await enrollDevice({ ...subscriptionFields(sub), label: deviceLabel() })
+      if (!result.ok) {
+        setPhase(result.reason === 'not_configured' ? 'not-configured' : 'off')
+        setError(result.error)
+        return
+      }
       setPhase('on')
       setMessage('This device will now get a notification when a customer books online.')
       await loadServer()
     } catch (err) {
+      setPhase((p) => (p === 'on' ? 'off' : p))
       setError(err instanceof Error ? err.message : 'Could not turn notifications on.')
     } finally { setBusy(false) }
   }, [publicKey, loadServer])
@@ -141,14 +177,19 @@ export default function EnableNotifications() {
   const disable = useCallback(async () => {
     setError(null); setMessage(null); setBusy(true)
     try {
-      const reg = await navigator.serviceWorker.ready
-      const sub = await reg.pushManager.getSubscription()
+      const reg = await withTimeout(navigator.serviceWorker.ready, WAIT_MS, 'the app’s background worker')
+      const sub = await withTimeout(reg.pushManager.getSubscription(), WAIT_MS, 'this device’s notification setup')
       if (sub) {
-        await fetch('/api/appointments/push', {
-          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ endpoint: sub.endpoint, reason: 'disabled_by_staff' }),
-        }).catch(() => {})
-        await sub.unsubscribe().catch(() => {})
+        const stop = await stopDevice({ endpoint: sub.endpoint, unsubscribe: () => sub.unsubscribe() })
+        if (!stop.stopped) {
+          // Nothing actually stopped: the device is still enrolled and still reachable. Leave the
+          // switch where it was and say so, rather than showing a reassuring "off".
+          setError(stop.error ?? 'This device could not be turned off. Try again.')
+          await loadServer()
+          return
+        }
+        // Stopped, but tell the reader if only one half of it succeeded.
+        if (stop.error) setError(stop.error)
       }
       setPhase('off')
       setMessage('This device will no longer get booking notifications.')
@@ -161,12 +202,12 @@ export default function EnableNotifications() {
   const sendTest = useCallback(async () => {
     setError(null); setMessage(null); setBusy(true)
     try {
-      const reg = await navigator.serviceWorker.ready
-      const sub = await reg.pushManager.getSubscription()
+      const reg = await withTimeout(navigator.serviceWorker.ready, WAIT_MS, 'the app’s background worker')
+      const sub = await withTimeout(reg.pushManager.getSubscription(), WAIT_MS, 'this device’s notification setup')
       if (!sub) { setPhase('off'); setError('This device is not enrolled yet.'); return }
-      const res = await fetch('/api/appointments/push/test', {
+      const res = await withTimeout(fetch('/api/appointments/push/test', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }),
-      })
+      }), WAIT_MS, 'the server')
       const data = await res.json().catch(() => ({})) as { ok?: boolean; message?: string; error?: string }
       if (res.ok && data.ok) setMessage(data.message ?? 'Test notification sent.')
       else setError(data.error ?? 'Could not send a test notification.')

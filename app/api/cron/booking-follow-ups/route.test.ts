@@ -8,7 +8,7 @@ vi.mock('@/apps/appointments/drafts', () => ({
 }))
 
 vi.mock('@/apps/staff-alerts/db', () => ({
-  dispatchStaffAlerts: vi.fn(async () => { calls.push('staff-alerts'); return { sent: 0, retrying: 0, failed: 0, expired: 0, skipped: 0, staleAlerts: 0, notConfigured: true } }),
+  dispatchStaffAlerts: vi.fn(async () => { calls.push('staff-alerts'); return { sent: 0, retrying: 0, failed: 0, expired: 0, skipped: 0, staleAlerts: 0, deferred: 0, notConfigured: true } }),
 }))
 
 import { GET } from './route'

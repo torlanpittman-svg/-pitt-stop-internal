@@ -7,8 +7,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createECDH } from 'node:crypto'
 import {
-  CURVE, MAX_PAYLOAD_BYTES, audienceOf, encryptPayload, generateVapidKeys, looksLikeVapidKeys,
-  pushConfig, sendPush, vapidAuthorization, vapidKeysMatch,
+  CURVE, MAX_ENDPOINT_LENGTH, MAX_PAYLOAD_BYTES, audienceOf, encryptPayload, generateVapidKeys,
+  isAllowedPushEndpoint, looksLikeVapidKeys, parsePushEndpoint, pushConfig, sendPush,
+  vapidAuthorization, vapidKeysMatch,
 } from './web-push'
 
 // RFC 8291, Section 5 "Push Message Encryption Example".
@@ -104,6 +105,79 @@ describe('VAPID (RFC 8292)', () => {
   })
 })
 
+describe('which URLs the server will POST to (SSRF surface)', () => {
+  it('accepts the four real push services, including their per-provider subdomain shapes', () => {
+    for (const endpoint of [
+      'https://web.push.apple.com/QBxc8HnBoaQfRBNUsqBKNxLnCdGJC6dPSgTkZNuLGWGnGNNRrkAEjgQ',
+      'https://push.apple.com/abc',
+      'https://fcm.googleapis.com/fcm/send/abc:APA91b',
+      'https://fcm.googleapis.com/wp/abc',
+      'https://updates.push.services.mozilla.com/wpush/v2/abc',
+      'https://push.services.mozilla.com/wpush/v2/abc',
+      'https://db5p.notify.windows.com/w/?token=abc',
+      'https://web.push.apple.com:443/explicit-default-port',
+    ]) {
+      expect(isAllowedPushEndpoint(endpoint), endpoint).toBe(true)
+    }
+  })
+
+  it('refuses anything that is not a known push service — no arbitrary DNS name', () => {
+    for (const endpoint of [
+      'https://push.example.com/abc',          // somebody else's server
+      'https://localhost/abc',
+      'https://127.0.0.1/abc',
+      'https://[::1]/abc',
+      'https://169.254.169.254/latest/meta-data/',  // cloud metadata
+      'https://10.0.0.5/abc',
+      'https://push.local/abc',
+      'https://push.internal/abc',
+      'http://web.push.apple.com/abc',          // not https
+      'ftp://web.push.apple.com/abc',
+      'web.push.apple.com/abc',                 // not a URL
+      '',
+      '   ',
+    ]) {
+      expect(isAllowedPushEndpoint(endpoint), endpoint).toBe(false)
+    }
+  })
+
+  it('refuses hosts that merely LOOK like a push service (suffix spoofing)', () => {
+    for (const endpoint of [
+      'https://evilpush.apple.com/abc',                  // endsWith('push.apple.com') but not a subdomain
+      'https://web.push.apple.com.evil.example/abc',     // allowed host as a prefix
+      'https://notfcm.googleapis.com/abc',
+      'https://fcm.googleapis.com.evil.example/abc',
+      'https://evil.example/web.push.apple.com',         // allowed host only in the path
+      'https://sub.fcm.googleapis.com/abc',              // Google is exact-host only
+      'https://web.push.apple.com./abc',                 // trailing-dot FQDN form
+    ]) {
+      expect(isAllowedPushEndpoint(endpoint), endpoint).toBe(false)
+    }
+  })
+
+  it('refuses userinfo, a non-default port and a fragment', () => {
+    // The userinfo trick: everything before the LAST @ is credentials, so the real host is evil.example.
+    expect(isAllowedPushEndpoint('https://fcm.googleapis.com@evil.example/abc')).toBe(false)
+    expect(isAllowedPushEndpoint('https://user:pw@fcm.googleapis.com/abc')).toBe(false)
+    expect(isAllowedPushEndpoint('https://web.push.apple.com:8443/abc')).toBe(false)
+    expect(isAllowedPushEndpoint('https://web.push.apple.com:22/abc')).toBe(false)
+    expect(isAllowedPushEndpoint('https://web.push.apple.com/abc#fragment')).toBe(false)
+    expect(isAllowedPushEndpoint('https://web.push.apple.com/abc#')).toBe(false)
+  })
+
+  it('refuses an absurdly long endpoint and non-strings', () => {
+    expect(isAllowedPushEndpoint(`https://web.push.apple.com/${'a'.repeat(MAX_ENDPOINT_LENGTH)}`)).toBe(false)
+    expect(isAllowedPushEndpoint(null)).toBe(false)
+    expect(isAllowedPushEndpoint(undefined)).toBe(false)
+    expect(isAllowedPushEndpoint({ endpoint: 'https://web.push.apple.com/abc' })).toBe(false)
+  })
+
+  it('returns the parsed URL for an allowed endpoint, so callers need not re-parse', () => {
+    expect(parsePushEndpoint(' https://web.push.apple.com/abc ')?.hostname).toBe('web.push.apple.com')
+    expect(parsePushEndpoint('https://evil.example/abc')).toBeNull()
+  })
+})
+
 describe('pushConfig', () => {
   const keys = generateVapidKeys()
   const good = { VAPID_PUBLIC_KEY: keys.publicKey, VAPID_PRIVATE_KEY: keys.privateKey, VAPID_SUBJECT: 'mailto:shop@example.com' } as unknown as NodeJS.ProcessEnv
@@ -125,7 +199,7 @@ describe('sendPush outcome mapping', () => {
   }
   const reply = (status: number, body = '') => vi.fn(async () => new Response(body, { status }))
 
-  it('posts an encrypted aes128gcm body with the VAPID header', async () => {
+  it('posts an encrypted aes128gcm body with the VAPID header, and never follows a redirect', async () => {
     const fetchImpl = reply(201)
     const out = await sendPush({ ...base, fetchImpl: fetchImpl as unknown as typeof fetch, topic: 'appt-1' })
     expect(out).toEqual({ status: 'sent', httpStatus: 201 })
@@ -136,6 +210,28 @@ describe('sendPush outcome mapping', () => {
     expect(headers.Authorization.startsWith('vapid t=')).toBe(true)
     expect(headers.Topic).toBe('appt-1')
     expect((init.body as Uint8Array).byteLength).toBeGreaterThan(80)
+    // Without this, a 302 from a push service could walk the request onto an internal address.
+    expect(init.redirect).toBe('error')
+  })
+
+  it.each([[301], [302], [307]])('treats a %i redirect as a permanent fault, never a hop to follow', async (status) => {
+    const out = await sendPush({ ...base, fetchImpl: reply(status) as unknown as typeof fetch })
+    expect(out.status).toBe('failed')
+  })
+
+  it('refuses to send to a host that is not a known push service, without any request', async () => {
+    const fetchImpl = reply(201)
+    for (const endpoint of [
+      'https://evil.example/abc',
+      'https://169.254.169.254/latest/meta-data/',
+      'https://web.push.apple.com.evil.example/abc',
+      'http://web.push.apple.com/abc',
+    ]) {
+      const out = await sendPush({ ...base, endpoint, fetchImpl: fetchImpl as unknown as typeof fetch })
+      // 'failed', not 'retry': such an endpoint will never become sendable, so it must not be requeued.
+      expect(out, endpoint).toEqual({ status: 'failed', httpStatus: null, error: 'Endpoint is not a recognised push service.' })
+    }
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it.each([[404], [410]])('treats %i as a dead subscription (never retried)', async (status) => {

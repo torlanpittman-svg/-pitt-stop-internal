@@ -69,6 +69,61 @@ export function vapidKeysMatch(keys: VapidKeys): boolean {
   } catch { return false }
 }
 
+// ── Which URLs the server is willing to POST to ───────────────────────────────
+
+/**
+ * THE allowlist of push services. A subscription endpoint is a URL this server will make an
+ * outbound POST to, with a body, from inside our network — so it is only ever allowed to be one of
+ * the four real browser push services. Anything else (an arbitrary DNS name that resolves to a
+ * private address, a link-local metadata host, a loopback name) is refused.
+ *
+ * `subdomains` is per provider because the shapes differ: Apple issues
+ * `web.push.apple.com`, Mozilla `updates.push.services.mozilla.com` and Windows a regional
+ * `<dc>.notify.windows.com`, while Google issues the one exact host `fcm.googleapis.com`.
+ */
+export const PUSH_PROVIDERS: ReadonlyArray<{ host: string; subdomains: boolean; who: string }> = [
+  { host: 'push.apple.com', subdomains: true, who: 'Apple (Safari / iPhone / iPad)' },
+  { host: 'fcm.googleapis.com', subdomains: false, who: 'Google (Chrome / Edge / Android)' },
+  { host: 'push.services.mozilla.com', subdomains: true, who: 'Mozilla (Firefox)' },
+  { host: 'notify.windows.com', subdomains: true, who: 'Microsoft WNS (Edge on Windows)' },
+]
+
+/** Longest endpoint we accept — real ones are a few hundred characters. */
+export const MAX_ENDPOINT_LENGTH = 1000
+
+/**
+ * Parse an endpoint, or return null if we must not send to it.
+ *
+ * Deliberately strict, because every rejected shape is a way to point our server somewhere else:
+ *  • non-HTTPS — a push endpoint is always https;
+ *  • userinfo (`https://user:pw@fcm.googleapis.com@evil.example`) — the classic host confusion;
+ *  • an explicit non-default port — a real push service is on 443;
+ *  • a fragment — never part of a push endpoint, and not sent on the wire, so it can only be there
+ *    to make a disallowed URL look allowed;
+ *  • a SUFFIX of an allowed host (`evilpush.apple.com`, `fcm.googleapis.com.evil.example`) — the
+ *    match is exact or on a dot boundary, never `endsWith` alone.
+ * IP literals, `localhost`, `*.local`/`*.internal` and bare hostnames are all excluded simply by
+ * not being on the allowlist.
+ */
+export function parsePushEndpoint(value: unknown): URL | null {
+  if (typeof value !== 'string') return null
+  const raw = value.trim()
+  if (!raw || raw.length > MAX_ENDPOINT_LENGTH) return null
+  if (raw.includes('#')) return null
+  let url: URL
+  try { url = new URL(raw) } catch { return null }
+  if (url.protocol !== 'https:') return null
+  if (url.username || url.password) return null
+  if (url.port !== '') return null   // URL() already strips a redundant ":443"
+  if (url.hash) return null
+  const host = url.hostname.toLowerCase()
+  const allowed = PUSH_PROVIDERS.some((p) => host === p.host || (p.subdomains && host.endsWith(`.${p.host}`)))
+  return allowed ? url : null
+}
+
+/** Shape + allowlist check for an endpoint we were handed (enrolment, release, test send). */
+export const isAllowedPushEndpoint = (value: unknown): boolean => parsePushEndpoint(value) !== null
+
 // ── VAPID (RFC 8292) ──────────────────────────────────────────────────────────
 
 /** `https://origin` of a push endpoint — the JWT audience. */
@@ -182,13 +237,29 @@ export interface SendOptions {
 }
 
 /**
+ * How long one send may take. The dispatcher budgets whole runs against this number, so it lives
+ * here next to the request that actually honours it.
+ */
+export const PUSH_SEND_TIMEOUT_MS = 8_000
+
+/**
  * POST one encrypted message to one push endpoint.
+ *
+ * The endpoint is re-checked against PUSH_PROVIDERS here and not only at enrolment: this is the
+ * single place an outbound request is actually made, so it is the only place that can guarantee the
+ * server never POSTs to an arbitrary host — whatever got into the table, and however this function
+ * comes to be called. Redirects are refused for the same reason (`redirect: 'error'`): a push
+ * service that answered 302 could otherwise walk the request onto an internal address.
  *
  * Outcome mapping is deliberate: 404/410 mean the subscription is gone (disable it); 429/5xx and
  * network failures are temporary (retry); everything else is a real fault we should surface rather
  * than retry forever. A push that is "sent" was only ACCEPTED by the push service.
  */
 export async function sendPush(opts: SendOptions): Promise<PushOutcome> {
+  // Not a retry: an endpoint that is not a known push service will never become one.
+  if (!isAllowedPushEndpoint(opts.endpoint)) {
+    return { status: 'failed', httpStatus: null, error: 'Endpoint is not a recognised push service.' }
+  }
   let encrypted: Buffer
   let authorization: string
   try {
@@ -212,7 +283,9 @@ export async function sendPush(opts: SendOptions): Promise<PushOutcome> {
         ...(opts.topic ? { Topic: opts.topic } : {}),
       },
       body: new Uint8Array(encrypted),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 8_000),
+      // A 3xx is a failure, not something to follow.
+      redirect: 'error',
+      signal: AbortSignal.timeout(opts.timeoutMs ?? PUSH_SEND_TIMEOUT_MS),
     })
   } catch (err) {
     return { status: 'retry', httpStatus: null, error: short(err instanceof Error ? `${err.name}: ${err.message}` : String(err)) }

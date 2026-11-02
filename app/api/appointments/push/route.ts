@@ -13,8 +13,8 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { authorizedManagerStrictFromRequest, employeeAuthorizedFromRequest } from '@/apps/auth/employee-guard'
-import { disableSubscription, listSubscriptions, mayEnrol, saveSubscription } from '@/apps/staff-alerts/db'
-import { pushConfig } from '@/apps/staff-alerts/web-push'
+import { disableSubscription, listSubscriptions, mayEnrol, refreshSubscription, saveSubscription } from '@/apps/staff-alerts/db'
+import { MAX_ENDPOINT_LENGTH, isAllowedPushEndpoint, pushConfig } from '@/apps/staff-alerts/web-push'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
@@ -23,18 +23,16 @@ export const dynamic = 'force-dynamic'
 const denied = () => NextResponse.json({ ok: false, error: 'Managers and admins only.' }, { status: 403 })
 
 /**
- * A subscription endpoint is a URL our server will POST to, so it has to be a real public HTTPS push
- * service — never loopback, a private address or a bare hostname.
+ * A subscription endpoint is a URL our server will later POST to, so it is checked against the ONE
+ * shared push-service allowlist in apps/staff-alerts/web-push.ts — the same rule sendPush enforces
+ * at the moment of sending. Keeping the rule in one place is the point: an endpoint that cannot be
+ * sent to must not be storable, and an endpoint that was stored must still be checked before use.
+ *
+ * DELETE uses the same rule even though it only ever STOPS notifications: a row can only exist if
+ * it passed this check at enrolment, so nothing releasable is excluded by being strict here.
  */
-const pushEndpoint = z.string().trim().url().max(1000).refine((value) => {
-  let url: URL
-  try { url = new URL(value) } catch { return false }
-  if (url.protocol !== 'https:') return false
-  const host = url.hostname.toLowerCase()
-  if (!host.includes('.') || host.endsWith('.local') || host.endsWith('.internal')) return false
-  if (host === 'localhost' || /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':')) return false
-  return true
-}, 'Unsupported push endpoint.')
+const pushEndpoint = z.string().trim().max(MAX_ENDPOINT_LENGTH)
+  .refine(isAllowedPushEndpoint, 'Unsupported push endpoint.')
 
 const subscribeBody = z.object({
   endpoint: pushEndpoint,
@@ -42,6 +40,13 @@ const subscribeBody = z.object({
   p256dh: z.string().trim().regex(/^[\w-]{80,120}$/),
   auth: z.string().trim().regex(/^[\w-]{16,48}$/),
   label: z.string().trim().max(120).optional(),
+  /**
+   * 'enroll' = somebody tapped Enable, and may create / re-enable / take over this device.
+   * 'refresh' = the setup screen re-registering an existing device on load. It must NOT be able to
+   * do any of those things, so it is a separate, strictly narrower operation. Default is 'enroll'
+   * so an older client (or Sign out's own call shape) keeps working exactly as before.
+   */
+  mode: z.enum(['enroll', 'refresh']).default('enroll'),
 })
 
 export async function GET(req: Request) {
@@ -53,7 +58,9 @@ export async function GET(req: Request) {
     ok: true,
     configured: !!cfg,
     publicKey: cfg?.vapid.publicKey ?? null,
-    devices: devices.map((d) => ({ id: d.id, label: d.deviceLabel, enrolledAt: d.createdAt, lastSuccessAt: d.lastSuccessAt })),
+    // enrolledAt = when this device's CURRENT enrolment started (see apps/staff-alerts/schema.ts);
+    // createdAt stays the audit record of when the row first appeared and is not shown.
+    devices: devices.map((d) => ({ id: d.id, label: d.deviceLabel, enrolledAt: d.enrolledAt, lastSuccessAt: d.lastSuccessAt })),
   })
 }
 
@@ -64,11 +71,22 @@ export async function POST(req: Request) {
 
   const parsed = subscribeBody.safeParse(await req.json().catch(() => null))
   if (!parsed.success) return NextResponse.json({ ok: false, error: 'That subscription could not be read.' }, { status: 400 })
+  const input = { endpoint: parsed.data.endpoint, p256dh: parsed.data.p256dh, auth: parsed.data.auth, deviceLabel: parsed.data.label ?? null }
 
-  const sub = await saveSubscription(
-    { endpoint: parsed.data.endpoint, p256dh: parsed.data.p256dh, auth: parsed.data.auth, deviceLabel: parsed.data.label ?? null },
-    actor,
-  )
+  if (parsed.data.mode === 'refresh') {
+    // One conditional UPDATE: it keeps an active enrolment of THIS actor's current, or changes
+    // nothing at all. A device that was turned off stays off, and a colleague's device stays theirs.
+    const refreshed = await refreshSubscription(input, actor)
+    if (!refreshed) {
+      return NextResponse.json({
+        ok: false,
+        error: 'Notifications are not currently on for this device under your sign-in. Tap Enable to turn them on.',
+      }, { status: 409 })
+    }
+    return NextResponse.json({ ok: true, id: refreshed.id })
+  }
+
+  const sub = await saveSubscription(input, actor)
   // Never log the endpoint itself — it is the address of someone's phone.
   logger.info('staff-alerts', 'device_enrolled', { employee: actor.key, subscriptionId: sub.id })
   return NextResponse.json({ ok: true, id: sub.id })

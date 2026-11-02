@@ -21,7 +21,15 @@ export const staffPushSubscriptions = pgTable('staff_push_subscriptions', {
   /** Role at enrolment — display/audit only; authority is re-checked live at send time. */
   employeeRole:   varchar('employee_role', { length: 16 }).notNull(),
   deviceLabel:    varchar('device_label', { length: 120 }),
+  /** Audit: when this device's row first appeared. Never rewritten. */
   createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  /**
+   * When this device's CURRENT enrolment began — the cut-off for "which bookings is this device
+   * entitled to be told about". A routine refresh by the same person PRESERVES it; a fresh
+   * enrolment after the device was disabled, or a hand-over to a different person on a shared shop
+   * phone, moves it forward so the new enrolment cannot be alerted about older bookings.
+   */
+  enrolledAt:     timestamp('enrolled_at', { withTimezone: true }).notNull().defaultNow(),
   lastSeenAt:     timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
   lastSuccessAt:  timestamp('last_success_at', { withTimezone: true }),
   /** Soft disable — a device row is never deleted, so the enrolment history stays auditable. */

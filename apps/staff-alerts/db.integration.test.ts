@@ -21,9 +21,9 @@ import { fakeVpic } from '@/apps/appointments/test-vpic'
 import {
   MAX_DELIVERY_ATTEMPTS, allowedRecipientKeys, disableSubscription, dispatchStaffAlerts, findSubscription,
   listSubscriptions, mayEnrol, newBookingDedupeKey, recentDeliveryProblems, recordNewBookingAlert,
-  renderAlert, saveSubscription, sendTestNotification,
+  refreshSubscription, renderAlert, saveSubscription, sendTestNotification,
 } from './db'
-import { generateVapidKeys, type PushConfig } from './web-push'
+import { PUSH_SEND_TIMEOUT_MS, generateVapidKeys, type PushConfig } from './web-push'
 
 const pg = new PGlite()
 const PARENTS = `
@@ -105,6 +105,13 @@ const device = (actor = MANAGER, endpoint = `https://web.push.apple.com/${Math.r
 
 const rows = async <T = Record<string, unknown>>(sql: string): Promise<T[]> => (await pg.query(sql)).rows as T[]
 const count = async (table: string, where = 'true') => ((await pg.query(`SELECT count(*)::int AS n FROM ${table} WHERE ${where}`)).rows[0] as { n: number }).n
+/**
+ * Enrolment timestamps are compared in SQL, at the database's microsecond resolution: two writes in
+ * the same millisecond are indistinguishable once a timestamptz has been narrowed to a JS Date.
+ */
+const enrolment = async (endpoint: string) => (await rows<{ enrolled: string; moved: boolean }>(
+  `SELECT enrolled_at::text AS enrolled, enrolled_at > created_at AS moved
+   FROM staff_push_subscriptions WHERE endpoint = '${endpoint}'`))[0]
 
 /** A push service that answers with the given statuses in order (last one repeats). */
 function pushService(...statuses: number[]) {
@@ -216,6 +223,181 @@ describe('delivery to enrolled devices', () => {
     // The customer's details must not be recoverable from the wire bytes.
     expect(body.toString('latin1')).not.toContain('Alex')
     expect(body.toString('latin1')).not.toContain('Civic')
+  })
+})
+
+// ── which bookings a device is entitled to hear about ─────────────────────────
+
+/**
+ * The rule under test: a device is told about a booking only if its CURRENT enrolment started at or
+ * before THAT BOOKING arrived. The comparison must be against the appointment's own created_at —
+ * not "now", and not the alert row's created_at, which for a recovered or retried alert is long
+ * after the booking it describes. Getting this wrong means a phone buzzing about yesterday evening
+ * the first time somebody turns notifications on, which is exactly the way to make staff switch the
+ * feature back off.
+ */
+describe('a device only hears about bookings from its own enrolment onwards', () => {
+  const EARLY = 'https://web.push.apple.com/enrolled-before-the-booking'
+  const LATE = 'https://web.push.apple.com/enrolled-after-the-booking'
+
+  it('alerts the phone enrolled before the booking and NOT the one enrolled after it', async () => {
+    await device(MANAGER, EARLY)
+    await book()
+    await device(OTHER_MANAGER, LATE)
+    const svc = pushService(201)
+    const tally = await dispatchStaffAlerts({ now: dispatchNow(), config: PUSH, fetchImpl: svc.fetchImpl })
+    expect(tally.sent).toBe(1)
+    expect(svc.calls.map((c) => c.url)).toEqual([EARLY])
+    // One delivery row only — the later phone is never even queued.
+    expect(await count('staff_alert_deliveries')).toBe(1)
+  })
+
+  it('judges a RECOVERED alert by the booking time, not by when the alert was recreated', async () => {
+    await device(MANAGER, EARLY)
+    const { appointment } = await book()
+    await pg.exec('DELETE FROM staff_alerts')      // as if the post-response write was dropped
+    await device(OTHER_MANAGER, LATE)              // a phone enrolled in between
+    const svc = pushService(201)
+    // Hours later the cron recreates the alert. Its created_at is NOW; the booking's is not.
+    await dispatchStaffAlerts({ now: dispatchNow(2 * HOUR), config: PUSH, fetchImpl: svc.fetchImpl })
+    expect(await rows<{ appointment_id: string }>('SELECT appointment_id FROM staff_alerts')).toEqual([{ appointment_id: appointment.id }])
+    expect(svc.calls.map((c) => c.url)).toEqual([EARLY])
+  })
+
+  it('creates no recovery alert at all when no enrolled device predates the booking', async () => {
+    await book()
+    await pg.exec('DELETE FROM staff_alerts')
+    await device(MANAGER, LATE)
+    const svc = pushService(201)
+    await dispatchStaffAlerts({ now: dispatchNow(2 * HOUR), config: PUSH, fetchImpl: svc.fetchImpl })
+    expect(await count('staff_alerts')).toBe(0)
+    expect(svc.calls).toHaveLength(0)
+  })
+
+  it('a routine refresh keeps the alerts the device was already owed', async () => {
+    const endpoint = 'https://web.push.apple.com/manager-own-phone'
+    await device(MANAGER, endpoint)
+    const before = await enrolment(endpoint)
+    await book()
+    // The notifications screen re-registers the same device, for the same person, on every visit.
+    await device(MANAGER, endpoint)
+    const after = await enrolment(endpoint)
+    expect(after.enrolled).toBe(before.enrolled)
+    expect(after.moved).toBe(false)
+
+    const svc = pushService(201)
+    expect((await dispatchStaffAlerts({ now: dispatchNow(), config: PUSH, fetchImpl: svc.fetchImpl })).sent).toBe(1)
+  })
+
+  it('re-enabling a device does not hand it the bookings that arrived while it was off', async () => {
+    const endpoint = 'https://web.push.apple.com/turned-off-and-on-again'
+    await device(MANAGER, endpoint)
+    await disableSubscription(endpoint, 'signed_out')
+    await book()                                   // arrived while nobody was listening
+    await device(MANAGER, endpoint)                // …then the phone is turned back on
+    expect((await enrolment(endpoint)).moved).toBe(true)
+
+    const svc = pushService(201)
+    await dispatchStaffAlerts({ now: dispatchNow(), config: PUSH, fetchImpl: svc.fetchImpl })
+    expect(svc.calls).toHaveLength(0)
+    expect(await rows<{ resolution: string }>('SELECT resolution FROM staff_alerts')).toEqual([{ resolution: 'no_devices' }])
+
+    // …but it is covered from now on, which is the point of turning it back on.
+    await book({ time: '09:15' })
+    await dispatchStaffAlerts({ now: dispatchNow(), config: PUSH, fetchImpl: svc.fetchImpl })
+    expect(svc.calls).toHaveLength(1)
+  })
+
+  it('drops a QUEUED delivery when the phone changes hands after it was fanned out', async () => {
+    // The gap the fan-out rule alone cannot close: the delivery was already created and correct
+    // when it was created. It then sits pending (no VAPID keys yet, a retry backoff, a budget
+    // deferral) while a different person signs in on that shared shop phone and re-enrols the SAME
+    // endpoint — without signing out first, so nothing is ever disabled.
+    const endpoint = 'https://web.push.apple.com/handover-while-queued'
+    await device(MANAGER, endpoint)
+    await book()
+    await dispatchStaffAlerts({ now: dispatchNow(), config: null })   // fan out, send nothing
+    expect(await count('staff_alert_deliveries', `status = 'pending'`)).toBe(1)
+
+    await device(OTHER_MANAGER, endpoint)
+    const svc = pushService(201)
+    const tally = await dispatchStaffAlerts({ now: dispatchNow(), config: PUSH, fetchImpl: svc.fetchImpl })
+
+    expect(svc.calls).toHaveLength(0)
+    expect(tally).toMatchObject({ sent: 0, skipped: 1 })
+    const [row] = await rows<{ status: string; error: string }>('SELECT status, error FROM staff_alert_deliveries')
+    expect(row.status).toBe('skipped')
+    expect(row.error).toMatch(/re-enrolled/)
+  })
+
+  it('still sends a queued delivery when the same person merely refreshed the device', async () => {
+    const endpoint = 'https://web.push.apple.com/refreshed-while-queued'
+    await device(MANAGER, endpoint)
+    await book()
+    await dispatchStaffAlerts({ now: dispatchNow(), config: null })
+    await device(MANAGER, endpoint)      // the notifications screen, re-registering the same device
+    const svc = pushService(201)
+    expect((await dispatchStaffAlerts({ now: dispatchNow(), config: PUSH, fetchImpl: svc.fetchImpl })).sent).toBe(1)
+    expect(svc.calls).toHaveLength(1)
+  })
+
+  it('handing a shared shop phone to another manager starts a fresh enrolment', async () => {
+    const endpoint = 'https://web.push.apple.com/shared-shop-phone-handover'
+    await device(MANAGER, endpoint)
+    await book()
+    await device(OTHER_MANAGER, endpoint)          // a different person signs in on the same phone
+    const after = await enrolment(endpoint)
+    expect(after.moved).toBe(true)
+
+    const svc = pushService(201)
+    await dispatchStaffAlerts({ now: dispatchNow(), config: PUSH, fetchImpl: svc.fetchImpl })
+    // Darryl does not inherit a booking that arrived while the phone was Torlan's.
+    expect(svc.calls).toHaveLength(0)
+    expect(await count('staff_push_subscriptions')).toBe(1)
+  })
+})
+
+// ── the invocation's time budget ───────────────────────────────────────────────
+
+describe('one dispatch run stays inside its invocation', () => {
+  it('stops before starting a send it has no time for, and leaves those deliveries untouched', async () => {
+    for (let i = 0; i < 4; i++) await device(MANAGER, `https://web.push.apple.com/phone-${i}`)
+    await book()
+
+    // Fake clock: each send costs a FULL push timeout, the way an unreachable endpoint does. The
+    // row limit alone would happily start all four — 4 × 8 s is already past a 16 s budget.
+    let clock = 0
+    let calls = 0
+    const fetchImpl = vi.fn(async () => { calls++; clock += PUSH_SEND_TIMEOUT_MS; return new Response('', { status: 201 }) })
+    const opts = { config: PUSH, fetchImpl: fetchImpl as unknown as typeof fetch, monotonicNow: () => clock }
+
+    const tally = await dispatchStaffAlerts({ ...opts, now: dispatchNow(), budgetMs: 2 * PUSH_SEND_TIMEOUT_MS })
+    expect(calls).toBe(2)
+    expect(tally).toMatchObject({ sent: 2, deferred: 2 })
+    // The two it never reached were not claimed: still pending, and no attempt was spent on them.
+    expect(await count('staff_alert_deliveries', `status = 'pending' AND attempts = 0`)).toBe(2)
+    expect(await count('staff_alerts', 'resolved_at IS NOT NULL')).toBe(0)
+
+    // Nothing was lost — the next run finishes them.
+    clock = 0
+    const second = await dispatchStaffAlerts({ ...opts, now: dispatchNow() })
+    expect(second).toMatchObject({ sent: 2, deferred: 0 })
+    expect(calls).toBe(4)
+    expect(await count('staff_alert_deliveries', `status = 'sent'`)).toBe(4)
+    expect(await rows<{ resolution: string }>('SELECT resolution FROM staff_alerts')).toEqual([{ resolution: 'delivered' }])
+  })
+
+  it('sends nothing — rather than one thing — when the budget cannot fit a single send', async () => {
+    await device()
+    await book()
+    const fetchImpl = vi.fn(async () => new Response('', { status: 201 }))
+    const tally = await dispatchStaffAlerts({
+      now: dispatchNow(), config: PUSH, fetchImpl: fetchImpl as unknown as typeof fetch,
+      budgetMs: 1_000, monotonicNow: () => 0,
+    })
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(tally).toMatchObject({ sent: 0, deferred: 1 })
+    expect(await count('staff_alert_deliveries', `status = 'pending' AND attempts = 0`)).toBe(1)
   })
 })
 
@@ -392,6 +574,62 @@ describe('only authorized staff keep getting alerts', () => {
     expect(svc.calls).toHaveLength(0)
     expect(await listSubscriptions()).toHaveLength(0)
     expect(await listSubscriptions({ includeDisabled: true })).toHaveLength(1)
+  })
+
+  /**
+   * The automatic refresh the setup screen performs on load. Because nobody asked for it, it must be
+   * incapable of changing WHO or WHETHER — only "still current". Otherwise simply opening the
+   * Notifications screen silently undoes an opt-out (the browser subscription often still exists,
+   * e.g. when the local unsubscribe failed) or hands a colleague's phone to whoever is signed in.
+   */
+  describe('the automatic refresh cannot enrol, re-enable or transfer', () => {
+    const ENDPOINT = 'https://web.push.apple.com/refresh-only-device'
+    const SUB = { endpoint: ENDPOINT, p256dh: UA_P256DH, auth: UA_AUTH, deviceLabel: 'iPhone · Safari' }
+
+    it('keeps an active enrolment of the owner current, without moving its enrolment window', async () => {
+      await device(MANAGER, ENDPOINT)
+      const before = await enrolment(ENDPOINT)
+      const row = await refreshSubscription(SUB, MANAGER)
+      expect(row?.employeeKey).toBe(MANAGER.key)
+      expect((await enrolment(ENDPOINT)).enrolled).toBe(before.enrolled)
+    })
+
+    it('leaves a device that was turned OFF disabled — opening the screen cannot re-enable it', async () => {
+      await device(MANAGER, ENDPOINT)
+      await disableSubscription(ENDPOINT, 'disabled_by_staff')
+
+      // The browser still holds the subscription (its unsubscribe failed), so the screen refreshes it.
+      expect(await refreshSubscription(SUB, MANAGER)).toBeNull()
+
+      const [row] = await rows<{ disabled_reason: string; endpoint: string }>(
+        `SELECT disabled_reason, endpoint FROM staff_push_subscriptions`)
+      expect(row.disabled_reason).toBe('disabled_by_staff')
+      expect(row.endpoint).toBe('')                       // credentials stayed cleared
+      expect(await listSubscriptions()).toHaveLength(0)    // still not an active device
+      expect(await count('staff_push_subscriptions')).toBe(1)   // and no second row was inserted
+
+      // Only an explicit Enable may bring it back.
+      await device(MANAGER, ENDPOINT)
+      expect(await listSubscriptions()).toHaveLength(1)
+    })
+
+    it('refuses a refresh from somebody who is not the owner, and changes nothing', async () => {
+      await device(MANAGER, ENDPOINT)
+      const before = (await rows<{ employee_key: string; employee_name: string; last_seen_at: string }>(
+        `SELECT employee_key, employee_name, last_seen_at::text FROM staff_push_subscriptions`))[0]
+
+      expect(await refreshSubscription(SUB, OTHER_MANAGER)).toBeNull()
+
+      const after = (await rows<{ employee_key: string; employee_name: string; last_seen_at: string }>(
+        `SELECT employee_key, employee_name, last_seen_at::text FROM staff_push_subscriptions`))[0]
+      expect(after).toEqual(before)                      // not transferred, not even touched
+      expect(await count('staff_push_subscriptions')).toBe(1)
+    })
+
+    it('never creates a device that was not enrolled at all', async () => {
+      expect(await refreshSubscription(SUB, MANAGER)).toBeNull()
+      expect(await count('staff_push_subscriptions')).toBe(0)
+    })
   })
 
   it('re-points a shared shop phone at whoever enrolled it last, without duplicating it', async () => {

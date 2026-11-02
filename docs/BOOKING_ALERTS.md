@@ -1,12 +1,29 @@
 # New-booking alerts (in-app + phone push) — handoff
 
-**Status: implemented locally and verified by tests/build only. NOT pushed, NOT deployed, no
-migration applied, no notification ever sent to a real device.** Phone delivery is unproven until
-the acceptance test below is run on the owner's iPhone.
+## Independent release verification — 2026-11-02
 
-Branch: `feat/booking-push-alerts` in worktree `/Users/torlanpittman/Projects/.ps-worktrees/booking-push`,
-based on `origin/main` = `6642999`, which is the commit Vercel production was serving when this was
-written (verified via the Vercel API: `dpl_Eu7DKoN2eVjxbEYBsb7kAKUyAaYG`, READY, target production).
+Codex reviewed the implementation and coordinated targeted fixes through Claude Code session
+`f95f65b0-ce0e-48b8-9807-d54aef104f0b`, in the isolated `codex/booking-push-release` worktree.
+Final verification: **228 test files / 2,953 tests pass**, and `next build --webpack` exits 0.
+Standalone TypeScript output is identical to the production-source baseline (10 existing diagnostics
+in `apps/estimates/quickbooks.test.ts`). Scoped ESLint has only the same two existing IdentityBar
+diagnostics, independently reproduced against `origin/main`; no new diagnostics.
+The original appointment domain, workflow, and QuickBooks modules are unchanged. Push-service
+allowlisting, honest setup/disable states, explicit enrollment versus refresh, enrollment-time
+filtering, queued-delivery ownership checks, post-response booking notification work, and the
+dispatch time budget are covered by regression tests. The hourly customer-follow-up workflow and
+its settings are unchanged. Real phone delivery remains unverified until the owner enables a device
+and performs the acceptance test. The release is authorized; production outcome is recorded separately.
+
+**Status: implemented and reviewed locally; verified by tests and a build only. No migration applied,
+no notification ever sent to a real device.** Phone delivery is unproven until the acceptance test in
+§7 is run on the owner's iPhone. A push accepted by Apple is not proof that a phone displayed it.
+
+Release branch: `codex/booking-push-release`, built on commit `e13070d` plus the review fixes
+recorded in §9. The feature was originally written on `feat/booking-push-alerts` off `origin/main` =
+`6642999`, the commit Vercel production was serving at the time (verified via the Vercel API:
+`dpl_Eu7DKoN2eVjxbEYBsb7kAKUyAaYG`, READY, target production). Confirm the current production commit
+before deploying — this document's commit references age.
 
 ---
 
@@ -15,12 +32,14 @@ written (verified via the Vercel API: `dpl_Eu7DKoN2eVjxbEYBsb7kAKUyAaYG`, READY,
 When a customer finishes booking online:
 
 1. The appointment is saved exactly as before. **The booking statement itself is untouched by this
-   feature** (`apps/appointments/` is byte-identical to production): the alert is recorded right
-   after the booking commits, best-effort, so no notification table, bug or missing migration can
-   fail, delay or undo a booking. If even that write is lost, the next dispatch recreates the alert
-   from the appointment row.
-2. Every manager/admin device that enrolled gets a **Web Push** notification. Tapping it opens
-   `/appointments/<id>` — the existing appointment screen, still behind the PIN gate.
+   feature** (`apps/appointments/` is byte-identical to production). The alert is recorded **after
+   the customer's response has been sent**, from the route's `after()` callback — not on the
+   response path — so no notification table, bug, stall, lock or missing migration can fail, delay
+   or undo a booking. If that write is lost entirely (a dropped `after` callback), the next dispatch
+   recreates the alert from the appointment row.
+2. Every manager/admin device that was already enrolled **when that booking arrived** gets a **Web
+   Push** notification. Tapping it opens `/appointments/<id>` — the existing appointment screen,
+   still behind the PIN gate.
 3. The Pitt Stop home screen shows an **in-app alert** ("New online booking → tap to open it") for
    as long as the booking is unacknowledged. This is the part that cannot fail: it reads the database
    on every Home render, whether or not any push got through.
@@ -62,25 +81,36 @@ it is never sent to a browser and never belongs in a `NEXT_PUBLIC_*` variable.
 **New — `apps/staff-alerts/`**
 | File | Purpose |
 |---|---|
-| `web-push.ts` | VAPID signing, aes128gcm encryption, `sendPush` + HTTP outcome mapping, `pushConfig()` |
-| `web-push.test.ts` | RFC 8291 vector, VAPID JWT shape, outcome mapping (23 tests) |
+| `web-push.ts` | VAPID signing, aes128gcm encryption, the **push-service allowlist**, `sendPush` + HTTP outcome mapping, `pushConfig()` |
+| `web-push.test.ts` | RFC 8291 vector, VAPID JWT shape, outcome mapping, allowlist/SSRF cases (33 tests) |
 | `schema.ts` | `staff_push_subscriptions`, `staff_alerts`, `staff_alert_deliveries` |
 | `db.ts` | `recordNewBookingAlert`, fan-out, delivery, retry, revocation, test notification, problem reporting |
-| `db.integration.test.ts` | the outbox against real Postgres via PGlite + the real migrations (30 tests) |
+| `db.integration.test.ts` | the outbox against real Postgres via PGlite + the real migrations (38 tests) |
 
 **New — elsewhere**
 - `drizzle/migrations/manual/0068_staff_push_alerts.sql` — the three tables (additive only).
+  `staff_push_subscriptions` has both `created_at` (audit: when the row first appeared, never
+  rewritten) and `enrolled_at` (when the device's CURRENT enrolment began — the entitlement cut-off
+  described in §4).
 - `app/api/appointments/push/route.ts` — GET status / POST enrol / DELETE un-enrol.
 - `app/api/appointments/push/test/route.ts` — one test notification to the caller's own device.
 - `app/appointments/notifications/page.tsx` + `EnableNotifications.tsx` — the enable button and the
-  iPhone install steps.
+  iPhone install steps, plus `enrollment.ts` / `enrollment.test.ts` (18 tests): the enrol / status /
+  stop plumbing, factored out so the honesty rules are testable without a DOM — the screen reports
+  **ON only after the server confirms**, reports **off only when something verifiably stopped**, uses
+  a **refresh-only** request for its automatic on-load re-registration, and bounds every wait so it
+  can never be left saying "Checking this device…".
+- `app/api/appointments/push/route.test.ts` — the two POST modes, the 409 refusal, and that
+  authorization plus the endpoint allowlist run before any write in either mode.
 - `app/components/NewBookingAlert.tsx` — the in-app home-screen alert.
 - `scripts/generate-vapid-keys.ts` — one-off key generation (read-only; prints, writes nothing).
 
 **Changed**
-- `app/api/book/appointments/route.ts` — records the alert after the booking commits, then delivers
-  that one alert post-response via `after()`; `maxDuration = 60` so the post-response work is not
-  torn down mid-send. **`apps/appointments/` is not modified at all.**
+- `app/api/book/appointments/route.ts` — records **and** delivers that one alert entirely inside
+  `after()`, i.e. after the customer's response; `maxDuration = 60` so the post-response work is not
+  torn down mid-send. **`apps/appointments/` is not modified at all.** `route.test.ts` proves the
+  booking response is produced before any alert work starts and that an alert write which throws, or
+  never resolves at all, cannot delay or fail the booking.
 - `app/api/cron/appointment-notifications/route.ts` (daily Vercel cron, 22:00 UTC) and
   `app/api/cron/booking-follow-ups/route.ts` (hourly **only if** the GitHub schedule is enabled —
   see §6 step 5) — the retry pass. A push failure here cannot fail the cron.
@@ -95,19 +125,30 @@ it is never sent to a browser and never belongs in a `NEXT_PUBLIC_*` variable.
 
 ---
 
-## 4. How duplicates are prevented
+## 4. How duplicates and misdirected alerts are prevented
 
-| Scenario | What stops a duplicate |
+**What is actually guaranteed:** we never create a second *delivery* for the same (alert, device)
+pair, and we never *send* twice for one delivery. **What is NOT guaranteed, by anyone:** exactly one
+notification *displayed* on a phone. The notification carries the alert id as its `tag` / `Topic`,
+which makes a push service replace an undelivered earlier copy and makes the OS replace a shown one,
+and that removes the ordinary duplicate — but what a given iOS/Android version does with a replaced
+notification is the OS's decision, not ours. Treat §7 step 8 as an observation, not a promise.
+
+| Scenario | What stops a duplicate / a misdirected alert |
 |---|---|
 | Customer double-taps Book | Same `idempotency_key` → the booking is replayed, the alert's `dedupe_key` (`<appointmentId>:new_booking`) collides, no second alert. |
 | Dispatch runs again (cron, next booking, manual) | Fan-out is claimed once via `fanned_out_at`; `staff_alert_deliveries` has `UNIQUE (alert_id, subscription_id)`. |
 | Two workers at the same instant | Every state change is a conditional `UPDATE … WHERE status = 'pending'`; only the winner sends. |
 | Push service retry after a lost response | A delivery that was claimed is never re-claimed; a `retry` outcome is re-queued with backoff, up to 5 attempts. |
 | Same phone re-enrolled | Keyed on `endpoint_hash` with upsert — one row per device, re-pointed at whoever enrolled last. |
-| A device enrolled after the booking | Fan-out happens once, to the devices enrolled at that moment; it never back-fills old alerts onto a new phone. |
+| A device enrolled after the booking | `enrolled_at` is the cut-off: a delivery is only ever created where `enrolled_at <= the APPOINTMENT's created_at`. Compared against the booking's own clock, never the alert's (a recovered alert is created hours later) and never "now". |
+| A phone handed to a different person, or turned back on | That re-enrolment moves `enrolled_at` forward, so the new enrolment is not owed older bookings. A routine refresh by the same person (which the setup screen does on every visit) **preserves** it, so a phone that merely re-opened the app keeps the alerts it was already owed. |
+| Opening the Notifications screen on a device somebody turned OFF | The screen's automatic re-registration is **refresh-only** (`mode: 'refresh'` → one conditional `UPDATE … WHERE still enabled AND still owned by this actor`). It cannot insert, re-enable or transfer, so a disabled device stays disabled and a colleague's device stays theirs; the screen shows "off" with the Enable button. Only an explicit Enable may change who or whether. |
+| A phone that changes hands while a delivery is still queued | The entitlement is re-read and re-checked immediately before sending, so an already-queued delivery is `skipped` rather than sent to whoever holds the phone now. |
 | An alert nobody received for a day | Retired `expired_unsent` instead of buzzing phones about stale news. |
-| A worker crashed mid-send | The stale `claimed_at` is requeued (within the attempt limit) rather than losing the alert. A phone that already received the first attempt **replaces** that notification instead of stacking another, because both carry the alert id as their `tag`. |
-| Turning notifications on for the first time | The recovery query only alerts bookings newer than the oldest enrolled device, so enabling a phone never replays the last day of bookings onto it. |
+| A worker crashed mid-send | The stale `claimed_at` is requeued (within the attempt limit) rather than losing the alert — losing an alert is worse than a possible second arrival, and the shared `tag` replaces the undelivered earlier copy. |
+| A run that would overrun its invocation | A wall-clock budget stops the run before starting a send it has no time for; untouched deliveries stay `pending` with their attempts intact and go out on the next run. |
+| Turning notifications on for the first time | The recovery query only creates an alert when some currently-enrolled device predates that booking, so enabling a phone never replays the last day of bookings onto it. |
 | A booking staff already marked seen | The recovery query uses the same `acknowledged_at IS NULL` rule as the Appointments list. |
 
 ## 5. Who gets alerted, and how access is revoked
@@ -123,6 +164,18 @@ Manager/admin only (`EMPLOYEE_IDENTITIES` + the `ADMIN_PASSWORD` admin actor). E
   other queued alerts skipped, never retried.
 
 Rows are only ever soft-disabled, so the enrolment history stays auditable.
+
+**Where the server is allowed to send.** A subscription endpoint is a URL this server makes an
+outbound POST to, so it is checked against one shared allowlist (`PUSH_PROVIDERS` in
+`apps/staff-alerts/web-push.ts`): HTTPS only, on `push.apple.com` + subdomains, exactly
+`fcm.googleapis.com`, `push.services.mozilla.com` + subdomains, or `notify.windows.com` +
+subdomains. Userinfo, a non-default port, a fragment and suffix look-alikes (`evilpush.apple.com`,
+`fcm.googleapis.com.evil.example`) are all refused, and redirects are not followed
+(`redirect: 'error'`). The rule is enforced both at enrolment and again inside `sendPush` — the one
+place a request is actually made — so no arbitrary DNS name or redirect can point the server at an
+internal address, whatever is in the table. If a browser ever issues an endpoint on a host outside
+that list, enrolment fails with "Unsupported push endpoint" and the host has to be added
+deliberately.
 
 ---
 
@@ -152,25 +205,42 @@ migration first is still the tidier order.
 4. **Deploy** using the established pattern — cherry-pick this branch's commit into a worktree off
    current `origin/main`, fast-forward push, then confirm the deployed commit through the Vercel API
    (not public asset hashes).
-5. **Decide about hourly retries (owner decision).** `.github/workflows/booking-follow-ups.yml`
-   already exists and is scheduled hourly, but it is **INERT** until two repository settings are
-   added (GitHub → Settings → Secrets and variables → Actions):
+5. **Retries are DAILY. Nothing in this release changes that, and nothing here activates an hourly
+   schedule.** The only retry pass that runs is the **daily** Vercel cron
+   (`/api/cron/appointment-notifications`). `/api/cron/booking-follow-ups` also runs the retry when
+   it is called, and `.github/workflows/booking-follow-ups.yml` is scheduled hourly in the file —
+   but that workflow is **INERT** and is **deliberately left inert**: it does nothing until two
+   GitHub repository settings are added (Settings → Secrets and variables → Actions), which is a
+   **separate owner decision and not part of this release**:
    - secret `CRON_SECRET` = the same value as the Vercel project's `CRON_SECRET`
    - variable `BOOKING_CRON_BASE_URL` = `https://pitt-stop-internal.vercel.app`
 
-   Without them the only retry pass is the **daily** Vercel cron at 22:00 UTC, and an alert that
-   fails late in the day may age out (`MAX_ALERT_AGE_HOURS = 24`) before its second chance. This is
-   less serious than it sounds, because the first attempt is immediate and the push services
-   themselves hold a message for an offline or sleeping phone for up to the 24 h TTL — our retry only
-   covers the case where the push service erred or the function died. Enabling those two settings
-   also improves the existing unfinished-booking follow-ups, which have the same limitation.
+   Consequence of daily-only, stated plainly: an alert whose *first* attempt fails late in the day
+   may age out (`MAX_ALERT_AGE_HOURS = 24`) before its second chance. That is narrower than it
+   sounds — the first attempt is immediate, and the push services themselves hold a message for an
+   offline or sleeping phone for up to the 24 h TTL, so our own retry only covers the case where the
+   push service erred or the function died. The in-app Home banner is unaffected either way.
+
+   Enabling those two settings would also affect the **existing customer-facing unfinished-booking
+   follow-ups**, which share that endpoint. That is exactly why it is not being switched on here: no
+   customer follow-up configuration is changed by this release.
 6. **Phone acceptance test** — section 7.
 
-**Rollback:** remove `VAPID_PRIVATE_KEY` from the environment. Push delivery stops immediately
-(alerts are still recorded and the in-app banner still works); no code change or redeploy needed.
-A full code rollback is the previous production deployment. Migration 0068 can also be rolled back
-while this code is live (the three tables are referenced only by this feature), though there is no
-reason to: without the keys they are inert.
+**Rollback — read this before relying on it.**
+
+- **The kill switch is a deployment, not an environment edit.** Removing or blanking
+  `VAPID_PRIVATE_KEY` in Vercel does **not** take effect on the running app: environment variables
+  are bound to a deployment, so the currently-running functions keep the value they were deployed
+  with. **A new deployment (or a redeploy) is required before the change is live.** There is no
+  instant env-only rollback.
+- **The fast rollback is Vercel Instant Rollback to the previous production deployment.** That is a
+  code rollback and it does take effect immediately.
+- Once a deployment without the keys *is* live, push delivery stops while alerts are still recorded
+  and the in-app Home banner still works — so staff keep seeing new bookings in the app.
+- Migration 0068 can be rolled back while this code is live (the three tables are referenced only by
+  this feature and never by the booking statement), though there is no reason to: without the keys
+  they are inert. Dropping them while the code is live means the post-response alert write throws and
+  is swallowed; bookings are unaffected.
 
 ---
 
@@ -196,7 +266,10 @@ Nothing here has been done. Steps 4–7 send real notifications, but only to the
 7. Confirm the Pitt Stop home screen shows the in-app "New online booking" banner, that it links to
    the same appointment, and that **Mark seen** on `/appointments` clears both.
 8. Repeat step 6 once with the phone in **Airplane Mode**, then turn Wi-Fi back on: the notification
-   should arrive late (the push service holds it) and must appear **once**, not twice.
+   should arrive late, because the push service holds it. Note how many copies appear. Expect one —
+   the shared `tag`/`Topic` replaces an undelivered earlier copy — but this is an **observation to
+   record, not a guarantee**: we control how many messages we send, not what the OS displays. Two
+   notifications for one booking is a cosmetic annoyance worth reporting, not a data problem.
 
 **Until step 6 passes on the device, phone delivery is unverified.** A push accepted by Apple is not
 proof that a phone displayed it.
@@ -205,26 +278,74 @@ proof that a phone displayed it.
 
 ## 8. What was actually verified locally
 
-- `apps/staff-alerts` — 53 tests pass (2 files), including the official RFC 8291 §5 vector and the
-  outbox against real Postgres (PGlite) running the real migrations. One test renames `staff_alerts`
-  out from under a booking to prove the booking still succeeds without the table.
-- `apps/appointments` — 152 tests pass (8 files), with those files **unmodified**.
+On the original `e13070d` implementation:
+
 - Full suite `npm test` — 225 files / 2,883 tests, all passing (run because this touches shared code:
   `drizzle/schema.ts`, `proxy.ts`, and two cron routes).
-- `npx tsc --noEmit` — no new errors (`apps/estimates/quickbooks.test.ts` errors are pre-existing on
-  `origin/main` and untouched).
+- `apps/appointments` — 152 tests pass (8 files), with those files **unmodified**.
+- `npx tsc --noEmit` — no new errors. The 10 errors in `apps/estimates/quickbooks.test.ts` are
+  pre-existing on `origin/main`; that file is byte-identical here and was deliberately not touched.
 - `npx eslint` on every changed/new file — clean (`IdentityBar.tsx`'s two errors and
   `api/cron/finance-sync`'s one are pre-existing on `origin/main`).
-- `npx next build --webpack` — compiled successfully; `/api/appointments/push`,
-  `/api/appointments/push/test` and `/appointments/notifications` are in the route manifest.
 
-**Not verified:** anything on a real device or against a real push service, and anything in
-production. No key was generated, no environment variable set, no migration applied, no notification
-sent, nothing pushed or deployed.
+After the review fixes in §9:
+
+- `apps/staff-alerts/web-push.test.ts` — **33 pass** (RFC 8291 §5 vector, VAPID JWT shape, outcome
+  mapping, and the allowlist/SSRF cases).
+- `apps/staff-alerts/db.integration.test.ts` — **38 pass** against real Postgres (PGlite) running the
+  real migrations. One test renames `staff_alerts` out from under a booking to prove the booking
+  still succeeds without the table.
+- `app/appointments/notifications/enrollment.test.ts` — **18 pass**.
+- `npx next build --webpack` — full success; `/api/appointments/push`, `/api/appointments/push/test`
+  and `/appointments/notifications` are in the route manifest.
+
+**Honest gaps in the verification, as of this document:**
+
+- The **full suite has not been re-run** since the last round of fixes (the send-time enrolment
+  re-check and the honest "off" path). The two directly affected files are covered by the counts
+  above; `app/api/book/appointments/route.test.ts` and
+  `app/api/cron/booking-follow-ups/route.test.ts` also need to be in that run. Re-run `npm test`
+  before deploying — this change touches `drizzle/schema.ts` and two cron routes, which is squarely
+  in CLAUDE.md's "run the full suite" category.
+- **Nothing has been verified on a real device or against a real push service**, and nothing in
+  production: no key generated, no environment variable set, no migration applied, no notification
+  sent.
+- The `enrollment.ts` rules are tested as functions. **The component wiring itself
+  (`EnableNotifications.tsx`) has no test** — this project has no DOM test environment — so the
+  mapping from those outcomes onto what the screen shows is verified by reading the code and by §7.
 
 ---
 
-## 9. Follow-ups worth a decision later
+## 9. Review fixes applied on top of `e13070d`
+
+Each of these was a real defect found in review, not a tidy-up:
+
+1. **Push endpoints are allowlisted** (§5, "Where the server is allowed to send"). The original
+   validation accepted any public-looking DNS name and `sendPush` followed redirects, so a stored or
+   injected endpoint could have pointed the server at an internal address.
+2. **The setup screen no longer claims "ON" without the server's confirmation.** The enrolment POST
+   was fire-and-forget; a 403, a 503, a 500 or no connection still showed a green "Notifications are
+   ON". Every wait on that screen is now bounded, so it also cannot be left on "Checking this
+   device…". Permission is still requested as the first thing the user's tap does — Safari ignores a
+   prompt that comes after an `await`.
+3. **Turning a device OFF is now honest too.** A failed server release plus a failed browser
+   unsubscribe used to be reported as "off" while the phone was still enrolled and reachable.
+   Relatedly, the screen's automatic on-load re-registration is now **refresh-only**: it used to run
+   the full enrol upsert, so opening the Notifications screen silently re-enabled a device somebody
+   had turned off (the browser subscription survives a failed local unsubscribe) and silently
+   transferred a colleague's device to whoever was signed in. Only an explicit Enable does that now.
+4. **`enrolled_at` replaces `created_at` as the entitlement cut-off**, compared against the
+   *appointment's* `created_at` at fan-out *and* re-checked against a fresh read immediately before
+   sending. The original `CROSS JOIN` fanned every alert out to every enabled device, and recovery
+   compared against the alert's own creation time, so a newly enabled phone could be alerted about
+   older bookings and a phone that changed hands could receive the previous holder's booking.
+5. **The dispatcher has a wall-clock budget.** A serial limit of 25–50 sends × an 8 s timeout can
+   exceed the 60 s invocation; untouched deliveries now stay `pending` with their attempts intact
+   instead of a run being torn down mid-send.
+6. **This document** — the rollback claim, the retry cadence and the "appears exactly once" claim
+   were all wrong; the migration's comments contradicted the implementation.
+
+## 10. Follow-ups worth a decision later
 
 - Alerts for staff-entered phone/walk-in bookings (deliberately excluded — they are entered by
   someone who already knows).

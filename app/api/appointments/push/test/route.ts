@@ -9,6 +9,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { authorizedManagerStrictFromRequest } from '@/apps/auth/employee-guard'
 import { findSubscription, mayEnrol, sendTestNotification } from '@/apps/staff-alerts/db'
+import { MAX_ENDPOINT_LENGTH, isAllowedPushEndpoint } from '@/apps/staff-alerts/web-push'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
@@ -18,7 +19,10 @@ export async function POST(req: Request) {
   const actor = await authorizedManagerStrictFromRequest(req)
   if (!mayEnrol(actor)) return NextResponse.json({ ok: false, error: 'Managers and admins only.' }, { status: 403 })
 
-  const parsed = z.object({ endpoint: z.string().trim().url().max(1000) }).safeParse(await req.json().catch(() => null))
+  // Same shared push-service allowlist as enrolment and as sendPush itself.
+  const parsed = z.object({
+    endpoint: z.string().trim().max(MAX_ENDPOINT_LENGTH).refine(isAllowedPushEndpoint, 'Unsupported push endpoint.'),
+  }).safeParse(await req.json().catch(() => null))
   if (!parsed.success) return NextResponse.json({ ok: false, error: 'That subscription could not be read.' }, { status: 400 })
 
   const sub = await findSubscription(parsed.data.endpoint)
