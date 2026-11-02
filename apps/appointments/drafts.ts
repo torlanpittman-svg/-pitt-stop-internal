@@ -31,7 +31,7 @@ import { validateVehicle } from './vehicles'
 import { draftToken, hashToken, isTokenShape, resumeUrl } from './tokens'
 import { cleanAttribution } from './attribution'
 import { BookingError, getBookingConfig, runAtomic } from './db'
-import { brandedHtml, transactionalEmailProvider, type TransactionalEmailProvider } from './notify'
+import { brandedHtml, transactionalEmailProvider, type TransactionalEmailProvider, replyToAddress } from './notify'
 
 export type BookingDraft = typeof bookingDrafts.$inferSelect
 export type BookingDraftEvent = typeof bookingDraftEvents.$inferSelect
@@ -347,7 +347,7 @@ export async function dispatchDraftFollowUps(opts: {
 
     // Render from the row as it was when cleared (current details), never the claim-time snapshot.
     const msg = renderDraftFollowUp(check.row, cfg, resumeUrl(id))
-    const res = await provider.send({ to: check.row.email, subject: msg.subject, text: msg.text, html: msg.html })
+    const res = await provider.send({ to: check.row.email, subject: msg.subject, text: msg.text, html: msg.html, replyTo: replyToAddress() })
     const mine = and(eq(bookingDrafts.id, id), inArray(bookingDrafts.followUpStatus, ['sending', 'uncertain']), eq(bookingDrafts.followUpAttempts, claimed.followUpAttempts))
     let after: { consent: boolean; staffStatus: string; status: string } | undefined
     if (res.status === 'sent') {
@@ -355,8 +355,16 @@ export async function dispatchDraftFollowUps(opts: {
         .where(mine).returning({ consent: bookingDrafts.followUpConsent, staffStatus: bookingDrafts.staffStatus, status: bookingDrafts.status })
       tally.sent++
     } else if (res.status === 'blocked') {
-      await db.update(bookingDrafts).set({ followUpStatus: 'suppressed', followUpProvider: provider.name, followUpError: res.reason }).where(mine)
-      tally.suppressed++
+      // TEST-MODE HOLD, not a suppression. 'suppressed' means "deliberately not sending this" (customer booked,
+      // lead closed, already emailed); an allowlist miss means only "not during this test". So it returns to the
+      // module's existing deferred state — 'pending' with the reason recorded and the attempt undone — and goes
+      // out once the allowlist is removed, subject to the same final eligibility check as any other run.
+      await db.update(bookingDrafts).set({
+        followUpStatus: 'pending', followUpProvider: provider.name, followUpError: res.reason,
+        followUpAttempts: sql`greatest(${bookingDrafts.followUpAttempts} - 1, 0)`,
+      }).where(mine)
+      await db.insert(bookingDraftEvents).values({ draftId: id, eventType: 'follow_up_deferred', actor: 'system', meta: { reason: res.reason } })
+      tally.deferred++
     } else if (res.status === 'not_configured') {
       await db.update(bookingDrafts).set({ followUpStatus: 'not_configured', followUpProvider: provider.name, followUpError: 'No transactional email provider is configured.' }).where(mine)
       tally.notConfigured++

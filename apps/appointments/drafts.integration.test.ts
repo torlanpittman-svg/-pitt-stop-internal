@@ -210,12 +210,19 @@ describe('the one follow-up email', () => {
     expect((await q('SELECT follow_up_status, follow_up_sent_at FROM booking_drafts'))[0]).toEqual({ follow_up_status: 'not_configured', follow_up_sent_at: null })
   })
 
-  it('test-mode allowlist blocks real customers and nothing leaves', async () => {
+  it('test-mode allowlist holds real customers without sending or discarding them', async () => {
     await saveDraft(draft(), { cfg: ON, vehicleFetch }); await age(25)
     const inner = capture()
     const p = new AllowlistEmailProvider(inner, ['owner@example.com'])
-    expect((await dispatchDraftFollowUps({ cfg: ON, provider: p })).suppressed).toBe(1)
+    // DEFERRED, not 'suppressed': an allowlist miss means "not during this test", not "never send this".
+    expect((await dispatchDraftFollowUps({ cfg: ON, provider: p })).deferred).toBe(1)
     expect(inner.sent).toHaveLength(0)
+    const held = (await q('SELECT follow_up_status, follow_up_attempts FROM booking_drafts'))[0]
+    expect(held).toEqual({ follow_up_status: 'pending', follow_up_attempts: 0 })
+    // Once the allowlist is removed the same follow-up goes out — exactly once.
+    expect((await dispatchDraftFollowUps({ cfg: ON, provider: inner })).sent).toBe(1)
+    expect(inner.sent).toHaveLength(1)
+    expect((await dispatchDraftFollowUps({ cfg: ON, provider: inner })).sent).toBe(0)
   })
 
   it('a provider failure retries, then stops as failed', async () => {

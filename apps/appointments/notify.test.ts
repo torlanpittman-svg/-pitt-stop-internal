@@ -77,3 +77,20 @@ describe('Postmark: only a readable acceptance is "sent"; anything that might ha
     }
   })
 })
+
+
+describe('Reply-To reaches the provider payload', () => {
+  it('Postmark is given ReplyTo when set, and omits it when not', async () => {
+    const calls: Record<string, unknown>[] = []
+    const t = (async (_u: string, init: RequestInit) => {
+      calls.push(JSON.parse(String(init.body)))
+      return new Response(JSON.stringify({ ErrorCode: 0, MessageID: 'pm-1' }), { status: 200 })
+    }) as unknown as typeof fetch
+    const p = new PostmarkEmailProvider('tok', 'appointments@example.com', t)
+    await p.send({ to: 'a@b.co', subject: 's', text: 'x', replyTo: 'service@example.com' })
+    await p.send({ to: 'a@b.co', subject: 's', text: 'x' })
+    expect(calls[0].ReplyTo).toBe('service@example.com')
+    expect(calls[1].ReplyTo).toBeUndefined()
+    expect(calls[0].From).toBe('appointments@example.com')
+  })
+})

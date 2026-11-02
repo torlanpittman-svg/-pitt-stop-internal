@@ -16,7 +16,7 @@ import { getDb } from '@/platform/db'
 import { createAppointment, cancelAppointment, getAppointment, type BookingInput } from './db'
 import { fakeVpic } from './test-vpic'
 import { checkInAppointment } from './checkin'
-import { dispatchDue, renderMessage, requeueNotification, PostmarkEmailProvider, NotConfiguredEmailProvider, type TransactionalEmailProvider } from './notify'
+import { dispatchDue, renderMessage, requeueNotification, PostmarkEmailProvider, NotConfiguredEmailProvider, AllowlistEmailProvider, replyToAddress, type EmailMessage, type TransactionalEmailProvider } from './notify'
 import { DEFAULT_BOOKING_CONFIG, zonedToUtc, addDays, localParts, weekdayOf, formatDateLabel, holidayName, type BookingConfig } from './policy'
 
 const pg = new PGlite()
@@ -270,5 +270,132 @@ describe('transactional notices: ambiguous delivery', () => {
     await dispatchDue({ provider: pm.provider, now: new Date(NOW.getTime() + 16 * 60_000), appointmentId: a.id })
     expect(pm.calls()).toBe(2)
     expect(await notice(a.id, 'confirmation')).toMatchObject({ status: 'sent', attempts: 2 })
+  })
+})
+
+
+// ── Controlled test safety: an allowlist must never consume a real customer's notice ──────────────
+// The failure this guards against: during an owner-only test the allowlist refuses every other address.
+// If that counted as a terminal 'skipped', a genuine confirmation or reminder queued at the same time
+// would be silently thrown away and could never be recovered (requeueNotification refuses 'skipped').
+describe('transactional notices: test-mode allowlist is a hold, not a discard', () => {
+  const box: EmailMessage[] = []
+  const inner: TransactionalEmailProvider = { name: 'fake', live: true, async send(m) { box.push(m); return { status: 'sent', providerMessageId: `m${box.length}` } } }
+  const allowOwnerOnly = new AllowlistEmailProvider(inner, ['owner@pittstop.test'])
+
+  it("holds a real customer's confirmation instead of discarding it, then sends it exactly once afterwards", async () => {
+    box.length = 0
+    const a = await book({ email: 'real.customer@gmail.com' })
+
+    // During the controlled test: nothing leaves, and the notice is NOT consumed.
+    const held = await dispatchDue({ provider: allowOwnerOnly, now: NOW, appointmentId: a.id })
+    expect(held).toMatchObject({ sent: 0, skipped: 0, held: 1 })
+    expect(box).toHaveLength(0)
+    const row = () => pg.query(
+      `SELECT status, attempts, error FROM appointment_notifications WHERE appointment_id = $1 AND kind = 'confirmation'`, [a.id],
+    ).then((r) => r.rows[0] as { status: string; attempts: number; error: string | null })
+    const afterHold = await row()
+    expect(afterHold.status).toBe('pending')          // still queued — recoverable
+    expect(afterHold.attempts).toBe(0)                // a hold never burns a real delivery attempt
+    expect(afterHold.error).toMatch(/allowlist/i)     // and says why, for the staff screen
+
+    // The allowlist is removed (owner approves real email): it goes out, once. A held notice waits out a
+    // short backoff first, so it is picked up by the next run rather than spun on within the same minute.
+    const AFTER_HOLD = new Date(NOW.getTime() + 16 * 60_000)
+    expect((await dispatchDue({ provider: inner, now: NOW, appointmentId: a.id })).sent).toBe(0)
+    expect((await dispatchDue({ provider: inner, now: AFTER_HOLD, appointmentId: a.id })).sent).toBe(1)
+    expect((await dispatchDue({ provider: inner, now: AFTER_HOLD, appointmentId: a.id })).sent).toBe(0)
+    expect(box).toHaveLength(1)
+    expect(box[0].to).toBe('real.customer@gmail.com')
+    expect((await row()).status).toBe('sent')
+  })
+
+  it('still sends to the allowlisted owner address while the test is running', async () => {
+    box.length = 0
+    const a = await book({ email: 'owner@pittstop.test' })
+    expect((await dispatchDue({ provider: allowOwnerOnly, now: NOW, appointmentId: a.id })).sent).toBe(1)
+    expect(box.map((m) => m.to)).toEqual(['owner@pittstop.test'])
+  })
+
+  it('a held notice that has become irrelevant is still not sent once the allowlist is removed', async () => {
+    box.length = 0
+    const a = await book({ email: 'real.customer@gmail.com' })
+    await dispatchDue({ provider: allowOwnerOnly, now: NOW, appointmentId: a.id })   // confirmation held
+    await cancelAppointment(a.id, { actor: 'Tony', by: 'staff' })
+    await dispatchDue({ provider: inner, now: new Date(NOW.getTime() + 16 * 60_000), appointmentId: a.id })
+    // The staleness re-check still applies to a held notice: a cancelled booking gets no "confirmed" email.
+    expect(box.map((m) => m.subject.split(' ')[0])).toEqual(['Appointment'])
+    expect(box[0].subject).toMatch(/cancelled/)
+  })
+})
+
+// ── Replies must reach a monitored human inbox, not the unattended sending address ───────────────
+describe('transactional notices: Reply-To', () => {
+  it('stamps Reply-To from APPOINTMENT_EMAIL_REPLY_TO on what the provider is given', async () => {
+    const box: EmailMessage[] = []
+    const provider: TransactionalEmailProvider = { name: 'fake', live: true, async send(m) { box.push(m); return { status: 'sent', providerMessageId: 'x' } } }
+    const prev = process.env.APPOINTMENT_EMAIL_REPLY_TO
+    process.env.APPOINTMENT_EMAIL_REPLY_TO = 'service@pittstop.test'
+    try {
+      const a = await book()
+      await dispatchDue({ provider, now: NOW, appointmentId: a.id })
+      expect(box[0].replyTo).toBe('service@pittstop.test')
+    } finally {
+      if (prev === undefined) delete process.env.APPOINTMENT_EMAIL_REPLY_TO
+      else process.env.APPOINTMENT_EMAIL_REPLY_TO = prev
+    }
+  })
+
+  it('unset means no Reply-To header rather than an empty one', () => {
+    expect(replyToAddress({} as NodeJS.ProcessEnv)).toBeNull()
+    expect(replyToAddress({ APPOINTMENT_EMAIL_REPLY_TO: '  ' } as unknown as NodeJS.ProcessEnv)).toBeNull()
+    expect(replyToAddress({ APPOINTMENT_EMAIL_REPLY_TO: ' service@x.co ' } as unknown as NodeJS.ProcessEnv)).toBe('service@x.co')
+  })
+})
+
+
+// ── Backdated confirmations: a notice that sat un-sent must not go out after the drop-off ────────
+// This is what protects the queue of notices recorded while no provider was configured: switching a
+// provider on, or a staff retry weeks later, must not mail "your drop-off is confirmed" about a past date.
+describe('transactional notices: a stale confirmation is never sent late', () => {
+  const box: EmailMessage[] = []
+  const provider: TransactionalEmailProvider = { name: 'fake', live: true, async send(m) { box.push(m); return { status: 'sent', providerMessageId: 'x' } } }
+
+  it('refuses a confirmation once the drop-off time has passed, even when a manager re-queues it', async () => {
+    box.length = 0
+    const a = await book({ email: 'late@example.com' })
+    // It was never sent (no provider at the time).
+    await dispatchDue({ provider: new NotConfiguredEmailProvider(), now: NOW, appointmentId: a.id })
+    const id = ((await pg.query(
+      `SELECT id FROM appointment_notifications WHERE appointment_id = $1 AND kind = 'confirmation'`, [a.id],
+    )).rows[0] as { id: string }).id
+
+    // A provider now exists and staff press "Send again" — but the drop-off is in the past.
+    await requeueNotification(id)
+    const past = new Date(a.startsAt.getTime() + 60 * 60_000)
+    await dispatchDue({ provider, now: past, appointmentId: a.id })
+    expect(box).toHaveLength(0)
+    const row = (await pg.query(`SELECT status, error FROM appointment_notifications WHERE id = $1`, [id]))
+      .rows[0] as { status: string; error: string | null }
+    expect(row.status).toBe('skipped')
+    expect(row.error).toBe('drop-off time passed')
+  })
+
+  it('still sends a confirmation while the drop-off is ahead', async () => {
+    box.length = 0
+    const a = await book({ email: 'intime@example.com' })
+    expect((await dispatchDue({ provider, now: NOW, appointmentId: a.id })).sent).toBe(1)
+    expect(box[0].subject).toMatch(/^Drop-off confirmed/)
+  })
+
+  it('a cancellation notice is still allowed after the drop-off time', async () => {
+    box.length = 0
+    const a = await book({ email: 'cancel@example.com' })
+    await dispatchDue({ provider, now: NOW, appointmentId: a.id })            // confirmation
+    const past = new Date(a.startsAt.getTime() + 60 * 60_000)
+    await cancelAppointment(a.id, { actor: 'Tony', by: 'staff' })
+    await dispatchDue({ provider, now: past, appointmentId: a.id })
+    expect(box.map((m) => m.subject.split(' ')[0])).toEqual(['Drop-off', 'Appointment'])
+    expect(box[1].subject).toMatch(/cancelled/)
   })
 })

@@ -17,8 +17,14 @@
  * never retried automatically and never re-queueable, so an accepted email can't be sent twice.
  *
  * TEST SAFETY: when APPOINTMENT_EMAIL_ALLOWLIST is set (comma-separated addresses and/or @domains), only those
- * recipients are sent to; every other notice is recorded `skipped` ("test mode") and nothing leaves. Set it for
- * any controlled test with a live provider; remove it only when the owner approves real customer email.
+ * recipients are sent to. Every other notice is HELD, not discarded: it stays `pending` with the reason recorded,
+ * so a controlled test can never silently consume a real customer's confirmation or reminder — once the allowlist
+ * is removed those notices go out on the next dispatch (staleness is re-checked then, so anything that has since
+ * become irrelevant still won't send). Set the allowlist for any controlled test with a live provider; remove it
+ * only when the owner approves real customer email.
+ *
+ * REPLIES: APPOINTMENT_EMAIL_REPLY_TO sets Reply-To on every customer notice, so replies reach a monitored human
+ * inbox instead of the unattended sending address. Unset = no Reply-To header (replies go to APPOINTMENT_EMAIL_FROM).
  */
 import { and, eq, lte, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
@@ -106,6 +112,16 @@ export class AllowlistEmailProvider implements TransactionalEmailProvider {
     if (!this.allows(msg.to)) return { status: 'blocked', reason: 'Test mode: recipient is not on APPOINTMENT_EMAIL_ALLOWLIST, so nothing was sent.' }
     return this.inner.send(msg)
   }
+}
+
+/**
+ * Reply-To for customer notices. The sending address is unattended, so replies must be steered to a monitored
+ * mailbox (e.g. the shared service group). Returns null when unset — then replies fall back to the From address,
+ * which is only safe if that address is itself a real monitored mailbox.
+ */
+export function replyToAddress(env: NodeJS.ProcessEnv = process.env): string | null {
+  const v = (env.APPOINTMENT_EMAIL_REPLY_TO ?? '').trim()
+  return v || null
 }
 
 export function transactionalEmailProvider(env: NodeJS.ProcessEnv = process.env): TransactionalEmailProvider {
@@ -206,22 +222,30 @@ export function staleReason(kind: string, a: Appointment, now: Date): string | n
   if (kind === 'reminder' && a.status !== 'confirmed') return `appointment ${a.status}`
   if (kind === 'reminder' && a.startsAt.getTime() <= now.getTime()) return 'drop-off time passed'
   if ((kind === 'confirmation' || kind === 'reschedule') && a.status === 'cancelled') return 'appointment cancelled'
+  // A confirmation is only true while the drop-off is still ahead. Once it has passed, telling the customer
+  // their drop-off "is confirmed" for a past time is wrong and confusing — this is what stops a notice that
+  // sat un-sent (no provider, a failure, a staff retry weeks later) from going out as a backdated
+  // confirmation. A cancellation notice is still always allowed: it stays true after the fact.
+  if ((kind === 'confirmation' || kind === 'reschedule') && a.startsAt.getTime() <= now.getTime()) return 'drop-off time passed'
   return null
 }
 
 const MAX_ATTEMPTS = 3
+/** How long a test-mode HELD notice waits before the next dispatch looks at it again. */
+const HOLD_RETRY_MINUTES = 15
 
 /** Send due notices. Safe to run concurrently: each row is claimed with a conditional update. */
-export async function dispatchDue(opts: { now?: Date; limit?: number; appointmentId?: string; provider?: TransactionalEmailProvider } = {}): Promise<{ sent: number; notConfigured: number; failed: number; uncertain: number; skipped: number }> {
+export async function dispatchDue(opts: { now?: Date; limit?: number; appointmentId?: string; provider?: TransactionalEmailProvider } = {}): Promise<{ sent: number; notConfigured: number; failed: number; uncertain: number; skipped: number; held: number }> {
   const db = getDb()
   const now = opts.now ?? new Date()
   const provider = opts.provider ?? transactionalEmailProvider()
+  const replyTo = replyToAddress()
   const cfg = await getBookingConfig()
   const due = await db.select().from(appointmentNotifications).where(and(
     eq(appointmentNotifications.status, 'pending'), lte(appointmentNotifications.sendAfter, now),
     ...(opts.appointmentId ? [eq(appointmentNotifications.appointmentId, opts.appointmentId)] : []),
   )).limit(opts.limit ?? 50)
-  const tally = { sent: 0, notConfigured: 0, failed: 0, uncertain: 0, skipped: 0 }
+  const tally = { sent: 0, notConfigured: 0, failed: 0, uncertain: 0, skipped: 0, held: 0 }
   for (const n of due) {
     const [claimed] = await db.update(appointmentNotifications).set({ status: 'sending', attempts: sql`${appointmentNotifications.attempts} + 1` })
       .where(and(eq(appointmentNotifications.id, n.id), eq(appointmentNotifications.status, 'pending'))).returning()
@@ -234,15 +258,22 @@ export async function dispatchDue(opts: { now?: Date; limit?: number; appointmen
       continue
     }
     const msg = renderMessage(n.kind, appt, cfg)
-    const res = await provider.send({ to: n.toAddress!, subject: msg.subject, text: msg.text, html: msg.html })
+    const res = await provider.send({ to: n.toAddress!, subject: msg.subject, text: msg.text, html: msg.html, replyTo })
     if (res.status === 'sent') {
       await db.update(appointmentNotifications).set({ status: 'sent', sentAt: new Date(), provider: provider.name, providerMessageId: res.providerMessageId, error: null })
         .where(eq(appointmentNotifications.id, n.id))
       tally.sent++
     } else if (res.status === 'blocked') {
-      await db.update(appointmentNotifications).set({ status: 'skipped', provider: provider.name, error: res.reason })
-        .where(eq(appointmentNotifications.id, n.id))
-      tally.skipped++
+      // TEST-MODE HOLD — never a discard. Not being on the allowlist says nothing about the notice: it is a
+      // legitimate customer message that must still go out once the allowlist is removed. So it returns to
+      // 'pending' rather than a terminal 'skipped', and the claim's attempt is undone so a held notice never
+      // burns a real delivery attempt. Nothing was sent, so there is no duplicate risk in sending it later.
+      await db.update(appointmentNotifications).set({
+        status: 'pending', provider: provider.name, error: res.reason,
+        attempts: sql`greatest(${appointmentNotifications.attempts} - 1, 0)`,
+        sendAfter: new Date(now.getTime() + HOLD_RETRY_MINUTES * 60_000),
+      }).where(eq(appointmentNotifications.id, n.id))
+      tally.held++
     } else if (res.status === 'not_configured') {
       await db.update(appointmentNotifications).set({ status: 'not_configured', provider: provider.name, error: 'No transactional email provider is configured.' })
         .where(eq(appointmentNotifications.id, n.id))

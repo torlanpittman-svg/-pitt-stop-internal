@@ -7,11 +7,12 @@ import { Badge } from '@/app/components/ui/Badge'
 import { getDb } from '@/platform/db'
 import { serviceOrders } from '@/apps/workflow/schema'
 import { authorizedManager } from '@/apps/auth/employee-guard'
-import { getAppointment, listEvents } from '@/apps/appointments/db'
+import { getAppointment, listEvents, listNotifications } from '@/apps/appointments/db'
 import { formatDateLabel, formatTimeLabel } from '@/apps/appointments/policy'
 import { isFuture } from '@/apps/appointments/public'
 import { STATUS_LABEL, STATUS_TONE, SOURCE_LABEL } from '../labels'
 import AppointmentActions from './AppointmentActions'
+import NotificationList from './NotificationList'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -22,8 +23,8 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
   const { id } = await params
   const a = await getAppointment(id)
   if (!a) notFound()
-  const [events, mgr, order] = await Promise.all([
-    listEvents(id), authorizedManager(),
+  const [events, notices, mgr, order] = await Promise.all([
+    listEvents(id), listNotifications(id), authorizedManager(),
     a.serviceOrderId ? getDb().select({ id: serviceOrders.id })
       .from(serviceOrders).where(eq(serviceOrders.id, a.serviceOrderId)).limit(1).then((r) => r[0] ?? null) : Promise.resolve(null),
   ])
@@ -84,6 +85,18 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
             <p className="mt-2 break-words text-sm text-gray-300">{attribution.map(([k, v]) => `${k}=${v}`).join(' · ')}</p>
           </section>
         )}
+
+        <section className="mt-6">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400">Customer email</h2>
+          <NotificationList
+            appointmentId={a.id} isManager={!!mgr}
+            notices={notices.map((n) => ({
+              id: n.id, kind: n.kind, status: n.status, error: n.error,
+              providerMessageId: n.providerMessageId, sentAt: n.sentAt ? n.sentAt.toISOString() : null,
+              sendAfter: n.sendAfter.toISOString(),
+            }))}
+          />
+        </section>
 
         <section className="mt-6">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400">History</h2>
