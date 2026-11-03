@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { EstimatePartView, EstimateServiceView } from '@/apps/workflow/estimate-db'
-import { groupJobItems, redactItemsView, removeServiceMessage, NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG } from './job-items-view'
+import { groupJobItems, redactItemsView, removeServiceMessage, validatePartDraft, NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG } from './job-items-view'
 
 const svc = (id: string, title = id): EstimateServiceView => ({ id, title, priceCents: 1000, suggestedCents: null, declined: false } as unknown as EstimateServiceView)
 const part = (id: string, o: Partial<EstimatePartView> = {}): EstimatePartView => ({
@@ -65,5 +65,35 @@ describe('removeServiceMessage', () => {
     expect(NEEDS_MANAGER_MSG).toMatch(/manager/i)
     expect(NEEDS_MANAGER_MSG).toMatch(/invoice/i)
     expect(SERVICE_NEEDS_MANAGER_MSG).toMatch(/manager/i)
+  })
+})
+
+describe('validatePartDraft (the add-part form; the server re-validates)', () => {
+  const draft = (over: Partial<Parameters<typeof validatePartDraft>[0]>) => ({ name: ' Cabin air filter ', cost: '', price: '', partNumber: '', quantity: '1', ...over })
+  it('a blank customer price is a problem on the price field — never a silent $0', () => {
+    for (const price of ['', '   ']) {
+      const r = validatePartDraft(draft({ price }), false)
+      expect(r).toMatchObject({ ok: false, problem: { field: 'price' } })
+      if (!r.ok) expect(r.problem.message).toMatch(/Enter the customer price/)
+    }
+  })
+  it('a negative or non-numeric price is rejected on the price field', () => {
+    for (const price of ['-1', 'abc', '1e999', '12,50']) {
+      expect(validatePartDraft(draft({ price }), true)).toMatchObject({ ok: false, problem: { field: 'price' } })
+    }
+  })
+  it('an explicit 0 is accepted (no-charge part); dollars become whole cents; quantity may be decimal but must be > 0', () => {
+    expect(validatePartDraft(draft({ price: '0' }), false)).toMatchObject({ ok: true, input: { priceCents: 0, quantity: 1 } })
+    expect(validatePartDraft(draft({ price: '12.5', quantity: '2' }), false)).toMatchObject({ ok: true, input: { name: 'Cabin air filter', priceCents: 1250, quantity: 2, costCents: null, partNumber: null } })
+    expect(validatePartDraft(draft({ price: '59.999' }), false)).toMatchObject({ ok: true, input: { priceCents: 6000 } })
+    expect(validatePartDraft(draft({ price: '5', quantity: '0' }), false)).toMatchObject({ ok: false, problem: { field: 'quantity' } })
+    expect(validatePartDraft(draft({ price: '5', quantity: '' }), false)).toMatchObject({ ok: false, problem: { field: 'quantity' } })
+    expect(validatePartDraft(draft({ price: '5', quantity: '1.5', partNumber: ' CF-1 ' }), false)).toMatchObject({ ok: true, input: { quantity: 1.5, partNumber: 'CF-1' } })
+  })
+  it('our cost is only read for a manager (an employee draft never carries one) and is checked before the price', () => {
+    expect(validatePartDraft(draft({ cost: '4', price: '9' }), true)).toMatchObject({ ok: true, input: { costCents: 400, priceCents: 900 } })
+    expect(validatePartDraft(draft({ cost: '4', price: '9' }), false)).toMatchObject({ ok: true, input: { costCents: null, priceCents: 900 } })
+    expect(validatePartDraft(draft({ cost: 'x', price: '' }), true)).toMatchObject({ ok: false, problem: { field: 'cost' } })
+    expect(validatePartDraft(draft({ cost: 'x', price: '' }), false)).toMatchObject({ ok: false, problem: { field: 'price' } })
   })
 })

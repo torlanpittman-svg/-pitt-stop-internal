@@ -37,6 +37,14 @@ const money = (v: unknown): number | null => {
   if (!Number.isFinite(n) || n < 0) throw new Error('Enter a valid amount.')
   return n
 }
+/** The Job-screen add's customer price: required, a number, not negative (whole cents). Never a silent $0. */
+const requiredPriceCents = (v: unknown): number => {
+  if (v == null || (typeof v === 'string' && v.trim() === '')) throw new Error('Enter the customer price · each before adding this part (use 0 for no charge).')
+  const n = typeof v === 'number' || typeof v === 'string' ? Number(v) : NaN
+  if (!Number.isFinite(n)) throw new Error('Check the customer price — use a number like 59 or 59.50.')
+  if (n < 0) throw new Error('The customer price can’t be negative.')
+  return Math.round(n)
+}
 const qtyOf = (v: unknown, fallback = 1): number => {
   if (v == null || v === '') return fallback
   const n = Number(v)
@@ -555,12 +563,19 @@ export async function partIsCharged(part: Pick<PartRow, 'jobLineItemId'>): Promi
 export async function addPartForJob(
   orderId: string, input: EstimatePartInput, actor: string | null, role: string | null, attachToServiceId?: string | null,
 ): Promise<PartRow> {
+  // Owner decision 2026-11-03: whoever adds the part on the Job screen enters the customer price, so a manager
+  // never has to price it afterwards. The price must be an EXPLICIT amount (0 is allowed for a no-charge part;
+  // a blank is never treated as $0) and is validated here for every role — the route forwards it as sent.
+  // Our cost is internal and comes only from a manager/admin; anything else sent is dropped, not stored.
+  const sellPriceCents = requiredPriceCents(input.sellPriceCents)
+  const unitCostCents = role === 'manager' || role === 'admin' ? input.unitCostCents : null
   if (attachToServiceId) {
     // Validate the service BEFORE any write so an invalid attach never leaves an orphan part behind.
     const coverable = await coverableServiceIds(orderId)
     if (!coverable.has(attachToServiceId)) throw new Error('That service is no longer on this job. Refresh to see the current list.')
   }
-  const part = await addEstimatePart(orderId, input, actor)
+  // supply 'shop' = the part is sold to the customer, so its price × quantity lands on the estimate line once.
+  const part = await addEstimatePart(orderId, { ...input, supply: 'shop', sellPriceCents, unitCostCents }, actor)
   if (attachToServiceId) await decidePartLabor(orderId, part.id, { action: 'included', serviceId: attachToServiceId }, actor, role)
   const [row] = await getDb().select().from(jobParts).where(eq(jobParts.id, part.id)).limit(1)
   return row ?? part

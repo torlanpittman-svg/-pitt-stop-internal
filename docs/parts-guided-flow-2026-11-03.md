@@ -26,9 +26,14 @@ Add from a PartsTech screenshot ›                           ← collapsed, sec
 ```
 
 - **Add part** opens a form right under the tapped action, focused on **What part?**. *More details* (collapsed):
-  Our cost · each (manager), Customer price · each (manager), Part number, Quantity (default 1).
-  Submit = **Add part to service** / **Add to this job**. A brief “✓ … added to …” notice appears where it happened,
-  the new row is highlighted and scrolled into view.
+  Our cost · each (**manager/admin only**), Customer price · each (**everyone — required**), Part number, Quantity
+  (default 1). Submit = **Add part to service** / **Add to this job**. A brief “✓ … added to …” notice appears where it
+  happened, the new row is highlighted and scrolled into view.
+- **Customer price is required (owner decision 2026-11-03).** Whoever adds the part types the customer price so a
+  manager never has to price it afterwards. A blank is never treated as $0: on submit the form opens *More details*,
+  focuses **Customer price · each** and says *“Enter the customer price · each (use 0 for no charge).”* A negative or
+  non-numeric amount is refused the same way. The server (`addPartForJob`) re-validates every add for every role —
+  missing, negative or invalid → 400 with the message, nothing written. An explicit **0** is a priced no-charge line.
 - **Part rows** show only name · customer amount · Remove. No ordered/received/waiting/“charged” labels anywhere
   (the Work Board WAITING ON PARTS chip and “· N waiting” are gone too). Historical `job_parts` status data is untouched.
 - **Remove part** asks once (“Remove ‘Oil filter’ from ‘Oil Change’ and the job total?”), removes only that part + its
@@ -49,32 +54,41 @@ Add from a PartsTech screenshot ›                           ← collapsed, sec
 | Add | `POST /parts {action:'add', laborServiceId?}` → `addPartForJob` (validates the service BEFORE any write) |
 | Remove part | `POST /parts {action:'remove'}` → `removeEstimatePartWithLabor(…,{action:'keep'})` (line + record, audited, QB only flagged) |
 | Remove service | `POST /estimate {action:'remove_service_with_parts'}` → `removeServiceWithParts` (each attached part via `removeEstimatePart`, then `removeEstimateService`; audit `service_removed_with_parts`) |
-| Employee pricing | employees cannot set cost/price (server strips); their part is saved **unpriced** → Invoice Draft `pricingIncomplete` blocks QB invoice creation until a manager prices it (existing Edit-part sheet) or removes it |
+| Customer price | typed by whoever adds the part; `addPartForJob` requires it (explicit, ≥ 0, whole cents) and forces `supply='shop'` so `addEstimatePart` creates the priced line once — `lineAmountCents(price, qty)` is what the total and Invoice Draft bill |
+| Our cost | `addPartForJob` keeps `unitCostCents` only when `role` is manager/admin (the route also strips it for non-managers); it lands in `job_line_items.cost_cents` and never in the customer charge; `/items` strips it from the view for non-managers |
+| Existing unpriced parts | any part that is still unpriced (older data, other entry paths) keeps blocking QB invoice creation via Invoice Draft `pricingIncomplete` until a manager prices it (Edit-part sheet) or removes it — unchanged safeguard |
+| Removal after an employee add | an employee-added part now carries a charge, so the existing **charged-part rule applies to it immediately**: the employee who added it sees “Ask a manager to remove it” (see Decisions) |
 
 ## Files
 
 - `apps/parts/estimate-parts.ts` — `attachedPartsOf`, `partIsCharged`, `addPartForJob`, `removeServiceWithParts`
-- `apps/parts/job-items-view.ts` (new, pure) — grouping, non-manager redaction, confirmation copy, manager-needed messages
+- `apps/parts/job-items-view.ts` (new, pure) — grouping, non-manager redaction, confirmation copy, manager-needed messages, `validatePartDraft` (the form's required-price rule)
 - `app/api/workflow/orders/[id]/items/route.ts` (new GET, any shop session) — the Job-screen view
 - `app/api/workflow/orders/[id]/parts/route.ts` — `add` → estimate path on retail Jobs; `remove`/`cancel` → one charge-aware rule
 - `app/api/workflow/orders/[id]/estimate/route.ts` — `remove_service_with_parts`; `app/orders/[id]/estimate/save-feedback.ts` — its labels/confirmation
 - `app/orders/[id]/JobItemsPanel.tsx` (new UI), `app/orders/[id]/JobItems.tsx` (hook: `/items`, `canEdit`, `removeServiceWithParts`), `app/orders/[id]/OrderDetail.tsx` (wiring)
 - `app/work-board/VehicleCard.tsx`, `app/work-board/WorkBoardClient.tsx` — waiting badge removed
-- Tests: `apps/parts/job-items-view.test.ts`, `apps/parts/remove-service-with-parts.test.ts` (PGlite, money/removal/audit/QB-flag/retry), `app/api/workflow/orders/[id]/parts/route.test.ts`
+- Tests: `apps/parts/job-items-view.test.ts` (grouping, redaction, copy, draft validation), `apps/parts/remove-service-with-parts.test.ts` (PGlite: employee priced adds attached + standalone, price × qty once, cost never charged / never stored for employees, missing/negative/invalid price refused before any write, explicit $0, existing-unpriced safeguard, removal/audit/QB-flag/retry), `app/api/workflow/orders/[id]/parts/route.test.ts` (price forwarded for every role, cost manager-only, service rejection → 400)
 
-## Verification (2026-11-03)
+## Verification (2026-11-03, after the required-price change)
 
 - `npx tsc --noEmit`: clean (the only errors are pre-existing in the untouched `apps/estimates/quickbooks.test.ts`).
-- ESLint on every changed file: no new findings (OrderDetail’s existing react-hooks errors are identical on origin/main).
-- Full suite `npm test`: 3013/3014; the one failure was a 5 s timeout in `apps/quickbooks/invoice-consolidation.test.ts`
-  while the dev server was compiling; re-run alone → 55/55.
+- ESLint on every changed file: 0 findings (OrderDetail’s existing react-hooks errors are identical on origin/main).
+- Targeted: `npx vitest run apps/parts "app/api/workflow/orders/[id]/parts"` → all pass (incl. the new price cases).
+- Full suite `npm test`: see the chat report for the run after this change (money/invoice change → full suite required).
 - `next build --webpack`: passes.
 - 390 px headless walkthrough (real page + components, data layer stubbed by route interception, no DB writes):
-  20/20 checks — employee/manager views, form placement + focus, More-details order, Quantity=1, confirmations,
-  manager-needed messages, service removal with attached parts, part removal keeps service, no forbidden labels,
-  no horizontal scroll. Screenshots: scratchpad `shots-guided/`.
+  29/29 checks — employee: blank price → More details expands, Customer price focused, message shown, nothing sent;
+  negative price refused in place; 12.50 × 2 sends `sellPriceCents=1250`, qty 2, no cost, row shows $25.00; the
+  employee’s own (now charged) part → manager message; a legacy unpriced part still removable; manager: More-details
+  order Our cost → Customer price → Part number → Quantity, price 18 + cost 7 sent, cost never on the row; plus the
+  earlier placement/focus/removal/forbidden-label/no-horizontal-scroll checks. Screenshots: scratchpad `shots-guided/`.
 
 ## Decisions for the owner (see the chat report)
 
-Employees now see customer prices on the Job screen; employee-added parts block QB invoice creation until priced;
-Remove service stays manager-only; no kill-switch flag was added (rollback = redeploy previous commit).
+- **Decided 2026-11-03:** employees enter the customer price when adding a part (this change). Our cost stays
+  manager/admin-only. Remove service, charged-part removal and QuickBooks actions are unchanged.
+- **Consequence to confirm:** because an employee-added part is priced immediately, the existing charged-part rule
+  means the employee cannot remove it themselves (even a typo seconds later) — a manager must. If that is too strict,
+  the next decision is whether an employee may remove a part that is not yet on a QuickBooks invoice.
+- Still open: employees see customer prices on the Job screen; no kill-switch flag (rollback = redeploy previous commit).

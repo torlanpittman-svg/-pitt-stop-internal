@@ -21,7 +21,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { EstimateViewData, PartView, ServiceView } from './estimate/save-feedback'
 import { partPrice, servicePrice } from './estimate/ItemRows'
-import { groupJobItems, removeServiceMessage, NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG } from '@/apps/parts/job-items-view'
+import { groupJobItems, removeServiceMessage, validatePartDraft, NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG, type DraftProblem, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
 
 const BTN = 'rounded-xl font-semibold text-sm px-4 min-h-11 active:opacity-80 disabled:opacity-40'
 const INPUT = 'w-full bg-gray-950 border border-gray-700 text-white rounded-xl px-3 py-2.5 text-base placeholder:text-gray-500 focus:border-blue-500 focus:outline-none disabled:opacity-60'
@@ -58,14 +58,6 @@ export interface JobItemsPanelProps {
   onChanged: () => void
   /** The collapsed "Add from a PartsTech screenshot" content. */
   importPanel?: ReactNode
-}
-
-const centsFrom = (s: string): number | null | 'bad' => {
-  const t = s.trim()
-  if (!t) return null
-  const n = Number(t)
-  if (!Number.isFinite(n) || n < 0) return 'bad'
-  return Math.round(n * 100)
 }
 
 export default function JobItemsPanel(p: JobItemsPanelProps) {
@@ -115,19 +107,18 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
   const unmirrored = p.textServices.filter((n) => !mirrored.has(n.trim().toLowerCase()))
 
   // ── adds ──
-  const addPart = async (f: PartDraft, attach: Adding & { kind: 'service' } | null) => {
-    const cost = centsFrom(f.cost), price = centsFrom(f.price)
-    if (cost === 'bad' || price === 'bad') { setError('Check the amounts — use a number like 59 or 59.50.'); return }
-    const qty = Number(f.quantity)
-    if (!Number.isFinite(qty) || qty <= 0) { setError('Enter a quantity of 1 or more.'); return }
+  const addPart = async (f: PartInput, attach: Adding & { kind: 'service' } | null) => {
+    // The customer price is entered by whoever adds the part (owner decision 2026-11-03) and is required —
+    // the form has already validated it; the server validates it again for every role. Our cost is sent
+    // only by a manager (the server drops it otherwise).
     const out = await post({
-      action: 'add', description: f.name.trim(), partNumber: f.partNumber.trim() || null, quantity: qty,
-      unitCostCents: manager ? cost : undefined, sellPriceCents: manager ? price : undefined,
+      action: 'add', description: f.name, partNumber: f.partNumber, quantity: f.quantity,
+      sellPriceCents: f.priceCents, unitCostCents: manager ? f.costCents : undefined,
       laborServiceId: attach?.serviceId ?? null,
     })
     if (!out.ok) { setError(out.error); return }
     setAdding(null); setFlash(out.partId)
-    setNotice(attach ? { text: `${f.name.trim()} added to ${attach.title}.`, at: attach.serviceId } : { text: `${f.name.trim()} added to this job.`, at: 'job' })
+    setNotice(attach ? { text: `${f.name} added to ${attach.title}.`, at: attach.serviceId } : { text: `${f.name} added to this job.`, at: 'job' })
     onChanged()
   }
 
@@ -346,26 +337,49 @@ function ConfirmBox({ label, text, tone = 'danger', children }: { label: string;
   )
 }
 
-interface PartDraft { name: string; cost: string; price: string; partNumber: string; quantity: string }
-
 /**
- * The add-part form. "What part?" is the one required field (focused on open). Everything else sits
- * under "More details" in this order: Our cost · each (manager), Customer price · each (manager), Part
- * number, Quantity (default 1). Submit says exactly where the part goes.
+ * The add-part form. "What part?" is focused on open. Everything else sits under "More details" in this
+ * order: Our cost · each (manager only), Customer price · each (everyone — required), Part number,
+ * Quantity (default 1). When the price is missing or invalid on submit, More details opens and the price
+ * field takes focus. Submit says exactly where the part goes.
  */
 function AddPartForm({ manager, busy, error, attachedTo, onSubmit, onCancel }: {
   manager: boolean; busy: boolean; error: string | null; attachedTo: string | null
-  onSubmit: (f: PartDraft) => void; onCancel: () => void
+  onSubmit: (f: PartInput) => void; onCancel: () => void
 }) {
   const ids = useId()
   const [f, setF] = useState<PartDraft>({ name: '', cost: '', price: '', partNumber: '', quantity: '1' })
+  const [problem, setProblem] = useState<DraftProblem | null>(null)
   const nameRef = useRef<HTMLInputElement>(null)
+  const costRef = useRef<HTMLInputElement>(null)
+  const priceRef = useRef<HTMLInputElement>(null)
+  const qtyRef = useRef<HTMLInputElement>(null)
+  const detailsRef = useRef<HTMLDetailsElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   useEffect(() => { formRef.current?.scrollIntoView({ block: 'nearest' }); nameRef.current?.focus() }, [])
-  const set = (k: keyof PartDraft) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value })
+  const set = (k: keyof PartDraft) => (e: React.ChangeEvent<HTMLInputElement>) => { setF({ ...f, [k]: e.target.value }); if (problem?.field === k || (k === 'price' && problem?.field === 'price')) setProblem(null) }
   const canSubmit = !busy && f.name.trim().length > 0
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!canSubmit) return
+    const v = validatePartDraft(f, manager)
+    if (!v.ok) {
+      setProblem(v.problem)
+      // The field may be hidden under collapsed More details — open it, then focus the field itself.
+      if (detailsRef.current) detailsRef.current.open = true
+      const target = v.problem.field === 'price' ? priceRef : v.problem.field === 'cost' ? costRef : qtyRef
+      requestAnimationFrame(() => { target.current?.focus(); target.current?.select(); target.current?.scrollIntoView({ block: 'nearest' }) })
+      return
+    }
+    setProblem(null)
+    onSubmit(v.input)
+  }
+  const flag = (field: DraftProblem['field']) => problem?.field === field ? 'border-amber-400 ring-1 ring-amber-400' : ''
+  // The validation message sits right under the field it is about (visible even with the keyboard up).
+  const fieldError = (field: DraftProblem['field']) => problem?.field === field
+    ? <span role="alert" id={`${ids}-${field}-error`} className="mt-1.5 block text-amber-300 text-sm">{problem.message}</span> : null
   return (
-    <form ref={formRef} onSubmit={(e) => { e.preventDefault(); if (canSubmit) onSubmit(f) }} noValidate
+    <form ref={formRef} onSubmit={submit} noValidate
       aria-label={attachedTo ? `Add part to ${attachedTo}` : 'Add a part to this job'}
       className="mt-2 rounded-2xl border border-gray-700 bg-gray-950/60 p-3 space-y-3">
       {attachedTo && <p className="text-sm font-semibold text-white">Add part to {attachedTo}</p>}
@@ -373,9 +387,9 @@ function AddPartForm({ manager, busy, error, attachedTo, onSubmit, onCancel }: {
         <span className="text-gray-300 text-sm">What part?</span>
         <input ref={nameRef} id={`${ids}-name`} value={f.name} onChange={set('name')} maxLength={200} disabled={busy} placeholder="Cabin air filter" autoComplete="off" className={`${INPUT} mt-1.5`} />
       </label>
-      <details className="group">
+      <details ref={detailsRef} className="group">
         <summary className="min-h-11 flex cursor-pointer list-none items-center justify-between text-sm text-gray-200 [&::-webkit-details-marker]:hidden">
-          <span>More details <span className="text-gray-500">· optional</span></span>
+          <span>More details <span className="text-gray-500">· customer price, part #, qty</span></span>
           <span aria-hidden className="text-gray-400 transition-transform group-open:rotate-90">›</span>
         </summary>
         <div className="space-y-3 pt-1">
@@ -383,30 +397,31 @@ function AddPartForm({ manager, busy, error, attachedTo, onSubmit, onCancel }: {
             <label className="block">
               <span className="text-gray-300 text-sm">Our cost · each</span>
               <span className="relative block mt-1.5"><span aria-hidden className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
-                <input id={`${ids}-cost`} value={f.cost} onChange={set('cost')} inputMode="decimal" disabled={busy} placeholder="0.00" autoComplete="off" className={`${INPUT} pl-7 tabular-nums`} /></span>
+                <input ref={costRef} id={`${ids}-cost`} value={f.cost} onChange={set('cost')} inputMode="decimal" disabled={busy} placeholder="0.00" autoComplete="off" aria-invalid={problem?.field === 'cost' || undefined} aria-describedby={problem?.field === 'cost' ? `${ids}-cost-error` : undefined} className={`${INPUT} pl-7 tabular-nums ${flag('cost')}`} /></span>
+              {fieldError('cost')}
             </label>
           )}
-          {manager && (
-            <label className="block">
-              <span className="text-gray-300 text-sm">Customer price · each</span>
-              <span className="relative block mt-1.5"><span aria-hidden className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
-                <input id={`${ids}-price`} value={f.price} onChange={set('price')} inputMode="decimal" disabled={busy} placeholder="0.00" autoComplete="off" className={`${INPUT} pl-7 tabular-nums`} /></span>
-            </label>
-          )}
+          <label className="block">
+            <span className="text-gray-300 text-sm">Customer price · each</span>
+            <span className="relative block mt-1.5"><span aria-hidden className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
+              <input ref={priceRef} id={`${ids}-price`} value={f.price} onChange={set('price')} inputMode="decimal" disabled={busy} placeholder="0.00" autoComplete="off" aria-required="true" aria-invalid={problem?.field === 'price' || undefined} aria-describedby={problem?.field === 'price' ? `${ids}-price-error` : undefined} className={`${INPUT} pl-7 tabular-nums ${flag('price')}`} /></span>
+            {fieldError('price')}
+          </label>
           <label className="block">
             <span className="text-gray-300 text-sm">Part number</span>
             <input id={`${ids}-pn`} value={f.partNumber} onChange={set('partNumber')} maxLength={80} disabled={busy} autoComplete="off" autoCapitalize="characters" className={`${INPUT} mt-1.5`} />
           </label>
           <label className="block">
             <span className="text-gray-300 text-sm">Quantity</span>
-            <input id={`${ids}-qty`} value={f.quantity} onChange={set('quantity')} inputMode="decimal" disabled={busy} className={`${INPUT} mt-1.5 max-w-[8rem]`} />
+            <input ref={qtyRef} id={`${ids}-qty`} value={f.quantity} onChange={set('quantity')} inputMode="decimal" disabled={busy} aria-invalid={problem?.field === 'quantity' || undefined} aria-describedby={problem?.field === 'quantity' ? `${ids}-quantity-error` : undefined} className={`${INPUT} mt-1.5 max-w-[8rem] ${flag('quantity')}`} />
+            {fieldError('quantity')}
           </label>
           <p className="text-xs text-gray-500">
-            {manager ? 'Customer price × quantity goes on the invoice and adds to the job total. Our cost is internal only.' : 'A manager adds the customer price.'}
+            Customer price × quantity goes on the invoice and adds to the job total.{manager ? ' Our cost is internal only.' : ''}
           </p>
         </div>
       </details>
-      {error && <p role="alert" className="text-amber-300 text-sm">{error}</p>}
+      {error && !problem && <p role="alert" className="text-amber-300 text-sm">{error}</p>}
       <div className="flex gap-2">
         <button type="submit" disabled={!canSubmit} className={`${BTN} flex-1 bg-blue-600 text-white py-3`}>{busy ? 'Saving…' : attachedTo ? 'Add part to service' : 'Add to this job'}</button>
         <button type="button" onClick={onCancel} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200 py-3`}>Cancel</button>

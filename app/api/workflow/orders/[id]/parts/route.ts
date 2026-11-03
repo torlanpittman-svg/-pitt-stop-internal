@@ -88,13 +88,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         if (!description) return NextResponse.json({ ok: false, error: 'A part description is required.' }, { status: 400 })
         if (await usesEstimatePath(id)) {
           // Job-screen guided flow (retail): the estimate's own part row + priced line, so customer
-          // price × quantity reaches the total and Invoice Draft exactly once. Our cost is internal.
-          // Prices come ONLY from a manager; an employee's part is saved unpriced for a manager to price.
+          // price × quantity reaches the total and Invoice Draft exactly once. Our cost is internal and
+          // comes only from a manager. The customer price is entered by whoever adds the part (owner
+          // decision 2026-11-03) and is REQUIRED — addPartForJob rejects a missing, negative or invalid
+          // amount for every role, so it is forwarded as sent rather than coerced here.
           const attachTo = typeof body.laborServiceId === 'string' && body.laborServiceId ? body.laborServiceId : null
           const row = await addPartForJob(id, {
             description, partNumber: str(body.partNumber), supplier: str(body.supplier), quantity: posNum(body.quantity, 1),
             unitCostCents: manager ? intOrNull(body.unitCostCents) : null,
-            sellPriceCents: manager ? intOrNull(body.sellPriceCents) : null,
+            sellPriceCents: amountInput(body.sellPriceCents),
           }, actorName, actor?.role ?? null, attachTo)
           partIdOut = row.id
           break
@@ -194,6 +196,10 @@ function str(v: unknown): string | null {
   if (typeof v !== 'string') return null
   const t = v.trim()
   return t ? t : null
+}
+/** A money amount as the client sent it (number or string); anything else is "missing" for the validator. */
+function amountInput(v: unknown): number | string | null {
+  return typeof v === 'number' || typeof v === 'string' ? v : null
 }
 function intOrNull(v: unknown): number | null {
   if (v == null || v === '') return null

@@ -2,7 +2,8 @@
  * Guided Job-screen parts flow — the money and record behaviour, end to end on the real schema:
  *   • "Add part to this service" attaches the part to the service that installs it (labor included);
  *   • customer price × quantity reaches the job total and the Invoice Draft EXACTLY once; our cost never does;
- *   • an employee's unpriced part blocks invoice creation (pricingIncomplete) until a manager prices it;
+ *   • whoever adds the part enters the customer price (required, explicit — never a silent $0); our cost
+ *     is stored only when a manager entered it; an already-unpriced part still blocks invoice creation;
  *   • removing a part keeps its service; removing a service removes its attached parts AND their charges,
  *     leaves unrelated services / standalone parts alone, is audited, and only FLAGS a linked QB invoice;
  *   • retries / double-taps never remove or charge anything twice.
@@ -26,7 +27,7 @@ import { seedProductionCatalog, CLEAR_TABLES } from '@/apps/quick-entry/catalog-
 import { getOrCreateEstimate, addService, setServicePrice, getEstimateView, getFullEstimate } from '@/apps/workflow/estimate-db'
 import { getOrderWithContext } from '@/apps/workflow/db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
-import { addPartForJob, attachedPartsOf, partIsCharged, removeServiceWithParts, removeEstimatePartWithLabor, updateEstimatePart } from './estimate-parts'
+import { addEstimatePart, addPartForJob, attachedPartsOf, partIsCharged, removeServiceWithParts, removeEstimatePartWithLabor, updateEstimatePart } from './estimate-parts'
 import { groupJobItems } from './job-items-view'
 import { serviceOrders, vehicles, jobParts, jobLineItems, jobEstimates, serviceOrderEvents } from '@/drizzle/schema'
 
@@ -94,9 +95,69 @@ describe('Add part to this service', () => {
     expect(await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, orderId))).toHaveLength(0)
     expect((await getEstimateView(orderId)).workTotalCents).toBe(6000)
   })
-  it('an employee’s part is saved unpriced (no charge, invoice blocked) until a manager prices it through the existing part editor', async () => {
+  it('an employee adds a part to a service WITH the customer price: price × quantity charged once, no manager pricing needed, cost never stored', async () => {
     const { orderId, ids } = await job([['Oil change', 6000]])
-    const part = await addPartForJob(orderId, { description: 'Cabin air filter', unitCostCents: null, sellPriceCents: null }, 'Employee', null, ids['Oil change'])
+    // unitCostCents is sent anyway (a tampered client) — it must not be stored for a non-manager.
+    const part = await addPartForJob(orderId, { description: 'Cabin air filter', quantity: 3, unitCostCents: 999, sellPriceCents: '1250' }, 'Employee', null, ids['Oil change'])
+    expect(part.laborStatus).toBe('included'); expect(part.laborServiceId).toBe(ids['Oil change'])
+    expect(part.sellPriceCents).toBe(1250); expect(part.unitCostCents).toBeNull(); expect(part.supply).toBe('shop')
+    expect(await partIsCharged(part)).toBe(true)
+    const view = await getEstimateView(orderId)
+    expect(view.incomplete).toBe(false)
+    expect(view.workTotalCents).toBe(6000 + 3 * 1250)
+    const g = groupJobItems(view)
+    expect(g.services[0].parts.map((p) => [p.description, p.lineCents, p.unitCostCents])).toEqual([['Cabin air filter', 3750, null]])
+    const d = await draft(orderId)
+    expect(d.pricingIncomplete).toBe(false)
+    expect(d.workPriceCents).toBe(9750)
+    expect(d.serviceBreakdown.map((l) => l.cents).reduce((a, b) => a + b, 0)).toBe(9750)   // exactly once
+    const [line] = await db.select().from(jobLineItems).where(eq(jobLineItems.id, part.jobLineItemId!))
+    expect(line.priceCents).toBe(1250); expect(Number(line.qty)).toBe(3); expect(line.costCents).toBe(0)
+  })
+  it('an employee adds a standalone part ("Add to this job") with the customer price — charged once under Parts', async () => {
+    const { orderId } = await job([['Oil change', 6000]])
+    const part = await addPartForJob(orderId, { description: 'Wiper blades', quantity: 2, sellPriceCents: 1200 }, 'Employee', null, null)
+    expect(part.laborServiceId).toBeNull(); expect(part.unitCostCents).toBeNull()
+    const g = groupJobItems(await getEstimateView(orderId))
+    expect(g.services[0].parts).toEqual([])
+    expect(g.standalone.map((p) => [p.description, p.lineCents])).toEqual([['Wiper blades', 2400]])
+    expect((await draft(orderId)).workPriceCents).toBe(8400)
+    expect((await draft(orderId)).pricingIncomplete).toBe(false)
+  })
+  it('a manager’s cost is stored but never changes the customer charge', async () => {
+    const { orderId, ids } = await job([['Oil change', 6000]])
+    const part = await addPartForJob(orderId, { description: 'Oil filter', quantity: 1, unitCostCents: 400, sellPriceCents: 900 }, M, 'manager', ids['Oil change'])
+    expect(part.unitCostCents).toBe(400); expect(part.sellPriceCents).toBe(900)
+    expect((await draft(orderId)).workPriceCents).toBe(6900)
+    expect(groupJobItems(await getEstimateView(orderId)).services[0].parts[0].lineCents).toBe(900)
+  })
+  it('a missing, blank, negative or invalid customer price is refused BEFORE anything is written (never a silent $0)', async () => {
+    const { orderId, ids } = await job([['Oil change', 6000]])
+    const bad: Array<[unknown, RegExp]> = [
+      [undefined, /Enter the customer price/], [null, /Enter the customer price/], ['', /Enter the customer price/], ['   ', /Enter the customer price/],
+      [-1, /negative/], ['-5', /negative/], ['abc', /Check the customer price/], [Number.NaN, /Check the customer price/], [Infinity, /Check the customer price/],
+    ]
+    for (const [price, re] of bad) {
+      await expect(addPartForJob(orderId, { description: 'Gasket', sellPriceCents: price as never }, 'Employee', null, ids['Oil change'])).rejects.toThrow(re)
+      await expect(addPartForJob(orderId, { description: 'Gasket', sellPriceCents: price as never }, M, 'manager', null)).rejects.toThrow(re)
+    }
+    expect(await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, orderId))).toEqual([])
+    expect(await events(orderId, 'part_added')).toEqual([])
+    const view = await getEstimateView(orderId)
+    expect(view.workTotalCents).toBe(6000); expect(view.incomplete).toBe(false)
+    expect(groupJobItems(view).services[0].parts).toEqual([])
+  })
+  it('$0 must be typed explicitly — then it is a priced, no-charge line (invoice not blocked)', async () => {
+    const { orderId, ids } = await job([['Oil change', 6000]])
+    const part = await addPartForJob(orderId, { description: 'Warranty clip', sellPriceCents: 0 }, 'Employee', null, ids['Oil change'])
+    expect(part.sellPriceCents).toBe(0); expect(part.jobLineItemId).not.toBeNull()
+    const view = await getEstimateView(orderId)
+    expect(view.workTotalCents).toBe(6000); expect(view.incomplete).toBe(false)
+    expect((await draft(orderId)).pricingIncomplete).toBe(false)
+  })
+  it('an existing unpriced part (older data / other entry paths) still blocks invoice creation until a manager prices it', async () => {
+    const { orderId } = await job([['Oil change', 6000]])
+    const part = await addEstimatePart(orderId, { description: 'Cabin air filter', sellPriceCents: null }, M)   // not the guided add
     expect(part.jobLineItemId).toBeNull()
     expect(await partIsCharged(part)).toBe(false)
     let view = await getEstimateView(orderId)

@@ -51,15 +51,29 @@ beforeEach(() => {
 })
 
 describe('add', () => {
-  it('an employee (shared PIN) adds through the estimate path, UNPRICED, attached to the chosen service', async () => {
+  it('an employee (shared PIN) adds through the estimate path WITH the customer price they entered; our cost is dropped', async () => {
     const res = await post({ action: 'add', description: ' Cabin air filter ', quantity: 2, partNumber: 'CF-1', unitCostCents: 400, sellPriceCents: 1500, laborServiceId: 'svc-1' })
     expect(res.status).toBe(200)
     expect((await res.json()).partId).toBe('new-part')
     expect(h.calls.addPartForJob).toHaveLength(1)
     const [orderId, input, actor, role, attach] = h.calls.addPartForJob[0]
     expect(orderId).toBe('o1')
-    expect(input).toMatchObject({ description: 'Cabin air filter', quantity: 2, partNumber: 'CF-1', unitCostCents: null, sellPriceCents: null })
+    expect(input).toMatchObject({ description: 'Cabin air filter', quantity: 2, partNumber: 'CF-1', unitCostCents: null, sellPriceCents: 1500 })
     expect(actor).toBe('Employee'); expect(role).toBeNull(); expect(attach).toBe('svc-1')
+    expect(h.calls.addPart).toHaveLength(0)
+  })
+  it('the customer price is forwarded as sent (string or number) for the service layer to validate; a non-amount is forwarded as missing', async () => {
+    await post({ action: 'add', description: 'Gasket', sellPriceCents: '1250' })
+    await post({ action: 'add', description: 'Gasket', sellPriceCents: -5 })
+    await post({ action: 'add', description: 'Gasket' })
+    await post({ action: 'add', description: 'Gasket', sellPriceCents: { cents: 5 } })
+    expect(h.calls.addPartForJob.map((c) => (c[1] as { sellPriceCents: unknown }).sellPriceCents)).toEqual(['1250', -5, null, null])
+  })
+  it('a missing / invalid customer price rejected by the service layer is a 400 with its message — nothing else is tried', async () => {
+    h.addThrows = new Error('Enter the customer price · each before adding this part (use 0 for no charge).')
+    const res = await post({ action: 'add', description: 'Gasket' })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/customer price/)
     expect(h.calls.addPart).toHaveLength(0)
   })
   it('a manager’s prices are kept (whole cents) and a job-level add carries no service', async () => {

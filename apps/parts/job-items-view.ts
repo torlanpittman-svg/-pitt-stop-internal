@@ -48,3 +48,31 @@ export function removeServiceMessage(title: string, attached: readonly { descrip
     ? `Remove “${title}” and its attached part ${names}? Both prices will be removed from the job total.`
     : `Remove “${title}” and its ${attached.length} attached parts (${names})? All of their prices will be removed from the job total.`
 }
+
+// ── Add-part draft validation (shared by the Job-screen form; the server re-validates every add) ──
+
+/** "59" / "59.50" → whole cents; blank → null; anything else → 'bad'. */
+export const centsFrom = (s: string): number | null | 'bad' => {
+  const t = s.trim()
+  if (!t) return null
+  const n = Number(t)
+  if (!Number.isFinite(n) || n < 0) return 'bad'
+  return Math.round(n * 100)
+}
+
+export interface PartDraft { name: string; cost: string; price: string; partNumber: string; quantity: string }
+/** A validated add: whole cents, quantity ≥ 1 (decimals allowed), cost only when a manager typed one. */
+export interface PartInput { name: string; priceCents: number; costCents: number | null; partNumber: string | null; quantity: number }
+export type DraftProblem = { field: 'price' | 'cost' | 'quantity'; message: string }
+
+/** Validate the draft. The customer price must be typed explicitly — a blank is a problem, never $0. */
+export function validatePartDraft(f: PartDraft, manager: boolean): { ok: true; input: PartInput } | { ok: false; problem: DraftProblem } {
+  const cost = manager ? centsFrom(f.cost) : null
+  if (cost === 'bad') return { ok: false, problem: { field: 'cost', message: 'Check our cost — use a number like 59 or 59.50.' } }
+  const price = centsFrom(f.price)
+  if (price === null) return { ok: false, problem: { field: 'price', message: 'Enter the customer price · each (use 0 for no charge).' } }
+  if (price === 'bad') return { ok: false, problem: { field: 'price', message: 'Check the customer price — use a number like 59 or 59.50.' } }
+  const quantity = Number(f.quantity.trim() || 'x')
+  if (!Number.isFinite(quantity) || quantity <= 0) return { ok: false, problem: { field: 'quantity', message: 'Enter a quantity of 1 or more.' } }
+  return { ok: true, input: { name: f.name.trim(), priceCents: price, costCents: cost, partNumber: f.partNumber.trim() || null, quantity } }
+}
