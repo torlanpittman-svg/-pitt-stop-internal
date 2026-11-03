@@ -12,5 +12,5 @@
 -- Idempotent.
 INSERT INTO app_settings (key, value, type, category, label, description)
 VALUES ('guided_job_items_enabled', 'true'::jsonb, 'bool', 'rollout', 'Guided Services + Parts (Job screen)',
-        'ON = services with their attached parts, in-place add with a required customer price, name · amount · Remove rows. OFF = the previous Job screen. Interface only; server rules apply either way.')
+        'ON = services with their attached parts, in-place add with a required customer price, name · amount · Remove rows. OFF = the previous Job screen. Interface only — server rules apply either way.')
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, type = EXCLUDED.type, updated_at = now();
