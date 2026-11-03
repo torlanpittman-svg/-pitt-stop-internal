@@ -1,7 +1,27 @@
-# Guided Services + Parts on the Job screen — 2026-11-03 (local, NOT deployed)
+# Guided Services + Parts on the Job screen — 2026-11-03 (DEPLOYED)
 
-Branch `feat/parts-guided-flow` (worktree `.ps-worktrees/parts-guided`, off production `origin/main` 8ccaa1b).
-No migration. No new flag. No production data touched. Nothing sent.
+Branch `feat/parts-guided-flow` (worktree `.ps-worktrees/parts-guided`), rebased onto production `origin/main` 688afb5 and
+fast-forward pushed to `main` on 2026-11-03 (deployment record: Claude memory `parts-guided-flow`). One migration
+(`0070_guided_job_items_enabled.sql` — a single `app_settings` row, the rollout switch; applied after the deploy was verified).
+No customer / job / invoice data touched. Nothing sent.
+
+## Rollout switch — how to turn the guided interface on / off
+
+`guided_job_items_enabled` (settings registry `apps/settings/db.ts`, accessor `guidedJobItemsEnabled()`, served to the
+client as `/api/identity → guidedItems`). **Default OFF in code** = the previous Job screen (plain Services list + parts
+tracker, WAITING ON PARTS badge). Migration 0070 sets the row to `true` in production.
+
+- **Turn OFF** (no redeploy; takes effect on the next page load):
+  `UPDATE app_settings SET value = 'false'::jsonb, updated_at = now() WHERE key = 'guided_job_items_enabled';`
+- **Turn ON**: re-apply `node scripts/apply-qb-migration.mjs drizzle/migrations/manual/0070_guided_job_items_enabled.sql`
+  (idempotent) or the same UPDATE with `'true'`.
+- The DB row wins over the env var `GUIDED_JOB_ITEMS_ENABLED` (env is the fallback when no row exists — e.g. local dev).
+- Avoid `/admin/settings` for this: its Save re-submits EVERY setting (string/json ones through number inputs).
+- **Interface only.** Whichever screen is shown, the server keeps enforcing: customer price required on the guided add
+  path, employee part removal only until the Job has a QuickBooks invoice, installation-labor parts and service removal
+  manager-only, removed Jobs frozen. With the switch OFF, `POST /parts add` goes back to the legacy tracker record (as in
+  production before this release). **Turning it off never undoes saved data**: parts, prices, attachments and removals
+  made through the guided screen stay on the Job / estimate / Invoice Draft exactly as they were saved.
 
 ## What an employee / manager now sees on a retail Job (estimate layer on)
 
@@ -99,6 +119,64 @@ Add from a PartsTech screenshot ›                           ← collapsed, sec
   order Our cost → Customer price → Part number → Quantity, price 18 + cost 7 sent, cost never on the row; plus the
   earlier placement/focus/removal/forbidden-label/no-horizontal-scroll checks. Screenshots: scratchpad `shots-guided/`.
 
+## Final review before deploy (2026-11-03) — what changed
+
+Fresh-eyes review of the whole diff vs production (pricing, permissions, audit, retries, shared invoices, concurrent
+Create/removal). Fixed in commits "read-only view, attach-by-title, rollout switch" and "final review fixes":
+
+- **Opening a Job is read-only.** `GET /items` no longer mirrors text services or recomputes; it only reads. A service that
+  exists only as Work Board text (older Jobs, 206 such non-cancelled retail Jobs in production, 5 active) still displays
+  ("Not priced") and now takes a part: the add sends `laborServiceTitle`, and `addPartForJob` runs the same idempotent
+  mirror Add Service uses (`promoteTextServices`) inside that explicit add — unknown titles refused before any write,
+  existing rows/prices untouched, repeats never duplicate.
+- **Flat-priced Jobs:** an employee's priced part would have itemized a flat Work Price (and blocked invoicing). Refused
+  before any write with "This job has a flat Work Price. Ask a manager to add this part." Managers keep the existing
+  (knowing) itemize behaviour.
+- **Retry safety:** each open add form carries a `requestId`, kept on the `part_added` audit event; a retry after a lost
+  response returns the part already added instead of charging twice. (Scope: the guided add path; Add Service and the
+  legacy tracker are unchanged.)
+- **No charged orphan:** if the attach step fails after the priced row was written, the add is undone, then the error shown.
+- **Installation-labor parts** (`labor_added`, tire work): an employee gets "This part has its own installation charge. Ask
+  a manager to remove it." (service layer `refuseOwnLabor`, so every caller shares it); the manager's confirmation says the
+  installation charge stays on the Job.
+- **Removed (cancelled) Jobs** are frozen on `/parts` (409, like the estimate route); the panel disables its controls.
+- **Dealer isolation:** remove/`cancel` on a dealer Job uses the plain tracker cancel again — the retail estimate path and
+  its Work Board label clean-up never touch a dealer Job.
+- **Retail QB Create:** a MANAGER edit committing after the post-lock re-read is now flagged "QuickBooks sync needed" on
+  the record instead of being cleared by the success update (employee edits are refused by their own guard). Regression
+  test for this ordering added next to the two existing race tests.
+- `removeEstimateService` no longer "re-opens" labor review on parts it cancelled in the same statement (audit noise);
+  `seedSuggestedPrices` ignores part rows; a charged part attached to a DECLINED service is listed under Parts instead of
+  vanishing with the service.
+- Work Board: `VehicleCard.tsx` / `WorkBoardClient.tsx` are back to production; the WAITING ON PARTS badge is simply
+  gated off while the switch is on.
+
+**Known limitations (documented, not fixed):** `promoteTextServices` (shared, pre-existing) is select-then-insert with no
+unique index, so two devices adding a part to the same text-only service in the same instant could mirror it twice — same
+exposure as Add Service in production; a DDL fix was out of scope. Removing a part from a Job a manager itemized does not
+restore flat mode (pre-existing). The retail parts tracker (order/receive/bill) is not reachable from the Job screen while
+the guided screen is on (owner decision: no ordering labels) — turn the switch off to get it back. `/parts` maps every
+add/remove failure to a 400 with its message. The no-line (customer-supplied) part removal uses the same predicate as the
+guard CTE but does not take the estimate row lock — no charge is involved. `linked` pending members count as invoiced.
+
+## Verification (final, after the review fixes, on the rebased branch)
+
+- `npx tsc --noEmit`: clean (pre-existing errors only in the untouched `apps/estimates/quickbooks.test.ts`).
+- ESLint on every changed file: 0 new findings (the two errors in `IdentityBar.tsx` and OrderDetail's react-hooks errors are
+  identical on origin/main).
+- Full suite `npm test`: **236 files / 3075 tests passed**. `next build --webpack`: passed.
+- 390 px headless walkthrough (real page + components, data layer stubbed by route interception, PINs read from the
+  worktree env, no DB writes): regression script 33/33; new script 24/24 with the switch ON (employee + manager: Add
+  Service → attach a priced part; older text-only service takes a part by title and becomes a real row with no duplicate;
+  failed add + retry re-sends the same requestId, a new form gets a new one; installation-labor part → manager message /
+  manager confirm says the charge stays and the Installation line survives; flat-priced Job → server message shown in place;
+  shared-invoice (qbInvoiced) → manager message; cost never on a row; no horizontal scroll) and 10/10 with the switch OFF
+  (identity reports `guidedItems=false`, guided panel absent, previous Services list + Parts tracker rendered for both
+  roles). Screenshots: scratchpad `shots-guided/g2-*`, `off-*`.
+- Not exercised in the browser (covered by PGlite/route tests only): the manager's "sync needed" flag after removing a part
+  on an invoiced Job (the flag lives on the real order payload, which the walkthrough doesn't stub); cancelled-Job freeze.
+- Production QuickBooks was never touched (local = sandbox tokens only; QB mocked at HTTP in tests).
+
 ## Decisions for the owner (see the chat report)
 
 - **Decided 2026-11-03:** employees enter the customer price when adding a part (this change). Our cost stays
@@ -108,4 +186,4 @@ Add from a PartsTech screenshot ›                           ← collapsed, sec
 - **Note for review:** `qb_status='linked'` (a Job billed on another Job’s shared invoice) counts as invoiced for
   employees even while the member is still *pending* (its charges not yet on the anchor invoice) — conservative on
   purpose. Also, the Create re-read is a small change to the retail QuickBooks Create path (refuse-before-write only).
-- Still open: employees see customer prices on the Job screen; no kill-switch flag (rollback = redeploy previous commit).
+- Still open: employees see customer prices on the Job screen. Rollback = the rollout switch above (no redeploy needed).
