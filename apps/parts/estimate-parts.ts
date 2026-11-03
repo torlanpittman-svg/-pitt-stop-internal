@@ -527,3 +527,70 @@ export async function clarifyServiceWithPart(orderId: string, serviceId: string,
   }
   return saved
 }
+
+// ── Job-screen guided flow: a part on the job, or attached to the service that installs it ────────
+
+/** Live (non-cancelled) parts whose installation is covered by this service (job_parts.labor_service_id). */
+export async function attachedPartsOf(orderId: string, serviceId: string): Promise<PartRow[]> {
+  return getDb().select().from(jobParts)
+    .where(and(eq(jobParts.serviceOrderId, orderId), eq(jobParts.laborServiceId, serviceId), ne(jobParts.status, 'cancelled')))
+    .orderBy(jobParts.createdAt)
+}
+
+/** True when this part carries a LIVE customer charge (a priced estimate line). An unpriced part has none. */
+export async function partIsCharged(part: Pick<PartRow, 'jobLineItemId'>): Promise<boolean> {
+  if (!part.jobLineItemId) return false
+  const [line] = await getDb().select({ id: jobLineItems.id }).from(jobLineItems).where(eq(jobLineItems.id, part.jobLineItemId)).limit(1)
+  return !!line
+}
+
+/**
+ * The Job screen's "Add a part" / "Add part to this service": ONE authoritative path (addEstimatePart —
+ * the same estimate row + priced line the Invoice Draft bills, so customer price × quantity is charged
+ * exactly once; our cost rides on the line as internal cost only). `attachToServiceId` links the part's
+ * installation to that existing work line ("included") in the same request, so a part added under a
+ * service never sits in labor review. A standalone part keeps the normal open review.
+ * Prices are only ever what the caller passes — the route strips them for non-managers.
+ */
+export async function addPartForJob(
+  orderId: string, input: EstimatePartInput, actor: string | null, role: string | null, attachToServiceId?: string | null,
+): Promise<PartRow> {
+  if (attachToServiceId) {
+    // Validate the service BEFORE any write so an invalid attach never leaves an orphan part behind.
+    const coverable = await coverableServiceIds(orderId)
+    if (!coverable.has(attachToServiceId)) throw new Error('That service is no longer on this job. Refresh to see the current list.')
+  }
+  const part = await addEstimatePart(orderId, input, actor)
+  if (attachToServiceId) await decidePartLabor(orderId, part.id, { action: 'included', serviceId: attachToServiceId }, actor, role)
+  const [row] = await getDb().select().from(jobParts).where(eq(jobParts.id, part.id)).limit(1)
+  return row ?? part
+}
+
+/**
+ * Remove a service AND the parts attached to it (their customer charges go with them), in that order:
+ * each attached part through removeEstimatePart (its own estimate row/line and procurement record,
+ * audited `part_removed` / `service_removed`), then the service itself through removeEstimateService
+ * (audited, Job text list kept in step, totals recomputed, a linked QuickBooks invoice only FLAGGED for
+ * sync — never voided or rewritten). Unrelated services and standalone parts are untouched.
+ * Retry-safe: a part already removed is skipped; a service already gone throws the usual stale-list
+ * error (nothing is removed twice).
+ */
+export async function removeServiceWithParts(orderId: string, serviceId: string, actor: string | null): Promise<{
+  title: string; removedParts: string[]; pricingImpactCents: number | null; qbSyncNeeded: boolean
+}> {
+  const attached = await attachedPartsOf(orderId, serviceId)
+  const removedParts: string[] = []
+  let partsImpact = 0
+  for (const p of attached) {
+    if (p.jobLineItemId) {
+      const [line] = await getDb().select({ priceCents: jobLineItems.priceCents, qty: jobLineItems.qty }).from(jobLineItems).where(eq(jobLineItems.id, p.jobLineItemId)).limit(1)
+      if (line) partsImpact += Math.round(line.priceCents * Number(line.qty))
+    }
+    await removeEstimatePart(orderId, p.id, actor)
+    removedParts.push(p.description)
+  }
+  const svc = await removeEstimateService(orderId, serviceId, actor)
+  const total = (svc.pricingImpactCents ?? 0) + partsImpact
+  await event(orderId, 'service_removed_with_parts', actor, { serviceId, title: svc.title, removedParts, pricingImpactCents: total || null })
+  return { title: svc.title, removedParts, pricingImpactCents: total > 0 ? total : null, qbSyncNeeded: svc.qbSyncNeeded }
+}

@@ -104,15 +104,12 @@ export default function VehicleCard({
   order,
   highlighted = false,
   removable = false,
-  showPartsBadge = false,
   onRemoved,
 }: {
   order: OrderWithContext
   highlighted?: boolean
   /** Manager/admin on the Active tab → allow swipe-to-remove. */
   removable?: boolean
-  /** Reversible rollout gate: show the WAITING ON PARTS badge (managers always; employees only when on). */
-  showPartsBadge?: boolean
   onRemoved?: (orderId: string) => void
 }) {
   const { vehicle } = order
@@ -139,7 +136,6 @@ export default function VehicleCard({
   const stock = isDealer ? stockFromNotes(order.notes) : null
   const services = order.items?.services ?? order.services ?? []
   const partCount = order.items?.parts.total ?? 0   // countJobParts — same rule as the Job page
-  const partsWaitingCount = order.items?.parts.waiting ?? 0
   // Swipe-to-remove is offered to manager/admin on any active card — RETAIL and DEALER alike
   // (an accidental check-in of either kind can be corrected). The confirm + tap are still required.
   const canRemove = removable
@@ -199,11 +195,6 @@ export default function VehicleCard({
             {kind === 'dealer' && (
               <span className="text-[10px] font-semibold tracking-wider px-2 py-0.5 rounded-md bg-gray-800 text-gray-400 border border-gray-700">DEALER</span>
             )}
-            {/* Additive parts signal — the Job keeps its normal status; this just flags a blocked delivery.
-                Gated by the reversible rollout flag so employees don't see it until parts ships to them. */}
-            {order.partsWaiting && showPartsBadge && (
-              <span className="text-[10px] font-bold tracking-wider px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30">WAITING ON PARTS</span>
-            )}
           </div>
           {/* Retail customer name → tap opens the contact popup (doesn't navigate). Dealer name is plain. */}
           {isDealer ? (
@@ -241,7 +232,6 @@ export default function VehicleCard({
         {partCount > 0 && (
           <span className="text-xs border border-gray-700 text-gray-400 px-2 py-0.5 rounded-md">
             {partCount} part{partCount === 1 ? '' : 's'}
-            {showPartsBadge && partsWaitingCount > 0 && <span className="text-amber-300"> · {partsWaitingCount} waiting</span>}
           </span>
         )}
       </div>

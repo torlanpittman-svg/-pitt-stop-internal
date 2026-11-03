@@ -17,7 +17,7 @@ import {
 } from '@/apps/workflow/estimate-db'
 import { interpretServiceEntry, listCatalogChoices } from '@/apps/quick-entry/service-match-db'
 import { listShortcuts, approveAlias } from '@/apps/quick-entry/shortcuts'
-import { addEstimatePart, updateEstimatePart, removeEstimatePartWithLabor, decidePartLabor, addTireWork, convertServiceToPart, clarifyServiceWithPart, type LaborAction } from '@/apps/parts/estimate-parts'
+import { addEstimatePart, updateEstimatePart, removeEstimatePartWithLabor, removeServiceWithParts, decidePartLabor, addTireWork, convertServiceToPart, clarifyServiceWithPart, type LaborAction } from '@/apps/parts/estimate-parts'
 import { assertEstimateReady } from '@/apps/workflow/estimate-review'
 import type { ApprovalState, EstimateStatus } from '@/apps/workflow/estimate'
 
@@ -190,6 +190,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         const removed = await removeEstimateService(id, String(body.serviceId), actor)
         return NextResponse.json({ ok: true, removed, view: await getEstimateView(id) })
       }
+      case 'remove_service_with_parts': {
+        // Job screen "Remove service": the service AND the parts attached to it (their charges go too).
+        const removed = await removeServiceWithParts(id, String(body.serviceId), actor)
+        return NextResponse.json({ ok: true, removed, view: await getEstimateView(id) })
+      }
       case 'add_line':        await addLine(String(body.serviceId), body.line as LineInput); await recomputeEstimate(await estimateId()); break
       case 'update_line':     await updateLine(String(body.lineId), body.patch as Record<string, never>); await recomputeEstimate(await estimateId()); break
       case 'remove_line':     await removeLine(String(body.lineId)); await recomputeEstimate(await estimateId()); break
@@ -217,7 +222,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (order.status === 'estimate') {
       // Standalone quotes use the dedicated conversion and email routes. All edits share
       // the same lock as send/conversion so a customer cannot receive a half-edited quote.
-      const allowed = ['build', 'prepare', 'set_service_price', 'set_work_total', 'itemize', 'accept_total', 'add_service', 'rename_service', 'remove_service',
+      const allowed = ['build', 'prepare', 'set_service_price', 'set_work_total', 'itemize', 'accept_total', 'add_service', 'rename_service', 'remove_service', 'remove_service_with_parts',
         'interpret', 'catalog_list', 'select_match', 'set_detail', 'add_part', 'update_part', 'remove_part', 'part_labor', 'add_tires',
         'convert_to_part', 'clarify_part']
       if (!allowed.includes(action)) return NextResponse.json({ error: 'Use the estimate actions to send or move this estimate.' }, { status: 400 })

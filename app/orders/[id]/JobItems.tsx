@@ -21,6 +21,8 @@ export interface JobItems {
   openService: (id: string) => void
   openPart: (id: string, confirmRemove?: boolean) => void
   removeService: (id: string) => void
+  /** Job screen "Remove service": the service and the parts attached to it, in one confirmed edit. */
+  removeServiceWithParts: (id: string) => Promise<boolean>
   /** Swipe → Remove for a part (asks about linked labor first, like the editor). */
   removePart: (p: PartView) => () => void
   /** Re-read the view (after a change made elsewhere on the page, e.g. Add Service / parts tracker). */
@@ -29,8 +31,13 @@ export interface JobItems {
   ui: ReactNode
 }
 
-export function useJobItems({ orderId, enabled, vehicleLabel, customerLabel, onSaved }: {
-  orderId: string; enabled: boolean; vehicleLabel: string; customerLabel: string
+export function useJobItems({ orderId, enabled, canEdit = enabled, vehicleLabel, customerLabel, onSaved }: {
+  orderId: string
+  /** Load the Services + Parts view (any shop role; retail Jobs with the estimate layer on). */
+  enabled: boolean
+  /** Open the editor sheets / send estimate edits (manager/admin only — the server enforces it too). */
+  canEdit?: boolean
+  vehicleLabel: string; customerLabel: string
   /** A change was confirmed by the server — refetch the Job (services/parts split, totals). */
   onSaved: () => void
 }): JobItems {
@@ -53,7 +60,8 @@ export function useJobItems({ orderId, enabled, vehicleLabel, customerLabel, onS
   useEffect(() => {
     if (!enabled) return
     let ok = true
-    fetch(`/api/workflow/orders/${orderId}/estimate`, { cache: 'no-store' })
+    // The same authoritative estimate view for every role; a non-manager gets our cost stripped server-side.
+    fetch(`/api/workflow/orders/${orderId}/items`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((d) => { if (ok && d?.ok && d.view) setView(d.view as EstimateViewData) })
       .catch(() => { /* keep the plain list; the estimate page still works */ })
@@ -119,9 +127,10 @@ export function useJobItems({ orderId, enabled, vehicleLabel, customerLabel, onS
     closePane()
   }, [closePane])
 
-  const openService = useCallback((id: string) => openPane({ kind: 'service', id }), [openPane])
-  const openPart = useCallback((id: string, confirmRemove?: boolean) => openPane({ kind: 'part', id, confirmRemove }), [openPane])
+  const openService = useCallback((id: string) => { if (canEdit) openPane({ kind: 'service', id }) }, [openPane, canEdit])
+  const openPart = useCallback((id: string, confirmRemove?: boolean) => { if (canEdit) openPane({ kind: 'part', id, confirmRemove }) }, [openPane, canEdit])
   const removeService = useCallback((id: string) => { void post({ action: 'remove_service', serviceId: id }) }, [post])
+  const removeServiceWithParts = useCallback((id: string) => post({ action: 'remove_service_with_parts', serviceId: id }), [post])
   const removePart = useCallback((p: PartView) => partSwipeRemove(p,
     () => { void post({ action: 'remove_part', partId: p.id, labor: { action: 'keep' } }) },
     () => openPart(p.id, true)), [post, openPart])
@@ -180,5 +189,5 @@ export function useJobItems({ orderId, enabled, vehicleLabel, customerLabel, onS
     </>
   )
 
-  return { view: enabled ? view : null, busy, openService, openPart, removeService, removePart, refresh, ui }
+  return { view: enabled ? view : null, busy, openService, openPart, removeService, removeServiceWithParts, removePart, refresh, ui }
 }

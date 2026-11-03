@@ -39,6 +39,7 @@ export function describeEdit(edit: EstimateEdit, view: EstimateViewData): { savi
   const name = svc ? quote(svc.title) : 'the service'
   switch (edit.action) {
     case 'remove_service': return { saving: `Removing ${name}…`, saved: `${name} removed · Saved`, failed: `Couldn’t remove ${name} — it’s still on the estimate.` }
+    case 'remove_service_with_parts': return { saving: `Removing ${name} and its parts…`, saved: `${name} and its attached parts removed · Saved`, failed: `Couldn’t remove ${name} — it’s still on the job.` }
     case 'rename_service': return { saving: 'Saving name…', saved: `Renamed to ${quote(clean(edit.title))} · Saved`, failed: `Couldn’t rename ${name} — the old name is still saved.` }
     case 'set_service_price': return { saving: 'Saving price…', saved: `Price for ${name} saved`, failed: `Couldn’t save the price for ${name} — the previous price is still saved.` }
     case 'add_service': return { saving: 'Adding service…', saved: `${quote(clean(edit.title))} added · Saved`, failed: `Couldn’t add ${quote(clean(edit.title))}.` }
@@ -66,6 +67,10 @@ function confirmsEdit(edit: EstimateEdit, view: EstimateViewData): string | null
   switch (edit.action) {
     case 'remove_service':
       return svc ? 'The server still lists this service.' : null
+    case 'remove_service_with_parts':
+      // The service is gone AND no live part still names it as its installation labor.
+      if (svc) return 'The server still lists this service.'
+      return (view.parts ?? []).some((p) => p.laborServiceId === edit.serviceId) ? 'The server still lists a part attached to this service.' : null
     case 'rename_service':
       return svc && clean(svc.title) === clean(edit.title) ? null : 'The server did not confirm the new name.'
     case 'set_service_price':

@@ -1,6 +1,13 @@
 import { NextResponse } from 'next/server'
+import { eq } from 'drizzle-orm'
+import { getDb } from '@/platform/db'
+import { serviceOrders } from '@/apps/workflow/schema'
 import { employeeAuthorizedFromRequest, shopActorFromRequest, isManagerRole } from '@/apps/auth/employee-guard'
 import { partsVisibleFor } from '@/apps/parts/visibility'
+import { isDealerOrder } from '@/apps/workflow/fees'
+import { estimateEnabled } from '@/apps/workflow/estimate'
+import { addPartForJob, partIsCharged, removeEstimatePartWithLabor } from '@/apps/parts/estimate-parts'
+import { NEEDS_MANAGER_MSG } from '@/apps/parts/job-items-view'
 import {
   listPartsForOrder,
   addPart,
@@ -8,7 +15,6 @@ import {
   markOrdered,
   receivePart,
   recordReturn,
-  cancelPart,
   billPart,
   type Part,
 } from '@/apps/parts/db'
@@ -40,6 +46,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   return NextResponse.json({ ok: true, parts: redact(parts, manager), manager, visible: true })
 }
 
+/** Retail Jobs with the estimate layer on use the authoritative estimate path (one row, one charge). */
+async function usesEstimatePath(orderId: string): Promise<boolean> {
+  if (!estimateEnabled()) return false
+  const [o] = await getDb().select({ source: serviceOrders.source, serviceType: serviceOrders.serviceType }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
+  return !!o && !isDealerOrder(o)
+}
+
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   // Same gate as GET: any valid employee session may record parts. Manager-only fields/actions (cost,
   // sell price, credits, bill-to-invoice) are enforced below via `manager`, which requires a resolved
@@ -62,16 +75,31 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // Confirm any referenced part belongs to THIS order before mutating (no cross-order edits).
   const existing = await listPartsForOrder(id)
   const partId = typeof body.partId === 'string' ? body.partId : null
-  if (action !== 'add' && (!partId || !existing.some((p) => p.id === partId))) {
+  const target = partId ? existing.find((p) => p.id === partId) : undefined
+  if (action !== 'add' && !target) {
     return NextResponse.json({ ok: false, error: 'Part not found on this order.' }, { status: 404 })
   }
 
+  let partIdOut: string | null = null
   try {
     switch (action) {
       case 'add': {
         const description = String(body.description ?? '').trim()
         if (!description) return NextResponse.json({ ok: false, error: 'A part description is required.' }, { status: 400 })
-        await addPart({
+        if (await usesEstimatePath(id)) {
+          // Job-screen guided flow (retail): the estimate's own part row + priced line, so customer
+          // price × quantity reaches the total and Invoice Draft exactly once. Our cost is internal.
+          // Prices come ONLY from a manager; an employee's part is saved unpriced for a manager to price.
+          const attachTo = typeof body.laborServiceId === 'string' && body.laborServiceId ? body.laborServiceId : null
+          const row = await addPartForJob(id, {
+            description, partNumber: str(body.partNumber), supplier: str(body.supplier), quantity: posNum(body.quantity, 1),
+            unitCostCents: manager ? intOrNull(body.unitCostCents) : null,
+            sellPriceCents: manager ? intOrNull(body.sellPriceCents) : null,
+          }, actorName, actor?.role ?? null, attachTo)
+          partIdOut = row.id
+          break
+        }
+        const row = await addPart({
           serviceOrderId: id,
           description,
           partNumber: str(body.partNumber),
@@ -84,6 +112,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           notes: str(body.notes),
           actor: actorName,
         })
+        partIdOut = row.id
         break
       }
       case 'update': {
@@ -127,8 +156,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         if (!r.ok) return NextResponse.json(r, { status: 400 })
         break
       }
+      case 'remove':
       case 'cancel': {
-        await cancelPart(partId!, actorName)
+        // ONE removal rule for every caller: a part is never hidden while its charge stays behind. A part
+        // with a live customer charge (priced estimate line) needs a manager — the manager path removes
+        // the line too (removeEstimatePartWithLabor: own row + line + procurement record, audited, a linked
+        // QuickBooks invoice only flagged for sync). An uncharged part may be removed by any employee.
+        // Idempotent: an already-removed part is a no-op.
+        if (target!.status === 'cancelled') break
+        if (!manager && (await partIsCharged({ jobLineItemId: target!.jobLineItemId }))) {
+          return NextResponse.json({ ok: false, error: NEEDS_MANAGER_MSG, needsManager: true }, { status: 403 })
+        }
+        await removeEstimatePartWithLabor(id, partId!, { action: 'keep' }, actorName)
         break
       }
       case 'bill': {
@@ -141,11 +180,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         return NextResponse.json({ ok: false, error: 'Unknown action.' }, { status: 400 })
     }
   } catch (err) {
-    return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : 'Parts update failed.' }, { status: 500 })
+    // Validation from the estimate path ("Describe the part", "Enter a quantity…") is a 400 with its message.
+    const message = err instanceof Error ? err.message : 'Parts update failed.'
+    const status = err instanceof Error && (action === 'add' || action === 'remove' || action === 'cancel') ? 400 : 500
+    return NextResponse.json({ ok: false, error: message }, { status })
   }
 
   const parts = await listPartsForOrder(id)
-  return NextResponse.json({ ok: true, parts: redact(parts, manager), manager })
+  return NextResponse.json({ ok: true, parts: redact(parts, manager), manager, partId: partIdOut })
 }
 
 function str(v: unknown): string | null {

@@ -11,6 +11,8 @@ import { useVinDecode, type VinDecodeResult } from '@/app/hooks/useVinDecode'
 import { isDealerOrder, orderSourceKind } from '@/apps/workflow/fees'
 import type { MovePreview } from '@/apps/estimates/move-to-estimates'
 import PartsSection from './PartsSection'
+import PartImportPanel from './PartImportPanel'
+import JobItemsPanel from './JobItemsPanel'
 import { countJobParts } from '@/apps/parts/status'
 import DealerInvoicePanel from './DealerInvoicePanel'
 import OrderPhotos from '@/app/components/OrderPhotos'
@@ -18,7 +20,6 @@ import PhotoInput from '@/app/components/PhotoInput'
 import OilStickerSheet from './OilStickerSheet'
 import { interpretVinScan } from './vin-scan'
 import { useJobItems } from './JobItems'
-import { PartRow, ServiceRow, Row } from './estimate/ItemRows'
 import { InvoiceDraftModal, money, SEND_BLOCK_MSG, SYNC_BLOCK_MSG, type InvoiceDraftData, type QbCandidate } from './InvoiceDraftPanel'
 import { InvoicePaymentSection } from './InvoicePaymentSection'
 import { paymentLocksInvoice } from '@/apps/quickbooks/retail-payment'
@@ -1151,7 +1152,6 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
   // part labels; a cancelled part never counts. Live tracker list when loaded, else the server's figure.
   const partsSummary = liveParts ? countJobParts(partLabels, liveParts) : order.items?.parts ?? { total: 0, waiting: 0 }
   const partCount   = partsSummary.total
-  const partsWaitingCount = partsSummary.waiting
   const activePartLabels = order.items?.activePartLabels ?? partLabels
 
   // Employee-facing simplifications:
@@ -1181,22 +1181,19 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
     }
   }, [order.id])
 
-  // Tap-to-edit Services / Parts (manager/admin, retail Job, estimate layer on): the same estimate
-  // records, editors and save path as the Invoice page. A confirmed change refetches the Job (services/
-  // parts split) and the server props (Total price). Employees and dealer Jobs keep the plain list.
-  const itemsEditable = isManager && !isDealerOrder(order) && identity.estimateEnabled && order.status !== 'cancelled'
+  // Services + Parts, the guided Job-screen version (retail Job, estimate layer on): every shop role sees
+  // the SAME authoritative estimate view the Invoice page uses (services with their attached parts, the
+  // customer's amounts); managers/admins additionally get the tap-to-edit sheets and the same save path.
+  // A confirmed change refetches the Job (services/parts split) and the server props (Total price).
+  // Dealer Jobs (isolated QB) and the estimate-off case keep the plain list + parts tracker below.
+  const itemsEnabled = !isDealerOrder(order) && identity.estimateEnabled
+  const itemsEditable = isManager && itemsEnabled && order.status !== 'cancelled'
   const items = useJobItems({
-    orderId: order.id, enabled: itemsEditable, vehicleLabel: vehicleName, customerLabel: title,
+    orderId: order.id, enabled: itemsEnabled, canEdit: itemsEditable, vehicleLabel: vehicleName, customerLabel: title,
     onSaved: () => { void reload(); router.refresh() },
   })
   const itemsView = items.view?.exists ? items.view : null
   const refreshItems = items.refresh
-  // The work to perform = the estimate's lines minus declined ones (same set as the Job's Services list).
-  const activeServiceRows = itemsView ? itemsView.services.filter((sv) => !sv.declined) : []
-  const mirrored = new Set(activeServiceRows.map((sv) => sv.title.trim().toLowerCase()))
-  const unmirrored = itemsView ? services.filter((name) => !mirrored.has(name.trim().toLowerCase())) : []
-  const editablePartIds = new Set((itemsView?.parts ?? []).map((p) => p.id))
-  const partsKey = JSON.stringify(itemsView?.parts ?? [])
 
   // Parts tracker changes update the heading's counts immediately; a change also refetches the Job so
   // the Services/Parts split follows. The section is always open, so nothing unmounts on a change.
@@ -1418,72 +1415,61 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
         </div>
       )}
 
-      {/* Services — the work to perform (plain list; completion is confirmed once in Finish Job).
-          Parts are listed separately below — classified by real part records, never by wording. */}
-      <div className="px-6 mb-6">
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Services</h2>
-          <button onClick={() => { setAddError(null); setAddingService(true) }}
-            className="text-blue-400 text-sm font-semibold active:opacity-70">+ Add Service</button>
-        </div>
-        {itemsView && (activeServiceRows.length + unmirrored.length) > 0 ? (
-          // Editable rows (same look as the Invoice page): tap → the shared editor; swipe → Remove.
-          <ul aria-label="Services" className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800 overflow-hidden">
-            {activeServiceRows.map((sv) => (
-              <ServiceRow key={sv.id} s={sv} flat={itemsView.flat} readOnly={false} busy={items.busy}
-                onOpen={() => items.openService(sv.id)} onRemove={() => items.removeService(sv.id)} />
-            ))}
-            {/* A Job service the estimate hasn't picked up yet: opening the Invoice page mirrors it. */}
-            {unmirrored.map((name, i) => (
-              <Row key={`u${i}`} id={`unmirrored:${i}`} label={`Edit ${name}`} title={name} sub="Open the invoice to price this line"
-                price={<span className="text-amber-300 text-sm font-semibold">Add price</span>}
-                onOpen={() => router.push(`/orders/${order.id}/estimate`)} onRemove={() => removeService(name)} />
-            ))}
-          </ul>
-        ) : services.length > 0 ? (
-          <ul className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800 overflow-hidden">
-            {services.map((s, i) => {
-              const inner = <div className="px-4 py-3.5 text-white text-base min-w-0 break-words">{s}</div>
-              // Manager/admin on a retail Job → swipe-left to remove. Employees & dealer Jobs see the plain list.
-              // Opaque foreground so the red Remove underlay only shows while swiping, never at rest.
-              return (isManager && !isDealerOrder(order))
-                ? <li key={i}><SwipeRow onRemove={() => removeService(s)} contentClassName="bg-gray-900">{inner}</SwipeRow></li>
-                : <li key={i}>{inner}</li>
-            })}
-          </ul>
-        ) : (
-          <p className="text-gray-600 text-sm italic">No services yet — tap ＋ Add Service.</p>
-        )}
-      </div>
-
-      {/* Parts — ALWAYS open (no collapsible row): the parts controls (+ Add Part, Import from screenshot)
-          must be visible without a tap, including on a Job with no parts yet. The heading keeps the part
-          count (and outstanding count where tracked). Below it: the existing parts tracker (name, qty,
-          part #, ordering/receiving status) for viewers it is rolled out to; otherwise the part names
-          only. Same records as the estimate/invoice — nothing duplicated. */}
-      {(partCount > 0 || identity.partsVisible) && (
-        <div className="px-6 mb-6">
-          <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider">
-            Parts{partCount > 0 && <span className="text-gray-400 normal-case"> · {partCount}</span>}
-            {identity.partsVisible && partsWaitingCount > 0 && <span className="text-amber-400 normal-case"> · {partsWaitingCount} waiting</span>}
-          </h2>
-          <div className="mt-2">
-            {identity.partsVisible
-              ? <PartsSection orderId={order.id} hideTitle onPartsChange={onPartsChange}
-                  onEditPart={itemsView ? (id) => items.openPart(id) : undefined} editableIds={editablePartIds} refreshKey={partsKey} />
-              : itemsView && itemsView.parts && itemsView.parts.length > 0 ? (
-                <ul aria-label="Parts" className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800 overflow-hidden">
-                  {itemsView.parts.map((p) => (
-                    <PartRow key={p.id} p={p} readOnly={false} busy={items.busy} onOpen={() => items.openPart(p.id)} onRemove={() => items.removePart(p)()} />
-                  ))}
-                </ul>
-              ) : (
-                <ul className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800">
-                  {activePartLabels.map((p, i) => <li key={i} className="px-4 py-3 text-gray-200 text-sm">{p}</li>)}
-                </ul>
-              )}
+      {itemsEnabled ? (
+        /* Services with their attached parts, standalone parts, add forms that open in place, confirmed removals.
+           Amounts are the estimate's own (customer price × quantity, once) — nothing is priced here. */
+        <JobItemsPanel orderId={order.id} view={itemsView} textServices={services} manager={isManager} canEdit={itemsEditable}
+          partsVisible={identity.partsVisible} busy={items.busy}
+          onAddService={() => { setAddError(null); setAddingService(true) }}
+          onOpenService={items.openService} onOpenPart={items.openPart}
+          onRemoveServiceWithParts={items.removeServiceWithParts} onRemoveTextService={removeService}
+          onChanged={() => { refreshItems(); void reload(); router.refresh() }}
+          importPanel={<PartImportPanel key={order.id} orderId={order.id} onApplied={() => { refreshItems(); void reload(); router.refresh() }} />} />
+      ) : (
+        <>
+          {/* Services — the work to perform (plain list; completion is confirmed once in Finish Job).
+              Parts are listed separately below — classified by real part records, never by wording. */}
+          <div className="px-6 mb-6">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Services</h2>
+              <button onClick={() => { setAddError(null); setAddingService(true) }}
+                className="text-blue-400 text-sm font-semibold active:opacity-70">+ Add Service</button>
+            </div>
+            {services.length > 0 ? (
+              <ul className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800 overflow-hidden">
+                {services.map((s, i) => {
+                  const inner = <div className="px-4 py-3.5 text-white text-base min-w-0 break-words">{s}</div>
+                  // Manager/admin on a retail Job → swipe-left to remove. Employees & dealer Jobs see the plain list.
+                  // Opaque foreground so the red Remove underlay only shows while swiping, never at rest.
+                  return (isManager && !isDealerOrder(order))
+                    ? <li key={i}><SwipeRow onRemove={() => removeService(s)} contentClassName="bg-gray-900">{inner}</SwipeRow></li>
+                    : <li key={i}>{inner}</li>
+                })}
+              </ul>
+            ) : (
+              <p className="text-gray-600 text-sm italic">No services yet — tap ＋ Add Service.</p>
+            )}
           </div>
-        </div>
+
+          {/* Parts — ALWAYS open (no collapsible row). Dealer Jobs / estimate-off keep the parts tracker for
+              viewers it is rolled out to; otherwise the part names only. Same records as the estimate/invoice. */}
+          {(partCount > 0 || identity.partsVisible) && (
+            <div className="px-6 mb-6">
+              <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider">
+                Parts{partCount > 0 && <span className="text-gray-400 normal-case"> · {partCount}</span>}
+              </h2>
+              <div className="mt-2">
+                {identity.partsVisible
+                  ? <PartsSection orderId={order.id} hideTitle onPartsChange={onPartsChange} />
+                  : (
+                    <ul className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800">
+                      {activePartLabels.map((p, i) => <li key={i} className="px-4 py-3 text-gray-200 text-sm">{p}</li>)}
+                    </ul>
+                  )}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {isManager && <div className="px-6 mb-6"><OrderPhotos orderId={order.id} /></div>}
