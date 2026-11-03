@@ -188,18 +188,40 @@ ${input.footnote ? `<p style="margin:16px 0 0;color:#555555;font-size:13px;line-
 </table></td></tr></table></body></html>`
 }
 
+/**
+ * What the confirmation email says about the drop-off time, stated ONCE, next to the appointment time.
+ * Owner wording (2026-11-02).
+ */
+export const DROP_OFF_NOTE = 'Your appointment is for vehicle drop-off. We’ll confirm the estimated completion time when you arrive.'
+
+/**
+ * The shared booking `instructions` setting repeats the finish-time caveat that the confirmation email now
+ * states next to the appointment time, so the email said it twice. Strip that one sentence from the email's
+ * copy of the note. The setting itself is NOT edited: the same text is rendered on the booking review page,
+ * the success page, the view/cancel page and the .ics description, and those are deliberately left alone.
+ * If the owner rewords the setting, nothing matches and the note passes through untouched.
+ */
+export function emailInstructions(instructions: string): string {
+  return instructions
+    .replace(/\s*Your drop-off time is when we receive the vehicle, not a promised finish time\.\s*/i, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
 export function renderMessage(kind: string, a: Appointment, cfg: BookingConfig, link = manageUrl(a.id)): { subject: string; text: string; html?: string } {
   const when = `${formatDateLabel(a.localDate)} at ${formatTimeLabel(a.localTime)}`
   const hi = `Hi ${a.firstName},`
   if (kind === 'confirmation') {
+    const note = emailInstructions(cfg.instructions)
     return {
       subject: `Drop-off confirmed — ${when}`,
-      text: `${hi}\n\nYour drop-off with ${SHOP} is confirmed for ${when}. This is the time we receive your vehicle, not a promised finish time.\n\n${details(a, cfg)}\n\n${cfg.instructions}\n\n${cfg.cancellationPolicy}\nView or cancel: ${link}\n\n— ${SHOP}`,
+      // "appointment", not "drop-off": DROP_OFF_NOTE says "drop-off" in the next sentence (owner, 2026-11-02).
+      text: `${hi}\n\nYour appointment with ${SHOP} is confirmed for ${when}. ${DROP_OFF_NOTE}\n\n${details(a, cfg)}\n\n${note}\n\n${cfg.cancellationPolicy}\nView or cancel: ${link}\n\n— ${SHOP}`,
       html: brandedHtml({
         preheader: `Drop-off ${when} · Reference ${a.reference}`,
         heading: 'Your drop-off is confirmed',
-        intro: `${hi} we have you down for ${when}. This is the time we receive your vehicle, not a promised finish time.`,
-        rows: detailRows(a, cfg), note: cfg.instructions,
+        intro: `${hi} we have you down for ${when}. ${DROP_OFF_NOTE}`,
+        rows: detailRows(a, cfg), note,
         button: { label: 'View or cancel', href: link }, footnote: cfg.cancellationPolicy, cfg,
       }),
     }

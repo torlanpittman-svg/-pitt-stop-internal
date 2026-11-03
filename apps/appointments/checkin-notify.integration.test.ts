@@ -145,7 +145,15 @@ describe('transactional notices', () => {
   it('confirmation copy carries the real appointment data', async () => {
     const a = await book()
     const m = renderMessage('confirmation', a, CFG)
-    expect(m.text).toContain(`Your drop-off with Pitt Stop Detail & Auto Sales is confirmed for ${formatDateLabel(TUE)} at 8:00 AM. This is the time we receive your vehicle, not a promised finish time.`)
+    expect(m.text).toContain(`Your appointment with Pitt Stop Detail & Auto Sales is confirmed for ${formatDateLabel(TUE)} at 8:00 AM. Your appointment is for vehicle drop-off. We’ll confirm the estimated completion time when you arrive.`)
+    // The drop-off note appears exactly ONCE in each part — it used to be repeated by cfg.instructions.
+    for (const body of [m.text, m.html!]) {
+      expect(body.split('Your appointment is for vehicle drop-off').length - 1).toBe(1)
+      expect(body).not.toContain('not a promised finish time')
+    }
+    // Stripping that sentence must not eat the rest of the shared instructions.
+    expect(m.text).toContain('Please remove valuables and personal items before drop-off.')
+    expect(m.text).toContain('We will contact you when it is ready.')
     // Branded HTML carries the same facts, escaped, plus the secure view/cancel link.
     expect(m.html).toContain(a.reference)
     expect(m.html).toContain('View or cancel')
