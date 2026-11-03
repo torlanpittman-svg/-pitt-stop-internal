@@ -293,3 +293,18 @@ export function isDuplicateStock(existing: Array<string | null | undefined>, sto
   if (!target) return false
   return existing.some((e) => normalizeStock(e) === target)
 }
+
+/**
+ * Drop invoices that were created BY HAND in QuickBooks and linked to Jobs as an explicit
+ * exception (dealer_scans.qb_invoice_external → listExternalInvoiceNumbers). They must never
+ * receive automatic vehicle lines, even while open and unsent; every other invoice keeps the
+ * normal selectAppendableInvoice rule. Pure; matching is by exact DocNumber.
+ */
+export function excludeExternalInvoices<T extends { docNumber?: string | null }>(
+  invoices: T[],
+  externalNumbers: readonly string[],
+): T[] {
+  if (externalNumbers.length === 0) return invoices
+  const blocked = new Set(externalNumbers.map((n) => n.trim()).filter(Boolean))
+  return invoices.filter((inv) => !(inv.docNumber && blocked.has(inv.docNumber.trim())))
+}

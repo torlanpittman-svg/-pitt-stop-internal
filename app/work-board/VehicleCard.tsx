@@ -76,6 +76,13 @@ function renderQbConsequence(preview: RemovalPreview) {
       </div>
     )
   }
+  if (preview.kind === 'external_invoice') {
+    return (
+      <div className="rounded-xl border border-gray-700 bg-gray-900/40 px-4 py-3 mb-4">
+        <p className="text-gray-300 text-sm">Invoice {inv} was created by hand in QuickBooks, so it will not be changed. This only removes the vehicle from the Work Board (cancelled, not deleted) — history is kept.</p>
+      </div>
+    )
+  }
   if (preview.kind === 'idempotent_qb_done') {
     return <p className="text-gray-500 text-xs mb-4">The QuickBooks invoice was already corrected. This just clears the vehicle from the Work Board.</p>
   }

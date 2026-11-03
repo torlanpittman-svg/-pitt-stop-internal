@@ -39,10 +39,14 @@ export interface RemovalLinkage {
   hasQbLink:    boolean           // dealer: synced scan w/ invoice #; retail: estimate has qbInvoiceId
   stockToken:   string | null     // dealer: `#<STOCK>` used to identify the exact erroneous line
   storedLineId: string | null     // dealer qb_line_id when present (extra agreement guard); else null
+  /** dealer: the linked invoice was created BY HAND in QuickBooks (dealer_scans.qb_invoice_external).
+   *  Removal must soft-cancel the Job only — that invoice is never touched. */
+  externalInvoiceNumber?: string | null
 }
 
 export type QbRemovalPlan =
   | { kind: 'no_qb' }                                                                    // Case A — never reached QB
+  | { kind: 'external_invoice'; invoiceNumber: string | null }                          // hand-made QB invoice — never touched
   | { kind: 'idempotent_qb_done'; invoiceNumber: string | null }                        // already voided / gone
   | { kind: 'line_remove';      invoiceId: string; invoiceNumber: string | null; lineId: string } // Case B
   | { kind: 'void_standalone';  invoiceId: string; invoiceNumber: string | null }       // Case C
@@ -65,6 +69,7 @@ export function descriptionMatchesStock(description: string, stockToken: string)
 
 /**
  * Decide the QuickBooks action for a removal. Pure. Order of checks is deliberate:
+ *   0. linked to a hand-made QB invoice   → external_invoice (soft-cancel only; QB never touched)
  *   1. no link at all                     → no_qb
  *   2. invoice vanished from QB           → idempotent_qb_done (proceed; nothing to undo)
  *   3. couldn't pin exactly one invoice   → ambiguous (fail closed)
@@ -76,6 +81,8 @@ export function descriptionMatchesStock(description: string, stockToken: string)
  *   7. retail: standalone invoice (identity already PSID-proven upstream) → void_standalone
  */
 export function decideQbRemovalPlan(link: RemovalLinkage, snap: QbInvoiceSnapshot | null): QbRemovalPlan {
+  // Externally managed invoice: decided BEFORE any snapshot so no QuickBooks read is even needed.
+  if (link.isDealer && link.externalInvoiceNumber) return { kind: 'external_invoice', invoiceNumber: link.externalInvoiceNumber }
   if (!link.hasQbLink || !snap) return { kind: 'no_qb' }
   if (snap.status === 'not_found') return { kind: 'idempotent_qb_done', invoiceNumber: snap.invoiceNumber }
   if (snap.status === 'ambiguous') return { kind: 'ambiguous', reason: snap.ambiguousReason ?? 'invoice_not_resolved' }

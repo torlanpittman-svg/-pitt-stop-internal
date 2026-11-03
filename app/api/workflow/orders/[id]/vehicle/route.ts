@@ -37,7 +37,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     color: order.vehicle.color,
     stockNumber: scan?.stockNumber ?? null,
     isDealer: !!scan,
-    qbLinked: !!(scan?.qbLineId && scan?.qbInvoiceNumber && scan?.qbSyncStatus === 'synced'),
+    qbLinked: !!(scan?.qbLineId && scan?.qbInvoiceNumber && scan?.qbSyncStatus === 'synced' && !scan?.qbInvoiceExternal),
   })
 }
 
@@ -82,6 +82,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const color = scan.color ?? order.vehicle.color ?? null
     const decision = qbSyncDecision({
       qbLineId: scan.qbLineId, qbInvoiceNumber: scan.qbInvoiceNumber, qbSyncStatus: scan.qbSyncStatus,
+      qbInvoiceExternal: scan.qbInvoiceExternal,
       oldDescription: correctedLineDescription(oldF, color), newDescription: correctedLineDescription(newF, color),
     })
     if (decision === 'update') {

@@ -76,6 +76,9 @@ export const dealerScans = pgTable(
     qbSyncStatus:    varchar('qb_sync_status', { length: 30 }), // synced | queued | error
     qbSyncError:     text('qb_sync_error'),
     qbSyncedAt:      timestamp('qb_synced_at', { withTimezone: true }),
+    /** The invoice was created by hand in QuickBooks (not by the app): never append to it,
+     *  never remove/void/rewrite its lines, and never bill this scan again. Migration 0069. */
+    qbInvoiceExternal: boolean('qb_invoice_external').notNull().default(false),
 
     // Work board linkage
     serviceOrderId: uuid('service_order_id'),

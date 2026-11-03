@@ -34,7 +34,8 @@ export type QbSyncAction = 'update' | 'not_linked' | 'no_change'
 /**
  * Decide whether a correction should touch QuickBooks.
  *  - not_linked : no synced dealer invoice line to update (retail Job, queued/unwritten,
- *                 or missing qb_line_id / invoice number) → update Pitt Stop only.
+ *                 missing qb_line_id / invoice number, or an invoice created by hand in
+ *                 QuickBooks — qb_invoice_external) → update Pitt Stop only.
  *  - no_change  : the QB line description is unchanged (e.g. only VIN edited) → skip QB.
  *  - update     : a synced line exists and its description changed → update that line.
  */
@@ -42,9 +43,12 @@ export function qbSyncDecision(params: {
   qbLineId: string | null | undefined
   qbInvoiceNumber: string | null | undefined
   qbSyncStatus: string | null | undefined
+  /** dealer_scans.qb_invoice_external — a hand-made QB invoice is never rewritten. */
+  qbInvoiceExternal?: boolean | null
   oldDescription: string
   newDescription: string
 }): QbSyncAction {
+  if (params.qbInvoiceExternal) return 'not_linked'
   const linked = !!params.qbLineId && !!params.qbInvoiceNumber && params.qbSyncStatus === 'synced'
   if (!linked) return 'not_linked'
   if (params.oldDescription.trim() === params.newDescription.trim()) return 'no_change'

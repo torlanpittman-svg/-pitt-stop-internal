@@ -119,8 +119,10 @@ export async function attachInvoiceForOrder(input: AttachInput): Promise<AttachR
   }
 
   // ── 2. Idempotency: already linked? ─────────────────────────────────────
+  // A scan linked to a hand-made QuickBooks invoice (qb_invoice_external) is final regardless
+  // of its sync status: this Job is already billed and must never be written to QB again.
   const existingScan = await getScanByServiceOrderId(sid)
-  if (existingScan?.qbInvoiceNumber && existingScan.qbSyncStatus === 'synced') {
+  if (existingScan?.qbInvoiceNumber && (existingScan.qbSyncStatus === 'synced' || existingScan.qbInvoiceExternal)) {
     return {
       ...base, ok: true, outcome: 'already_linked', action: 'already_linked', invoiceStatus: 'linked',
       invoiceNumber: existingScan.qbInvoiceNumber, lineAmount: existingScan.rate ?? undefined,

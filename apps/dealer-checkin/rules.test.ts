@@ -9,6 +9,7 @@ import {
   formatLineDescription,
   decidePricing,
   selectAppendableInvoice,
+  excludeExternalInvoices,
   isDuplicateStock,
   normalizeStock,
   clampText,
@@ -316,5 +317,36 @@ describe('duplicate detection', () => {
   })
   it('blank target is never a duplicate', () => {
     expect(isDuplicateStock(['K518991'], null)).toBe(false)
+  })
+})
+
+describe('excludeExternalInvoices (hand-made QuickBooks invoices are never append targets)', () => {
+  // Sterling Kia, 2026-11-03: #100937 was created by hand and is newer than the regular #100931.
+  const regular = { id: '24579', docNumber: '100931', sent: false, balance: 200, txnDate: '2026-10-29' }
+  const special = { id: '24596', docNumber: '100937', sent: false, balance: 600, txnDate: '2026-11-03' }
+
+  it('without the exclusion the newer special invoice would win', () => {
+    expect(selectAppendableInvoice([special, regular])?.docNumber).toBe('100937')
+  })
+  it('with the exclusion the regular invoice stays the append target', () => {
+    const eligible = excludeExternalInvoices([special, regular], ['100937'])
+    expect(eligible.map((i) => i.docNumber)).toEqual(['100931'])
+    expect(selectAppendableInvoice(eligible)?.docNumber).toBe('100931')
+  })
+  it('does not force the regular invoice once it is sent or paid (→ create new)', () => {
+    const sent = { ...regular, sent: true }
+    expect(selectAppendableInvoice(excludeExternalInvoices([special, sent], ['100937']))).toBeNull()
+    const paid = { ...regular, balance: 0 }
+    expect(selectAppendableInvoice(excludeExternalInvoices([special, paid], ['100937']))).toBeNull()
+  })
+  it('is a no-op for every other dealer and with no exceptions recorded', () => {
+    expect(excludeExternalInvoices([special, regular], [])).toEqual([special, regular])
+    const subaru = { id: '9', docNumber: '100934', sent: false, balance: 400, txnDate: '2026-11-02' }
+    expect(excludeExternalInvoices([subaru], ['100937'])).toEqual([subaru])
+  })
+  it('matches by exact DocNumber only (trimmed), never by prefix', () => {
+    const near = { id: '1', docNumber: '1009370', sent: false, balance: 1, txnDate: '2026-11-03' }
+    expect(excludeExternalInvoices([near, special], [' 100937 '])).toEqual([near])
+    expect(excludeExternalInvoices([{ id: 'x', docNumber: null, sent: false, balance: 1, txnDate: '2026-11-03' }], ['100937'])).toHaveLength(1)
   })
 })

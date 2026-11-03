@@ -51,8 +51,11 @@ async function resolveLinkageAndSnapshot(order: OrderWithContext): Promise<{ lin
       hasQbLink,
       stockToken: stock ? `#${stock}` : null,
       storedLineId: scan?.qbLineId ?? null,
+      // Hand-made QuickBooks invoice (qb_invoice_external): the plan is decided without any QB
+      // read and the invoice is never touched — see decideQbRemovalPlan.
+      externalInvoiceNumber: scan?.qbInvoiceExternal ? (scan.qbInvoiceNumber ?? null) : null,
     }
-    if (!hasQbLink) return { link, snap: null }
+    if (link.externalInvoiceNumber || !hasQbLink) return { link, snap: null }
     const snap = await readDealerInvoiceSnapshot(scan!.qbInvoiceNumber!)
     return { link, snap }
   }
@@ -226,6 +229,9 @@ export async function executeOrderRemoval(params: { orderId: string; actor: stri
     }
   } else if (plan.kind === 'idempotent_qb_done') {
     qbAction = 'already_done'
+  } else if (plan.kind === 'external_invoice') {
+    // Hand-made invoice: record WHY QuickBooks was left alone, then soft-cancel only.
+    await logEvent({ serviceOrderId: orderId, eventType: 'qb_external_invoice_untouched', employeeName: actor, note: `#${plan.invoiceNumber ?? '?'} was created by hand in QuickBooks and is not changed by this removal` })
   }
 
   // 4. Soft-cancel — only reached when QB is confirmed in the desired state (every block/failure

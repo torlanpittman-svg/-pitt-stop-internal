@@ -27,6 +27,37 @@ describe('CASE A — no QuickBooks link', () => {
   })
 })
 
+describe('CASE 0 — hand-made QuickBooks invoice (dealer_scans.qb_invoice_external)', () => {
+  // Sterling Kia 2026-11-03: three vehicles pre-billed on #100937, which the app must never edit.
+  const external = dealerLink({ stockToken: '#TG481851', externalInvoiceNumber: '100937' })
+  const liveSnap = snap({ invoiceId: '24596', invoiceNumber: '100937', totalCents: 60000, balanceCents: 60000,
+    salesLines: [line('1', '2026 Kia Sorento Panthera #TG481851'), line('2', '2027 Kia Telluride Terrain #VG040718'), line('3', '2026 Kiaa K5 White #T5472699')] })
+
+  it('decides external_invoice BEFORE any snapshot (no QuickBooks read required)', () => {
+    expect(decideQbRemovalPlan(external, null)).toEqual({ kind: 'external_invoice', invoiceNumber: '100937' })
+  })
+  it('even with a live snapshot that would otherwise yield line_remove, QuickBooks is left alone', () => {
+    expect(decideQbRemovalPlan(dealerLink({ stockToken: '#TG481851' }), liveSnap).kind).toBe('line_remove')
+    expect(decideQbRemovalPlan(external, liveSnap)).toEqual({ kind: 'external_invoice', invoiceNumber: '100937' })
+  })
+  it('never writes to QB, never blocks, and soft-cancels the Job', () => {
+    const plan = decideQbRemovalPlan(external, liveSnap)
+    expect(planRequiresQbWrite(plan)).toBe(false)
+    expect(planBlocksRemoval(plan)).toBe(false)
+    expect(shouldSoftCancel(plan, undefined)).toBe(true)
+  })
+  it('payment activity on the hand-made invoice still does not matter — nothing is touched either way', () => {
+    expect(decideQbRemovalPlan(external, snap({ invoiceNumber: '100937', totalCents: 60000, balanceCents: 40000 })).kind).toBe('external_invoice')
+  })
+  it('a normal dealer link (flag absent or null) is unaffected', () => {
+    expect(decideQbRemovalPlan(dealerLink({ externalInvoiceNumber: null, hasQbLink: false }), null)).toEqual({ kind: 'no_qb' })
+    expect(decideQbRemovalPlan(dealerLink(), snap({ salesLines: [line('1', '2024 Kia Sportage White #K518991')] })).kind).toBe('void_standalone')
+  })
+  it('retail links ignore the flag', () => {
+    expect(decideQbRemovalPlan(retailLink({ externalInvoiceNumber: '100937' }), snap()).kind).toBe('void_standalone')
+  })
+})
+
 describe('CASE B — one vehicle on a multi-vehicle dealer invoice', () => {
   const threeLines = [
     line('1', '2024 Toyota Camry Blue #A111'),   // legitimate

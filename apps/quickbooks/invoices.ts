@@ -6,7 +6,8 @@
  * dealer check-in flow uses to decide append-to-open vs. create-new.
  */
 import { queryQBO, qboEscape } from './client'
-import { selectAppendableInvoice } from '@/apps/dealer-checkin/rules'
+import { selectAppendableInvoice, excludeExternalInvoices } from '@/apps/dealer-checkin/rules'
+import { listExternalInvoiceNumbers } from '@/apps/dealer-checkin/db'
 
 export type QBEmailStatus = 'NotSet' | 'NeedToSend' | 'EmailSent'
 
@@ -66,8 +67,12 @@ export async function listOpenInvoicesForCustomer(customerId: string): Promise<Q
 /**
  * The invoice a new dealer line should be appended to: the most recent open,
  * NOT-yet-sent invoice. Returns null when a fresh invoice should be created.
+ * Invoices created by hand in QuickBooks and linked as an exception
+ * (dealer_scans.qb_invoice_external) are never candidates — the selection simply
+ * continues with the next eligible invoice, or null.
  */
 export async function findAppendableInvoice(customerId: string): Promise<QBInvoiceSummary | null> {
   const all = await listInvoicesForCustomer(customerId)
-  return selectAppendableInvoice(all)
+  const external = await listExternalInvoiceNumbers()
+  return selectAppendableInvoice(excludeExternalInvoices(all, external))
 }

@@ -221,3 +221,17 @@ export async function deleteScanCascade(scanId: string): Promise<void> {
   await db.delete(dealerScanEvents).where(eq(dealerScanEvents.scanId, scanId))
   await db.delete(dealerScans).where(eq(dealerScans.id, scanId))
 }
+
+/**
+ * QuickBooks invoice numbers that were created BY HAND in QuickBooks and linked to Jobs as an
+ * explicit exception (dealer_scans.qb_invoice_external). The dealer check-in / attach / retry
+ * paths must never append new vehicle lines to these — see findAppendableInvoice.
+ */
+export async function listExternalInvoiceNumbers(): Promise<string[]> {
+  const db = getDb()
+  const rows = await db
+    .selectDistinct({ n: dealerScans.qbInvoiceNumber })
+    .from(dealerScans)
+    .where(and(eq(dealerScans.qbInvoiceExternal, true), sql`${dealerScans.qbInvoiceNumber} is not null`))
+  return rows.map((r) => r.n).filter((n): n is string => !!n)
+}

@@ -41,3 +41,17 @@ describe('qbSyncDecision', () => {
     expect(qbSyncDecision({ ...base, qbLineId: null, oldDescription: 'a', newDescription: 'b' })).toBe('not_linked')
   })
 })
+
+describe('qbSyncDecision — hand-made QuickBooks invoice (qb_invoice_external)', () => {
+  it('never rewrites a line on an externally managed invoice, even when fully linked and changed', () => {
+    expect(qbSyncDecision({
+      qbLineId: '1', qbInvoiceNumber: '100937', qbSyncStatus: 'synced', qbInvoiceExternal: true,
+      oldDescription: '2026 Kia Sorento Panthera #TG481851', newDescription: '2026 Kia Sorento Black #TG481851',
+    })).toBe('not_linked')
+  })
+  it('false/absent flag keeps the existing behaviour', () => {
+    const base = { qbLineId: '1', qbInvoiceNumber: '100931', qbSyncStatus: 'synced', oldDescription: 'a #K1', newDescription: 'b #K1' }
+    expect(qbSyncDecision({ ...base, qbInvoiceExternal: false })).toBe('update')
+    expect(qbSyncDecision(base)).toBe('update')
+  })
+})
