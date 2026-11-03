@@ -23,7 +23,10 @@ import { classifyPartWording } from '@/apps/quick-entry/service-interpret'
 import { partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
 import { listCatalogChoices } from '@/apps/quick-entry/service-match-db'
 import { validateLaborDecision, effectiveLaborStatus, type LaborDecision } from './labor-review'
-import { INVOICED_NEEDS_MANAGER_MSG } from './job-items-view'
+import { INVOICED_NEEDS_MANAGER_MSG, FLAT_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG } from './job-items-view'
+
+/** A removal an employee may not make (route → 403 needsManager). */
+export class PartNeedsManagerError extends Error { readonly needsManager = true }
 
 type PartRow = typeof jobParts.$inferSelect
 
@@ -65,6 +68,8 @@ export interface EstimatePartInput {
   /** Customer selling price per unit. Null = not priced yet (estimate shows it as unpriced). */
   sellPriceCents?: number | string | null
   entryText?: string | null
+  /** Client replay key (one per add attempt on the Job screen): a retry after a lost response returns the part already added. */
+  requestId?: string | null
 }
 
 async function ownPart(orderId: string, partId: string): Promise<PartRow> {
@@ -107,7 +112,7 @@ export async function addEstimatePart(orderId: string, input: EstimatePartInput,
     jobServiceId, jobLineItemId, status: 'needed', laborStatus: 'needs_review',
     createdBy: actor, updatedBy: actor,
   }).returning()
-  await event(orderId, 'part_added', actor, { partId: row.id, description, supply, quantity, unitCostCents, sellPriceCents, fitment, partNumber, entry: input.entryText ?? null })
+  await event(orderId, 'part_added', actor, { partId: row.id, description, supply, quantity, unitCostCents, sellPriceCents, fitment, partNumber, entry: input.entryText ?? null, ...(input.requestId ? { requestId: input.requestId } : {}) })
   if (supply === 'shop') await settlePricingAfterLineChange(est.id, sellPriceCents != null)
   await flagQbSyncNeededIfInvoiced(orderId, 'a part was added')
   return row
@@ -165,6 +170,11 @@ export interface PartRemovalOptions {
    * Managers/admins remove without this (their removal flags the linked invoice for sync, never voids it).
    */
   requireNotInvoiced?: boolean
+  /**
+   * Employee removals: refuse a part that carries its OWN installation line (labor_added) unless that labor is
+   * removed with it — the Job screen never removes labor, so the customer would be billed to install nothing.
+   */
+  refuseOwnLabor?: boolean
 }
 
 /** The persisted QuickBooks linkage says this Job is invoiced (or an invoice is in flight). */
@@ -220,6 +230,7 @@ export async function removeEstimatePartWithLabor(
   const db = getDb()
   const [p] = await db.select().from(jobParts).where(and(eq(jobParts.id, partId), eq(jobParts.serviceOrderId, orderId))).limit(1)
   if (!p) throw new Error('That part is no longer on this estimate. Refresh to see the current list.')
+  if (opts.refuseOwnLabor && p.status !== 'cancelled' && p.laborStatus === 'labor_added' && labor?.action !== 'remove') throw new PartNeedsManagerError(LABOR_NEEDS_MANAGER_MSG)
   if (labor?.action === 'remove') {
     const est = await getEstimateRow(orderId)
     const [svc] = est ? await db.select({ id: jobServices.id }).from(jobServices)
@@ -620,15 +631,41 @@ async function mirrorTextService(orderId: string, title: string, actor: string |
   return hit.id
 }
 
+/**
+ * Retry safety: a lost response + "tap again" must not charge twice. The add's audit event carries the client's
+ * requestId; a repeat of the same key returns the part that was already added (whatever its state now).
+ */
+async function replayedPart(orderId: string, requestId: string): Promise<PartRow | null> {
+  const [ev] = await getDb().select({ note: serviceOrderEvents.note }).from(serviceOrderEvents)
+    .where(and(eq(serviceOrderEvents.serviceOrderId, orderId), eq(serviceOrderEvents.eventType, 'part_added'),
+      sql`${serviceOrderEvents.note} LIKE ${'%"requestId":"' + requestId + '"%'}`)).limit(1)
+  if (!ev?.note) return null
+  let partId = ''
+  try { partId = String((JSON.parse(ev.note) as { partId?: unknown }).partId ?? '') } catch { return null }
+  if (!partId) return null
+  const [row] = await getDb().select().from(jobParts).where(and(eq(jobParts.id, partId), eq(jobParts.serviceOrderId, orderId))).limit(1)
+  return row ?? null
+}
+
 export async function addPartForJob(
   orderId: string, input: EstimatePartInput, actor: string | null, role: string | null, attachTo?: AttachTarget,
 ): Promise<PartRow> {
+  const requestId = typeof input.requestId === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(input.requestId) ? input.requestId : null
+  if (requestId) { const done = await replayedPart(orderId, requestId); if (done) return done }
   // Owner decision 2026-11-03: whoever adds the part on the Job screen enters the customer price, so a manager
   // never has to price it afterwards. The price must be an EXPLICIT amount (0 is allowed for a no-charge part;
   // a blank is never treated as $0) and is validated here for every role — the route forwards it as sent.
   // Our cost is internal and comes only from a manager/admin; anything else sent is dropped, not stored.
   const sellPriceCents = requiredPriceCents(input.sellPriceCents)
-  const unitCostCents = role === 'manager' || role === 'admin' ? input.unitCostCents : null
+  const isManager = role === 'manager' || role === 'admin'
+  const unitCostCents = isManager ? input.unitCostCents : null
+  if (!isManager) {
+    // A Job priced as ONE flat Work Price: a priced part line would itemize it (the agreed amount becomes a
+    // reference and every service needs its own price before invoicing). That is a manager's call, made
+    // knowingly from the Invoice Draft — never a side effect of an employee's add. Refused before any write.
+    const est = await getEstimateRow(orderId)
+    if (est?.priceMode === 'explicit_pretax' && est.explicitTotalCents != null) throw new Error(FLAT_NEEDS_MANAGER_MSG)
+  }
   let attachToServiceId: string | null = null
   if (typeof attachTo === 'string' && attachTo) {
     // Validate the service BEFORE any write so an invalid attach never leaves an orphan part behind.
@@ -639,8 +676,17 @@ export async function addPartForJob(
     attachToServiceId = await mirrorTextService(orderId, attachTo.title, actor)
   }
   // supply 'shop' = the part is sold to the customer, so its price × quantity lands on the estimate line once.
-  const part = await addEstimatePart(orderId, { ...input, supply: 'shop', sellPriceCents, unitCostCents }, actor)
-  if (attachToServiceId) await decidePartLabor(orderId, part.id, { action: 'included', serviceId: attachToServiceId }, actor, role)
+  const part = await addEstimatePart(orderId, { ...input, supply: 'shop', sellPriceCents, unitCostCents, requestId }, actor)
+  if (attachToServiceId) {
+    try {
+      await decidePartLabor(orderId, part.id, { action: 'included', serviceId: attachToServiceId }, actor, role)
+    } catch (err) {
+      // The attach failed AFTER the priced row was written (e.g. the service vanished in between): never leave a
+      // charged part behind that the user was told failed (a retry would then charge twice). Undo, then surface it.
+      await removeEstimatePart(orderId, part.id, actor).catch((e) => console.error('[parts] attach failed and the undo failed too', e))
+      throw err
+    }
+  }
   const [row] = await getDb().select().from(jobParts).where(eq(jobParts.id, part.id)).limit(1)
   return row ?? part
 }

@@ -15,18 +15,26 @@ import type { EstimateView, EstimatePartView, EstimateServiceView } from '@/apps
 export const INVOICED_NEEDS_MANAGER_MSG = 'This job has a QuickBooks invoice. Ask a manager to remove this part.'
 /** Shown to a non-manager who taps Remove service. */
 export const SERVICE_NEEDS_MANAGER_MSG = 'A manager is needed to remove a service from this job.'
+/** A non-manager tried to add a part to a Job priced as ONE flat Work Price (a priced line would itemize it). */
+export const FLAT_NEEDS_MANAGER_MSG = 'This job has a flat Work Price. Ask a manager to add this part.'
+/** A non-manager tried to remove a part that carries its own installation charge (a separate labor line). */
+export const LABOR_NEEDS_MANAGER_MSG = 'This part has its own installation charge. Ask a manager to remove it.'
+/** Appended to a manager's confirmation when the part has its own installation line — the Job screen never removes labor. */
+export const LABOR_STAYS_NOTE = 'Its separate installation charge stays on the job — remove it from the Invoice Draft if it no longer applies.'
 
 export interface ServiceWithParts extends EstimateServiceView { parts: EstimatePartView[] }
 export interface GroupedJobItems {
   services: ServiceWithParts[]
-  /** Live parts not attached to any service (or attached to a service that is no longer on the estimate). */
+  /** Live parts not attached to any service (or attached to a service that is no longer on the estimate / was declined). */
   standalone: EstimatePartView[]
 }
 
 export function groupJobItems(view: Pick<EstimateView, 'services' | 'parts'>): GroupedJobItems {
   const byService = new Map<string, EstimatePartView[]>()
   const standalone: EstimatePartView[] = []
-  const serviceIds = new Set(view.services.map((s) => s.id))
+  // A declined service isn't shown on the Job screen; a charged part attached to it is still billed, so it must
+  // stay visible (and removable) — it is listed under Parts instead of vanishing with the service.
+  const serviceIds = new Set(view.services.filter((s) => !s.declined).map((s) => s.id))
   for (const p of view.parts ?? []) {
     const covered = (p.laborStatus === 'included' || p.laborStatus === 'labor_added') && p.laborServiceId && serviceIds.has(p.laborServiceId)
     if (covered) (byService.get(p.laborServiceId!) ?? byService.set(p.laborServiceId!, []).get(p.laborServiceId!)!).push(p)

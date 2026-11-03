@@ -372,11 +372,19 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
       return { ok: false, status: 'error', invoiceId: inv.invoiceId, invoiceNumber: inv.invoiceNumber, error: msg }
     }
 
+    // (2c) The invoice was built from the locked read. An employee edit in the meantime was refused by its own
+    // guard; a MANAGER edit (unguarded) may have committed after the re-read, and while qb_status was still
+    // 'creating' with no invoice id nothing could flag it. Compare once more and keep "sync needed" on the record
+    // instead of clearing it — the invoice is never silently out of step with the Job.
+    const fullAfter = await getFullEstimate(orderId)
+    const changedDuringCreate = !fullAfter || estimateFingerprint(fullAfter) !== estimateFingerprint(fullLocked)
+    if (changedDuringCreate) logger.warn(APP, 'estimate_changed_during_create', { orderId, invoiceId: inv.invoiceId })
     const hash = contentHash(customer.qbCustomerId, payload, billEmail)
     await db.update(jobEstimates).set({
       qbInvoiceId: inv.invoiceId, qbInvoiceNumber: inv.invoiceNumber, qbSyncToken: inv.syncToken,
       qbStatus: 'created', qbContentHash: hash, qbSyncedAt: new Date(), qbLastRequestId: requestId,
-      qbSyncError: null, qbLinesFingerprint: inv.linesFingerprint, updatedAt: new Date(),
+      qbSyncError: changedDuringCreate ? 'QuickBooks sync needed — the estimate changed while the invoice was being created.' : null,
+      qbLinesFingerprint: inv.linesFingerprint, updatedAt: new Date(),
     }).where(eq(jobEstimates.id, est0.id))
     const emailNote = customer.emailConflict ? ' · EMAIL CONFLICT (review before Send)' : (billEmail ? '' : ' · no email (Send blocked)')
     const itemNote = fallbacks.length ? ` · Labor fallback: ${fallbacks.join(', ')}` : ''

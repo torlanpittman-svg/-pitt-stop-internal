@@ -9,16 +9,7 @@ import { estimateEnabled } from '@/apps/workflow/estimate'
 import { guidedJobItemsEnabled } from '@/apps/settings/db'
 import { addPartForJob, jobHasQbInvoice, removeEstimatePartWithLabor } from '@/apps/parts/estimate-parts'
 import { INVOICED_NEEDS_MANAGER_MSG } from '@/apps/parts/job-items-view'
-import {
-  listPartsForOrder,
-  addPart,
-  updatePart,
-  markOrdered,
-  receivePart,
-  recordReturn,
-  billPart,
-  type Part,
-} from '@/apps/parts/db'
+import { listPartsForOrder, addPart, updatePart, markOrdered, receivePart, recordReturn, billPart, type Part, cancelPart } from '@/apps/parts/db'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -53,10 +44,15 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
  * tracker record exactly as before (the previous interface has no price field for employees). Removal rules
  * below do not depend on the switch.
  */
-async function usesEstimatePath(orderId: string): Promise<boolean> {
+type OrderMeta = { source: string; serviceType: string | null; status: string }
+async function orderMeta(orderId: string): Promise<OrderMeta | null> {
+  const [o] = await getDb().select({ source: serviceOrders.source, serviceType: serviceOrders.serviceType, status: serviceOrders.status })
+    .from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
+  return (o as OrderMeta | undefined) ?? null
+}
+async function usesEstimatePath(order: OrderMeta | null): Promise<boolean> {
   if (!estimateEnabled() || !(await guidedJobItemsEnabled())) return false
-  const [o] = await getDb().select({ source: serviceOrders.source, serviceType: serviceOrders.serviceType }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
-  return !!o && !isDealerOrder(o)
+  return !!order && !isDealerOrder(order)
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -77,6 +73,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
   const body = await req.json().catch(() => ({})) as Record<string, unknown>
   const action = String(body.action ?? '')
+  const order = await orderMeta(id)
+  if (!order) return NextResponse.json({ ok: false, error: 'Job not found.' }, { status: 404 })
+  // A removed (soft-cancelled) Job is frozen: nothing is added to or taken off it — same 409 as the estimate route.
+  if (order.status === 'cancelled' && (action === 'add' || action === 'remove' || action === 'cancel')) {
+    return NextResponse.json({ ok: false, error: 'This job was removed. Parts can’t be added or removed.' }, { status: 409 })
+  }
 
   // Confirm any referenced part belongs to THIS order before mutating (no cross-order edits).
   const existing = await listPartsForOrder(id)
@@ -92,7 +94,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       case 'add': {
         const description = String(body.description ?? '').trim()
         if (!description) return NextResponse.json({ ok: false, error: 'A part description is required.' }, { status: 400 })
-        if (await usesEstimatePath(id)) {
+        if (await usesEstimatePath(order)) {
           // Job-screen guided flow (retail): the estimate's own part row + priced line, so customer
           // price × quantity reaches the total and Invoice Draft exactly once. Our cost is internal and
           // comes only from a manager. The customer price is entered by whoever adds the part (owner
@@ -106,6 +108,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
             description, partNumber: str(body.partNumber), supplier: str(body.supplier), quantity: posNum(body.quantity, 1),
             unitCostCents: manager ? intOrNull(body.unitCostCents) : null,
             sellPriceCents: amountInput(body.sellPriceCents),
+            requestId: typeof body.requestId === 'string' ? body.requestId : null,
           }, actorName, actor?.role ?? null, attachTo)
           partIdOut = row.id
           break
@@ -178,9 +181,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         // the removal statement itself re-checks under the estimate row lock, so an invoice Create that claims
         // the Job first always wins over a racing employee removal. Idempotent: an already-removed part is a no-op.
         if (target!.status === 'cancelled') break
+        // Dealer Jobs (isolated dealer QB, legacy tracker only): the plain record cancel, exactly as before — the
+        // retail estimate path (and its Work Board label clean-up) is never applied to a dealer Job.
+        if (isDealerOrder(order)) { await cancelPart(partId!, actorName); break }
         if (!manager) {
           if (await jobHasQbInvoice(id)) return NextResponse.json({ ok: false, error: INVOICED_NEEDS_MANAGER_MSG, needsManager: true }, { status: 403 })
-          await removeEstimatePartWithLabor(id, partId!, { action: 'keep' }, actorName, { requireNotInvoiced: true })
+          // A part with its OWN installation line (tire work) is refused for an employee too (refuseOwnLabor): the Job
+          // screen never removes labor, so the customer would be billed to install nothing — a manager decides that.
+          await removeEstimatePartWithLabor(id, partId!, { action: 'keep' }, actorName, { requireNotInvoiced: true, refuseOwnLabor: true })
           break
         }
         await removeEstimatePartWithLabor(id, partId!, { action: 'keep' }, actorName)
@@ -196,8 +204,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         return NextResponse.json({ ok: false, error: 'Unknown action.' }, { status: 400 })
     }
   } catch (err) {
-    // The atomic not-invoiced guard lost to a concurrent invoice Create (or the Job was invoiced meanwhile).
-    if (err instanceof Error && (err as { invoiced?: boolean }).invoiced === true) {
+    // The atomic not-invoiced guard lost to a concurrent invoice Create (or the Job was invoiced meanwhile), or the
+    // part carries its own installation line — either way: a manager is needed (403, not a generic failure).
+    if (err instanceof Error && ((err as { invoiced?: boolean }).invoiced === true || (err as { needsManager?: boolean }).needsManager === true)) {
       return NextResponse.json({ ok: false, error: err.message, needsManager: true }, { status: 403 })
     }
     // Validation from the estimate path ("Describe the part", "Enter a quantity…") is a 400 with its message.

@@ -6,7 +6,17 @@ import { describe, it, expect } from 'vitest'
 import type { EstimatePartView, EstimateServiceView } from '@/apps/workflow/estimate-db'
 import { groupJobItems, redactItemsView, removeServiceMessage, validatePartDraft, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG } from './job-items-view'
 
-const svc = (id: string, title = id): EstimateServiceView => ({ id, title, priceCents: 1000, suggestedCents: null, declined: false } as unknown as EstimateServiceView)
+const svc = (id: string, title = id, declined = false): EstimateServiceView => ({ id, title, priceCents: 1000, suggestedCents: null, declined } as unknown as EstimateServiceView)
+
+describe('groupJobItems — declined services', () => {
+  it('a charged part attached to a DECLINED service is listed under Parts (still billed, still removable), never hidden with the service', () => {
+    const view = { services: [svc('s1', 'Tint', true), svc('s2', 'Oil change')], parts: [part('p1', { laborStatus: 'included', laborServiceId: 's1' }), part('p2', { laborStatus: 'included', laborServiceId: 's2' })] }
+    const g = groupJobItems(view as unknown as Parameters<typeof groupJobItems>[0])
+    expect(g.standalone.map((p) => p.id)).toEqual(['p1'])
+    expect(g.services.find((s) => s.id === 's2')!.parts.map((p) => p.id)).toEqual(['p2'])
+    expect(g.services.find((s) => s.id === 's1')!.parts).toEqual([])
+  })
+})
 const part = (id: string, o: Partial<EstimatePartView> = {}): EstimatePartView => ({
   id, serviceId: `row-${id}`, description: id, fitment: null, partNumber: null, supplier: null, quantity: 1,
   unitCostCents: 400, sellPriceCents: 1200, lineCents: 1200, supply: 'shop', laborStatus: 'needs_review', laborServiceId: null, laborNote: null, invoiceText: id,

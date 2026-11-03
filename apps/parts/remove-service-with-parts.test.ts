@@ -26,11 +26,11 @@ vi.mock('@/apps/settings/db', () => ({
 }))
 
 import { seedProductionCatalog, CLEAR_TABLES } from '@/apps/quick-entry/catalog-fixture.test-support'
-import { getOrCreateEstimate, addService, setServicePrice, getEstimateView, getFullEstimate, getEstimateRow } from '@/apps/workflow/estimate-db'
+import { getOrCreateEstimate, addService, setServicePrice, setExplicitPrice, getEstimateView, getFullEstimate, getEstimateRow } from '@/apps/workflow/estimate-db'
 import { getOrderWithContext } from '@/apps/workflow/db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
-import { addEstimatePart, addPartForJob, attachedPartsOf, partIsCharged, removeServiceWithParts, removeEstimatePartWithLabor, updateEstimatePart, jobHasQbInvoice } from './estimate-parts'
-import { INVOICED_NEEDS_MANAGER_MSG } from './job-items-view'
+import { addEstimatePart, addPartForJob, attachedPartsOf, partIsCharged, removeServiceWithParts, removeEstimatePartWithLabor, updateEstimatePart, jobHasQbInvoice, decidePartLabor } from './estimate-parts'
+import { INVOICED_NEEDS_MANAGER_MSG, FLAT_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG } from './job-items-view'
 import { groupJobItems } from './job-items-view'
 import { serviceOrders, vehicles, jobParts, jobLineItems, jobEstimates, serviceOrderEvents } from '@/drizzle/schema'
 
@@ -184,6 +184,62 @@ describe('Add part to this service', () => {
     expect(g.services[0].parts).toEqual([])
     expect(g.standalone.map((p) => [p.description, p.lineCents])).toEqual([['Wiper blades', 2400]])
     expect((await getEstimateView(orderId)).workTotalCents).toBe(8400)
+  })
+})
+
+describe('Flat-priced Jobs and retries', () => {
+  it('an employee cannot add a part to a Job priced as one flat Work Price (it would itemize it) — refused before any write, with the message', async () => {
+    const { orderId, estimateId, ids } = await job([['Full detail', 0]])
+    await setExplicitPrice(estimateId, 25000, M)
+    await expect(addPartForJob(orderId, { description: 'Clip', sellPriceCents: 500 }, 'Employee', null, ids['Full detail'])).rejects.toThrow(FLAT_NEEDS_MANAGER_MSG)
+    await expect(addPartForJob(orderId, { description: 'Clip', sellPriceCents: 500 }, 'Employee', null, null)).rejects.toThrow(FLAT_NEEDS_MANAGER_MSG)
+    expect(await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, orderId))).toHaveLength(0)
+    const est = (await getEstimateRow(orderId))!
+    expect(est.priceMode).toBe('explicit_pretax'); expect(est.explicitTotalCents).toBe(25000)   // still flat, still $250
+    expect((await draft(orderId)).workPriceCents).toBe(25000)
+    // A manager may (existing behaviour: the Job itemizes, the agreed amount is kept as the reference).
+    const part = await addPartForJob(orderId, { description: 'Clip', sellPriceCents: 500 }, M, 'manager', ids['Full detail'])
+    expect(part.sellPriceCents).toBe(500)
+    expect((await getEstimateRow(orderId))!.priceMode).toBe('itemized')
+  })
+  it('the same requestId sent again (lost response → retry) returns the part already added and charges once', async () => {
+    const { orderId, ids } = await job([['Oil change', 6000]])
+    const key = 'c3f1a9d2-1111-2222-3333-000000000042'
+    const a = await addPartForJob(orderId, { description: 'Oil filter', quantity: 2, sellPriceCents: 1250, requestId: key }, 'Employee', null, ids['Oil change'])
+    const b = await addPartForJob(orderId, { description: 'Oil filter', quantity: 2, sellPriceCents: 1250, requestId: key }, 'Employee', null, ids['Oil change'])
+    expect(b.id).toBe(a.id)
+    expect((await db.select().from(jobParts).where(and(eq(jobParts.serviceOrderId, orderId), eq(jobParts.status, 'needed'))))).toHaveLength(1)
+    expect((await getEstimateView(orderId)).workTotalCents).toBe(6000 + 2500)
+    expect((await draft(orderId)).workPriceCents).toBe(8500)
+    expect(await events(orderId, 'part_added')).toHaveLength(1)
+    // A different key is a different add.
+    const c = await addPartForJob(orderId, { description: 'Oil filter', quantity: 2, sellPriceCents: 1250, requestId: 'c3f1a9d2-1111-2222-3333-000000000043' }, 'Employee', null, ids['Oil change'])
+    expect(c.id).not.toBe(a.id)
+    expect((await getEstimateView(orderId)).workTotalCents).toBe(6000 + 5000)
+  })
+})
+
+describe('A part with its own installation line (labor_added)', () => {
+  it('an employee is refused (the Job screen never removes labor); nothing changes; a manager removes the part and the labor line stays', async () => {
+    const { orderId, ids } = await job([['Oil change', 6000]])
+    const tire = await addPartForJob(orderId, { description: 'Tire', quantity: 4, sellPriceCents: 12000 }, M, 'manager', null)
+    await decidePartLabor(orderId, tire.id, { action: 'add_labor', cents: 8000 }, M, 'manager')   // its own Installation line
+    expect((await livePart(tire.id)).laborStatus).toBe('labor_added')
+    const totalBefore = (await getEstimateView(orderId)).workTotalCents
+    expect(totalBefore).toBe(6000 + 48000 + 8000)
+    await expect(removeEstimatePartWithLabor(orderId, tire.id, { action: 'keep' }, 'Employee', { requireNotInvoiced: true, refuseOwnLabor: true })).rejects.toThrow(LABOR_NEEDS_MANAGER_MSG)
+    expect((await livePart(tire.id)).status).toBe('needed')
+    expect((await getEstimateView(orderId)).workTotalCents).toBe(totalBefore)
+    // A plain attached / standalone part is still the employee's to remove under the same options.
+    const clip = await addPartForJob(orderId, { description: 'Clip', sellPriceCents: 300 }, 'Employee', null, ids['Oil change'])
+    await removeEstimatePartWithLabor(orderId, clip.id, { action: 'keep' }, 'Employee', { requireNotInvoiced: true, refuseOwnLabor: true })
+    expect((await livePart(clip.id)).status).toBe('cancelled')
+    // Manager: part gone, its separate installation line stays on the Job (to be reviewed on the Invoice Draft).
+    await removeEstimatePartWithLabor(orderId, tire.id, { action: 'keep' }, M)
+    expect((await livePart(tire.id)).status).toBe('cancelled')
+    const after = await getEstimateView(orderId)
+    expect(after.workTotalCents).toBe(6000 + 8000)
+    expect(after.services.some((s) => /install/i.test(s.title))).toBe(true)
   })
 })
 

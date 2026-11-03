@@ -1420,7 +1420,7 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
       {itemsEnabled ? (
         /* Services with their attached parts, standalone parts, add forms that open in place, confirmed removals.
            Amounts are the estimate's own (customer price × quantity, once) — nothing is priced here. */
-        <JobItemsPanel orderId={order.id} view={itemsView} textServices={services} manager={isManager} canEdit={itemsEditable}
+        <JobItemsPanel orderId={order.id} view={itemsView} textServices={services} manager={isManager} canEdit={itemsEditable} cancelled={order.status === 'cancelled'}
           partsVisible={identity.partsVisible} busy={items.busy}
           onAddService={() => { setAddError(null); setAddingService(true) }}
           onOpenService={items.openService} onOpenPart={items.openPart}

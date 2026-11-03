@@ -129,6 +129,20 @@ describe('employee part removal racing retail invoice Create', () => {
     expect((await estRow(estimateId)).qbInvoiceId).toBe('INV-1')
   })
 
+  it('a MANAGER removal (unguarded) committing after Create’s re-read → the invoice is created from the locked read and the record is flagged “sync needed”, never cleared', async () => {
+    const { orderId, estimateId, part } = await jobWithPart()
+    // Create's re-read UNDER the lock has returned WITH the part; a manager then removes it before the QB write lands.
+    est.after = async (n) => { if (n === 2) await removeEstimatePartWithLabor(orderId, part.id, { action: 'keep' }, 'Manager') }
+    const r = await createRetailQBInvoice({ orderId, actor: 'Manager' })
+    expect(r).toMatchObject({ ok: true, status: 'created' })
+    expect(invoiceTotalCents()).toBe(6000 + 2500)                       // invoiced as read (never silently altered)
+    expect((await partRow(part.id)).status).toBe('cancelled')             // the manager's removal stands
+    const e = await estRow(estimateId)
+    expect(e.qbInvoiceId).toBe('INV-1'); expect(e.qbStatus).toBe('created')
+    expect(e.qbSyncError).toMatch(/sync needed/i)                         // the gap is on the record for Sync
+    expect((await getEstimateView(orderId)).workTotalCents).toBe(6000)
+  })
+
   it('removal attempted after Create claimed the row (qb_status=creating) → refused by the removal’s own guard; the invoice bills the part', async () => {
     const { orderId, estimateId, part } = await jobWithPart()
     let refusedWith: string | null = null

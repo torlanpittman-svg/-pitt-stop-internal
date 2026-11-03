@@ -21,7 +21,10 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { EstimateViewData, PartView, ServiceView } from './estimate/save-feedback'
 import { partPrice, servicePrice } from './estimate/ItemRows'
-import { groupJobItems, removeServiceMessage, validatePartDraft, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG, type DraftProblem, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
+import { groupJobItems, removeServiceMessage, validatePartDraft, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG, LABOR_STAYS_NOTE, type DraftProblem, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
+
+/** One key per add attempt: a retry of the same open form replays instead of charging twice (the server keeps it on the audit event). */
+const newRequestId = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`)
 
 const BTN = 'rounded-xl font-semibold text-sm px-4 min-h-11 active:opacity-80 disabled:opacity-40'
 const INPUT = 'w-full bg-gray-950 border border-gray-700 text-white rounded-xl px-3 py-2.5 text-base placeholder:text-gray-500 focus:border-blue-500 focus:outline-none disabled:opacity-60'
@@ -47,6 +50,8 @@ export interface JobItemsPanelProps {
   /** Tap-to-edit sheets are available (manager, retail Job, estimate layer on, Job not cancelled). */
   canEdit: boolean
   partsVisible: boolean
+  /** The Job was removed (soft-cancelled): nothing can be added or taken off it (the server refuses too). */
+  cancelled?: boolean
   /** An estimate edit is in flight elsewhere on the page. */
   busy: boolean
   onAddService: () => void
@@ -71,7 +76,8 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
   const [flash, setFlash] = useState<string | null>(null)
   const [localBusy, setLocalBusy] = useState(false)
   const inFlight = useRef(false)
-  const busy = p.busy || localBusy
+  const frozen = p.cancelled === true
+  const busy = p.busy || localBusy || frozen
 
   useEffect(() => {
     if (!notice) return
@@ -109,7 +115,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
   const unmirrored = p.textServices.filter((n) => !mirrored.has(n.trim().toLowerCase()))
 
   // ── adds ──
-  const addPart = async (f: PartInput, attach: Adding & { kind: 'service' } | null) => {
+  const addPart = async (f: PartInput, attach: Adding & { kind: 'service' } | null, requestId: string) => {
     // The customer price is entered by whoever adds the part (owner decision 2026-11-03) and is required —
     // the form has already validated it; the server validates it again for every role. Our cost is sent
     // only by a manager (the server drops it otherwise).
@@ -118,6 +124,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
       sellPriceCents: f.priceCents, unitCostCents: manager ? f.costCents : undefined,
       laborServiceId: attach?.serviceId ?? null,
       laborServiceTitle: attach && !attach.serviceId ? attach.title : null,
+      requestId,
     })
     if (!out.ok) { setError(out.error); return }
     setAdding(null); setFlash(out.partId)
@@ -139,6 +146,8 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
     // Once the Job has a QuickBooks invoice, an employee can't remove a part — say so right away (the server
     // enforces the same rule from the persisted linkage, and atomically against a concurrent invoice Create).
     if (!manager && view?.qbInvoiced) { setConfirm({ kind: 'message', id: part.id, text: INVOICED_NEEDS_MANAGER_MSG }); return }
+    // A part with its own installation line: the Job screen never removes labor, so a manager decides (server rule too).
+    if (!manager && part.laborStatus === 'labor_added') { setConfirm({ kind: 'message', id: part.id, text: LABOR_NEEDS_MANAGER_MSG }); return }
     setConfirm({ kind: 'part', id: part.id })
   }
   const askRemoveService = (s: ServiceView) => {
@@ -179,7 +188,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
       </div>
       {confirm?.kind === 'part' && confirm.id === part.id && (
         <ConfirmBox label={`Confirm removing ${part.description}`}
-          text={attachedTo ? `Remove “${part.description}” from “${attachedTo.title}” and the job total?` : `Remove “${part.description}” from this job?`}>
+          text={(attachedTo ? `Remove “${part.description}” from “${attachedTo.title}” and the job total?` : `Remove “${part.description}” from this job?`) + (part.laborStatus === 'labor_added' ? ` ${LABOR_STAYS_NOTE}` : '')}>
           <button type="button" disabled={busy} onClick={() => void removePart(part, attachedTo)} className={`${BTN} bg-red-600 text-white`}>Remove part</button>
           <button type="button" disabled={busy} onClick={() => setConfirm(null)} className={`${BTN} border border-gray-600 text-gray-200`}>Keep part</button>
         </ConfirmBox>
@@ -198,8 +207,9 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
       <section aria-labelledby="job-services-heading">
         <div className="flex items-center justify-between mb-2">
           <h2 id="job-services-heading" className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Services</h2>
-          <button type="button" onClick={p.onAddService} className="text-blue-400 text-sm font-semibold active:opacity-70 min-h-11">+ Add Service</button>
+          <button type="button" onClick={p.onAddService} disabled={frozen} className="text-blue-400 text-sm font-semibold active:opacity-70 min-h-11 disabled:opacity-40">+ Add Service</button>
         </div>
+        {frozen && <p className="mb-2 text-amber-300/90 text-sm">This job was removed — nothing can be added or taken off it.</p>}
         {grouped.services.length + unmirrored.length === 0 ? (
           <p className="text-gray-600 text-sm italic">No services yet — tap ＋ Add Service.</p>
         ) : (
@@ -238,7 +248,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                   {(notice?.at === s.id || notice?.at === textKey(s.title)) && <Notice text={notice.text} />}
                   {attachOpen && (
                     <AddPartForm key={`svc-${s.id}`} manager={manager} busy={busy} error={error} attachedTo={s.title}
-                      onSubmit={(f) => void addPart(f, adding as Adding & { kind: 'service' })} onCancel={() => { setAdding(null); setError(null) }} />
+                      onSubmit={(f, rid) => void addPart(f, adding as Adding & { kind: 'service' }, rid)} onCancel={() => { setAdding(null); setError(null) }} />
                   )}
 
                   {confirm?.kind === 'service' && confirm.id === s.id && (
@@ -276,7 +286,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                 {notice?.at === textKey(name) && <Notice text={notice.text} />}
                 {attachOpen && (
                   <AddPartForm key={`text-${name}`} manager={manager} busy={busy} error={error} attachedTo={name}
-                    onSubmit={(f) => void addPart(f, adding as Adding & { kind: 'service' })} onCancel={() => { setAdding(null); setError(null) }} />
+                    onSubmit={(f, rid) => void addPart(f, adding as Adding & { kind: 'service' }, rid)} onCancel={() => { setAdding(null); setError(null) }} />
                 )}
                 {confirm?.kind === 'text-service' && confirm.name === name && (
                   <ConfirmBox label={`Confirm removing ${name}`} text={`Remove “${name}” from this job?`}>
@@ -304,7 +314,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
           </h2>
           {adding?.kind === 'job' ? (
             <AddPartForm key="job" manager={manager} busy={busy} error={error} attachedTo={null}
-              onSubmit={(f) => void addPart(f, null)} onCancel={() => { setAdding(null); setError(null) }} />
+              onSubmit={(f, rid) => void addPart(f, null, rid)} onCancel={() => { setAdding(null); setError(null) }} />
           ) : (
             <button type="button" disabled={busy} onClick={() => { setError(null); setConfirm(null); setAdding({ kind: 'job' }) }}
               className="w-full rounded-xl bg-blue-600 text-white font-semibold py-3 min-h-12 active:bg-blue-700 disabled:opacity-40">
@@ -362,8 +372,9 @@ function ConfirmBox({ label, text, tone = 'danger', children }: { label: string;
  */
 function AddPartForm({ manager, busy, error, attachedTo, onSubmit, onCancel }: {
   manager: boolean; busy: boolean; error: string | null; attachedTo: string | null
-  onSubmit: (f: PartInput) => void; onCancel: () => void
+  onSubmit: (f: PartInput, requestId: string) => void; onCancel: () => void
 }) {
+  const requestId = useRef(newRequestId())   // stable for this open form: a retry replays, a new form gets a new key
   const ids = useId()
   const [f, setF] = useState<PartDraft>({ name: '', cost: '', price: '', partNumber: '', quantity: '1' })
   const [problem, setProblem] = useState<DraftProblem | null>(null)
@@ -389,7 +400,7 @@ function AddPartForm({ manager, busy, error, attachedTo, onSubmit, onCancel }: {
       return
     }
     setProblem(null)
-    onSubmit(v.input)
+    onSubmit(v.input, requestId.current)
   }
   const flag = (field: DraftProblem['field']) => problem?.field === field ? 'border-amber-400 ring-1 ring-amber-400' : ''
   // The validation message sits right under the field it is about (visible even with the keyboard up).

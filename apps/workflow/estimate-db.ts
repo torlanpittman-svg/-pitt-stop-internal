@@ -387,7 +387,9 @@ async function itemizeFromFlat(estimateId: string): Promise<void> {
 export async function seedSuggestedPrices(estimateId: string): Promise<void> {
   const [est] = await getDb().select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
   if (!est || est.priceMode !== 'itemized' || est.explicitTotalCents != null) return
-  const services = await listUserServices(estimateId)
+  // A part's own row (kind='part') is not a service the manager priced — it must neither count as "already
+  // engaged" nor be seeded.
+  const services = (await listUserServices(estimateId)).filter((s) => s.kind !== 'part')
   if (services.length === 0) return
   for (const s of services) if (await getServicePriceLine(s.id)) return   // already engaged → stop
   // By each line's catalog identity — never its editable name (see suggestedPricesForCatalogIds).
@@ -1043,7 +1045,7 @@ export async function removeEstimateService(orderId: string, serviceId: string, 
       UPDATE job_parts SET labor_status = 'needs_review', labor_service_id = NULL,
         clarifies_service_id = CASE WHEN clarifies_service_id IN (SELECT id FROM del) THEN NULL ELSE clarifies_service_id END,
         labor_decided_by = ${actor}, labor_decided_at = now(), updated_at = now()
-      WHERE labor_service_id IN (SELECT id FROM del) AND labor_status IN ('labor_added', 'included')
+      WHERE labor_service_id IN (SELECT id FROM del) AND labor_status IN ('labor_added', 'included') AND status <> 'cancelled'
       RETURNING id
     ), ev_reopen AS (
       INSERT INTO service_order_events(service_order_id, event_type, employee_name, note)
