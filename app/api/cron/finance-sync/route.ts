@@ -23,6 +23,7 @@ import { getDb } from '@/platform/db'
 import { finSyncRuns } from '@/apps/finance/schema'
 import { eq } from 'drizzle-orm'
 import { logger } from '@/platform/logger'
+import { appDatabaseHost } from '@/platform/db-url'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -42,7 +43,7 @@ export async function GET(req: Request) {
     const [active] = await db.select({ n: sql<number>`count(*)::int` }).from(finPlaidItems).where(sql`status='active'`)
     const [accts] = await db.select({ n: sql<number>`count(*)::int` }).from(finPlaidAccounts)
     const [txs] = await db.select({ n: sql<number>`count(*)::int` }).from(finTransactions)
-    const host = (process.env.DATABASE_URL ?? '').replace(/^.*@/, '').replace(/\/.*$/, '')
+    const host = appDatabaseHost()
     return NextResponse.json({ ok: true, diag: { dbHost: host, plaidItems: items.n, activeItems: active.n, plaidAccounts: accts.n, transactions: txs.n } })
   }
 

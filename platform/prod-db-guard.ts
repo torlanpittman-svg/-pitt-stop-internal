@@ -25,14 +25,24 @@
 // classifyDbTarget). Overridable so the marker isn't hard-coded forever.
 const PROD_HOST_MARKER = process.env.PROD_DB_HOST_MARKER || 'ep-morning-base-adq5h6rq'
 
+/**
+ * The connection string the guard classifies. The app connects with APP_DATABASE_URL (platform/db-url.ts);
+ * legacy local scripts may still construct a client from DATABASE_URL. This is CLASSIFICATION ONLY (which
+ * host would be written to) — it never selects which credential the app connects with, and an absent or
+ * unknown target stays fail-closed (writes blocked).
+ */
+export function guardedDbUrl(env: Record<string, string | undefined> = process.env): string | undefined {
+  return env.APP_DATABASE_URL?.trim() || env.DATABASE_URL || undefined
+}
+
 export function isKnownProdUrl(url: string | undefined | null): boolean {
   return !!url && url.includes(PROD_HOST_MARKER)
 }
 
 /** Parse the Neon endpoint id (the part that differs between branches) from a connection URL. */
 export function dbEndpointId(url: string | undefined | null): string {
-  try { return new URL(url ?? '').hostname.split('.')[0] || '(invalid DATABASE_URL)' }
-  catch { return '(invalid DATABASE_URL)' }
+  try { return new URL(url ?? '').hostname.split('.')[0] || '(invalid database URL)' }
+  catch { return '(invalid database URL)' }
 }
 
 export type DbClassification = 'production' | 'declared-nonprod' | 'unknown'
@@ -54,7 +64,7 @@ function dbEnvDeclaration(env: Record<string, string | undefined>): string | nul
  * explicitly declared non-prod via DATABASE_ENV AND is not the known prod host.
  */
 export function classifyDbTarget(env: Record<string, string | undefined> = process.env): DbClassification {
-  if (isKnownProdUrl(env.DATABASE_URL)) return 'production'
+  if (isKnownProdUrl(guardedDbUrl(env))) return 'production'
   const decl = dbEnvDeclaration(env)
   if (decl && PROD_DECLARATIONS.has(decl)) return 'production'
   if (decl && NONPROD_DECLARATIONS.has(decl)) return 'declared-nonprod'
@@ -66,7 +76,7 @@ export function describeDbTarget(env: Record<string, string | undefined> = proce
   endpoint: string; classification: DbClassification; deployed: boolean; writesBlocked: boolean
 } {
   return {
-    endpoint: dbEndpointId(env.DATABASE_URL),
+    endpoint: dbEndpointId(guardedDbUrl(env)),
     classification: classifyDbTarget(env),
     deployed: !!env.VERCEL,
     writesBlocked: prodWriteGuardActive(env),
@@ -108,17 +118,17 @@ export function isWriteSql(sql: string): boolean {
 
 export const PROD_WRITE_BLOCK_MESSAGE =
   'Blocked a WRITE to the PRODUCTION database from a local process.\n' +
-  '.env.local DATABASE_URL points at the production Neon branch, so local writes would mutate ' +
-  'real business data. Point DATABASE_URL at a dedicated dev branch for write-testing, or set ' +
+  '.env.local APP_DATABASE_URL points at the production Neon branch, so local writes would mutate ' +
+  'real business data. Point APP_DATABASE_URL at a dedicated dev branch for write-testing, or set ' +
   'ALLOW_PROD_DB_WRITES=1 for a deliberate, acknowledged operation. (Reads are allowed.)'
 
 /** Classification-aware block message — names the endpoint and why it was blocked. */
 export function blockWriteMessage(env: Record<string, string | undefined> = process.env): string {
-  const ep = dbEndpointId(env.DATABASE_URL)
+  const ep = dbEndpointId(guardedDbUrl(env))
   const cls = classifyDbTarget(env)
   if (cls === 'production') {
     return `Blocked a WRITE to the PRODUCTION database (endpoint ${ep}) from a local process. ` +
-      'Set ALLOW_PROD_DB_WRITES=1 for a deliberate, acknowledged operation, or point DATABASE_URL ' +
+      'Set ALLOW_PROD_DB_WRITES=1 for a deliberate, acknowledged operation, or point APP_DATABASE_URL ' +
       'at a dev branch and set DATABASE_ENV=development. (Reads are allowed.)'
   }
   // unknown: fail-closed — treated as PRODUCTION until positively declared otherwise.

@@ -3,11 +3,12 @@ import { getDb } from '@/platform/db'
 import { demoStore } from '@/platform/demo-store'
 import { invoiceBatches, mockQbInvoices, vehicleEntries } from '@/apps/vehicle-entry/schema'
 import type { QBLine } from './qb/types'
+import { hasAppDatabase } from '@/platform/db-url'
 
 const BATCH_COL  = 'invoice_batches'
 const MOCK_QB_COL = 'mock_qb_invoices'
 
-function isDemoMode() { return !process.env.DATABASE_URL }
+function isDemoMode() { return !hasAppDatabase() }
 
 // ── Invoice Batches ─────────────────────────────────────────────────────────
 

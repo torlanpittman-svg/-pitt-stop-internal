@@ -3,13 +3,14 @@ import { getDb } from '@/platform/db'
 import { demoStore } from '@/platform/demo-store'
 import { vehicleEntries, dealerships } from '@/apps/vehicle-entry/schema'
 import type { VehicleEntryStatus } from './types'
+import { hasAppDatabase } from '@/platform/db-url'
 export type { VehicleEntryStatus }
 
 const COLLECTION     = 'vehicle_entries'
 const DEALER_COL     = 'dealerships'
 
 function isDemoMode(): boolean {
-  return !process.env.DATABASE_URL
+  return !hasAppDatabase()
 }
 
 // ── Dealership ─────────────────────────────────────────────────────────────

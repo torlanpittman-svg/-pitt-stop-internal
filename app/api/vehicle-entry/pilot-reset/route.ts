@@ -3,13 +3,14 @@ import { getDb } from '@/platform/db'
 import { vehicleEntries, mockQbInvoices, invoiceBatches } from '@/apps/vehicle-entry/schema'
 import { eq, and } from 'drizzle-orm'
 import { logger } from '@/platform/logger'
+import { hasAppDatabase } from '@/platform/db-url'
 
 export const dynamic = 'force-dynamic'
 
 const LOG = 'api:vehicle-entry:pilot-reset'
 
 export async function POST() {
-  if (!process.env.DATABASE_URL) {
+  if (!hasAppDatabase()) {
     return NextResponse.json({ error: 'Not available in demo mode' }, { status: 400 })
   }
 

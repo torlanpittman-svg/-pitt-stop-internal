@@ -3,7 +3,7 @@
  * Run: node_modules/.bin/tsx scripts/db-target.ts
  *
  * Reports (NEVER printing credentials):
- *   - the connection ENDPOINT id parsed from DATABASE_URL (this is what differs between Neon
+ *   - the connection ENDPOINT id parsed from APP_DATABASE_URL (this is what differs between Neon
  *     branches — compare it to your intended dev branch endpoint),
  *   - whether that host is the KNOWN PRODUCTION endpoint and whether the write-guard is active,
  *   - a LIVE read-only round-trip (SELECT) that proves we actually reach that host — the absence
@@ -22,14 +22,19 @@ for (const l of readFileSync('.env.local', 'utf8').split('\n')) {
 }
 
 function hostEndpoint(url: string | undefined): string {
-  try { return new URL(url ?? '').hostname.split('.')[0] || '(invalid DATABASE_URL)' }
-  catch { return '(invalid DATABASE_URL)' }
+  try { return new URL(url ?? '').hostname.split('.')[0] || '(invalid APP_DATABASE_URL)' }
+  catch { return '(invalid APP_DATABASE_URL)' }
+}
+function urlRole(url: string | undefined): string {
+  try { return new URL(url ?? '').username || '(none)' } catch { return '(invalid)' }
 }
 
 ;(async () => {
   const { neon } = await import('@neondatabase/serverless')
   const { isKnownProdUrl, prodWriteGuardActive, guardNeonClient, classifyDbTarget } = await import('@/platform/prod-db-guard')
-  const url = process.env.DATABASE_URL
+  const { appDatabaseUrl } = await import('@/platform/db-url')
+  const url = appDatabaseUrl() // the ONLY variable the app reads; no DATABASE_URL fallback
+  if (!url) { console.log('APP_DATABASE_URL is not set — the app would refuse to start (no fallback to DATABASE_URL by design).'); process.exitCode = 1; return }
 
   const expected = process.argv[2]
   const endpoint = hostEndpoint(url)
@@ -38,6 +43,8 @@ function hostEndpoint(url: string | undefined): string {
   const guard = prodWriteGuardActive()
   console.log('── Effective database target ───────────────────────────────')
   console.log('  endpoint id      :', hostEndpoint(url), '   (compare to your dev-branch endpoint)')
+  console.log('  app role (URL)   :', urlRole(url), '   (expect pitt_stop_app; neondb_owner here is WRONG)')
+  console.log('  owner var        :', process.env.DATABASE_URL_OWNER ? 'DATABASE_URL_OWNER present (migrations only)' : '(DATABASE_URL_OWNER unset — migrations unavailable here)')
   console.log('  DATABASE_ENV     :', process.env.DATABASE_ENV ?? '(unset)')
   console.log('  classification   :', classification.toUpperCase(),
     classification === 'unknown' ? '(undeclared → treated as PRODUCTION / fail-closed)' : '')
@@ -73,7 +80,7 @@ function hostEndpoint(url: string | undefined): string {
   console.log('  PLAID_ENV              :', process.env.PLAID_ENV ?? '(unset)', '  (read-only ingestion)')
   console.log('  SMS infra              : none in this codebase')
   console.log('────────────────────────────────────────────────────────────')
-  if (prod) console.log('⚠ This is PRODUCTION. Point DATABASE_URL at a dev branch before write testing.')
+  if (prod) console.log('⚠ This is PRODUCTION. Point APP_DATABASE_URL at a dev branch before write testing.')
   else if (connected && expected) console.log('✓ LIVE connection verified to the exact requested development endpoint.')
   else if (connected) console.log('Endpoint reached; supply the expected endpoint as an argument for positive dev verification.')
 })()

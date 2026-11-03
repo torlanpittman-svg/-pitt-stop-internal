@@ -1,6 +1,6 @@
 /**
  * In-memory demo store for local development without a real database.
- * Activated automatically when DATABASE_URL is not set.
+ * Activated automatically when APP_DATABASE_URL is not set (see platform/db-url.ts).
  * Uses a process-level global so the Map survives across Next.js
  * module re-evaluations in dev mode (common with Turbopack/HMR).
  *

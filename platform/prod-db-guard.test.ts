@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { isWriteSql, isKnownProdUrl, prodWriteGuardActive, classifyDbTarget, queryTextFrom, guardNeonClient } from './prod-db-guard'
+import { isWriteSql, isKnownProdUrl, prodWriteGuardActive, classifyDbTarget, queryTextFrom, guardNeonClient, guardedDbUrl } from './prod-db-guard'
 
 describe('isWriteSql', () => {
   it('treats reads as reads', () => {
@@ -67,6 +67,22 @@ describe('prodWriteGuardActive', () => {
   })
   it('is inert with an explicit override', () => {
     expect(prodWriteGuardActive({ DATABASE_URL: prod, ALLOW_PROD_DB_WRITES: '1' })).toBe(false)
+  })
+})
+
+describe('guardedDbUrl (classification source)', () => {
+  const PROD = 'postgresql://pitt_stop_app:p@ep-morning-base-adq5h6rq.neon.tech/db'
+  const DEV = 'postgresql://pitt_stop_app:p@ep-dev-xyz.neon.tech/db'
+  it('classifies the APP connection first — a stale owner DATABASE_URL cannot mask the real target', () => {
+    expect(guardedDbUrl({ APP_DATABASE_URL: PROD, DATABASE_URL: DEV })).toBe(PROD)
+    expect(classifyDbTarget({ APP_DATABASE_URL: PROD, DATABASE_URL: DEV, DATABASE_ENV: 'development' })).toBe('production')
+    expect(prodWriteGuardActive({ APP_DATABASE_URL: PROD, DATABASE_URL: DEV, DATABASE_ENV: 'development' })).toBe(true)
+  })
+  it('still classifies legacy DATABASE_URL-only scripts (fail-closed when neither is set)', () => {
+    expect(guardedDbUrl({ DATABASE_URL: PROD })).toBe(PROD)
+    expect(classifyDbTarget({ DATABASE_URL: PROD })).toBe('production')
+    expect(guardedDbUrl({})).toBeUndefined()
+    expect(prodWriteGuardActive({})).toBe(true)
   })
 })
 

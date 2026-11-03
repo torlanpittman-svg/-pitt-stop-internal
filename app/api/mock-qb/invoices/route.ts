@@ -5,10 +5,11 @@ import { createMockQBInvoice, nextMockInvoiceNumber } from '@/apps/vehicle-entry
 import { desc } from 'drizzle-orm'
 import { demoStore } from '@/platform/demo-store'
 import type { MockQBInvoiceRow } from '@/apps/vehicle-entry/invoice-db'
+import { hasAppDatabase } from '@/platform/db-url'
 
 export const dynamic = 'force-dynamic'
 
-function isDemoMode() { return !process.env.DATABASE_URL }
+function isDemoMode() { return !hasAppDatabase() }
 
 export async function GET() {
   if (isDemoMode()) {

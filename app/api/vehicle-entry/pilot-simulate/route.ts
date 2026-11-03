@@ -10,6 +10,7 @@ import { NextResponse } from 'next/server'
 import { createVehicleEntry, updateVehicleEntry, listDealerships } from '@/apps/vehicle-entry/db'
 import { getActiveBatchForDealership, getMockQBInvoice } from '@/apps/vehicle-entry/invoice-db'
 import { syncEntryToInvoice } from '@/apps/vehicle-entry/invoice-sync'
+import { hasAppDatabase } from '@/platform/db-url'
 
 export const dynamic = 'force-dynamic'
 
@@ -27,7 +28,7 @@ const VEHICLES = [
 ]
 
 export async function POST() {
-  if (!process.env.DATABASE_URL) {
+  if (!hasAppDatabase()) {
     return NextResponse.json({ error: 'Simulation requires a real database' }, { status: 400 })
   }
 

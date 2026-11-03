@@ -11,6 +11,7 @@ import { encrypt } from './crypto'
 import { getEnvironment } from './config'
 import type { TokenResponse } from './oauth'
 import type { QBEnvironment } from './config'
+import { hasAppDatabase } from '@/platform/db-url'
 
 export interface QBConnectionRow {
   id:                    string
@@ -30,8 +31,8 @@ export interface QBConnectionRow {
 }
 
 function requireDb() {
-  if (!process.env.DATABASE_URL) {
-    throw new Error('DATABASE_URL is not configured; cannot store QuickBooks connection.')
+  if (!hasAppDatabase()) {
+    throw new Error('APP_DATABASE_URL is not configured; cannot store QuickBooks connection.')
   }
   return getDb()
 }
@@ -82,7 +83,7 @@ export async function saveConnection(params: {
 
 /** The active connection for the current environment, or null. */
 export async function getActiveConnection(): Promise<QBConnectionRow | null> {
-  if (!process.env.DATABASE_URL) return null
+  if (!hasAppDatabase()) return null
   const db  = getDb()
   const env = getEnvironment()
   const [row] = await db
@@ -96,7 +97,7 @@ export async function getActiveConnection(): Promise<QBConnectionRow | null> {
 
 /** The most recent connection row regardless of status (for status display). */
 export async function getLatestConnection(): Promise<QBConnectionRow | null> {
-  if (!process.env.DATABASE_URL) return null
+  if (!hasAppDatabase()) return null
   const db  = getDb()
   const env = getEnvironment()
   const [row] = await db

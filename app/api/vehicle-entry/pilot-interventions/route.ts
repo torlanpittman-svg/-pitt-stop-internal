@@ -2,11 +2,12 @@ import { NextResponse } from 'next/server'
 import { getDb } from '@/platform/db'
 import { pilotInterventions } from '@/apps/vehicle-entry/schema'
 import { desc } from 'drizzle-orm'
+import { hasAppDatabase } from '@/platform/db-url'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET() {
-  if (!process.env.DATABASE_URL) {
+  if (!hasAppDatabase()) {
     return NextResponse.json({ interventions: [] })
   }
   const db   = getDb()
@@ -18,7 +19,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  if (!process.env.DATABASE_URL) {
+  if (!hasAppDatabase()) {
     return NextResponse.json({ error: 'Not available in demo mode' }, { status: 400 })
   }
 
