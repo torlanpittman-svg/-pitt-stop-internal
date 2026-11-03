@@ -1185,8 +1185,10 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
   // the SAME authoritative estimate view the Invoice page uses (services with their attached parts, the
   // customer's amounts); managers/admins additionally get the tap-to-edit sheets and the same save path.
   // A confirmed change refetches the Job (services/parts split) and the server props (Total price).
-  // Dealer Jobs (isolated QB) and the estimate-off case keep the plain list + parts tracker below.
-  const itemsEnabled = !isDealerOrder(order) && identity.estimateEnabled
+  // Dealer Jobs (isolated QB), the estimate-off case and the rollout switch OFF keep the plain list + parts
+  // tracker below (the previous Job screen). The switch is interface-only: the server's money/permission rules
+  // apply either way, and flipping it never undoes saved data.
+  const itemsEnabled = !isDealerOrder(order) && identity.estimateEnabled && identity.guidedItems
   const itemsEditable = isManager && itemsEnabled && order.status !== 'cancelled'
   const items = useJobItems({
     orderId: order.id, enabled: itemsEnabled, canEdit: itemsEditable, vehicleLabel: vehicleName, customerLabel: title,

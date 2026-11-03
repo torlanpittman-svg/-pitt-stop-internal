@@ -15,7 +15,7 @@ import { partsVisibleFor } from '@/apps/parts/visibility'
 import { identityEnabled } from '@/apps/workflow/identity'
 import { completionEnabled } from '@/apps/workflow/completion'
 import { estimateEnabled } from '@/apps/workflow/estimate'
-import { completionInvoiceEnabled } from '@/apps/settings/db'
+import { completionInvoiceEnabled, guidedJobItemsEnabled } from '@/apps/settings/db'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -34,6 +34,8 @@ export async function GET(req: Request) {
     completionInvoiceEnabled: await completionInvoiceEnabled(),
     // Reversible rollout gate: managers/admins always see parts; employees only once the flag is on.
     partsVisible: partsVisibleFor(isManagerRole(actor?.role)),
+    // Rollout switch for the guided Services + Parts Job screen (interface only; server rules apply regardless).
+    guidedItems: await guidedJobItemsEnabled(),
   })
 }
 

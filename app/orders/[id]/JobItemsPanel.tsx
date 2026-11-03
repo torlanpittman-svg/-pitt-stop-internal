@@ -27,7 +27,9 @@ const BTN = 'rounded-xl font-semibold text-sm px-4 min-h-11 active:opacity-80 di
 const INPUT = 'w-full bg-gray-950 border border-gray-700 text-white rounded-xl px-3 py-2.5 text-base placeholder:text-gray-500 focus:border-blue-500 focus:outline-none disabled:opacity-60'
 const LINK = 'min-h-11 inline-flex items-center px-1 text-sm font-semibold active:opacity-70 disabled:opacity-40'
 
-type Adding = null | { kind: 'job' } | { kind: 'service'; serviceId: string; title: string }
+/** serviceId null = a Job service that only exists as Work Board text (older Jobs); the server mirrors it on add. */
+type Adding = null | { kind: 'job' } | { kind: 'service'; serviceId: string | null; title: string }
+const textKey = (title: string) => `text:${title.trim().toLowerCase()}`
 type Confirm = null
   | { kind: 'part'; id: string }
   | { kind: 'service'; id: string }
@@ -115,10 +117,11 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
       action: 'add', description: f.name, partNumber: f.partNumber, quantity: f.quantity,
       sellPriceCents: f.priceCents, unitCostCents: manager ? f.costCents : undefined,
       laborServiceId: attach?.serviceId ?? null,
+      laborServiceTitle: attach && !attach.serviceId ? attach.title : null,
     })
     if (!out.ok) { setError(out.error); return }
     setAdding(null); setFlash(out.partId)
-    setNotice(attach ? { text: `${f.name} added to ${attach.title}.`, at: attach.serviceId } : { text: `${f.name} added to this job.`, at: 'job' })
+    setNotice(attach ? { text: `${f.name} added to ${attach.title}.`, at: attach.serviceId ?? textKey(attach.title) } : { text: `${f.name} added to this job.`, at: 'job' })
     onChanged()
   }
 
@@ -232,7 +235,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                     <button type="button" disabled={busy} onClick={() => askRemoveService(s)} className={`${LINK} text-red-400`}>Remove service</button>
                   </div>
 
-                  {notice?.at === s.id && <Notice text={notice.text} />}
+                  {(notice?.at === s.id || notice?.at === textKey(s.title)) && <Notice text={notice.text} />}
                   {attachOpen && (
                     <AddPartForm key={`svc-${s.id}`} manager={manager} busy={busy} error={error} attachedTo={s.title}
                       onSubmit={(f) => void addPart(f, adding as Adding & { kind: 'service' })} onCancel={() => { setAdding(null); setError(null) }} />
@@ -252,17 +255,29 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                 </li>
               )
             })}
-            {/* A Job service the estimate hasn't picked up yet (no estimate on this Job yet). */}
-            {unmirrored.map((name, i) => (
-              <li key={`u${i}`} className="px-4 py-3">
+            {/* A Job service that exists only as Work Board text (older Jobs / no estimate yet). Opening the Job never
+                creates its estimate row; adding a part to it does (the same mirror Add Service runs), then it shows above. */}
+            {unmirrored.map((name, i) => {
+              const attachOpen = adding?.kind === 'service' && adding.serviceId === null && adding.title === name
+              return (
+              <li key={`u${i}`} data-service={textKey(name)} className="px-4 py-3">
                 <div className="flex items-start justify-between gap-3">
                   <span className="min-w-0 flex-1 font-semibold text-white text-base leading-snug break-words min-h-11 flex items-center">{name}</span>
                   <span className="shrink-0 min-h-11 flex items-center text-gray-400 text-sm">Not priced</span>
                 </div>
-                <div className="flex justify-end">
+                <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3">
+                  {partsVisible ? (
+                    <button type="button" disabled={busy || attachOpen} onClick={() => { setError(null); setConfirm(null); setAdding({ kind: 'service', serviceId: null, title: name }) }}
+                      className={`${LINK} text-blue-400`}>+ Add part to this service</button>
+                  ) : <span />}
                   <button type="button" disabled={busy} onClick={() => { setError(null); if (!manager) setConfirm({ kind: 'message', id: `text:${name}`, text: SERVICE_NEEDS_MANAGER_MSG }); else setConfirm({ kind: 'text-service', name }) }}
                     className={`${LINK} text-red-400`}>Remove service</button>
                 </div>
+                {notice?.at === textKey(name) && <Notice text={notice.text} />}
+                {attachOpen && (
+                  <AddPartForm key={`text-${name}`} manager={manager} busy={busy} error={error} attachedTo={name}
+                    onSubmit={(f) => void addPart(f, adding as Adding & { kind: 'service' })} onCancel={() => { setAdding(null); setError(null) }} />
+                )}
                 {confirm?.kind === 'text-service' && confirm.name === name && (
                   <ConfirmBox label={`Confirm removing ${name}`} text={`Remove “${name}” from this job?`}>
                     <button type="button" disabled={busy} onClick={() => void removeTextService(name)} className={`${BTN} bg-red-600 text-white`}>Remove service</button>
@@ -275,7 +290,8 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                   </ConfirmBox>
                 )}
               </li>
-            ))}
+              )
+            })}
           </ul>
         )}
       </section>

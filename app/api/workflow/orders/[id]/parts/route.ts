@@ -6,6 +6,7 @@ import { employeeAuthorizedFromRequest, shopActorFromRequest, isManagerRole } fr
 import { partsVisibleFor } from '@/apps/parts/visibility'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { estimateEnabled } from '@/apps/workflow/estimate'
+import { guidedJobItemsEnabled } from '@/apps/settings/db'
 import { addPartForJob, jobHasQbInvoice, removeEstimatePartWithLabor } from '@/apps/parts/estimate-parts'
 import { INVOICED_NEEDS_MANAGER_MSG } from '@/apps/parts/job-items-view'
 import {
@@ -46,9 +47,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   return NextResponse.json({ ok: true, parts: redact(parts, manager), manager, visible: true })
 }
 
-/** Retail Jobs with the estimate layer on use the authoritative estimate path (one row, one charge). */
+/**
+ * Retail Jobs with the estimate layer on AND the guided Job screen switched on use the authoritative estimate
+ * path for adds (one row, one charge, customer price required). With the switch off, adds go to the legacy
+ * tracker record exactly as before (the previous interface has no price field for employees). Removal rules
+ * below do not depend on the switch.
+ */
 async function usesEstimatePath(orderId: string): Promise<boolean> {
-  if (!estimateEnabled()) return false
+  if (!estimateEnabled() || !(await guidedJobItemsEnabled())) return false
   const [o] = await getDb().select({ source: serviceOrders.source, serviceType: serviceOrders.serviceType }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
   return !!o && !isDealerOrder(o)
 }
@@ -92,7 +98,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           // comes only from a manager. The customer price is entered by whoever adds the part (owner
           // decision 2026-11-03) and is REQUIRED — addPartForJob rejects a missing, negative or invalid
           // amount for every role, so it is forwarded as sent rather than coerced here.
-          const attachTo = typeof body.laborServiceId === 'string' && body.laborServiceId ? body.laborServiceId : null
+          // Attach to an estimate service (id) or to a Job service that only exists as Work Board text (title —
+          // older Jobs / no estimate yet): the estimate row is created inside this add, never on a read.
+          const attachTo = typeof body.laborServiceId === 'string' && body.laborServiceId ? body.laborServiceId
+            : typeof body.laborServiceTitle === 'string' && body.laborServiceTitle.trim() ? { title: body.laborServiceTitle.trim() } : null
           const row = await addPartForJob(id, {
             description, partNumber: str(body.partNumber), supplier: str(body.supplier), quantity: posNum(body.quantity, 1),
             unitCostCents: manager ? intOrNull(body.unitCostCents) : null,

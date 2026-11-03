@@ -15,9 +15,9 @@ import { randomUUID } from 'node:crypto'
 import { getDb } from '@/platform/db'
 import { and, eq, ne, sql } from 'drizzle-orm'
 import { jobParts } from './schema'
-import { jobServices, jobLineItems, serviceOrderEvents } from '@/apps/workflow/schema'
+import { jobServices, jobLineItems, serviceOrderEvents, serviceOrders } from '@/apps/workflow/schema'
 import {
-  getOrCreateEstimate, getEstimateRow, addService, addLine, updateLine, removeLine, setServicePrice, settlePricingAfterLineChange, flagQbSyncNeededIfInvoiced, removeEstimateService, estimateHasQbInvoice, EstimateInvoicedError,
+  getOrCreateEstimate, getEstimateRow, addService, addLine, updateLine, removeLine, setServicePrice, settlePricingAfterLineChange, flagQbSyncNeededIfInvoiced, removeEstimateService, estimateHasQbInvoice, EstimateInvoicedError, promoteTextServices, recomputeEstimate,
 } from '@/apps/workflow/estimate-db'
 import { classifyPartWording } from '@/apps/quick-entry/service-interpret'
 import { partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
@@ -588,8 +588,40 @@ export async function partIsCharged(part: Pick<PartRow, 'jobLineItemId'>): Promi
  * service never sits in labor review. A standalone part keeps the normal open review.
  * Prices are only ever what the caller passes — the route strips them for non-managers.
  */
+/** Where a Job-screen add attaches: an estimate service id, or a Job service that only exists as Work Board text. */
+export type AttachTarget = string | { title: string } | null | undefined
+
+/**
+ * A Job service that exists only as Work Board text (older Jobs, or a Job with no estimate yet) gets its
+ * estimate row HERE — inside the explicit add — with the SAME idempotent mirror Add Service runs
+ * (promoteTextServices: dedupes by title, never re-creates a live part, never touches existing rows or
+ * prices), then the row is found by title. Opening the Job never does this (GET /items is read-only).
+ */
+async function mirrorTextService(orderId: string, title: string, actor: string | null): Promise<string> {
+  const STALE = 'That service is no longer on this job. Refresh to see the current list.'
+  const key = title.trim().toLowerCase()
+  if (!key) throw new Error(STALE)
+  const db = getDb()
+  const findRow = async (estimateId: string) => {
+    const rows = await db.select({ id: jobServices.id, title: jobServices.title }).from(jobServices)
+      .where(and(eq(jobServices.jobEstimateId, estimateId), ne(jobServices.source, 'system'), ne(jobServices.kind, 'part')))
+    return rows.find((r) => r.title.trim().toLowerCase() === key) ?? null
+  }
+  // Already mirrored (the row simply wasn't in the client's view yet): nothing to prepare.
+  const existing = await getEstimateRow(orderId)
+  if (existing) { const hit = await findRow(existing.id); if (hit) return hit.id }
+  // Refuse a title the Job doesn't list BEFORE creating an estimate or any row (stale client / tampering).
+  const [order] = await db.select({ services: serviceOrders.services }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
+  if (!(order?.services ?? []).some((s) => s.trim().toLowerCase() === key)) throw new Error(STALE)
+  const est = await getOrCreateEstimate(orderId, actor)
+  if ((await promoteTextServices(est.id, orderId)) > 0) await recomputeEstimate(est.id)
+  const hit = await findRow(est.id)
+  if (!hit) throw new Error(STALE)
+  return hit.id
+}
+
 export async function addPartForJob(
-  orderId: string, input: EstimatePartInput, actor: string | null, role: string | null, attachToServiceId?: string | null,
+  orderId: string, input: EstimatePartInput, actor: string | null, role: string | null, attachTo?: AttachTarget,
 ): Promise<PartRow> {
   // Owner decision 2026-11-03: whoever adds the part on the Job screen enters the customer price, so a manager
   // never has to price it afterwards. The price must be an EXPLICIT amount (0 is allowed for a no-charge part;
@@ -597,10 +629,14 @@ export async function addPartForJob(
   // Our cost is internal and comes only from a manager/admin; anything else sent is dropped, not stored.
   const sellPriceCents = requiredPriceCents(input.sellPriceCents)
   const unitCostCents = role === 'manager' || role === 'admin' ? input.unitCostCents : null
-  if (attachToServiceId) {
+  let attachToServiceId: string | null = null
+  if (typeof attachTo === 'string' && attachTo) {
     // Validate the service BEFORE any write so an invalid attach never leaves an orphan part behind.
     const coverable = await coverableServiceIds(orderId)
-    if (!coverable.has(attachToServiceId)) throw new Error('That service is no longer on this job. Refresh to see the current list.')
+    if (!coverable.has(attachTo)) throw new Error('That service is no longer on this job. Refresh to see the current list.')
+    attachToServiceId = attachTo
+  } else if (attachTo && typeof attachTo === 'object') {
+    attachToServiceId = await mirrorTextService(orderId, attachTo.title, actor)
   }
   // supply 'shop' = the part is sold to the customer, so its price × quantity lands on the estimate line once.
   const part = await addEstimatePart(orderId, { ...input, supply: 'shop', sellPriceCents, unitCostCents }, actor)

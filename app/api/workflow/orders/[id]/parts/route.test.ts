@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   actor: null as { key: string; name: string; role: string } | null,
   authorized: true,
   estimateOn: true,
+  guidedOn: true,
   order: { source: 'quick_entry', serviceType: 'retail' } as { source: string; serviceType: string } | null,
   parts: [] as Array<{ id: string; status: string; jobLineItemId: string | null }>,
   invoiced: false,
@@ -25,6 +26,7 @@ vi.mock('@/apps/auth/employee-guard', () => ({
 }))
 vi.mock('@/apps/parts/visibility', () => ({ partsVisibleFor: () => true }))
 vi.mock('@/apps/workflow/estimate', () => ({ estimateEnabled: () => h.estimateOn }))
+vi.mock('@/apps/settings/db', () => ({ guidedJobItemsEnabled: async () => h.guidedOn }))
 vi.mock('@/apps/workflow/fees', () => ({ isDealerOrder: (o: { source: string }) => o.source === 'dealer_checkin' }))
 vi.mock('@/platform/db', () => ({
   getDb: () => ({ select: () => ({ from: () => ({ where: () => ({ limit: async () => (h.order ? [h.order] : []) }) }) }) }),
@@ -46,7 +48,7 @@ const post = (body: unknown) => POST(new Request('http://x/api/workflow/orders/o
 const MANAGER = { key: 'tony', name: 'Tony', role: 'manager' }
 
 beforeEach(() => {
-  h.actor = null; h.authorized = true; h.estimateOn = true; h.order = { source: 'quick_entry', serviceType: 'retail' }
+  h.actor = null; h.authorized = true; h.estimateOn = true; h.guidedOn = true; h.order = { source: 'quick_entry', serviceType: 'retail' }
   h.parts = [{ id: 'p1', status: 'needed', jobLineItemId: 'line-1' }]; h.invoiced = false; h.addThrows = null; h.removeThrows = null
   h.calls = { addPartForJob: [], addPart: [], removeWithLabor: [], hasInvoice: 0 }
 })
@@ -97,6 +99,21 @@ describe('add', () => {
     h.estimateOn = false
     await post({ action: 'add', description: 'Mirror' })
     expect(h.calls.addPartForJob).toHaveLength(0); expect(h.calls.addPart).toHaveLength(1)
+  })
+  it('a service that only exists as Work Board text (older Job) is attached BY TITLE — the server mirrors it inside the add, never on a read', async () => {
+    await post({ action: 'add', description: 'Pads', sellPriceCents: 4500, laborServiceTitle: '  Brake job ' })
+    expect(h.calls.addPartForJob[0][4]).toEqual({ title: 'Brake job' })
+    // An estimate service id wins when both are sent; a blank title is a job-level add.
+    await post({ action: 'add', description: 'Pads', sellPriceCents: 4500, laborServiceId: 'svc-1', laborServiceTitle: 'Brake job' })
+    await post({ action: 'add', description: 'Pads', sellPriceCents: 4500, laborServiceTitle: '   ' })
+    expect(h.calls.addPartForJob[1][4]).toBe('svc-1'); expect(h.calls.addPartForJob[2][4]).toBeNull()
+  })
+  it('rollout switch OFF: adds go to the legacy tracker record exactly as before (previous interface), never the guided path', async () => {
+    h.guidedOn = false
+    const res = await post({ action: 'add', description: 'Mirror', quantity: 2 })
+    expect(res.status).toBe(200)
+    expect(h.calls.addPartForJob).toHaveLength(0); expect(h.calls.addPart).toHaveLength(1)
+    expect((await res.json()).partId).toBe('legacy-part')
   })
   it('a blank description is a 400; a service-layer validation error is a 400 with its message', async () => {
     expect((await post({ action: 'add', description: '  ' })).status).toBe(400)
@@ -153,6 +170,16 @@ describe('remove — one rule for every caller', () => {
     const res = await post({ action: 'remove', partId: 'p1' })
     expect(res.status).toBe(200)
     expect(h.calls.removeWithLabor).toHaveLength(0)
+  })
+  it('rollout switch OFF changes nothing about removal: the invoiced-Job rule still stands for an employee', async () => {
+    h.guidedOn = false; h.invoiced = true
+    const res = await post({ action: 'remove', partId: 'p1' })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ needsManager: true, error: 'This job has a QuickBooks invoice. Ask a manager to remove this part.' })
+    expect(h.calls.removeWithLabor).toHaveLength(0)
+    h.invoiced = false
+    expect((await post({ action: 'remove', partId: 'p1' })).status).toBe(200)
+    expect(h.calls.removeWithLabor[0][4]).toEqual({ requireNotInvoiced: true })
   })
   it('a part that is not on THIS order is a 404 (no cross-order removal)', async () => {
     h.actor = MANAGER

@@ -26,7 +26,7 @@ vi.mock('@/apps/settings/db', () => ({
 }))
 
 import { seedProductionCatalog, CLEAR_TABLES } from '@/apps/quick-entry/catalog-fixture.test-support'
-import { getOrCreateEstimate, addService, setServicePrice, getEstimateView, getFullEstimate } from '@/apps/workflow/estimate-db'
+import { getOrCreateEstimate, addService, setServicePrice, getEstimateView, getFullEstimate, getEstimateRow } from '@/apps/workflow/estimate-db'
 import { getOrderWithContext } from '@/apps/workflow/db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { addEstimatePart, addPartForJob, attachedPartsOf, partIsCharged, removeServiceWithParts, removeEstimatePartWithLabor, updateEstimatePart, jobHasQbInvoice } from './estimate-parts'
@@ -184,6 +184,69 @@ describe('Add part to this service', () => {
     expect(g.services[0].parts).toEqual([])
     expect(g.standalone.map((p) => [p.description, p.lineCents])).toEqual([['Wiper blades', 2400]])
     expect((await getEstimateView(orderId)).workTotalCents).toBe(8400)
+  })
+})
+
+describe('Older Jobs — a service that exists only as Work Board text', () => {
+  /** A retail Job the way intake leaves it: services as text, NO estimate at all. */
+  async function textJob(services: string[]) {
+    const [v] = await db.insert(vehicles).values({ make: 'Ford', model: 'F-150', year: '2017' }).returning()
+    const [o] = await db.insert(serviceOrders).values({ orderNumber: `GT-${++seq}`, vehicleId: v.id, source: 'quick_entry', serviceType: 'retail', status: 'in_progress', customerName: 'Older Customer', services }).returning()
+    return o.id
+  }
+  const liveServices = async (estimateId: string) => (await db.select().from(schema.jobServices).where(eq(schema.jobServices.jobEstimateId, estimateId))).filter((s) => s.kind !== 'part' && s.source !== 'system')
+
+  it('opening the Job (the items view) creates nothing — no estimate, no rows; the text services still display', async () => {
+    const orderId = await textJob(['Oil change', 'Brake job'])
+    const view = await getEstimateView(orderId)
+    expect(view.exists).toBe(false)
+    expect(await getEstimateRow(orderId)).toBeNull()
+    expect(await getEstimateView(orderId)).toEqual(view)   // a refresh is the same read
+    expect(await getEstimateRow(orderId)).toBeNull()
+  })
+  it('attaching a priced part BY TITLE creates the estimate and mirrors the service once (the same mirror Add Service runs); a repeat attaches again without a duplicate row', async () => {
+    const orderId = await textJob(['Oil change', 'Brake job'])
+    const part = await addPartForJob(orderId, { description: 'Front pads', quantity: 1, sellPriceCents: 4500 }, 'Employee', null, { title: 'Brake job' })
+    const est = (await getEstimateRow(orderId))!
+    expect(est).toBeTruthy()
+    const svcs = await liveServices(est.id)
+    // BOTH text services were mirrored (the one canonical mirror), each exactly once.
+    expect(svcs.map((s) => s.title).sort()).toEqual(['Brake job', 'Oil change'])
+    const brake = svcs.find((s) => s.title === 'Brake job')!
+    expect(part.laborServiceId).toBe(brake.id); expect(part.laborStatus).toBe('included'); expect(part.sellPriceCents).toBe(4500)
+    expect(await partIsCharged(part)).toBe(true)
+
+    // Again, by a differently-cased / padded title: same row, second part, still no duplicate service.
+    const part2 = await addPartForJob(orderId, { description: 'Rotors', quantity: 2, sellPriceCents: 9000 }, 'Employee', null, { title: ' brake JOB ' })
+    expect(part2.laborServiceId).toBe(brake.id)
+    expect((await liveServices(est.id)).map((s) => s.title).sort()).toEqual(['Brake job', 'Oil change'])
+    expect((await getEstimateRow(orderId))!.id).toBe(est.id)   // one estimate
+    const g = groupJobItems(await getEstimateView(orderId))
+    expect(g.services.find((s) => s.title === 'Brake job')!.parts.map((p) => [p.description, p.lineCents])).toEqual([['Front pads', 4500], ['Rotors', 18000]])
+    expect((await draft(orderId)).serviceBreakdown.filter((l) => /pads|Rotors/.test(l.title)).map((l) => l.cents)).toEqual([4500, 18000])   // each charge once
+  })
+  it('on a Job that already has priced services, a text-only service is mirrored without touching the existing rows or prices', async () => {
+    const { orderId, estimateId, ids } = await job([['Oil change', 6000]])
+    await db.update(serviceOrders).set({ services: ['Oil change', 'Headlight restore'] }).where(eq(serviceOrders.id, orderId))
+    const before = await getEstimateView(orderId)
+    expect(before.services.map((s) => s.title)).toEqual(['Oil change'])   // not mirrored by a read
+    const part = await addPartForJob(orderId, { description: 'Restore kit', sellPriceCents: 2500 }, 'Employee', null, { title: 'Headlight restore' })
+    const svcs = await liveServices(estimateId)
+    expect(svcs.map((s) => s.title).sort()).toEqual(['Headlight restore', 'Oil change'])
+    expect(svcs.find((s) => s.title === 'Oil change')!.id).toBe(ids['Oil change'])
+    const after = await getEstimateView(orderId)
+    expect(after.services.find((s) => s.title === 'Oil change')!.priceCents).toBe(6000)
+    expect(part.laborServiceId).toBe(svcs.find((s) => s.title === 'Headlight restore')!.id)
+    // A title the Job already has a row for attaches directly (no mirror run, no duplicate).
+    const p3 = await addPartForJob(orderId, { description: 'Filter', sellPriceCents: 800 }, 'Employee', null, { title: 'oil change' })
+    expect(p3.laborServiceId).toBe(ids['Oil change'])
+    expect((await liveServices(estimateId)).length).toBe(2)
+  })
+  it('a title the Job does not list is refused BEFORE anything is written (no estimate, no rows, no part)', async () => {
+    const orderId = await textJob(['Oil change'])
+    await expect(addPartForJob(orderId, { description: 'Pads', sellPriceCents: 4500 }, 'Employee', null, { title: 'Brake job' })).rejects.toThrow(/no longer on this job/)
+    expect(await getEstimateRow(orderId)).toBeNull()
+    expect(await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, orderId))).toHaveLength(0)
   })
 })
 

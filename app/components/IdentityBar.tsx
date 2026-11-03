@@ -16,9 +16,11 @@ export interface IdentityState {
   completionInvoiceEnabled: boolean
   /** Reversible rollout gate: are the parts controls + work-board badge shown to this viewer yet? */
   partsVisible: boolean
+  /** Rollout switch: the guided Services + Parts Job screen (off = the previous Job screen). */
+  guidedItems: boolean
 }
 
-const EMPTY: IdentityState = { enabled: false, actor: null, elevated: false, elevatedUntil: null, effectiveRole: 'employee', minutes: 10, completionEnabled: false, estimateEnabled: false, completionInvoiceEnabled: false, partsVisible: false }
+const EMPTY: IdentityState = { enabled: false, actor: null, elevated: false, elevatedUntil: null, effectiveRole: 'employee', minutes: 10, completionEnabled: false, estimateEnabled: false, completionInvoiceEnabled: false, partsVisible: false, guidedItems: false }
 
 /** Fetches identity state once (+ on refresh); auto-refreshes when elevation expires. */
 export function useIdentity() {

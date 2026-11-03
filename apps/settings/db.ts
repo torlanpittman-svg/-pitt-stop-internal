@@ -61,6 +61,13 @@ export const SETTINGS: Record<string, SettingDef> = {
   retail_payment_mappings:  { key: 'retail_payment_mappings',  type: 'json',   def: '{}',               env: 'RETAIL_PAYMENT_MAPPINGS' },
   // CFO Financial Command Center (Phase 1). Default OFF — /admin/finance ships dark. Read-only
   // toward QuickBooks; admin-only; no money movement.
+  // Guided Services + Parts on the Job screen (2026-11-03): services with their attached parts, in-place add
+  // with a required customer price, name·amount·Remove rows. Default OFF = the previous Job screen (plain
+  // Services list + parts tracker, WAITING ON PARTS badge). INTERFACE ONLY: the server-side money and
+  // permission rules (required price on the guided add path, employee removal only until a QuickBooks
+  // invoice exists, manager-only service removal) stay in force whichever interface is shown, and turning
+  // it off never undoes saved parts, prices or removals. Flip via /admin/settings or env GUIDED_JOB_ITEMS_ENABLED.
+  guided_job_items_enabled: { key: 'guided_job_items_enabled', type: 'bool',  def: false,              env: 'GUIDED_JOB_ITEMS_ENABLED' },
   finance_enabled:         { key: 'finance_enabled',         type: 'bool',   def: false,              env: 'FINANCE_ENABLED' },
   // CFO reserve policy — intentionally UNCONFIGURED at $0 until the owner sets a real policy.
   // reserves_configured stays false so Safe-to-Spend discloses that the buffer is not yet trustworthy.
@@ -265,6 +272,11 @@ export async function retailQbCombineRecoveryEnabled(): Promise<boolean> {
 export async function retailQbPaymentEnabled(): Promise<boolean> {
   const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'retail_qb_payment_enabled'))
   return resolve(SETTINGS.retail_qb_payment_enabled, rows[0]?.value) as boolean
+}
+/** Guided Services + Parts Job screen rollout switch. Default OFF (previous interface). Interface only — see SETTINGS. */
+export async function guidedJobItemsEnabled(): Promise<boolean> {
+  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'guided_job_items_enabled'))
+  return resolve(SETTINGS.guided_job_items_enabled, rows[0]?.value) as boolean
 }
 /** Raw Record Payment mapping config (parsed + validated by apps/quickbooks/retail-payment.ts). */
 export async function retailPaymentMappingsRaw(): Promise<unknown> {
