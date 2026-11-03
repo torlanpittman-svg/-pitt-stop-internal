@@ -11,7 +11,8 @@
 import type { EstimateView, EstimatePartView, EstimateServiceView } from '@/apps/workflow/estimate-db'
 
 /** Shown to a non-manager who taps Remove on a part that carries a live customer charge. */
-export const NEEDS_MANAGER_MSG = 'This part is on the customer’s invoice. Ask a manager to remove it.'
+/** Employee tried to remove a part from a Job that has a QuickBooks invoice (persisted linkage — not price/draft/send). */
+export const INVOICED_NEEDS_MANAGER_MSG = 'This job has a QuickBooks invoice. Ask a manager to remove this part.'
 /** Shown to a non-manager who taps Remove service. */
 export const SERVICE_NEEDS_MANAGER_MSG = 'A manager is needed to remove a service from this job.'
 

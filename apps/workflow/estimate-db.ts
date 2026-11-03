@@ -46,6 +46,39 @@ async function logJobEvent(orderId: string, eventType: string, actor: string | n
   await getDb().insert(serviceOrderEvents).values({ serviceOrderId: orderId, eventType, employeeName: actor, note })
 }
 
+/** qb_status values from which a retail QuickBooks invoice can still be CREATED: none exists and none is in flight. */
+export const UNINVOICED_QB_STATUSES = ['none', 'error'] as const
+
+/**
+ * Does this Job have a QuickBooks invoice? The PERSISTED linkage is the only authority: an invoice id, or a
+ * qb_status that means one exists / is being created / is being combined / is shared ('linked'). Never price,
+ * Invoice Draft lines or email/send status. An 'error' row with no invoice id is a failed Create that may be
+ * retried — not invoiced.
+ */
+export function estimateHasQbInvoice(est: Pick<EstimateRow, 'qbInvoiceId' | 'qbStatus'> | null | undefined): boolean {
+  if (!est) return false
+  return !!est.qbInvoiceId || !(UNINVOICED_QB_STATUSES as readonly string[]).includes(est.qbStatus ?? 'none')
+}
+
+/** A removal refused because the Job has (or is getting) a QuickBooks invoice. `invoiced` lets routes map it to 403. */
+export class EstimateInvoicedError extends Error {
+  readonly invoiced = true
+  constructor(message: string) { super(message); this.name = 'EstimateInvoicedError' }
+}
+
+export interface RemoveServiceOptions {
+  /**
+   * Refuse when the Job has a QuickBooks invoice or one is in flight — decided INSIDE the statement that removes the
+   * line: a guard UPDATE on the job_estimates row (the same row the invoice Create compare-and-sets) takes the row
+   * lock and re-evaluates its WHERE against the committed row, so this removal is ordered strictly before or after a
+   * concurrent Create — never interleaved with it. (neon-http has no transactions; one conditional statement is atomic.)
+   */
+  requireNotInvoiced?: boolean
+  /** The refusal message (defaults to a generic one). */
+  invoicedMessage?: string
+}
+const INVOICED_DEFAULT_MSG = 'This job has a QuickBooks invoice. Ask a manager to make this change.'
+
 export async function getEstimateRow(orderId: string): Promise<EstimateRow | null> {
   const [e] = await getDb().select().from(jobEstimates).where(eq(jobEstimates.serviceOrderId, orderId)).limit(1)
   return e ?? null
@@ -969,8 +1002,9 @@ export async function renameService(orderId: string, serviceId: string, rawTitle
  * invoice is never touched — only flagged "sync needed". Throws (nothing changed) if the service
  * isn't a user service on THIS order's estimate, so a stale page or double-tap can't fake a save.
  */
-export async function removeEstimateService(orderId: string, serviceId: string, actor: string | null): Promise<{ title: string; pricingImpactCents: number | null; qbSyncNeeded: boolean }> {
+export async function removeEstimateService(orderId: string, serviceId: string, actor: string | null, opts: RemoveServiceOptions = {}): Promise<{ title: string; pricingImpactCents: number | null; qbSyncNeeded: boolean }> {
   const db = getDb()
+  const guarded = opts.requireNotInvoiced === true
   const est = await getEstimateRow(orderId)
   const services = est ? await listUserServices(est.id) : []
   const service = services.find((s) => s.id === serviceId)
@@ -983,8 +1017,15 @@ export async function removeEstimateService(orderId: string, serviceId: string, 
   const key = norm(service.title)
 
   const res = await db.execute(sql`
-    WITH del AS (
+    WITH guard AS (
+      -- Row lock + re-check on the estimate row (see RemoveServiceOptions). Unguarded callers always pass.
+      UPDATE job_estimates SET updated_at = now()
+       WHERE id = ${est.id}::uuid
+         AND (${!guarded}::boolean OR (qb_invoice_id IS NULL AND qb_status IN ('none', 'error')))
+      RETURNING id
+    ), del AS (
       DELETE FROM job_services WHERE id = ${serviceId}::uuid AND job_estimate_id = ${est.id}::uuid AND source <> 'system'
+        AND EXISTS (SELECT 1 FROM guard)
       RETURNING id, title
     ), upd_order AS (
       UPDATE service_orders so SET updated_at = now(), services = COALESCE((
@@ -1025,7 +1066,11 @@ export async function removeEstimateService(orderId: string, serviceId: string, 
     RETURNING id
   `)
   const rows = (res as unknown as { rows?: unknown[] }).rows ?? (res as unknown as unknown[])
-  if (!Array.isArray(rows) || rows.length === 0) throw new Error('That service is no longer on this estimate. Refresh to see the current list.')
+  if (!Array.isArray(rows) || rows.length === 0) {
+    // Nothing was removed. Guarded: say why when the Job is (now) invoiced — the guard refused it atomically.
+    if (guarded && estimateHasQbInvoice(await getEstimateRow(orderId))) throw new EstimateInvoicedError(opts.invoicedMessage ?? INVOICED_DEFAULT_MSG)
+    throw new Error('That service is no longer on this estimate. Refresh to see the current list.')
+  }
 
   await recomputeEstimate(est.id)   // itemized → remaining lines set the total; flat → unchanged
   const qbSyncNeeded = await flagQbSyncNeededIfInvoiced(orderId, 'a service was removed after the invoice was created')

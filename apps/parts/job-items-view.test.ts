@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { EstimatePartView, EstimateServiceView } from '@/apps/workflow/estimate-db'
-import { groupJobItems, redactItemsView, removeServiceMessage, validatePartDraft, NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG } from './job-items-view'
+import { groupJobItems, redactItemsView, removeServiceMessage, validatePartDraft, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG } from './job-items-view'
 
 const svc = (id: string, title = id): EstimateServiceView => ({ id, title, priceCents: 1000, suggestedCents: null, declined: false } as unknown as EstimateServiceView)
 const part = (id: string, o: Partial<EstimatePartView> = {}): EstimatePartView => ({
@@ -62,8 +62,7 @@ describe('removeServiceMessage', () => {
       .toBe('Remove “Brakes” and its 2 attached parts (“Pads”, “Rotors”)? All of their prices will be removed from the job total.')
   })
   it('the needs-a-manager messages say what to do, in plain words', () => {
-    expect(NEEDS_MANAGER_MSG).toMatch(/manager/i)
-    expect(NEEDS_MANAGER_MSG).toMatch(/invoice/i)
+    expect(INVOICED_NEEDS_MANAGER_MSG).toBe('This job has a QuickBooks invoice. Ask a manager to remove this part.')
     expect(SERVICE_NEEDS_MANAGER_MSG).toMatch(/manager/i)
   })
 })

@@ -4,6 +4,8 @@
  *   • customer price × quantity reaches the job total and the Invoice Draft EXACTLY once; our cost never does;
  *   • whoever adds the part enters the customer price (required, explicit — never a silent $0); our cost
  *     is stored only when a manager entered it; an already-unpriced part still blocks invoice creation;
+ *   • an employee removes a part (priced, attached or standalone) until the Job has a QuickBooks invoice — then only
+ *     a manager can (persisted QB linkage decides; the guard is atomic inside the removal statement);
  *   • removing a part keeps its service; removing a service removes its attached parts AND their charges,
  *     leaves unrelated services / standalone parts alone, is audited, and only FLAGS a linked QB invoice;
  *   • retries / double-taps never remove or charge anything twice.
@@ -27,7 +29,8 @@ import { seedProductionCatalog, CLEAR_TABLES } from '@/apps/quick-entry/catalog-
 import { getOrCreateEstimate, addService, setServicePrice, getEstimateView, getFullEstimate } from '@/apps/workflow/estimate-db'
 import { getOrderWithContext } from '@/apps/workflow/db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
-import { addEstimatePart, addPartForJob, attachedPartsOf, partIsCharged, removeServiceWithParts, removeEstimatePartWithLabor, updateEstimatePart } from './estimate-parts'
+import { addEstimatePart, addPartForJob, attachedPartsOf, partIsCharged, removeServiceWithParts, removeEstimatePartWithLabor, updateEstimatePart, jobHasQbInvoice } from './estimate-parts'
+import { INVOICED_NEEDS_MANAGER_MSG } from './job-items-view'
 import { groupJobItems } from './job-items-view'
 import { serviceOrders, vehicles, jobParts, jobLineItems, jobEstimates, serviceOrderEvents } from '@/drizzle/schema'
 
@@ -202,6 +205,117 @@ describe('Remove part', () => {
     await removeEstimatePartWithLabor(orderId, part.id, { action: 'keep' }, M)   // double-tap
     expect((await getEstimateView(orderId)).workTotalCents).toBe(6000)
     expect((await events(orderId, 'service_removed')).length + (await events(orderId, 'part_removed')).length).toBe(before)
+  })
+})
+
+describe('Employee removal — allowed until the Job has a QuickBooks invoice', () => {
+  const E = 'Employee'
+  const EMP = { requireNotInvoiced: true }
+  const invoiced = (estimateId: string, patch: Partial<{ qbInvoiceId: string | null; qbStatus: string }>) =>
+    db.update(jobEstimates).set({ qbInvoiceId: patch.qbInvoiceId ?? null, qbStatus: patch.qbStatus ?? 'created', qbInvoiceNumber: patch.qbInvoiceId ? '1001' : null }).where(eq(jobEstimates.id, estimateId))
+
+  it('an employee adds a priced part to a service and removes it right away: charge gone exactly once, service stays, audited', async () => {
+    const { orderId, ids } = await job([['Oil change', 6000]])
+    const part = await addPartForJob(orderId, { description: 'Cabin air filter', quantity: 2, sellPriceCents: 1250 }, E, null, ids['Oil change'])
+    expect((await draft(orderId)).workPriceCents).toBe(8500)
+    expect(await jobHasQbInvoice(orderId)).toBe(false)
+    await removeEstimatePartWithLabor(orderId, part.id, { action: 'keep' }, E, EMP)
+    expect((await livePart(part.id)).status).toBe('cancelled')
+    expect(await db.select().from(jobLineItems).where(eq(jobLineItems.id, part.jobLineItemId!))).toEqual([])
+    const view = await getEstimateView(orderId)
+    expect(view.workTotalCents).toBe(6000)
+    expect(view.services.map((s) => s.title)).toEqual(['Oil change'])
+    expect(groupJobItems(view).services[0].parts).toEqual([])
+    const d = await draft(orderId)
+    expect(d.workPriceCents).toBe(6000); expect(d.pricingIncomplete).toBe(false)
+    expect(await events(orderId, 'service_removed')).toHaveLength(1)   // the part's own estimate row, audited
+    // Retry / double-tap: a no-op, nothing removed twice, no new audit rows.
+    await removeEstimatePartWithLabor(orderId, part.id, { action: 'keep' }, E, EMP)
+    expect(await events(orderId, 'service_removed')).toHaveLength(1)
+    expect((await getEstimateView(orderId)).workTotalCents).toBe(6000)
+  })
+  it('a standalone part follows the same rule; unrelated services and parts are untouched', async () => {
+    const { orderId, ids } = await job([['Oil change', 6000]])
+    const keep = await addPartForJob(orderId, { description: 'Oil filter', sellPriceCents: 900 }, E, null, ids['Oil change'])
+    const part = await addPartForJob(orderId, { description: 'Wiper blades', quantity: 2, sellPriceCents: 1200 }, E, null, null)
+    expect((await draft(orderId)).workPriceCents).toBe(6000 + 900 + 2400)
+    await removeEstimatePartWithLabor(orderId, part.id, { action: 'keep' }, E, EMP)
+    const g = groupJobItems(await getEstimateView(orderId))
+    expect(g.standalone).toEqual([])
+    expect(g.services[0].parts.map((p) => p.id)).toEqual([keep.id])
+    expect((await draft(orderId)).workPriceCents).toBe(6900)
+  })
+  it('once the Job has a QuickBooks invoice (even unsent) the employee is refused with the exact message and nothing changes', async () => {
+    const { orderId, estimateId, ids } = await job([['Oil change', 6000]])
+    const part = await addPartForJob(orderId, { description: 'Cabin air filter', sellPriceCents: 1800 }, E, null, ids['Oil change'])
+    await invoiced(estimateId, { qbInvoiceId: 'QB-1001', qbStatus: 'created' })   // created, NOT emailed
+    expect(await jobHasQbInvoice(orderId)).toBe(true)
+    const before = { events: (await db.select().from(serviceOrderEvents).where(eq(serviceOrderEvents.serviceOrderId, orderId))).length, total: (await getEstimateView(orderId)).workTotalCents }
+    await expect(removeEstimatePartWithLabor(orderId, part.id, { action: 'keep' }, E, EMP)).rejects.toThrow(INVOICED_NEEDS_MANAGER_MSG)
+    expect((await livePart(part.id)).status).toBe('needed')
+    expect(await db.select().from(jobLineItems).where(eq(jobLineItems.id, part.jobLineItemId!))).toHaveLength(1)
+    expect((await getEstimateView(orderId)).workTotalCents).toBe(before.total)
+    expect((await db.select().from(serviceOrderEvents).where(eq(serviceOrderEvents.serviceOrderId, orderId))).length).toBe(before.events)
+    const [est] = await db.select().from(jobEstimates).where(eq(jobEstimates.id, estimateId))
+    expect(est.qbInvoiceId).toBe('QB-1001'); expect(est.qbSyncError).toBeNull()
+  })
+  it('a part added AFTER invoicing is under the same rule (the whole invoiced Job is manager-only)', async () => {
+    const { orderId, estimateId, ids } = await job([['Oil change', 6000]])
+    await invoiced(estimateId, { qbInvoiceId: 'QB-1001', qbStatus: 'created' })
+    const later = await addPartForJob(orderId, { description: 'Drain plug gasket', sellPriceCents: 300 }, E, null, ids['Oil change'])
+    await expect(removeEstimatePartWithLabor(orderId, later.id, { action: 'keep' }, E, EMP)).rejects.toThrow(INVOICED_NEEDS_MANAGER_MSG)
+    expect((await livePart(later.id)).status).toBe('needed')
+    const standalone = await addPartForJob(orderId, { description: 'Wiper blades', sellPriceCents: 2400 }, E, null, null)
+    await expect(removeEstimatePartWithLabor(orderId, standalone.id, { action: 'keep' }, E, EMP)).rejects.toThrow(INVOICED_NEEDS_MANAGER_MSG)
+    // A part with NO estimate line (customer-supplied) on the invoiced Job: same answer.
+    const supplied = await addEstimatePart(orderId, { description: 'Customer’s own bulb', supply: 'customer' }, M)
+    expect(supplied.jobServiceId).toBeNull()
+    await expect(removeEstimatePartWithLabor(orderId, supplied.id, { action: 'keep' }, E, EMP)).rejects.toThrow(INVOICED_NEEDS_MANAGER_MSG)
+    expect((await livePart(supplied.id)).status).toBe('needed')
+  })
+  it('the persisted QB state decides — price, draft lines and send status do not', async () => {
+    const { orderId, estimateId, ids } = await job([['Oil change', 6000]])
+    const mk = () => addPartForJob(orderId, { description: 'Gasket', sellPriceCents: 500 }, E, null, ids['Oil change'])
+    // In flight / combined / shared: blocked even with no invoice id yet.
+    for (const qbStatus of ['creating', 'syncing', 'consolidating', 'linked', 'created', 'sent']) {
+      await invoiced(estimateId, { qbInvoiceId: null, qbStatus })
+      const p = await mk()
+      await expect(removeEstimatePartWithLabor(orderId, p.id, { action: 'keep' }, E, EMP)).rejects.toThrow(INVOICED_NEEDS_MANAGER_MSG)
+      expect((await livePart(p.id)).status).toBe('needed')
+      await invoiced(estimateId, { qbInvoiceId: null, qbStatus: 'none' })
+      await removeEstimatePartWithLabor(orderId, p.id, { action: 'keep' }, M)   // tidy up as a manager
+    }
+    // A failed Create with no invoice ('error', no id) may be retried → not invoiced → the employee may remove.
+    await invoiced(estimateId, { qbInvoiceId: null, qbStatus: 'error' })
+    const p = await mk()
+    await removeEstimatePartWithLabor(orderId, p.id, { action: 'keep' }, E, EMP)
+    expect((await livePart(p.id)).status).toBe('cancelled')
+    // An 'error' row that DOES carry an invoice id (QB total mismatch after the write) is invoiced.
+    await invoiced(estimateId, { qbInvoiceId: 'QB-1001', qbStatus: 'error' })
+    const q = await mk()
+    await expect(removeEstimatePartWithLabor(orderId, q.id, { action: 'keep' }, E, EMP)).rejects.toThrow(INVOICED_NEEDS_MANAGER_MSG)
+  })
+  it('a manager still removes on an invoiced Job: charge gone once, service kept, invoice only FLAGGED for sync (never voided), audited', async () => {
+    const { orderId, estimateId, ids } = await job([['Oil change', 6000]])
+    const part = await addPartForJob(orderId, { description: 'Cabin air filter', sellPriceCents: 1800 }, E, null, ids['Oil change'])
+    await invoiced(estimateId, { qbInvoiceId: 'QB-1001', qbStatus: 'created' })
+    await removeEstimatePartWithLabor(orderId, part.id, { action: 'keep' }, M)
+    expect((await livePart(part.id)).status).toBe('cancelled')
+    const view = await getEstimateView(orderId)
+    expect(view.workTotalCents).toBe(6000); expect(view.services.map((s) => s.title)).toEqual(['Oil change'])
+    const [est] = await db.select().from(jobEstimates).where(eq(jobEstimates.id, estimateId))
+    expect(est.qbInvoiceId).toBe('QB-1001'); expect(est.qbStatus).toBe('created')
+    expect(est.qbSyncError).toMatch(/QuickBooks sync needed/)
+    expect((await draft(orderId)).qb.syncNeeded).toBe(true)
+    expect(await events(orderId, 'service_removed')).toHaveLength(1)
+  })
+  it('the unguarded (manager) statement never touches the QB columns on the estimate row', async () => {
+    const { orderId, estimateId, ids } = await job([['Oil change', 6000]])
+    const part = await addPartForJob(orderId, { description: 'Gasket', sellPriceCents: 500 }, M, 'manager', ids['Oil change'])
+    const before = await db.select().from(jobEstimates).where(eq(jobEstimates.id, estimateId))
+    await removeEstimatePartWithLabor(orderId, part.id, { action: 'keep' }, M)
+    const after = await db.select().from(jobEstimates).where(eq(jobEstimates.id, estimateId))
+    expect({ id: after[0].qbInvoiceId, s: after[0].qbStatus, e: after[0].qbSyncError }).toEqual({ id: before[0].qbInvoiceId, s: before[0].qbStatus, e: before[0].qbSyncError })
   })
 })
 

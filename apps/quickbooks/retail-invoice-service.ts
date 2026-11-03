@@ -253,6 +253,12 @@ export async function sharedMemberCustomerMismatch(members: MemberRow[], invoice
   return null
 }
 
+/** Everything Create bills from, minus the estimate row's own QB/bookkeeping columns (the lock itself changes those). */
+export function estimateFingerprint(full: FullEstimate): string {
+  const est = Object.fromEntries(Object.entries(full.estimate).filter(([k]) => !k.startsWith('qb') && k !== 'updatedAt'))
+  return JSON.stringify({ est, services: full.services })
+}
+
 export async function createRetailQBInvoice(params: { orderId: string; actor: string | null; requestId?: string | null }): Promise<CreateRetailResult> {
   const { orderId, actor } = params
   const requestId = params.requestId ?? null
@@ -308,10 +314,22 @@ export async function createRetailQBInvoice(params: { orderId: string; actor: st
     await logEvent({ serviceOrderId: orderId, eventType: 'qb_invoice_error', employeeName: actor, note: msg }).catch(() => {})
   }
 
+  // (2b) The estimate was read and validated BEFORE the lock. A part/service change that committed in between
+  // (e.g. an employee removing a part — allowed until the Job is invoiced) must neither be invoiced from the
+  // stale read nor silently dropped: re-read under the lock and, if anything differs, release the lock and
+  // refuse. Nothing has been written to QuickBooks at this point.
+  const fullLocked = await getFullEstimate(orderId)
+  if (!fullLocked || !full || estimateFingerprint(fullLocked) !== estimateFingerprint(full)) {
+    await db.update(jobEstimates).set({ qbStatus: est0.qbStatus, updatedAt: new Date() })
+      .where(and(eq(jobEstimates.id, est0.id), eq(jobEstimates.qbStatus, 'creating'), isNull(jobEstimates.qbInvoiceId)))
+    logger.warn(APP, 'estimate_changed_before_lock', { orderId })
+    return { ok: false, status: 'refused', error: 'The estimate changed while the invoice was being created — review the Invoice Draft and try again.' }
+  }
+
   try {
     // A flat Job is invoiced as-is (flatPricingIssue above guarantees its lines bill exactly the agreed
     // amount). It is never itemized here: itemizing no longer preserves the Work Total.
-    const fullNow = full
+    const fullNow = fullLocked
     const draftNow = draft
 
     // One line per actual service (mapped Product/Service or Labor fallback) + fee lines.

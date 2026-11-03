@@ -14,14 +14,14 @@
  *     the SAME line amount (customer price × quantity) the Invoice Draft bills — shown, never recomputed;
  *   • adds go through POST /parts `add` (addPartForJob → the estimate's part row + priced line);
  *   • part removals go through POST /parts `remove` (removeEstimatePartWithLabor: line + record, audited;
- *     a charged part needs a manager, and the server enforces it);
+ *     once the Job has a QuickBooks invoice an employee can't remove a part — the server enforces it);
  *   • service removals go through the estimate route `remove_service_with_parts` (manager/admin).
  * Part rows deliberately show only name · amount · Remove — no ordering/receiving, no statuses.
  */
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { EstimateViewData, PartView, ServiceView } from './estimate/save-feedback'
 import { partPrice, servicePrice } from './estimate/ItemRows'
-import { groupJobItems, removeServiceMessage, validatePartDraft, NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG, type DraftProblem, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
+import { groupJobItems, removeServiceMessage, validatePartDraft, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG, type DraftProblem, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
 
 const BTN = 'rounded-xl font-semibold text-sm px-4 min-h-11 active:opacity-80 disabled:opacity-40'
 const INPUT = 'w-full bg-gray-950 border border-gray-700 text-white rounded-xl px-3 py-2.5 text-base placeholder:text-gray-500 focus:border-blue-500 focus:outline-none disabled:opacity-60'
@@ -133,8 +133,9 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
   }
   const askRemovePart = (part: PartView) => {
     setError(null)
-    // An employee can't remove a charged part — say so right away (the server enforces the same rule).
-    if (!manager && part.lineCents != null) { setConfirm({ kind: 'message', id: part.id, text: NEEDS_MANAGER_MSG }); return }
+    // Once the Job has a QuickBooks invoice, an employee can't remove a part — say so right away (the server
+    // enforces the same rule from the persisted linkage, and atomically against a concurrent invoice Create).
+    if (!manager && view?.qbInvoiced) { setConfirm({ kind: 'message', id: part.id, text: INVOICED_NEEDS_MANAGER_MSG }); return }
     setConfirm({ kind: 'part', id: part.id })
   }
   const askRemoveService = (s: ServiceView) => {

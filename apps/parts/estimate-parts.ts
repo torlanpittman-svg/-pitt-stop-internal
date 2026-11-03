@@ -17,13 +17,13 @@ import { and, eq, ne, sql } from 'drizzle-orm'
 import { jobParts } from './schema'
 import { jobServices, jobLineItems, serviceOrderEvents } from '@/apps/workflow/schema'
 import {
-  getOrCreateEstimate, getEstimateRow, addService, addLine, updateLine, removeLine, setServicePrice,
-  settlePricingAfterLineChange, flagQbSyncNeededIfInvoiced, removeEstimateService,
+  getOrCreateEstimate, getEstimateRow, addService, addLine, updateLine, removeLine, setServicePrice, settlePricingAfterLineChange, flagQbSyncNeededIfInvoiced, removeEstimateService, estimateHasQbInvoice, EstimateInvoicedError,
 } from '@/apps/workflow/estimate-db'
 import { classifyPartWording } from '@/apps/quick-entry/service-interpret'
 import { partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
 import { listCatalogChoices } from '@/apps/quick-entry/service-match-db'
 import { validateLaborDecision, effectiveLaborStatus, type LaborDecision } from './labor-review'
+import { INVOICED_NEEDS_MANAGER_MSG } from './job-items-view'
 
 type PartRow = typeof jobParts.$inferSelect
 
@@ -157,13 +157,40 @@ export async function updateEstimatePart(orderId: string, partId: string, patch:
 }
 
 /** Remove a part from the estimate: its line goes (durably), the procurement record is cancelled. */
-export async function removeEstimatePart(orderId: string, partId: string, actor: string | null): Promise<void> {
+/** Options for every part-removal path. */
+export interface PartRemovalOptions {
+  /**
+   * Employee removals: refuse when the Job has a QuickBooks invoice (or one is being created / combined / shared),
+   * decided atomically inside the statement that removes the charge — see RemoveServiceOptions in estimate-db.
+   * Managers/admins remove without this (their removal flags the linked invoice for sync, never voids it).
+   */
+  requireNotInvoiced?: boolean
+}
+
+/** The persisted QuickBooks linkage says this Job is invoiced (or an invoice is in flight). */
+export async function jobHasQbInvoice(orderId: string): Promise<boolean> {
+  return estimateHasQbInvoice(await getEstimateRow(orderId))
+}
+
+export async function removeEstimatePart(orderId: string, partId: string, actor: string | null, opts: PartRemovalOptions = {}): Promise<void> {
   const p = await ownPart(orderId, partId)
+  const guarded = opts.requireNotInvoiced === true
   if (p.jobServiceId) {
-    await removeEstimateService(orderId, p.jobServiceId, actor)   // cancels the part in the same statement
+    // Cancels the part in the same statement that removes its line (and, guarded, refuses atomically if invoiced).
+    await removeEstimateService(orderId, p.jobServiceId, actor, { requireNotInvoiced: guarded, invoicedMessage: INVOICED_NEEDS_MANAGER_MSG })
     return
   }
-  await getDb().update(jobParts).set({ status: 'cancelled', updatedAt: new Date(), updatedBy: actor }).where(eq(jobParts.id, partId))
+  // No estimate line of its own (customer-supplied / legacy record): no charge, but the invoiced Job stays
+  // manager-only for employees all the same — the same condition, checked in the UPDATE itself.
+  const cancelled = await getDb().update(jobParts).set({ status: 'cancelled', updatedAt: new Date(), updatedBy: actor })
+    .where(and(eq(jobParts.id, partId), sql`(${!guarded}::boolean OR NOT EXISTS (
+      SELECT 1 FROM job_estimates je WHERE je.service_order_id = ${orderId}::uuid
+        AND (je.qb_invoice_id IS NOT NULL OR je.qb_status NOT IN ('none', 'error'))))`))
+    .returning({ id: jobParts.id })
+  if (cancelled.length === 0) {
+    if (guarded && (await jobHasQbInvoice(orderId))) throw new EstimateInvoicedError(INVOICED_NEEDS_MANAGER_MSG)
+    throw new Error('That part is no longer on this estimate. Refresh to see the current list.')
+  }
   // A customer-supplied part entered at Quick Entry also sits on the Work Board label list; drop that
   // label too (unless another live line still uses the name) so reopening never re-creates it as a service.
   const key = p.description.trim().toLowerCase()
@@ -188,6 +215,7 @@ export async function removeEstimatePart(orderId: string, partId: string, actor:
  */
 export async function removeEstimatePartWithLabor(
   orderId: string, partId: string, labor: { action: 'keep' } | { action: 'remove'; serviceId: string } | undefined, actor: string | null,
+  opts: PartRemovalOptions = {},
 ): Promise<void> {
   const db = getDb()
   const [p] = await db.select().from(jobParts).where(and(eq(jobParts.id, partId), eq(jobParts.serviceOrderId, orderId))).limit(1)
@@ -201,10 +229,10 @@ export async function removeEstimatePartWithLabor(
       const sharing = await db.select({ description: jobParts.description }).from(jobParts)
         .where(and(eq(jobParts.serviceOrderId, orderId), eq(jobParts.laborServiceId, labor.serviceId), ne(jobParts.id, partId), ne(jobParts.status, 'cancelled')))
       if (sharing.length) throw new Error(`That labor also covers ${sharing.map((x) => `“${x.description}”`).join(', ')}, so it stays. Remove the part and keep the labor.`)
-      await removeEstimateService(orderId, labor.serviceId, actor)
+      await removeEstimateService(orderId, labor.serviceId, actor, { requireNotInvoiced: opts.requireNotInvoiced, invoicedMessage: INVOICED_NEEDS_MANAGER_MSG })
     }
   }
-  if (p.status !== 'cancelled') await removeEstimatePart(orderId, partId, actor)
+  if (p.status !== 'cancelled') await removeEstimatePart(orderId, partId, actor, opts)
 }
 
 /** Live work services on the estimate that can cover installation (never a part's own row). */

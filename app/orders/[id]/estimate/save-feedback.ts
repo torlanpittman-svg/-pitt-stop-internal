@@ -26,6 +26,8 @@ export interface ReviewIssue { code: 'part_labor' | 'odor_choice' | 'ceramic_cho
 export interface EstimateViewData {
   exists: boolean; flat: boolean; workTotalCents: number; services: ServiceView[]; incomplete: boolean; referenceCents: number | null
   parts?: PartView[]; review?: { ready: boolean; issues: ReviewIssue[] }
+  /** The Job has a QuickBooks invoice (or one is in flight) — from the persisted linkage; present on GET /items. */
+  qbInvoiced?: boolean
 }
 export type EstimateEdit = Record<string, unknown> & { action: string }
 export type SaveOutcome = { ok: true; view: EstimateViewData } | { ok: false; error: string }

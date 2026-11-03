@@ -6,8 +6,8 @@ import { employeeAuthorizedFromRequest, shopActorFromRequest, isManagerRole } fr
 import { partsVisibleFor } from '@/apps/parts/visibility'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { estimateEnabled } from '@/apps/workflow/estimate'
-import { addPartForJob, partIsCharged, removeEstimatePartWithLabor } from '@/apps/parts/estimate-parts'
-import { NEEDS_MANAGER_MSG } from '@/apps/parts/job-items-view'
+import { addPartForJob, jobHasQbInvoice, removeEstimatePartWithLabor } from '@/apps/parts/estimate-parts'
+import { INVOICED_NEEDS_MANAGER_MSG } from '@/apps/parts/job-items-view'
 import {
   listPartsForOrder,
   addPart,
@@ -160,14 +160,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       }
       case 'remove':
       case 'cancel': {
-        // ONE removal rule for every caller: a part is never hidden while its charge stays behind. A part
-        // with a live customer charge (priced estimate line) needs a manager — the manager path removes
-        // the line too (removeEstimatePartWithLabor: own row + line + procurement record, audited, a linked
-        // QuickBooks invoice only flagged for sync). An uncharged part may be removed by any employee.
-        // Idempotent: an already-removed part is a no-op.
+        // ONE removal rule for every caller (the legacy `cancel` action included): the part and its customer
+        // charge go together through removeEstimatePartWithLabor (own row + line + procurement record, audited;
+        // a linked QuickBooks invoice is only FLAGGED for sync, never voided). Owner decision 2026-11-03:
+        // an employee may remove a part (attached or standalone, priced or not) until the Job has a QuickBooks
+        // invoice — decided by the persisted QB linkage, never by price/draft lines/send status. Once invoiced
+        // (including parts added afterwards) removal needs a manager/admin. The check here gives a clear 403;
+        // the removal statement itself re-checks under the estimate row lock, so an invoice Create that claims
+        // the Job first always wins over a racing employee removal. Idempotent: an already-removed part is a no-op.
         if (target!.status === 'cancelled') break
-        if (!manager && (await partIsCharged({ jobLineItemId: target!.jobLineItemId }))) {
-          return NextResponse.json({ ok: false, error: NEEDS_MANAGER_MSG, needsManager: true }, { status: 403 })
+        if (!manager) {
+          if (await jobHasQbInvoice(id)) return NextResponse.json({ ok: false, error: INVOICED_NEEDS_MANAGER_MSG, needsManager: true }, { status: 403 })
+          await removeEstimatePartWithLabor(id, partId!, { action: 'keep' }, actorName, { requireNotInvoiced: true })
+          break
         }
         await removeEstimatePartWithLabor(id, partId!, { action: 'keep' }, actorName)
         break
@@ -182,6 +187,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         return NextResponse.json({ ok: false, error: 'Unknown action.' }, { status: 400 })
     }
   } catch (err) {
+    // The atomic not-invoiced guard lost to a concurrent invoice Create (or the Job was invoiced meanwhile).
+    if (err instanceof Error && (err as { invoiced?: boolean }).invoiced === true) {
+      return NextResponse.json({ ok: false, error: err.message, needsManager: true }, { status: 403 })
+    }
     // Validation from the estimate path ("Describe the part", "Enter a quantity…") is a 400 with its message.
     const message = err instanceof Error ? err.message : 'Parts update failed.'
     const status = err instanceof Error && (action === 'add' || action === 'remove' || action === 'cancel') ? 400 : 500

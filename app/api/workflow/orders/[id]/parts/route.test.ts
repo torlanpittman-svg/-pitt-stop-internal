@@ -1,7 +1,7 @@
 /**
  * POST /api/workflow/orders/[id]/parts — the Job screen's add / remove rules, with the service layer
- * injected (no DB): who may price, where an add goes, and the ONE removal rule (a charged part needs a
- * manager; nothing is hidden while its charge stays). The money/record behaviour of the service layer
+ * injected (no DB): who may price, where an add goes, and the ONE removal rule (an employee removes parts
+ * until the Job has a QuickBooks invoice; then a manager is needed). The money/record behaviour of the service layer
  * itself is covered in apps/parts/remove-service-with-parts.test.ts (PGlite).
  */
 import { vi, describe, it, expect, beforeEach } from 'vitest'
@@ -12,9 +12,10 @@ const h = vi.hoisted(() => ({
   estimateOn: true,
   order: { source: 'quick_entry', serviceType: 'retail' } as { source: string; serviceType: string } | null,
   parts: [] as Array<{ id: string; status: string; jobLineItemId: string | null }>,
-  charged: false,
-  calls: { addPartForJob: [] as unknown[][], addPart: [] as unknown[][], removeWithLabor: [] as unknown[][], partIsCharged: 0 },
+  invoiced: false,
+  calls: { addPartForJob: [] as unknown[][], addPart: [] as unknown[][], removeWithLabor: [] as unknown[][], hasInvoice: 0 },
   addThrows: null as Error | null,
+  removeThrows: null as Error | null,
 }))
 
 vi.mock('@/apps/auth/employee-guard', () => ({
@@ -31,8 +32,8 @@ vi.mock('@/platform/db', () => ({
 vi.mock('@/apps/workflow/schema', () => ({ serviceOrders: { id: 'id', source: 'source', serviceType: 'service_type' } }))
 vi.mock('@/apps/parts/estimate-parts', () => ({
   addPartForJob: async (...a: unknown[]) => { h.calls.addPartForJob.push(a); if (h.addThrows) throw h.addThrows; return { id: 'new-part' } },
-  partIsCharged: async () => { h.calls.partIsCharged++; return h.charged },
-  removeEstimatePartWithLabor: async (...a: unknown[]) => { h.calls.removeWithLabor.push(a) },
+  jobHasQbInvoice: async () => { h.calls.hasInvoice++; return h.invoiced },
+  removeEstimatePartWithLabor: async (...a: unknown[]) => { h.calls.removeWithLabor.push(a); if (h.removeThrows) throw h.removeThrows },
 }))
 vi.mock('@/apps/parts/db', () => ({
   listPartsForOrder: async () => h.parts,
@@ -46,8 +47,8 @@ const MANAGER = { key: 'tony', name: 'Tony', role: 'manager' }
 
 beforeEach(() => {
   h.actor = null; h.authorized = true; h.estimateOn = true; h.order = { source: 'quick_entry', serviceType: 'retail' }
-  h.parts = [{ id: 'p1', status: 'needed', jobLineItemId: 'line-1' }]; h.charged = false; h.addThrows = null
-  h.calls = { addPartForJob: [], addPart: [], removeWithLabor: [], partIsCharged: 0 }
+  h.parts = [{ id: 'p1', status: 'needed', jobLineItemId: 'line-1' }]; h.invoiced = false; h.addThrows = null; h.removeThrows = null
+  h.calls = { addPartForJob: [], addPart: [], removeWithLabor: [], hasInvoice: 0 }
 })
 
 describe('add', () => {
@@ -111,30 +112,44 @@ describe('add', () => {
 })
 
 describe('remove — one rule for every caller', () => {
-  it('an employee may NOT remove a part that carries a customer charge: 403, needsManager, nothing removed', async () => {
-    h.charged = true
+  it('before a QuickBooks invoice exists an employee removes a PRICED part through the guarded estimate removal (charge + record), labor kept', async () => {
+    const res = await post({ action: 'remove', partId: 'p1' })
+    expect(res.status).toBe(200)
+    expect(h.calls.removeWithLabor).toEqual([['o1', 'p1', { action: 'keep' }, 'Employee', { requireNotInvoiced: true }]])
+  })
+  it('the legacy `cancel` action follows the same rule and path (no bypass)', async () => {
+    const res = await post({ action: 'cancel', partId: 'p1' })
+    expect(res.status).toBe(200)
+    expect(h.calls.removeWithLabor).toEqual([['o1', 'p1', { action: 'keep' }, 'Employee', { requireNotInvoiced: true }]])
+    h.invoiced = true
+    expect((await post({ action: 'cancel', partId: 'p1' })).status).toBe(403)
+    expect(h.calls.removeWithLabor).toHaveLength(1)
+  })
+  it('once the Job has a QuickBooks invoice an employee may NOT remove a part: 403 with the exact message, nothing removed', async () => {
+    h.invoiced = true
     const res = await post({ action: 'remove', partId: 'p1' })
     expect(res.status).toBe(403)
     const body = await res.json()
     expect(body.needsManager).toBe(true)
-    expect(body.error).toMatch(/manager/i)
+    expect(body.error).toBe('This job has a QuickBooks invoice. Ask a manager to remove this part.')
     expect(h.calls.removeWithLabor).toHaveLength(0)
   })
-  it('an employee may remove an uncharged part — through the estimate removal (record + any line), labor kept', async () => {
-    h.charged = false
-    const res = await post({ action: 'cancel', partId: 'p1' })
-    expect(res.status).toBe(200)
-    expect(h.calls.removeWithLabor).toEqual([['o1', 'p1', { action: 'keep' }, 'Employee']])
+  it('the removal statement’s own guard losing to a concurrent invoice Create is a 403 too (not a 400/500)', async () => {
+    h.invoiced = false   // the pre-check passed…
+    h.removeThrows = Object.assign(new Error('This job has a QuickBooks invoice. Ask a manager to remove this part.'), { invoiced: true })   // …but the atomic guard refused
+    const res = await post({ action: 'remove', partId: 'p1' })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ ok: false, needsManager: true, error: /QuickBooks invoice/ })
   })
-  it('a manager removes a charged part without the charge check', async () => {
-    h.actor = MANAGER; h.charged = true
+  it('a manager removes a part on an invoiced Job without the guard (existing behaviour: the invoice is flagged for sync, never voided)', async () => {
+    h.actor = MANAGER; h.invoiced = true
     const res = await post({ action: 'remove', partId: 'p1' })
     expect(res.status).toBe(200)
-    expect(h.calls.partIsCharged).toBe(0)
+    expect(h.calls.hasInvoice).toBe(0)
     expect(h.calls.removeWithLabor).toEqual([['o1', 'p1', { action: 'keep' }, 'Tony']])
   })
   it('removing an already-removed part is an idempotent no-op (double-tap / retry)', async () => {
-    h.parts = [{ id: 'p1', status: 'cancelled', jobLineItemId: null }]; h.charged = true
+    h.parts = [{ id: 'p1', status: 'cancelled', jobLineItemId: null }]; h.invoiced = true
     const res = await post({ action: 'remove', partId: 'p1' })
     expect(res.status).toBe(200)
     expect(h.calls.removeWithLabor).toHaveLength(0)

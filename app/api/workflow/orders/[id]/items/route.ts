@@ -8,7 +8,7 @@
 import { NextResponse } from 'next/server'
 import { employeeAuthorizedFromRequest, shopActorFromRequest, isManagerRole } from '@/apps/auth/employee-guard'
 import { estimateEnabled } from '@/apps/workflow/estimate'
-import { getEstimateView, getEstimateRow, promoteTextServices, recomputeEstimate } from '@/apps/workflow/estimate-db'
+import { getEstimateView, getEstimateRow, promoteTextServices, recomputeEstimate, estimateHasQbInvoice } from '@/apps/workflow/estimate-db'
 import { partsVisibleFor } from '@/apps/parts/visibility'
 import { redactItemsView } from '@/apps/parts/job-items-view'
 
@@ -27,8 +27,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // Keep the estimate's rows in step with the Job's text services (the same idempotent mirror Add Service
   // runs) so every listed service has a row a part can attach to. Only when an estimate already exists —
   // never creates one. Best-effort: a mirror hiccup never hides the list.
+  const est = await getEstimateRow(id)
   try {
-    const est = await getEstimateRow(id)
     if (est && (await promoteTextServices(est.id, id)) > 0) await recomputeEstimate(est.id)
   } catch (err) {
     console.error('[items] service mirror failed (list still served):', err)
@@ -36,5 +36,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const view = redactItemsView(await getEstimateView(id), manager)
   // Same reversible rollout gate as the parts tracker: when Parts is hidden from this viewer, no part data leaves.
   if (!partsVisible) view.parts = []
-  return NextResponse.json({ ok: true, view, manager, partsVisible })
+  // Persisted QuickBooks linkage (the removal rule's authority) — the server enforces it on every removal regardless.
+  return NextResponse.json({ ok: true, view: { ...view, qbInvoiced: estimateHasQbInvoice(est) }, manager, partsVisible })
 }
