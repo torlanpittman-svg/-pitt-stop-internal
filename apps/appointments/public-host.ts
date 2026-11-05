@@ -16,6 +16,8 @@ export function publicBookingRoute(pathname: string, method: string): 'allow' | 
   const read = method === 'GET' || method === 'HEAD'
   if (pathname === '/' && read) return 'redirect'
   if (read && (pathname === '/book' || new RegExp(`^/book/[ar]/${TOKEN}$`).test(pathname))) return 'allow'
+  if (read && pathname === '/quote') return 'allow'                   // public quote request form (ceramic / headliner)
+  if (method === 'POST' && pathname === '/api/quote') return 'allow'
   if (read && /^\/book\/[\w-]+\.(png|webp)$/.test(pathname)) return 'allow'
   if (read && (pathname === '/api/book/availability' || pathname === '/api/book/vehicles' || new RegExp(`^/api/book/a/${TOKEN}/ics$`).test(pathname))) return 'allow'
   if (method === 'POST' && (pathname === '/api/book/appointments' || pathname === '/api/book/drafts' || new RegExp(`^/api/book/a/${TOKEN}/cancel$`).test(pathname))) return 'allow'

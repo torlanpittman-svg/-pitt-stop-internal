@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BookShell, telHref } from './BookShell'
 import Combobox from './Combobox'
 import { formatUsPhone, validateContact, type ContactErrors } from '@/apps/appointments/contact'
+import { fireBookingConversion } from './conversion'
 
 interface Service { key: string; label: string; description: string }
 interface Shop { title: string; intro: string; phone: string; address: string; instructions: string; cancellationPolicy: string }
@@ -275,6 +276,8 @@ export default function BookingFlow({ open, services, preselect, attribution, sh
       const d = await r.json().catch(() => ({}))
       if (d.ok) {
         doneRef.current = true
+        // Google Ads "Booking confirmed" — fires once per NEW appointment (server says created=false on a replay).
+        if (d.created === true) fireBookingConversion(d.appointment?.reference)
         setDone({ appt: d.appointment, token: d.token, emailQueued: d.confirmationEmail === 'queued' })
         return
       }

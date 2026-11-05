@@ -199,6 +199,9 @@ export async function createServiceOrder(data: {
   customerId?: string | null
   /** Operational urgency set at check-in (defaults Normal). Visual/sort only. */
   isUrgent?: boolean
+  /** Customer's self-reported "How did you hear about us?" (migration 0071). Never derived from tracking. */
+  referralSource?: string | null
+  referralDetail?: string | null
 }): Promise<ServiceOrderRow> {
   const db = getDb()
   const orderNumber = await nextOrderNumber()
@@ -214,6 +217,8 @@ export async function createServiceOrder(data: {
       serviceFocus: data.serviceFocus ?? null,
       checkedInBy: data.checkedInBy ?? null,
       notes:       data.notes        ?? null,
+      referralSource: data.referralSource ?? null,
+      referralDetail: data.referralDetail ?? null,
       services:    data.services && data.services.length > 0 ? data.services : null,
       customerName: data.customerName?.trim() || null,
       customerId:  data.customerId ?? null,

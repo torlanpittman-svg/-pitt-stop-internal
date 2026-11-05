@@ -64,7 +64,9 @@ export async function POST(req: Request) {
     const cfg = await getBookingConfig()
     const attempts = !!appointment.email && cfg.confirmationEnabled && provider.live &&
       (!(provider instanceof AllowlistEmailProvider) || provider.allows(appointment.email))
-    return NextResponse.json({ ok: true, token, appointment: publicSummary(appointment), confirmationEmail: attempts ? 'queued' : 'off' })
+    // `created` is false on an idempotent replay (double-tap / retry): the client fires its Google Ads
+    // booking conversion only when this is true, so one booking can never count twice.
+    return NextResponse.json({ ok: true, created: !replayed, token, appointment: publicSummary(appointment), confirmationEmail: attempts ? 'queued' : 'off' })
   } catch (err) {
     if (err instanceof BookingError) return NextResponse.json({ ok: false, code: err.code, error: err.message }, { status: STATUS[err.code] })
     console.error('[book] booking failed:', err instanceof Error ? err.message : 'unknown error')

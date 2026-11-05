@@ -1,6 +1,7 @@
 /** POST /api/quick-entry/jobs — capture a job onto the Work Board (no QB/AutoLeap). */
 import { NextResponse } from 'next/server'
 import { createQuickEntryJob, type CreateJobInput } from '@/apps/quick-entry/jobs-db'
+import { normalizeReferralSource } from '@/apps/quick-entry/referral-source'
 import { employeeAuthorizedFromRequest, authenticatedActorFromRequest } from '@/apps/auth/employee-guard'
 
 export const runtime = 'nodejs'
@@ -38,7 +39,10 @@ export async function POST(req: Request) {
       : undefined
     const internalNote = typeof body.internalNote === 'string' ? body.internalNote.slice(0, 500) : null
     const isUrgent = body.isUrgent === true
-    const res = await createQuickEntryJob({ ...body, customerName: body.customerName.trim(), createdBy, workPriceCents, agreedPriceCents, agreedServices, internalNote, isUrgent })
+    // Optional self-reported referral answer: only a known key is stored (anything else → null), detail is clamped.
+    const referralSource = normalizeReferralSource(body.referralSource)
+    const referralDetail = referralSource && typeof body.referralDetail === 'string' ? body.referralDetail.trim().slice(0, 120) || null : null
+    const res = await createQuickEntryJob({ ...body, customerName: body.customerName.trim(), createdBy, workPriceCents, agreedPriceCents, agreedServices, internalNote, isUrgent, referralSource, referralDetail })
     return NextResponse.json({ ok: true, ...res })
   } catch (err) {
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })

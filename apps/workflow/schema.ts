@@ -87,6 +87,11 @@ export const serviceOrders = pgTable(
     // dealer name (Dealer Check-In). Null → card falls back to "Unknown Customer".
     customerName: varchar('customer_name', { length: 200 }),
     checkedInBy: varchar('checked_in_by', { length: 200 }),
+    // "How did you hear about us?" — the customer's SELF-REPORTED answer at retail intake (migration 0071).
+    // Deliberately separate from captured click attribution (gclid/utm on bookings → marketing_attribution):
+    // this is what the customer said, not what a tracking parameter proved. NULL = not asked / not answered.
+    referralSource: varchar('referral_source', { length: 24 }),   // google | social | referral | returning | drive_by | business | other
+    referralDetail: varchar('referral_detail', { length: 120 }),
 
     // ── Occasional third-party billing (migration 0049) ──────────────────────────────────────
     // When someone OTHER than the service customer pays (a company covering a resident's repair, a

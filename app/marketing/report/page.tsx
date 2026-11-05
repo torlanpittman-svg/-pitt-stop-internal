@@ -2,6 +2,7 @@ import { requireMarketingManager, MarketingShell, Section, StatTile, EmptyRow } 
 import { AdDataNotice } from '@/app/marketing/AdDataNotice'
 import { money, bigMoney, count, shortDate } from '@/app/lib/format'
 import { weeklyReport, reportForRange } from '@/apps/marketing/report'
+import { referralSourceBreakdown } from '@/apps/quick-entry/referral-report'
 import { unavailableAdGuidance } from '@/apps/marketing/ad-notice'
 import { ACCOUNT_TIME_ZONE } from '@/apps/marketing/ad-dates'
 import { SERVICE_CATEGORY_LABELS, REPORT_CHANNEL_LABELS } from '@/apps/marketing/types'
@@ -34,6 +35,8 @@ export default async function WeeklyReportPage({ searchParams }: { searchParams:
     ? await reportForRange(from!, to!)
     : await weeklyReport(new Date())
   const comparisonLabel = customRange ? 'prior equal period' : 'last wk'
+  // Self-reported intake answers for the same window — shown beside (never blended into) click attribution.
+  const referral = await referralSourceBreakdown({ from: new Date(current.range.from), to: new Date(current.range.to) })
   const adUnavailable = current.adData.status === 'unavailable'
   const adConfigured = current.adData.source === 'google_ads_api'
 
@@ -165,6 +168,29 @@ export default async function WeeklyReportPage({ searchParams }: { searchParams:
               </tbody>
             </table>
           </div>
+        )}
+      </Section>
+
+      <Section title="How customers said they heard about us">
+        <p className="mb-3 text-xs text-gray-500">
+          The optional question asked at Quick Entry check-in, as the customer answered it. This is <span className="text-gray-300">self-reported</span> and
+          is kept separate from captured click attribution (gclid / utm on online bookings) — the two are never merged.
+          {referral.total > 0 && <> Answered on {referral.answered} of {referral.total} jobs created in this window.</>}
+        </p>
+        {referral.total === 0 ? <EmptyRow>No jobs created in this window.</EmptyRow> : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase text-gray-500"><th className="pb-2">Answer</th><th className="pb-2 text-right">Jobs</th></tr>
+            </thead>
+            <tbody>
+              {referral.lines.map((l) => (
+                <tr key={l.source ?? '__none'} className="border-t border-gray-800">
+                  <td className={`py-2 ${l.source ? '' : 'text-gray-500'}`}>{l.label}</td>
+                  <td className="py-2 text-right">{l.jobs}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </Section>
 

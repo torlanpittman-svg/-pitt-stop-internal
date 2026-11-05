@@ -166,6 +166,10 @@ export interface CreateJobInput {
   jobNote?: string | null
   /** Operational urgency set at check-in (defaults Normal). Visual/sort only. */
   isUrgent?: boolean
+  /** Optional "How did you hear about us?" — the customer's own answer (see REFERRAL_SOURCES). Stored on the
+   *  Job (service_orders.referral_source/_detail), separate from any captured click attribution. */
+  referralSource?: string | null
+  referralDetail?: string | null
 }
 
 /** Create the job: find/create the vehicle, put it on the Work Board, store the job + lines. */
@@ -210,6 +214,8 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
     customerName: input.customerName,  // Work Board card title
     customerId,                        // canonical directory link (null if resolution failed)
     isUrgent: input.isUrgent ?? false,
+    referralSource: input.referralSource ?? null,
+    referralDetail: input.referralDetail ?? null,
   })
 
   const db = getDb()

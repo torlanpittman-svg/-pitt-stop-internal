@@ -18,6 +18,7 @@ import { useSharedInvoiceDiscovery, SharedInvoiceOfferSheet } from '@/app/compon
 import { type JobLine, type InterpEntry, linesFromEntries, chooseCandidate, keepAsTyped, choosePart, chooseTires, reopenChoice } from '@/apps/quick-entry/job-lines'
 import { type CustomerMatch, type CustVehicle } from '@/apps/quick-entry/customers'
 import { draftKey as draftKeyFor, saveDraft, loadDraftEntry, clearDraft, draftAgeLabel } from '@/app/lib/draft'
+import { REFERRAL_SOURCES } from '@/apps/quick-entry/referral-source'
 
 type DraftShape = {
   cust?: { first: string; last: string; phone: string; email: string }
@@ -30,6 +31,7 @@ type DraftShape = {
   nlNote?: string
   isUrgent?: boolean
   tech?: string[]
+  referral?: { source: string; detail: string }
 }
 
 type Phase = 'details' | 'services' | 'review' | 'submitting' | 'done'
@@ -137,6 +139,8 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
   const [lines, setLines] = useState<JobLine[]>([])
   const [suggByKey, setSuggByKey] = useState<Record<string, ServiceMatch | null>>({})
   const [isUrgent, setIsUrgent] = useState(false)
+  // Optional "How did you hear about us?" — the customer's own words, kept apart from any click attribution.
+  const [referral, setReferral] = useState({ source: '', detail: '' })
   const [tech, setTech] = useState<Set<string>>(new Set())
 
   // -- Draft autosave (per-user, per-mode) ---------------------------------------------------
@@ -166,6 +170,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
       if (typeof d.nlText === 'string') setNlText(d.nlText)
       if (typeof d.nlNote === 'string') setNlNote(d.nlNote)
       if (typeof d.isUrgent === 'boolean') setIsUrgent(d.isUrgent)
+      if (d.referral && typeof d.referral.source === 'string') setReferral({ source: d.referral.source, detail: d.referral.detail ?? '' })
       if (Array.isArray(d.tech)) setTech(new Set(d.tech))
       const hasContent = !!(d.cust?.first || d.cust?.phone || d.veh?.vin || d.nlText || d.nlNote || (d.lines && d.lines.length))
       if (hasContent) { setDraftRestored(true); setDraftAge(draftAgeLabel(entry!.at)) }
@@ -175,8 +180,8 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
   /* eslint-enable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!draftK || !draftHydrated.current) return
-    saveDraft(draftK, { cust, veh, vehicleMode, selectedVehicleId, lines, workPrice, nlText, nlNote, isUrgent, tech: [...tech] })
-  }, [draftK, cust, veh, vehicleMode, selectedVehicleId, lines, workPrice, nlText, nlNote, isUrgent, tech])
+    saveDraft(draftK, { cust, veh, vehicleMode, selectedVehicleId, lines, workPrice, nlText, nlNote, isUrgent, tech: [...tech], referral })
+  }, [draftK, cust, veh, vehicleMode, selectedVehicleId, lines, workPrice, nlText, nlNote, isUrgent, tech, referral])
   const discardDraft = () => {
     if (draftKeyRef.current) clearDraft(draftKeyRef.current)
     setDraftRestored(false)
@@ -491,6 +496,8 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
             return { originalText: (l.entryText || l.name).trim(), matchedFamily: s?.familyKey ?? null, matchedDisplay: s?.display ?? null, suggestedCents: s?.suggestedPriceCents ?? null, sampleSize: s?.sampleSize ?? null, confirmedCents: l.priceCents }
           }),
           isUrgent,
+          referralSource: referral.source || null,
+          referralDetail: referral.source ? referral.detail || null : null,
           internalNote: nlNote.trim() || null,
           // Vehicle-identification audit (VIN photo only now). No secrets.
           audit: {
@@ -509,7 +516,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); setPhase('review') }
     // workPrice + nlNote MUST be deps: otherwise the create closure reads their stale
     // initial values and the manager's Work Price / internal note are silently dropped.
-  }, [cust, veh, lines, tech, vehicleMode, selectedVehicleId, workPrice, nlNote, expectedTotalCents, suggByKey, isUrgent, isEstimate, router])
+  }, [cust, veh, lines, tech, vehicleMode, selectedVehicleId, workPrice, nlNote, expectedTotalCents, suggByKey, isUrgent, isEstimate, router, referral])
 
   const input = 'w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500'
 
@@ -538,6 +545,19 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
               </div>
               <input className={input} placeholder="Phone number" inputMode="tel" value={cust.phone} onChange={(e) => { setCust({ ...cust, phone: e.target.value }); searchCustomers(e.target.value) }} />
               <input className={input} placeholder="Email" inputMode="email" autoCapitalize="off" value={cust.email} onChange={(e) => { setCust({ ...cust, email: e.target.value }); searchCustomers(e.target.value) }} />
+              {/* Optional. The customer's own answer — never pre-filled from tracking data. */}
+              <select
+                aria-label="How did you hear about us?"
+                className={`${input} ${referral.source ? '' : 'text-gray-400'}`}
+                value={referral.source}
+                onChange={(e) => setReferral({ source: e.target.value, detail: e.target.value === 'other' ? referral.detail : '' })}
+              >
+                <option value="">How did you hear about us? (optional)</option>
+                {REFERRAL_SOURCES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
+              </select>
+              {referral.source === 'other' && (
+                <input className={input} placeholder="Where did you hear about us?" maxLength={120} value={referral.detail} onChange={(e) => setReferral({ ...referral, detail: e.target.value })} />
+              )}
             </div>
 
             {/* Returning-customer lookup — status + matches. Manual entry always stays available;

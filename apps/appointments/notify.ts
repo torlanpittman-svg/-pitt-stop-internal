@@ -33,7 +33,8 @@ import { type BookingConfig, formatDateLabel, formatTimeLabel } from './policy'
 import { manageUrl, publicBaseUrl } from './tokens'
 import { getBookingConfig, type Appointment } from './db'
 
-export interface EmailMessage { to: string; subject: string; text: string; html?: string; replyTo?: string | null }
+export interface EmailAttachment { name: string; contentBase64: string; contentType: string }
+export interface EmailMessage { to: string; subject: string; text: string; html?: string; replyTo?: string | null; attachments?: EmailAttachment[] }
 export type DeliveryResult =
   | { status: 'sent'; providerMessageId: string }
   | { status: 'not_configured' }
@@ -79,7 +80,7 @@ export class PostmarkEmailProvider implements TransactionalEmailProvider {
       res = await this.fetchImpl('https://api.postmarkapp.com/email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Postmark-Server-Token': this.token },
-        body: JSON.stringify({ From: this.from, To: msg.to, Subject: msg.subject, TextBody: msg.text, HtmlBody: msg.html || undefined, ReplyTo: msg.replyTo || undefined, MessageStream: 'outbound' }),
+        body: JSON.stringify({ From: this.from, To: msg.to, Subject: msg.subject, TextBody: msg.text, HtmlBody: msg.html || undefined, ReplyTo: msg.replyTo || undefined, MessageStream: 'outbound', Attachments: msg.attachments?.length ? msg.attachments.map((a) => ({ Name: a.name, Content: a.contentBase64, ContentType: a.contentType })) : undefined }),
         signal: AbortSignal.timeout(20_000),
       })
     } catch (err) {
