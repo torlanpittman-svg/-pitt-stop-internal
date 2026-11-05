@@ -10,7 +10,11 @@
  *   NEXT_PUBLIC_GOOGLE_ADS_ID                 AW-XXXXXXX → optional direct Google Ads tag.
  *   NEXT_PUBLIC_GOOGLE_ADS_BOOKING_CONVERSION AW-XXXXXXX/AbCdEf → optional direct conversion send_to.
  *
- * transaction_id = the appointment reference, so Google de-duplicates even if the tag somehow fires twice.
+ * transaction_id = the appointment reference. Caveat: GA4 only guarantees transaction_id
+ * de-duplication for the standard `purchase` event — on a custom event like `booking_confirmed` it
+ * is an identifying parameter, not a guaranteed de-dupe. Single-fire therefore rests on the
+ * created=true gate in BookingFlow above all. A direct Google Ads conversion can also use the
+ * transaction ID for duplicate detection; its Count setting is a separate configuration.
  */
 export const GA_MEASUREMENT_ID = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID || ''
 export const GOOGLE_ADS_ID = process.env.NEXT_PUBLIC_GOOGLE_ADS_ID || ''

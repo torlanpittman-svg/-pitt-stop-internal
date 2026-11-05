@@ -3,6 +3,9 @@
  * Short quote form: contact, year/make/model, service, what's going on, up to 2 optional photos.
  * Photos are downscaled in the browser (≤1600px JPEG) so the request stays small; the server rejects
  * anything over ~1 MB each. The success screen only says the shop was emailed when the server confirmed it.
+ * A per-payload request key makes retries safe: resubmitting the SAME content (double-tap, flaky network)
+ * reuses the key so the server replays the stored outcome instead of creating a second lead/email; any
+ * edit clears the key so the next submit is a genuinely new request.
  */
 import { useRef, useState } from 'react'
 import { QUOTE_SERVICES, MAX_PHOTOS, type QuoteService, type QuoteErrors } from '@/apps/marketing/quote-shared'
@@ -37,7 +40,12 @@ export default function QuoteForm({ preselect, attribution, phone }: { preselect
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState<{ emailed: boolean } | null>(null)
   const website = useRef('') // honeypot
-  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => { setF({ ...f, [k]: e.target.value }); setErrors((x) => ({ ...x, [k]: undefined })) }
+  // Idempotency key: minted at first submit, REUSED while the content is unchanged (so a retry replays
+  // instead of double-submitting), cleared on any edit or server-reported conflict.
+  const requestKey = useRef('')
+  const mintKey = () =>
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `qk-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => { setF({ ...f, [k]: e.target.value }); setErrors((x) => ({ ...x, [k]: undefined })); requestKey.current = '' }
 
   async function addPhotos(list: FileList | null) {
     if (!list) return
@@ -48,19 +56,22 @@ export default function QuoteForm({ preselect, attribution, phone }: { preselect
       try { next.push(await downscale(file)) } catch { setErrors((x) => ({ ...x, photos: 'That file could not be read as a photo.' })) }
     }
     setPhotos(next)
+    requestKey.current = ''
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     if (busy) return
     setBusy(true); setErrors({})
+    if (!requestKey.current) requestKey.current = mintKey()
     try {
       const r = await fetch('/api/quote', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service, ...f, referralSource: referral.source || undefined, referralDetail: referral.source === 'other' ? referral.detail : undefined, photos: photos.map((p) => ({ name: p.name, contentType: p.contentType, contentBase64: p.contentBase64 })), attribution, website: website.current }),
+        body: JSON.stringify({ service, ...f, referralSource: referral.source || undefined, referralDetail: referral.source === 'other' ? referral.detail : undefined, photos: photos.map((p) => ({ name: p.name, contentType: p.contentType, contentBase64: p.contentBase64 })), attribution, website: website.current, requestKey: requestKey.current }),
       })
       const d = await r.json().catch(() => ({}))
       if (d.ok) { setDone({ emailed: d.emailed === true }); return }
+      if (d.conflict) requestKey.current = '' // server saw this key with different content — next submit gets a fresh key
       if (d.errors) { setErrors(d.errors); return }
       setErrors({ form: d.error || 'Something went wrong. Please call the shop.' })
     } catch {
@@ -83,7 +94,7 @@ export default function QuoteForm({ preselect, attribution, phone }: { preselect
   }
 
   return (
-    <form onSubmit={submit} noValidate className="mx-auto max-w-3xl space-y-5 px-4 py-6" id="main">
+    <form onSubmit={submit} noValidate className="mx-auto max-w-3xl space-y-5 px-4 py-6">
       <p className="text-[var(--ps-body)]">Tell us about the vehicle and we&apos;ll get back to you with a quote. Prefer to talk? Call <a className="font-medium underline" href={telHref(phone)}>{phone}</a>.</p>
       {errors.form && <div role="alert" className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">{errors.form}</div>}
 
@@ -92,7 +103,7 @@ export default function QuoteForm({ preselect, attribution, phone }: { preselect
         <div className="grid gap-2 sm:grid-cols-3">
           {(Object.keys(QUOTE_SERVICES) as QuoteService[]).map((k) => (
             <label key={k} className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-3 ${service === k ? 'border-[var(--ps-navy)] bg-[var(--ps-navy)] text-white' : 'border-[var(--ps-line,#cfd8e3)] bg-white'}`}>
-              <input type="radio" name="service" value={k} checked={service === k} onChange={() => setService(k)} className="sr-only" />
+              <input type="radio" name="service" value={k} checked={service === k} onChange={() => { setService(k); requestKey.current = '' }} className="sr-only" />
               <span className="text-sm font-medium">{QUOTE_SERVICES[k].label}</span>
             </label>
           ))}
@@ -126,7 +137,7 @@ export default function QuoteForm({ preselect, attribution, phone }: { preselect
               <div key={i} className="relative">
                 {/* eslint-disable-next-line @next/next/no-img-element -- local preview of the customer's own upload */}
                 <img src={p.preview} alt="" className="h-20 w-20 rounded object-cover" />
-                <button type="button" aria-label="Remove photo" onClick={() => setPhotos(photos.filter((_, j) => j !== i))} className="absolute -right-2 -top-2 h-6 w-6 rounded-full bg-black/70 text-xs text-white">×</button>
+                <button type="button" aria-label="Remove photo" onClick={() => { setPhotos(photos.filter((_, j) => j !== i)); requestKey.current = '' }} className="absolute -right-2 -top-2 h-6 w-6 rounded-full bg-black/70 text-xs text-white">×</button>
               </div>
             ))}
           </div>
@@ -136,13 +147,13 @@ export default function QuoteForm({ preselect, attribution, phone }: { preselect
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
           <label className={label} htmlFor="q-ref">How did you hear about us? (optional)</label>
-          <select id="q-ref" className={field} value={referral.source} onChange={(e) => setReferral({ source: e.target.value, detail: '' })}>
+          <select id="q-ref" className={field} value={referral.source} onChange={(e) => { setReferral({ source: e.target.value, detail: '' }); requestKey.current = '' }}>
             <option value="">Choose one</option>
             {REFERRAL_SOURCES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
           </select>
         </div>
         {referral.source === 'other' && (
-          <div><label className={label} htmlFor="q-ref-detail">Where?</label><input id="q-ref-detail" className={field} maxLength={120} value={referral.detail} onChange={(e) => setReferral({ ...referral, detail: e.target.value })} /></div>
+          <div><label className={label} htmlFor="q-ref-detail">Where?</label><input id="q-ref-detail" className={field} maxLength={120} value={referral.detail} onChange={(e) => { setReferral({ ...referral, detail: e.target.value }); requestKey.current = '' }} /></div>
         )}
       </div>
 

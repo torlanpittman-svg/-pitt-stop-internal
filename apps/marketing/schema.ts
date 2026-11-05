@@ -159,6 +159,36 @@ export const marketingLeads = pgTable('marketing_leads', {
   index('marketing_leads_created_idx').on(t.createdAt),
 ])
 
+/**
+ * One row per public /quote submission, keyed by the client's request key (migration 0075). The UNIQUE
+ * request_key is the idempotency claim: a retry/double-tap replays the stored outcome instead of creating
+ * a second lead or a second email, and payload_hash stops a reused key returning another payload's result.
+ * The row, its marketing_leads row and the lead_created audit event are created in ONE data-modifying-CTE
+ * statement (quote-request.ts), which is why lead_id is NOT NULL: a claim without a lead cannot exist.
+ * email_attempts is the send FENCE — every provider call is authorized by winning a conditional UPDATE
+ * that increments it, so a delayed or crashed sender can never cause a second send.
+ * photos is the durable copy of the customer's uploads (the email attachment is derived from it, so a
+ * failed send never loses them). Operational outbox like appointment_notifications — status IS updated;
+ * this is not one of the append-only tables.
+ */
+export const quoteRequests = pgTable('quote_requests', {
+  id:            uuid('id').primaryKey().defaultRandom(),
+  requestKey:    varchar('request_key', { length: 64 }).notNull(),
+  payloadHash:   varchar('payload_hash', { length: 64 }).notNull(),
+  leadId:        uuid('lead_id').notNull().references(() => marketingLeads.id),
+  /** processing | sent | failed | not_configured | uncertain | blocked — 'sent'/'uncertain' are never re-sent. */
+  emailStatus:   varchar('email_status', { length: 16 }).notNull().default('processing'),
+  emailError:    text('email_error'),
+  emailAttempts: integer('email_attempts').notNull().default(0),
+  photos:        jsonb('photos').$type<{ name: string; contentType: string; contentBase64: string }[]>().notNull(),
+  createdAt:     timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:     timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex('quote_requests_key_uniq').on(t.requestKey),
+  index('quote_requests_lead_idx').on(t.leadId),
+  index('quote_requests_created_idx').on(t.createdAt),
+])
+
 export const marketingAttribution = pgTable('marketing_attribution', {
   id:             uuid('id').primaryKey().defaultRandom(),
   source:         varchar('source', { length: 24 }).notNull(),

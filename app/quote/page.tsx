@@ -23,7 +23,8 @@ export default async function QuotePage({ searchParams }: { searchParams: Promis
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? ''
   const attribution = Object.fromEntries(ATTRIBUTION_KEYS.map((k) => [k, one(sp[k]).slice(0, 120)]).filter(([, v]) => v))
   const svc = one(sp.service)
-  const preselect = (svc in QUOTE_SERVICES ? svc : 'ceramic') as QuoteService
+  // Object.hasOwn, not `in`: ?service=toString / __proto__ must fall back, not leak an inherited key.
+  const preselect = (Object.hasOwn(QUOTE_SERVICES, svc) ? svc : 'ceramic') as QuoteService
   return (
     <BookShell phone={cfg.phone} address={cfg.address} heading="Request a Quote">
       <QuoteForm preselect={preselect} attribution={attribution} phone={cfg.phone} />

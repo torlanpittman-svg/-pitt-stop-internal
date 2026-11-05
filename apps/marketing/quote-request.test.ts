@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseQuoteRequest, quoteSubject, quoteEmailText, quoteInbox, DEFAULT_QUOTE_INBOX } from './quote-request'
+import { parseQuoteRequest, quoteSubject, quoteEmailText, quoteInbox, DEFAULT_QUOTE_INBOX, normalizeRequestKey, quotePayloadHash } from './quote-request'
 import { publicBookingRoute } from '@/apps/appointments/public-host'
 
 const good = { service: 'ceramic', name: 'Jane Doe', phone: '(979) 555-0199', email: 'Jane@Example.com', vehicleYear: '2020', vehicleMake: 'Cadillac', vehicleModel: 'XT6', message: 'Light swirls', photos: [] }
@@ -23,6 +23,13 @@ describe('quote request parsing', () => {
     expect(r.ok).toBe(false)
     if (!r.ok) expect(Object.keys(r.errors).sort()).toEqual(['email', 'phone', 'service', 'vehicleYear'])
   })
+  it('rejects inherited object keys as services (Object.hasOwn, not `in`)', () => {
+    for (const service of ['toString', '__proto__', 'constructor', 'hasOwnProperty', 'valueOf']) {
+      const r = parseQuoteRequest({ ...good, service })
+      expect(r.ok, `service=${service} must not validate`).toBe(false)
+      if (!r.ok) expect(r.errors.service).toBe('Choose a service.')
+    }
+  })
   it('limits photos to 2 small JPEG/PNG/WebP images', () => {
     const png = { name: 'a.png', contentType: 'image/png', contentBase64: 'iVBORw0KGgo=' }
     const ok = parseQuoteRequest({ ...good, photos: [png, png] }); expect(ok.ok).toBe(true)
@@ -45,6 +52,27 @@ describe('quote email', () => {
   it('delivers to the shop group unless QUOTE_INBOX overrides it', () => {
     expect(quoteInbox({} as unknown as NodeJS.ProcessEnv)).toBe(DEFAULT_QUOTE_INBOX)
     expect(quoteInbox({ QUOTE_INBOX: ' x@pittstopbcs.com ' } as unknown as NodeJS.ProcessEnv)).toBe('x@pittstopbcs.com')
+  })
+})
+
+describe('request key + payload fingerprint', () => {
+  it('accepts a browser UUID and the non-crypto fallback, rejects everything else', () => {
+    expect(normalizeRequestKey('d3b07384-d9a0-4c97-9a23-8f63e1a2b4c5')).toBe('d3b07384-d9a0-4c97-9a23-8f63e1a2b4c5')
+    expect(normalizeRequestKey(' qk-mh3x1a2b-0a1b2c3d4e ')).toBe('qk-mh3x1a2b-0a1b2c3d4e')
+    expect(normalizeRequestKey('short')).toBeNull()
+    expect(normalizeRequestKey('x'.repeat(65))).toBeNull()
+    expect(normalizeRequestKey('has spaces in the middle!')).toBeNull()
+    expect(normalizeRequestKey(42)).toBeNull()
+    expect(normalizeRequestKey(undefined)).toBeNull()
+  })
+  it('hash is stable for the same payload and changes with any field including photos', () => {
+    const a = parseQuoteRequest(good); if (!a.ok) throw new Error('parse')
+    const b = parseQuoteRequest(good); if (!b.ok) throw new Error('parse')
+    expect(quotePayloadHash(a.req)).toBe(quotePayloadHash(b.req))
+    const edited = parseQuoteRequest({ ...good, message: 'Deep scratches' }); if (!edited.ok) throw new Error('parse')
+    expect(quotePayloadHash(edited.req)).not.toBe(quotePayloadHash(a.req))
+    const withPhoto = parseQuoteRequest({ ...good, photos: [{ name: 'a.png', contentType: 'image/png', contentBase64: 'iVBORw0KGgo=' }] }); if (!withPhoto.ok) throw new Error('parse')
+    expect(quotePayloadHash(withPhoto.req)).not.toBe(quotePayloadHash(a.req))
   })
 })
 
