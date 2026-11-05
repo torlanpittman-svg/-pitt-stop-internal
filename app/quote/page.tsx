@@ -6,7 +6,7 @@
 import type { Metadata } from 'next'
 import { getBookingConfig } from '@/apps/appointments/db'
 import { ATTRIBUTION_KEYS } from '@/apps/appointments/attribution'
-import { QUOTE_SERVICES, type QuoteService } from '@/apps/marketing/quote-request'
+import { QUOTE_SERVICES, type QuoteService } from '@/apps/marketing/quote-shared'
 import { BookShell } from '@/app/book/BookShell'
 import QuoteForm from './QuoteForm'
 

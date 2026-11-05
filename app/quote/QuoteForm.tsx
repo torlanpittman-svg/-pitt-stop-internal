@@ -5,7 +5,7 @@
  * anything over ~1 MB each. The success screen only says the shop was emailed when the server confirmed it.
  */
 import { useRef, useState } from 'react'
-import { QUOTE_SERVICES, MAX_PHOTOS, type QuoteService, type QuoteErrors } from '@/apps/marketing/quote-request'
+import { QUOTE_SERVICES, MAX_PHOTOS, type QuoteService, type QuoteErrors } from '@/apps/marketing/quote-shared'
 import { REFERRAL_SOURCES } from '@/apps/quick-entry/referral-source'
 import { telHref } from '@/app/book/BookShell'
 

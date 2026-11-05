@@ -16,39 +16,16 @@ import { recordAttribution } from './attribution'
 import { cleanAttribution, classifySource, attributionConfidence, type BookingAttribution } from '@/apps/appointments/attribution'
 import { isValidUsPhone, isValidEmail, formatUsPhone } from '@/apps/appointments/contact'
 import { transactionalEmailProvider, type TransactionalEmailProvider, type EmailAttachment } from '@/apps/appointments/notify'
-import { normalizeReferralSource, referralSourceLabel, type ReferralSource } from '@/apps/quick-entry/referral-source'
+import { normalizeReferralSource, referralSourceLabel } from '@/apps/quick-entry/referral-source'
 
-export const QUOTE_SERVICES = {
-  ceramic:   { label: 'Ceramic coating', category: 'ceramic' },
-  headliner: { label: 'Headliner repair or replacement', category: 'headliner' },
-  other:     { label: 'Other detailing', category: 'other' },
-} as const
-export type QuoteService = keyof typeof QUOTE_SERVICES
+import { QUOTE_SERVICES, MAX_PHOTOS, MAX_PHOTO_BYTES, type QuoteService, type QuotePhoto, type QuoteRequest, type QuoteErrors } from './quote-shared'
+export { QUOTE_SERVICES, MAX_PHOTOS, MAX_PHOTO_BYTES, type QuoteService, type QuotePhoto, type QuoteRequest, type QuoteErrors } from './quote-shared'
 
 /** Where quote requests are delivered. Override with QUOTE_INBOX; the default is the monitored shop group. */
 export const DEFAULT_QUOTE_INBOX = 'service@pittstopbcs.com'
 export const quoteInbox = (env: NodeJS.ProcessEnv = process.env): string => (env.QUOTE_INBOX ?? '').trim() || DEFAULT_QUOTE_INBOX
 
-export const MAX_PHOTOS = 2
-export const MAX_PHOTO_BYTES = 1_200_000          // after client-side downscale; keeps the request well under Vercel's body cap
 const PHOTO_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
-
-export interface QuotePhoto { name: string; contentType: string; contentBase64: string }
-export interface QuoteRequest {
-  service: QuoteService
-  name: string
-  phone: string
-  email: string
-  vehicleYear: string
-  vehicleMake: string
-  vehicleModel: string
-  message: string
-  photos: QuotePhoto[]
-  /** Optional self-reported answer; null = not answered. */
-  referralSource: ReferralSource | null
-  referralDetail: string
-}
-export type QuoteErrors = Partial<Record<keyof QuoteRequest | 'form', string>>
 
 const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 
