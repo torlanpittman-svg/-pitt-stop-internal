@@ -23,6 +23,7 @@ CREATE TABLE service_orders (id uuid PRIMARY KEY, customer_id uuid, status text)
 beforeAll(async () => {
   await pg.exec(PARENTS)
   await pg.exec(readFileSync('drizzle/migrations/manual/0046_marketing.sql', 'utf8'))
+  await pg.exec(readFileSync('drizzle/migrations/manual/0072_marketing_leads_referral.sql', 'utf8'))
   await pg.exec(readFileSync('drizzle/migrations/manual/0047_marketing_sms_consent.sql', 'utf8'))
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
 })

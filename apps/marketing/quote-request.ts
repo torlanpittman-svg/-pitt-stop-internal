@@ -8,13 +8,15 @@
  *   reports honestly whether the email was accepted by Postmark (the lead is saved either way).
  *
  * Click attribution (gclid / utm_*) is recorded against the lead in marketing_attribution; the customer's
- * own words never touch it.
+ * own words never touch it. The optional "How did you hear about us?" answer is stored on the lead row
+ * (referral_source / referral_detail) as what the customer SAID — reported beside, never merged with, attribution.
  */
 import { createLead } from './leads'
 import { recordAttribution } from './attribution'
 import { cleanAttribution, classifySource, attributionConfidence, type BookingAttribution } from '@/apps/appointments/attribution'
 import { isValidUsPhone, isValidEmail, formatUsPhone } from '@/apps/appointments/contact'
 import { transactionalEmailProvider, type TransactionalEmailProvider, type EmailAttachment } from '@/apps/appointments/notify'
+import { normalizeReferralSource, referralSourceLabel, type ReferralSource } from '@/apps/quick-entry/referral-source'
 
 export const QUOTE_SERVICES = {
   ceramic:   { label: 'Ceramic coating', category: 'ceramic' },
@@ -42,6 +44,9 @@ export interface QuoteRequest {
   vehicleModel: string
   message: string
   photos: QuotePhoto[]
+  /** Optional self-reported answer; null = not answered. */
+  referralSource: ReferralSource | null
+  referralDetail: string
 }
 export type QuoteErrors = Partial<Record<keyof QuoteRequest | 'form', string>>
 
@@ -66,6 +71,8 @@ export function parseQuoteRequest(body: unknown): { ok: true; req: QuoteRequest 
   const vehicleModel = str(b.vehicleModel, 40)
   if (!vehicleModel) errors.vehicleModel = 'Enter the model.'
   const message = str(b.message, 1500)
+  const referralSource = normalizeReferralSource(b.referralSource)
+  const referralDetail = referralSource ? str(b.referralDetail, 120) : ''
   const rawPhotos = Array.isArray(b.photos) ? b.photos : []
   if (rawPhotos.length > MAX_PHOTOS) errors.photos = `Up to ${MAX_PHOTOS} photos.`
   const photos: QuotePhoto[] = []
@@ -78,7 +85,7 @@ export function parseQuoteRequest(body: unknown): { ok: true; req: QuoteRequest 
     photos.push({ name: str(o.name, 80).replace(/[^\w.-]+/g, '_') || `photo-${photos.length + 1}.jpg`, contentType, contentBase64 })
   }
   if (Object.keys(errors).length) return { ok: false, errors }
-  return { ok: true, req: { service, name, phone: formatUsPhone(phone), email, vehicleYear, vehicleMake, vehicleModel, message, photos } }
+  return { ok: true, req: { service, name, phone: formatUsPhone(phone), email, vehicleYear, vehicleMake, vehicleModel, message, photos, referralSource, referralDetail } }
 }
 
 export const vehicleLabel = (r: Pick<QuoteRequest, 'vehicleYear' | 'vehicleMake' | 'vehicleModel'>) => [r.vehicleYear, r.vehicleMake, r.vehicleModel].filter(Boolean).join(' ')
@@ -101,6 +108,8 @@ export function quoteEmailText(r: QuoteRequest, meta: { leadId: string; source: 
     'Customer notes:',
     r.message || '(none)',
     '',
+    `Heard about us (customer's own answer): ${r.referralSource ? referralSourceLabel(r.referralSource) + (r.referralDetail ? ` — ${r.referralDetail}` : '') : '(not answered)'}`,
+    '',
     r.photos.length ? `${r.photos.length} photo(s) attached.` : 'No photos attached.',
     '',
     `Received ${meta.receivedAt.toLocaleString('en-US', { timeZone: 'America/Chicago' })} CT · source: ${meta.source} · lead ${meta.leadId}`,
@@ -121,6 +130,7 @@ export async function submitQuoteRequest(
   const lead = await createLead({
     name: req.name, phone: req.phone, email: req.email, vehicle: vehicleLabel(req),
     requestedService: QUOTE_SERVICES[req.service].category, source,
+    referralSource: req.referralSource, referralDetail: req.referralDetail || null,
     notes: [`Quote request via /quote`, req.message ? `Customer notes: ${req.message}` : null, req.photos.length ? `${req.photos.length} photo(s) emailed` : null].filter(Boolean).join('\n'),
   }, 'website:quote')
   if (attribution.gclid || attribution.utm_source || attribution.fbclid) {

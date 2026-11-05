@@ -85,7 +85,7 @@ export const DEFAULT_BOOKING_SERVICES: BookingService[] = [
   { key: 'mini_detail', label: 'Mini Detail', description: 'A lighter refresh, inside and out.', category: 'detail', weight: 1, catalogSlug: 'mini_detail', enabled: true },
   { key: 'complete_detail', label: 'Full Detail', description: 'A complete interior and exterior detail.', category: 'detail', weight: 1, catalogSlug: 'complete_detail', enabled: true },
   { key: 'premium_detail', label: 'Premium Detail', description: 'Our most thorough detail, inside and out.', category: 'detail', weight: 2, catalogSlug: null, enabled: true },
-  { key: 'ceramic_coating', label: 'Ceramic Coating', description: '1-year or 3-year coating. We confirm the option with you at drop-off.', category: 'detail', weight: 2, catalogSlug: null, enabled: true },
+  { key: 'ceramic_coating', label: 'Ceramic Coating', description: '1-year protection from $1,000 or 3-year protection from $2,200, paint correction included. We confirm the option and your pickup time with you.', category: 'detail', weight: 2, catalogSlug: null, enabled: true },
   { key: 'interior_detail', label: 'Interior Detail', description: 'Seats, carpets, surfaces, stains.', category: 'detail', weight: 1, catalogSlug: 'interior_detail', enabled: true },
   { key: 'exterior_detail', label: 'Exterior Detail', description: 'Wash and exterior care.', category: 'detail', weight: 1, catalogSlug: null, enabled: true },
   { key: 'paint_correction', label: 'Paint Correction', description: 'Swirl and scratch removal. Final scope confirmed at drop-off.', category: 'detail', weight: 2, catalogSlug: null, enabled: true },

@@ -65,8 +65,8 @@ describe('admin view: retail/dealer separation + tier rendering', () => {
 describe('owner decisions are encoded', () => {
   it('Ceramic Coating is split 1yr/3yr, each needing a NEW QB item with sync OFF', () => {
     const one = bySlug('ceramic_coating_1yr'); const three = bySlug('ceramic_coating_3yr')
-    expect(one.defaultPriceCents).toBe(80000)
-    expect(three.defaultPriceCents).toBe(200000)
+    expect(one.defaultPriceCents).toBe(100000)
+    expect(three.defaultPriceCents).toBe(220000)
     for (const c of [one, three]) {
       expect(c.qbItemStatus).toBe('new_create_at_golive')
       expect(c.qbSyncEnabled).toBe(false)

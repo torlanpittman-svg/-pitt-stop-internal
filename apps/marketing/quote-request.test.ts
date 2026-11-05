@@ -8,7 +8,15 @@ describe('quote request parsing', () => {
   it('accepts a complete request and normalises phone/email', () => {
     const r = parseQuoteRequest(good)
     expect(r.ok).toBe(true)
-    if (r.ok) { expect(r.req.email).toBe('jane@example.com'); expect(r.req.phone).toMatch(/979/); expect(r.req.service).toBe('ceramic') }
+    if (r.ok) { expect(r.req.email).toBe('jane@example.com'); expect(r.req.phone).toMatch(/979/); expect(r.req.service).toBe('ceramic'); expect(r.req.referralSource).toBeNull(); expect(r.req.referralDetail).toBe('') }
+  })
+  it('keeps the optional self-reported referral answer, fail-closed to known keys, detail only with a source', () => {
+    const a = parseQuoteRequest({ ...good, referralSource: 'Google', referralDetail: 'ignored' }); if (!a.ok) throw new Error('parse')
+    expect(a.req.referralSource).toBe('google'); expect(a.req.referralDetail).toBe('ignored')
+    const b = parseQuoteRequest({ ...good, referralSource: 'tv', referralDetail: 'x' }); if (!b.ok) throw new Error('parse')
+    expect(b.req.referralSource).toBeNull(); expect(b.req.referralDetail).toBe('')
+    const c = parseQuoteRequest({ ...good, referralSource: 'other', referralDetail: 'A'.repeat(200) }); if (!c.ok) throw new Error('parse')
+    expect(c.req.referralDetail).toHaveLength(120)
   })
   it('rejects a bad service, missing contact and bad year with per-field errors', () => {
     const r = parseQuoteRequest({ ...good, service: 'ppf', phone: '12', email: 'nope', vehicleYear: '20' })
@@ -30,6 +38,9 @@ describe('quote email', () => {
     expect(quoteSubject(r.req)).toBe('Ceramic coating quote request — 2020 Cadillac XT6 — Jane Doe')
     const text = quoteEmailText(r.req, { leadId: 'L1', source: 'google_ads', receivedAt: new Date('2026-11-05T18:00:00Z') })
     expect(text).toContain('jane@example.com'); expect(text).toContain('Light swirls'); expect(text).toContain('google_ads')
+    expect(text).toContain('Heard about us (customer\'s own answer): (not answered)')
+    const r2 = parseQuoteRequest({ ...good, referralSource: 'other', referralDetail: 'church bulletin' }); if (!r2.ok) throw new Error('parse')
+    expect(quoteEmailText(r2.req, { leadId: 'L2', source: 'website', receivedAt: new Date() })).toContain('Other — church bulletin')
   })
   it('delivers to the shop group unless QUOTE_INBOX overrides it', () => {
     expect(quoteInbox({} as unknown as NodeJS.ProcessEnv)).toBe(DEFAULT_QUOTE_INBOX)

@@ -22,6 +22,9 @@ export interface CreateLeadInput {
   estimatedValueCents?: number | null
   customerId?: string | null
   notes?: string | null
+  /** Self-reported "how did you hear about us?" — kept apart from captured attribution. */
+  referralSource?: string | null
+  referralDetail?: string | null
   /** Optional explicit creation time (used for backfill/tests so report windows are testable). */
   createdAt?: Date
 }
@@ -38,6 +41,8 @@ export async function createLead(input: CreateLeadInput, actor: string | null): 
     estimatedValueCents: input.estimatedValueCents ?? null,
     customerId: input.customerId ?? null,
     notes: input.notes ?? null,
+    referralSource: input.referralSource ?? null,
+    referralDetail: input.referralDetail ?? null,
     status: 'new',
     ...(input.createdAt ? { createdAt: input.createdAt } : {}),
   }).returning()

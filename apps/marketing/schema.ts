@@ -148,6 +148,9 @@ export const marketingLeads = pgTable('marketing_leads', {
   serviceOrderId:         uuid('service_order_id'),
   attributedRevenueCents: integer('attributed_revenue_cents'),
   notes:                  text('notes'),
+  /** Customer's SELF-REPORTED "how did you hear about us?" (migration 0071) — never merged with marketing_attribution. */
+  referralSource:         varchar('referral_source', { length: 24 }),
+  referralDetail:         varchar('referral_detail', { length: 120 }),
   createdAt:              timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt:              timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

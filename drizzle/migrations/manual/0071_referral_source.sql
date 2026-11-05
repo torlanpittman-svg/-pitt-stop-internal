@@ -1,4 +1,4 @@
--- 0071 — "How did you hear about us?" on retail intake (2026-11-05).
+-- 0071 — "How did you hear about us?" on retail intake (2026-11-05). (0072 adds the same two columns to marketing_leads.)
 -- Self-reported customer answer captured at Quick Entry. Kept SEPARATE from captured click attribution
 -- (appointments.attribution / marketing_attribution carry gclid, utm_* and fbclid); this column is what the
 -- customer SAID, never what a tracking parameter proved. Optional: NULL = not asked / not answered.

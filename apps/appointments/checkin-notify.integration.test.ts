@@ -42,7 +42,7 @@ const CFG: BookingConfig = { ...DEFAULT_BOOKING_CONFIG, enabled: true, slotCapac
 
 beforeAll(async () => {
   await pg.exec(SCHEMA)
-  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql']) await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
+  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql', '0072_marketing_leads_referral.sql']) await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
   await pg.query(`INSERT INTO app_settings (key, value, type) VALUES ('booking_config', $1::jsonb, 'json')`, [JSON.stringify(CFG)])
   // A live Complete Detail catalog item exists — check-in must still not bill it from the booking.
   await pg.query(`INSERT INTO service_catalog (slug, name, kind) VALUES ('complete_detail', 'Complete Detail', 'package')`)

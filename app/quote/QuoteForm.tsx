@@ -6,6 +6,7 @@
  */
 import { useRef, useState } from 'react'
 import { QUOTE_SERVICES, MAX_PHOTOS, type QuoteService, type QuoteErrors } from '@/apps/marketing/quote-request'
+import { REFERRAL_SOURCES } from '@/apps/quick-entry/referral-source'
 import { telHref } from '@/app/book/BookShell'
 
 type Photo = { name: string; contentType: string; contentBase64: string; preview: string }
@@ -30,6 +31,7 @@ const label = 'mb-1 block text-sm font-medium text-[var(--ps-ink,#0b1f33)]'
 export default function QuoteForm({ preselect, attribution, phone }: { preselect: QuoteService; attribution: Record<string, string>; phone: string }) {
   const [service, setService] = useState<QuoteService>(preselect)
   const [f, setF] = useState({ name: '', phone: '', email: '', vehicleYear: '', vehicleMake: '', vehicleModel: '', message: '' })
+  const [referral, setReferral] = useState({ source: '', detail: '' }) // optional, self-reported; sent separately from `attribution`
   const [photos, setPhotos] = useState<Photo[]>([])
   const [errors, setErrors] = useState<QuoteErrors>({})
   const [busy, setBusy] = useState(false)
@@ -55,7 +57,7 @@ export default function QuoteForm({ preselect, attribution, phone }: { preselect
     try {
       const r = await fetch('/api/quote', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service, ...f, photos: photos.map((p) => ({ name: p.name, contentType: p.contentType, contentBase64: p.contentBase64 })), attribution, website: website.current }),
+        body: JSON.stringify({ service, ...f, referralSource: referral.source || undefined, referralDetail: referral.source === 'other' ? referral.detail : undefined, photos: photos.map((p) => ({ name: p.name, contentType: p.contentType, contentBase64: p.contentBase64 })), attribution, website: website.current }),
       })
       const d = await r.json().catch(() => ({}))
       if (d.ok) { setDone({ emailed: d.emailed === true }); return }
@@ -128,6 +130,19 @@ export default function QuoteForm({ preselect, attribution, phone }: { preselect
               </div>
             ))}
           </div>
+        )}
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div>
+          <label className={label} htmlFor="q-ref">How did you hear about us? (optional)</label>
+          <select id="q-ref" className={field} value={referral.source} onChange={(e) => setReferral({ source: e.target.value, detail: '' })}>
+            <option value="">Choose one</option>
+            {REFERRAL_SOURCES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
+          </select>
+        </div>
+        {referral.source === 'other' && (
+          <div><label className={label} htmlFor="q-ref-detail">Where?</label><input id="q-ref-detail" className={field} maxLength={120} value={referral.detail} onChange={(e) => setReferral({ ...referral, detail: e.target.value })} /></div>
         )}
       </div>
 

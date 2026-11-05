@@ -23,7 +23,7 @@ const person = { id: '88', email: 'customer@example.com', status: 'active' }
 
 beforeAll(async () => {
   await pg.exec('CREATE TABLE customers(id uuid PRIMARY KEY,email text,normalized_email text,active boolean DEFAULT true); CREATE TABLE service_orders(id uuid PRIMARY KEY);')
-  for (const file of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0048_marketing_sms_delivery.sql', '0049_marketing_autopilot.sql']) await pg.exec(readFileSync(`drizzle/migrations/manual/${file}`, 'utf8'))
+  for (const file of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0048_marketing_sms_delivery.sql', '0049_marketing_autopilot.sql','0072_marketing_leads_referral.sql']) await pg.exec(readFileSync(`drizzle/migrations/manual/${file}`, 'utf8'))
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
 })
 afterAll(() => pg.close())

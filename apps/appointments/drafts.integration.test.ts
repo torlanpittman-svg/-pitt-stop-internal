@@ -41,7 +41,7 @@ CREATE TABLE app_settings (
 
 beforeAll(async () => {
   await pg.exec(PARENTS)
-  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql']) {
+  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql', '0072_marketing_leads_referral.sql']) {
     await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
   }
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)

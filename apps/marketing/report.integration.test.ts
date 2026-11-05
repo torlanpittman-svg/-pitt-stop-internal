@@ -32,6 +32,7 @@ const inRange = new Date('2026-10-04T00:00:00Z')
 beforeAll(async () => {
   await pg.exec(PARENTS)
   await pg.exec(readFileSync('drizzle/migrations/manual/0046_marketing.sql', 'utf8'))
+  await pg.exec(readFileSync('drizzle/migrations/manual/0072_marketing_leads_referral.sql', 'utf8'))
   await pg.exec(readFileSync('drizzle/migrations/manual/0047_marketing_sms_consent.sql', 'utf8'))
   await pg.exec(readFileSync('drizzle/migrations/manual/0048_marketing_sms_delivery.sql', 'utf8'))
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
