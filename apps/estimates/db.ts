@@ -68,27 +68,59 @@ export async function createIntake(input: z.infer<typeof intakeInput>, actor: st
   const pricedLines = services.flatMap((service, i) => input.lines[i].priceCents > 0 ? [{ service, priceCents: input.lines[i].priceCents }] : [])
   const cfg = await getBusinessConfig()
   // Neon batch is transactional: an estimate never appears briefly as an arrived Job,
-  // and a failed contact/estimate insert cannot leave a half-created intake behind.
+  // and a failed contact/estimate insert cannot leave a half-created intake behind. FKs are still
+  // checked per statement, so the service_orders parent must precede anything that references it.
   const statements = [
     ...(!savedVehicle ? [db.insert(vehicles).values({ id: vehicleId, year: input.year, make: input.make, model: input.model, vin: input.vin || null })] : []),
-    // Fill the saved vehicle's missing details in place. Each field is guarded in SQL: a field that became
-    // valid since it was read (someone corrected it meanwhile) is kept, never overwritten. Audited like the
-    // Job's Edit Vehicle (service_order_events 'vehicle_corrected', old/new per field, append-only).
-    ...(completion?.filled.length ? [
-      db.update(vehicles).set({
-        year: sql`CASE WHEN ${vehicles.year} ~ '^[0-9]{4}$' THEN ${vehicles.year} ELSE ${completion.vehicle.year} END`,
-        make: sql`COALESCE(NULLIF(btrim(${vehicles.make}), ''), ${completion.vehicle.make})`,
-        model: sql`COALESCE(NULLIF(btrim(${vehicles.model}), ''), ${completion.vehicle.model})`,
-      }).where(eq(vehicles.id, vehicleId)),
-      db.insert(serviceOrderEvents).values({ serviceOrderId: id, eventType: 'vehicle_corrected', employeeName: actor,
-        note: JSON.stringify({ changed: completion.filled, old: completion.old, new: completion.new, reason: 'estimate_intake_completed_saved_vehicle', qb: 'not_linked' }) }),
-    ] : []),
     db.insert(serviceOrders).values({ id, orderNumber: `ES-${id.replaceAll('-', '').slice(0, 16)}`, vehicleId,
       source: 'estimate', serviceType: 'retail', status: 'estimate', customerName: input.customerName,
       notes: input.notes || null, checkedInBy: actor }),
-    db.insert(quickEntryJobs).values({ serviceOrderId: id, vehicleId, customerName: input.customerName,
-      customerEmail: input.customerEmail || null, customerPhone: input.customerPhone || null,
-      year: vehicle.year, make: vehicle.make, model: vehicle.model, vin: vehicle.vin || null, createdBy: actor }),
+    // Fill the saved vehicle's missing details in place — ONE statement, everything derived from the
+    // LOCKED row, never from the earlier JS read. Each field is guarded: one that became valid since it
+    // was read (someone corrected it meanwhile) is kept, never overwritten. The intake snapshot
+    // (quick_entry_jobs) copies the row exactly as persisted, and the audit (service_order_events
+    // 'vehicle_corrected', append-only, like the Job's Edit Vehicle) records only fields that actually
+    // changed — a fill the guard skipped is never claimed. The VIN is never touched.
+    ...(completion?.filled.length ? [
+      db.execute(sql`
+        WITH locked AS (
+          -- FOR NO KEY UPDATE, not FOR UPDATE: the service_orders insert above already holds FOR KEY
+          -- SHARE on this row (FK check), so two concurrent intakes for the same vehicle would deadlock
+          -- upgrading to FOR UPDATE. Only non-key year/make/model change, and NO KEY UPDATE does not
+          -- conflict with KEY SHARE while still serializing these fills against each other.
+          SELECT id, year, make, model, vin FROM vehicles WHERE id = ${vehicleId}::uuid FOR NO KEY UPDATE
+        ), updated AS (
+          UPDATE vehicles v SET
+            year  = CASE WHEN btrim(COALESCE(l.year, '')) ~ '^[0-9]{4}$' THEN l.year ELSE ${completion.vehicle.year} END,
+            make  = COALESCE(NULLIF(btrim(l.make), ''), ${completion.vehicle.make}),
+            model = COALESCE(NULLIF(btrim(l.model), ''), ${completion.vehicle.model})
+          FROM locked l WHERE v.id = l.id
+          RETURNING v.id, v.year, v.make, v.model, v.vin, l.year AS old_year, l.make AS old_make, l.model AS old_model
+        ), snapshot AS (
+          INSERT INTO quick_entry_jobs (service_order_id, vehicle_id, customer_name, customer_email, customer_phone, year, make, model, vin, created_by)
+          SELECT ${id}::uuid, u.id, ${input.customerName}, ${input.customerEmail || null}, ${input.customerPhone || null}, u.year, u.make, u.model, u.vin, ${actor}
+          FROM updated u
+        ), changes AS (
+          SELECT * FROM (
+            SELECT 1 AS ord, 'year' AS field, u.old_year AS old_value, u.year AS new_value FROM updated u WHERE u.year IS DISTINCT FROM u.old_year
+            UNION ALL SELECT 2, 'make', u.old_make, u.make FROM updated u WHERE u.make IS DISTINCT FROM u.old_make
+            UNION ALL SELECT 3, 'model', u.old_model, u.model FROM updated u WHERE u.model IS DISTINCT FROM u.old_model
+          ) c
+        )
+        INSERT INTO service_order_events (service_order_id, event_type, employee_name, note)
+        SELECT ${id}::uuid, 'vehicle_corrected', ${actor},
+          json_build_object(
+            'changed', (SELECT json_agg(field ORDER BY ord) FROM changes),
+            'old',     (SELECT json_object_agg(field, old_value ORDER BY ord) FROM changes),
+            'new',     (SELECT json_object_agg(field, new_value ORDER BY ord) FROM changes),
+            'reason', 'estimate_intake_completed_saved_vehicle', 'qb', 'not_linked'
+          )::text
+        WHERE EXISTS (SELECT 1 FROM changes)`),
+    ] : [
+      db.insert(quickEntryJobs).values({ serviceOrderId: id, vehicleId, customerName: input.customerName,
+        customerEmail: input.customerEmail || null, customerPhone: input.customerPhone || null,
+        year: vehicle.year, make: vehicle.make, model: vehicle.model, vin: vehicle.vin || null, createdBy: actor }),
+    ]),
     db.insert(jobEstimates).values({ id: estimateId, serviceOrderId: id, priceMode: input.workPriceCents ? 'explicit_pretax' : 'itemized', explicitTotalCents: input.workPriceCents || null, taxRateBps: cfg.defaultTaxBps, explicitTaxCategory: 'detailing', createdBy: actor, updatedBy: actor }),
     ...(services.length ? [db.insert(jobServices).values(services)] : []),
     ...(pricedLines.length ? [
@@ -98,8 +130,8 @@ export async function createIntake(input: z.infer<typeof intakeInput>, actor: st
     db.insert(serviceOrderEvents).values({ serviceOrderId: id, eventType: 'estimate_intake', employeeName: actor, newStatus: 'estimate' }),
   ]
   try {
-    // batch() requires a non-empty tuple; the service-order/job/estimate/intake/event
-    // inserts are unconditional, so `statements` always has at least those five.
+    // batch() requires a non-empty tuple; the service-order/snapshot/estimate/intake/event
+    // statements are unconditional, so `statements` always has at least those five.
     await db.batch(statements as [(typeof statements)[number], ...(typeof statements)[number][]])
   } catch (error) {
     const [retry] = await db.select().from(estimateIntakes).where(eq(estimateIntakes.orderId, id))

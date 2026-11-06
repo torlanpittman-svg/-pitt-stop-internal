@@ -80,3 +80,19 @@ The other three conditions (first name, VIN read pending, vehicle pick) were equ
 - Completing a saved vehicle writes `vehicles.year/make/model` only when blank/invalid; a wrong-but-valid
   saved value still needs the Job's Edit Vehicle (by design).
 - `next build --webpack` after the corrections: passed (exit 0).
+
+## Final independent review and release preparation
+
+Owner authorized completion and deployment. Isolated release checkout is `/private/tmp/pitt-estimate-continue-release`, branch `codex/estimate-continue-release`, based on original commits 89fef12 and 133f1af on production 4886fd3.
+
+Codex found and Claude corrected the audit-before-parent FK failure and stale intake/audit snapshots during intervening vehicle corrections. The completed saved vehicle, snapshot, and actual change audit now derive from a locked row inside one SQL statement in the existing Neon transactional batch; the order parent is inserted first. FOR NO KEY UPDATE avoids conflict with FK KEY SHARE locks. No schema migration, pricing changes, or VIN overwrites. The growing Continue alert reserves its actual height so fields can scroll above it.
+
+Verification performed independently:
+- Full suite: 248 files / 3,169 tests pass.
+- Nine actual-schema PGlite tests cover foreign keys, missing/invalid fields, intervening corrections, rollback, sequential retry and double-tap race. The success regression fails on 133f1af with the exact service_order_events foreign-key violation.
+- Production `next build --webpack` passed.
+- New/changed supporting files lint clean; QuickEntryFlow retains exactly the same 11 baseline diagnostics (9 errors, 2 warnings), compared independently against production source.
+- Full tsc retains only 10 documented pre-existing errors in apps/estimates/quickbooks.test.ts; no new type errors.
+- Actual QuickEntryFlow rendered in a local browser fixture with synthetic customer data and POST disabled: missing year stays editable after one digit, full year plus trailing space advances; missing make/model can be typed completely; invalid saved year can be corrected; error links focus visible fields at 390x667 and the completed form advances to services. Fixture substitutes auth/navigation/draft/API data; this is not a real saved estimate.
+
+Brian's exact original form was never observed; do not claim that field-level cause is confirmed. No production data or customer sends used in verification. Claude correction session: b76c2539-2649-4b83-8ded-c504c5e05d4f. Evidence logs: /private/tmp/estimate-release-tests.log, estimate-release-build.log, estimate-release-types.log, estimate-release-lint.log, estimate-release-flow-lint.log, estimate-baseline-flow-lint.log, estimate-regression-red.log.

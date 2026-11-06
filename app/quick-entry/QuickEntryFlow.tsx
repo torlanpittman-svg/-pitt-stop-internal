@@ -558,9 +558,10 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
         </div>
       )}
 
-      {/* STEP 1 — customer + vehicle */}
+      {/* STEP 1 — customer + vehicle. No fixed bottom padding: ContinueBar reserves its own
+          (growing) height in flow, so its blocker list can never cover the bottom fields. */}
       {phase === 'details' && (
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5 pb-28">
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
           <div>
             <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Customer</p>
             <div className="space-y-2">

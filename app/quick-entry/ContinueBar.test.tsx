@@ -34,4 +34,8 @@ describe('ContinueBar', () => {
     const html = renderToStaticMarkup(<ContinueBar blockers={[]} attempted onContinue={() => {}} />)
     expect(html).not.toContain('role="alert"')
   })
+  it('reserves in-flow space for the fixed bar so it cannot cover the fields above it', () => {
+    const html = renderToStaticMarkup(<ContinueBar blockers={blockers} attempted onContinue={() => {}} />)
+    expect(html).toMatch(/aria-hidden="true" style="height:\d+px"/)
+  })
 })

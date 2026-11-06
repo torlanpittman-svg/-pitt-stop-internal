@@ -7,8 +7,10 @@
  *   • every VALID saved field stays (year that is 4 digits, non-blank make/model) — the typed value never
  *     replaces details already on file (corrections go through the Job's Edit Vehicle, with its audit);
  *   • the VIN is never touched here;
- *   • only blank / invalid fields are filled, and the SQL write (see createIntake) re-checks each field at
- *     write time, so a concurrent correction is never overwritten.
+ *   • only blank / invalid fields are filled. This module only decides WHETHER a write is needed (and what
+ *     the intake records when nothing is): the write itself (see createIntake) re-derives the fill, the
+ *     intake snapshot and the audit from the locked row at write time, so a concurrent correction is never
+ *     overwritten and the audit never claims a fill the guard skipped.
  */
 export type VehicleField = 'year' | 'make' | 'model'
 export interface SavedVehicleLike { year?: string | null; make?: string | null; model?: string | null; vin?: string | null }
