@@ -16,9 +16,17 @@ import {
   addBlock, removeBlock, getAvailability, getBookingConfig, saveBookingConfig, BookingError, APPOINTMENT_SOURCES,
   type AppointmentSource, type BookingInput,
 } from '@/apps/appointments/db'
-import { checkInAppointment } from '@/apps/appointments/checkin'
+import { checkInAppointment, type VehicleChoice } from '@/apps/appointments/checkin'
 import { dispatchDue, requeueNotification } from '@/apps/appointments/notify'
 import { mergeBookingConfig, WEEKDAYS, type BookingConfig, type DayView } from '@/apps/appointments/policy'
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/** The staff's answer to "which vehicle is here?" — only a saved-vehicle id or an explicit "new vehicle"; anything else is no choice. */
+function vehicleChoice(c?: { vehicleId?: string | null; newVehicle?: boolean } | null): VehicleChoice | null {
+  if (c?.vehicleId && UUID.test(c.vehicleId)) return { vehicleId: c.vehicleId }
+  if (c?.newVehicle === true) return { newVehicle: true }
+  return null
+}
 
 export type ActionResult = { ok: true; id?: string } | { ok: false; error: string }
 
@@ -59,11 +67,11 @@ export async function createStaffAppointment(input: BookingInput & { source: str
   } catch (e) { return fail(e) }
 }
 
-export async function checkInAction(id: string): Promise<ActionResult> {
+export async function checkInAction(id: string, choice?: { vehicleId?: string | null; newVehicle?: boolean } | null): Promise<ActionResult> {
   let orderId: string
   try {
     const who = await staff()
-    orderId = (await checkInAppointment(id, who.name)).serviceOrderId
+    orderId = (await checkInAppointment(id, who.name, vehicleChoice(choice))).serviceOrderId
   } catch (e) { return fail(e) }
   revalidatePath('/appointments')
   redirect(`/orders/${orderId}`)

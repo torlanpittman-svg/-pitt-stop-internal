@@ -15,7 +15,7 @@ vi.mock('@/apps/marketing/attribution', async (orig) => ({ ...(await orig<typeof
 import { getDb } from '@/platform/db'
 import { createAppointment, cancelAppointment, getAppointment, type BookingInput } from './db'
 import { fakeVpic } from './test-vpic'
-import { checkInAppointment } from './checkin'
+import { checkInAppointment, savedVehiclesFor } from './checkin'
 import { dispatchDue, renderMessage, requeueNotification, PostmarkEmailProvider, NotConfiguredEmailProvider, AllowlistEmailProvider, replyToAddress, type EmailMessage, type TransactionalEmailProvider } from './notify'
 import { DEFAULT_BOOKING_CONFIG, zonedToUtc, addDays, localParts, weekdayOf, formatDateLabel, holidayName, type BookingConfig } from './policy'
 
@@ -28,7 +28,7 @@ CREATE TABLE customers (
   quickbooks_customer_id varchar(120), autoleap_vehicle_count integer, source_values jsonb NOT NULL DEFAULT '{}', created_by_import_batch_id uuid,
   first_seen_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE vehicles (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), year varchar(4), make varchar(100), model varchar(100));
+CREATE TABLE vehicles (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), vin varchar(17), year varchar(4), make varchar(100), model varchar(100), color varchar(100));
 CREATE TABLE customer_vehicles (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), customer_id uuid NOT NULL, vehicle_id uuid NOT NULL,
   relationship varchar(20) NOT NULL DEFAULT 'owner', source varchar(20) NOT NULL DEFAULT 'x', created_by_import_batch_id uuid,
   first_seen_at timestamptz NOT NULL DEFAULT now(), last_seen_at timestamptz NOT NULL DEFAULT now(), UNIQUE (customer_id, vehicle_id));
@@ -135,6 +135,90 @@ describe('check-in → existing Work Board intake', () => {
     await cancelAppointment(a.id, { actor: 'Tony', by: 'staff' })
     await expect(checkInAppointment(a.id, 'Tony')).rejects.toMatchObject({ code: 'conflict' })
     expect(createJob).not.toHaveBeenCalled()
+  })
+})
+
+describe('check-in → which vehicle (saved VIN retained, never guessed)', () => {
+  // Regression for PS-HJY66R (2026-11-06): a booking carries only year/make/model — the VIN lives on the
+  // customer's SAVED vehicle row. Check-in must hand that row's id to the Quick Entry creator, never infer
+  // a VIN from the text, and never silently pick between two saved vehicles.
+  const saveVehicle = async (customerId: string, v: { vin?: string | null; year: string; make: string; model: string; color?: string | null }) => {
+    const id = randomUUID()
+    await pg.query(`INSERT INTO vehicles (id, vin, year, make, model, color) VALUES ($1, $2, $3, $4, $5, $6)`, [id, v.vin ?? null, v.year, v.make, v.model, v.color ?? null])
+    await pg.query(`INSERT INTO customer_vehicles (customer_id, vehicle_id, source) VALUES ($1, $2, 'quick_entry')`, [customerId, id])
+    return id
+  }
+  const checkedIn = async (id: string) => (await pg.query(`SELECT meta FROM appointment_events WHERE appointment_id = $1 AND event_type = 'checked_in'`, [id])).rows as { meta: Record<string, unknown> }[]
+
+  it('nothing on file (an imported customer with no vehicle rows): the Job gets no vehicle id and NO VIN — never inferred from year/make/model', async () => {
+    const a = await book()
+    expect(a.customerId).toBeTruthy()
+    expect(await savedVehiclesFor(a)).toEqual([])
+    await checkInAppointment(a.id, 'Tony')
+    const arg = createJob.mock.calls[0][0]
+    expect(arg.vehicleId).toBeNull()
+    expect(arg.vehicle.vin ?? null).toBeNull()
+    expect(arg.audit.idMethod).toBe('manual')
+    expect(await checkedIn(a.id)).toMatchObject([{ meta: { vehicle: 'none_on_file', vehicleId: null } }])
+  })
+
+  it('exactly one saved vehicle is the booked year/make/model: that row (and so its VIN) is reused', async () => {
+    const a = await book()
+    const truck = await saveVehicle(a.customerId!, { vin: '1FTFW1E52KFA00001', year: '2019', make: 'FORD', model: 'f-150', color: 'Blue' })
+    await saveVehicle(a.customerId!, { vin: 'JF2SKAJC8PH542607', year: '2023', make: 'Subaru', model: 'Forester' })
+    const saved = await savedVehiclesFor(a)
+    expect(saved.map((v) => [v.id, v.matches])).toEqual([[truck, true], [expect.any(String), false]])
+    await checkInAppointment(a.id, 'Tony')
+    const arg = createJob.mock.calls[0][0]
+    expect(arg.vehicleId).toBe(truck)
+    expect(arg.audit.idMethod).toBe('saved_vehicle')
+    expect(arg.vehicle.vin ?? null).toBeNull()          // the text still carries no VIN; the row does
+    expect(await checkedIn(a.id)).toMatchObject([{ meta: { vehicle: 'matched', vehicleId: truck } }])
+  })
+
+  it('two saved vehicles match: check-in refuses (no Job, no claim) until staff choose one', async () => {
+    const a = await book()
+    const first = await saveVehicle(a.customerId!, { vin: '1FTFW1E52KFA00001', year: '2019', make: 'Ford', model: 'F-150' })
+    const second = await saveVehicle(a.customerId!, { vin: '1FTFW1E52KFA00002', year: '2019', make: 'Ford', model: 'F-150' })
+    await expect(checkInAppointment(a.id, 'Tony')).rejects.toMatchObject({ code: 'conflict', message: expect.stringContaining('2 saved vehicles') })
+    expect(createJob).not.toHaveBeenCalled()
+    expect((await getAppointment(a.id))!.checkinStartedAt).toBeNull()   // nothing claimed by a refusal
+    await checkInAppointment(a.id, 'Tony', { vehicleId: second })
+    expect(createJob.mock.calls[0][0].vehicleId).toBe(second)
+    expect(createJob.mock.calls[0][0].vehicleId).not.toBe(first)
+    expect(await checkedIn(a.id)).toMatchObject([{ meta: { vehicle: 'chosen', vehicleId: second } }])
+  })
+
+  it('saved vehicles exist but none is the booked one: refuses until staff pick a saved vehicle or confirm a new one', async () => {
+    const a = await book()
+    const old = await saveVehicle(a.customerId!, { vin: '3GTU2PEJXHG464930', year: '2017', make: 'GMC', model: 'Sierra' })
+    await expect(checkInAppointment(a.id, 'Tony')).rejects.toMatchObject({ code: 'conflict', message: expect.stringContaining('none is a 2019 Ford F-150') })
+    expect(createJob).not.toHaveBeenCalled()
+    await checkInAppointment(a.id, 'Tony', { newVehicle: true })
+    expect(createJob.mock.calls[0][0].vehicleId).toBeNull()
+    expect(await checkedIn(a.id)).toMatchObject([{ meta: { vehicle: 'new', vehicleId: null } }])
+    // …and the other way round for a second appointment: an explicit saved choice is honoured as-is.
+    const b = await book({ idempotencyKey: `ck-${randomUUID()}`, time: '09:00' })
+    await checkInAppointment(b.id, 'Tony', { vehicleId: old })
+    expect(createJob.mock.calls[1][0].vehicleId).toBe(old)
+  })
+
+  it("a chosen vehicle must be on THIS customer's file", async () => {
+    const a = await book()
+    const [other] = (await pg.query(`INSERT INTO customers (display_name) VALUES ('Someone Else') RETURNING id`)).rows as { id: string }[]
+    const theirs = await saveVehicle(other.id, { vin: 'W1K2J5KBXPA118276', year: '2019', make: 'Ford', model: 'F-150' })
+    await expect(checkInAppointment(a.id, 'Tony', { vehicleId: theirs })).rejects.toMatchObject({ code: 'invalid' })
+    await expect(checkInAppointment(a.id, 'Tony', { vehicleId: randomUUID() })).rejects.toMatchObject({ code: 'invalid' })
+    expect(createJob).not.toHaveBeenCalled()
+  })
+
+  it('a staff-entered VIN on the appointment goes to the creator as typed (it de-dupes by VIN); saved rows are not consulted', async () => {
+    const a = await book({ vehicleVin: '1ftfw1e52kfa00001' })
+    await saveVehicle(a.customerId!, { vin: '1FTFW1E52KFA00009', year: '2019', make: 'Ford', model: 'F-150' })
+    await saveVehicle(a.customerId!, { vin: '1FTFW1E52KFA00008', year: '2019', make: 'Ford', model: 'F-150' })
+    await checkInAppointment(a.id, 'Tony')
+    expect(createJob.mock.calls[0][0]).toMatchObject({ vehicleId: null, vehicle: { vin: '1FTFW1E52KFA00001' } })
+    expect(await checkedIn(a.id)).toMatchObject([{ meta: { vehicle: 'vin' } }])
   })
 })
 

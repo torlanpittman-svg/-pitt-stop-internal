@@ -174,11 +174,18 @@ export interface CreateJobInput {
 
 /** Create the job: find/create the vehicle, put it on the Work Board, store the job + lines. */
 export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobId: string; serviceOrderId: string; orderNumber: string }> {
-  const v = input.vehicle
   // Reuse the exact existing vehicle when one was selected; otherwise find-or-create
   // (which itself de-dupes by VIN). Prevents duplicate vehicle rows for returning customers.
-  const vehicle = (input.vehicleId ? await getVehicleById(input.vehicleId) : null)
-    ?? await findOrCreateVehicle({ vin: v.vin ?? null, year: v.year ?? null, make: v.make ?? null, model: v.model ?? null, color: v.color ?? null })
+  const reused = input.vehicleId ? await getVehicleById(input.vehicleId) : null
+  const typed = input.vehicle
+  const vehicle = reused
+    ?? await findOrCreateVehicle({ vin: typed.vin ?? null, year: typed.year ?? null, make: typed.make ?? null, model: typed.model ?? null, color: typed.color ?? null })
+  // What the Job records as its vehicle: a REUSED saved vehicle is described by its own row (its VIN and
+  // decoded identity — a booking carries no VIN, so the typed text would lose it); typed text only fills
+  // the row's blanks. A new vehicle is exactly what was typed — a VIN is never inferred.
+  const v = reused
+    ? { vin: reused.vin ?? typed.vin ?? null, year: reused.year ?? typed.year ?? null, make: reused.make ?? typed.make ?? null, model: reused.model ?? typed.model ?? null, color: reused.color ?? typed.color ?? null }
+    : typed
 
   const vehicleLabel = [v.year, v.make, v.model].filter(Boolean).join(' ') || v.vin || 'vehicle'
   const lines = input.lines.map(sanitizeJobLine).filter((l) => l.name || l.tires)

@@ -11,6 +11,7 @@ import { getAppointment, listEvents, listNotifications } from '@/apps/appointmen
 import { formatDateLabel, formatTimeLabel } from '@/apps/appointments/policy'
 import { isMissedSend, isTestModeHold } from '@/apps/appointments/notify'
 import { isFuture } from '@/apps/appointments/public'
+import { savedVehiclesFor, bookedVehicleLabel } from '@/apps/appointments/checkin'
 import { STATUS_LABEL, STATUS_TONE, SOURCE_LABEL } from '../labels'
 import AppointmentActions from './AppointmentActions'
 import NotificationList from './NotificationList'
@@ -24,10 +25,13 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
   const { id } = await params
   const a = await getAppointment(id)
   if (!a) notFound()
-  const [events, notices, mgr, order] = await Promise.all([
+  const canCheckIn = !a.serviceOrderId && (a.status === 'confirmed' || a.status === 'arrived')
+  const [events, notices, mgr, order, saved] = await Promise.all([
     listEvents(id), listNotifications(id), authorizedManager(),
     a.serviceOrderId ? getDb().select({ id: serviceOrders.id })
       .from(serviceOrders).where(eq(serviceOrders.id, a.serviceOrderId)).limit(1).then((r) => r[0] ?? null) : Promise.resolve(null),
+    // The customer's saved vehicles (with VINs) — staff pick which one is here; check-in never guesses.
+    canCheckIn ? savedVehiclesFor(a) : Promise.resolve([]),
   ])
   const vehicle = [a.vehicleYear, a.vehicleMake, a.vehicleModel].filter(Boolean).join(' ')
   const attribution = Object.entries(a.attribution ?? {})
@@ -77,6 +81,8 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
         <AppointmentActions
           id={a.id} status={a.status} hasJob={!!a.serviceOrderId} isManager={!!mgr}
           past={!isFuture(a.startsAt)} date={a.localDate} time={a.localTime} serviceKeys={a.serviceKeys ?? []}
+          bookedVehicle={bookedVehicleLabel(a)} bookedVin={a.vehicleVin}
+          savedVehicles={saved.map((v) => ({ id: v.id, label: [v.year, v.make, v.model].filter(Boolean).join(' ') || 'Vehicle', color: v.color, vin: v.vin, matches: v.matches }))}
         />
 
 
