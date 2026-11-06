@@ -53,5 +53,14 @@ export function continueBlockers(s: DetailsState): Blocker[] {
   return out
 }
 
+/**
+ * A saved vehicle an ESTIMATE can use as-is: 4-digit year, make and model all on file. When this is false
+ * the Details step opens the inline year/make/model editor for that vehicle. The editor's visibility is
+ * STATE captured when the vehicle is chosen (or opened by hand) — never re-derived from the fields while
+ * they are typed, so entering the first digit of a missing year cannot hide the editor.
+ */
+export const savedVehicleComplete = (v: { year?: string | null; make?: string | null; model?: string | null }): boolean =>
+  isFourDigitYear(v.year ?? '') && !!(v.make ?? '').trim() && !!(v.model ?? '').trim()
+
 /** DOM id of the input that a blocker points at (the screen scrolls to / highlights it). */
 export const blockerInputId = (field: BlockerField): string => `qe-details-${field}`

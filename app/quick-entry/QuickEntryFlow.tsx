@@ -19,7 +19,7 @@ import { type JobLine, type InterpEntry, linesFromEntries, chooseCandidate, keep
 import { type CustomerMatch, type CustVehicle } from '@/apps/quick-entry/customers'
 import { draftKey as draftKeyFor, saveDraft, loadDraftEntry, clearDraft, draftAgeLabel } from '@/app/lib/draft'
 import { REFERRAL_SOURCES } from '@/apps/quick-entry/referral-source'
-import { continueBlockers, normalizeVehicleText, blockerInputId, type BlockerField } from './continue-gate'
+import { continueBlockers, normalizeVehicleText, blockerInputId, savedVehicleComplete, type BlockerField } from './continue-gate'
 import ContinueBar from './ContinueBar'
 
 type DraftShape = {
@@ -128,6 +128,10 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
   const [custVehicles, setCustVehicles] = useState<CustVehicle[]>([])
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null)
   const [vehicleMode, setVehicleMode] = useState<'new' | 'existing' | 'pick'>('new')
+  // Saved-vehicle inline editor (estimate only). Opened when the chosen saved vehicle is incomplete or
+  // its year is not 4 digits, or by "Edit details"; closed only by choosing another vehicle. NOT derived
+  // from the fields, so typing into them never hides the editor mid-entry.
+  const [savedEditOpen, setSavedEditOpen] = useState(false)
   const vinVersion = useRef(0)
   // "Continue →" gate — ONE rule (continue-gate.ts) names what is missing instead of silently dimming
   // the button. Field highlights + the reason list appear once Continue has been tapped with a gap.
@@ -182,6 +186,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
       if (d.cust) setCust(d.cust)
       if (d.veh) setVeh(d.veh)
       if (d.vehicleMode) setVehicleMode(d.vehicleMode)
+      if (d.vehicleMode === 'existing' && d.veh && isEstimate && !savedVehicleComplete(d.veh)) setSavedEditOpen(true)
       if ('selectedVehicleId' in d) setSelectedVehicleId(d.selectedVehicleId ?? null)
       if (Array.isArray(d.lines)) setLines(d.lines)
       if (typeof d.workPrice === 'string') setWorkPrice(d.workPrice)
@@ -194,7 +199,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
       if (hasContent) { setDraftRestored(true); setDraftAge(draftAgeLabel(entry!.at)) }
     }
     draftHydrated.current = true
-  }, [draftK])
+  }, [draftK, isEstimate])
   /* eslint-enable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!draftK || !draftHydrated.current) return
@@ -251,14 +256,15 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
     vinVersion.current++; if (decodeTimer.current) clearTimeout(decodeTimer.current); setVinBusy(false)
     setVeh({ vin: vh.vin ?? '', year: vh.year ?? '', make: vh.make ?? '', model: vh.model ?? '', color: '' })
     setSelectedVehicleId(vh.id); setVehicleMode('existing')
+    setSavedEditOpen(isEstimate && !savedVehicleComplete(vh))   // captured once, here — not while typing
     setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null })
     idMethodRef.current = 'returning_vehicle'; audit.current.autoIdentified = true
     setVinStatus('ok'); setVinMsg(`Saved vehicle ✓ ${vh.label}`)
-  }, [])
+  }, [isEstimate])
   const addNewVehicle = useCallback(() => {
     vinVersion.current++; if (decodeTimer.current) clearTimeout(decodeTimer.current); setVinBusy(false)
     setSelectedVehicleId(null); setVeh({ vin: '', year: '', make: '', model: '', color: '' })
-    setVehicleMode('new'); setVinStatus('idle'); setVinMsg(null)
+    setVehicleMode('new'); setVinStatus('idle'); setVinMsg(null); setSavedEditOpen(false)
     setVinPhotoUrl((u) => { if (u) URL.revokeObjectURL(u); return null })
     idMethodRef.current = 'vin_camera'
   }, [])
@@ -268,7 +274,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
     setCust({ first: m.first, last: m.last, phone: m.phone ?? '', email: m.email ?? '' })
     setCustVehicles(m.vehicles)
     if (m.vehicles.length === 1) selectVehicle(m.vehicles[0])
-    else if (m.vehicles.length > 1) { setVehicleMode('pick'); setSelectedVehicleId(null); setVeh({ vin: '', year: '', make: '', model: '', color: '' }) }
+    else if (m.vehicles.length > 1) { setVehicleMode('pick'); setSelectedVehicleId(null); setSavedEditOpen(false); setVeh({ vin: '', year: '', make: '', model: '', color: '' }) }
     else addNewVehicle()
   }, [selectVehicle, addNewVehicle, clearCustomerSearch])
 
@@ -635,14 +641,16 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
                   {veh.vin && <p className="text-gray-500 text-xs font-mono mt-0.5">{veh.vin}</p>}
                 </div>
                 <div className="flex gap-4 text-sm">
-                  {custVehicles.length > 1 && <button onClick={() => setVehicleMode('pick')} className="text-gray-400 underline">Use a different vehicle</button>}
+                  {custVehicles.length > 1 && <button onClick={() => { setVehicleMode('pick'); setSavedEditOpen(false) }} className="text-gray-400 underline">Use a different vehicle</button>}
                   <button onClick={addNewVehicle} className="text-blue-400 underline">Add new vehicle</button>
+                  {isEstimate && !savedEditOpen && <button onClick={() => setSavedEditOpen(true)} className="text-gray-400 underline">Edit details</button>}
                 </div>
-                {/* An estimate needs year/make/model; a saved vehicle may have none on file. Complete it HERE
-                    (still the same saved vehicle — vehicleId is kept, no duplicate row). */}
-                {isEstimate && (!veh.year.trim() || !veh.make.trim() || !veh.model.trim()) && (
+                {/* An estimate needs year/make/model; a saved vehicle may have none on file (or a bad year). Complete
+                    it HERE — same saved vehicle (vehicleId kept, the API fills only its blank/invalid fields). The
+                    editor stays open while typing: its visibility is savedEditOpen, never the fields' emptiness. */}
+                {isEstimate && savedEditOpen && (
                   <div className="rounded-xl border border-amber-700/50 bg-amber-950/30 px-3 py-2.5">
-                    <p className="text-amber-200 text-xs">This saved vehicle is missing details an estimate needs. Fill them in — it stays the same saved vehicle.</p>
+                    <p className="text-amber-200 text-xs">{savedVehicleComplete(veh) ? 'Saved vehicle details — edits here complete this saved vehicle; they do not replace details already on file.' : 'This saved vehicle is missing details an estimate needs. Fill them in — it stays the same saved vehicle.'}</p>
                     <div className="grid grid-cols-3 gap-2 mt-2">
                       <input id={blockerInputId('year')} aria-invalid={invalidFields.has('year') || undefined} className={invalidFields.has('year') ? inputFlagged : input} placeholder="Year" inputMode="numeric" value={veh.year} onChange={(e) => { setVeh({ ...veh, year: e.target.value }); markVehicleEdited() }} />
                       <input id={blockerInputId('make')} aria-invalid={invalidFields.has('make') || undefined} className={invalidFields.has('make') ? inputFlagged : input} placeholder="Make" value={veh.make} onChange={(e) => { setVeh({ ...veh, make: e.target.value }); markVehicleEdited() }} />

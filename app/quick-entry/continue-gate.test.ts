@@ -3,7 +3,7 @@
  * The Details-step gate must (1) keep every real requirement and (2) NAME what is missing.
  */
 import { describe, it, expect } from 'vitest'
-import { continueBlockers, isFourDigitYear, normalizeVehicleText, type DetailsState } from './continue-gate'
+import { continueBlockers, isFourDigitYear, normalizeVehicleText, savedVehicleComplete, type DetailsState } from './continue-gate'
 
 const ok: DetailsState = { isEstimate: true, first: 'Brian', vinBusy: false, vehicleMode: 'new', pickCount: 0, year: '2019', make: 'GMC', model: 'Sierra' }
 const fields = (s: Partial<DetailsState>) => continueBlockers({ ...ok, ...s }).map((b) => b.field)
@@ -55,5 +55,19 @@ describe('normalizeVehicleText', () => {
   it('trims year/make/model exactly as the gate judged them, leaving other fields alone', () => {
     expect(normalizeVehicleText({ vin: '1GT12SEG4GF221480', year: '2016 ', make: ' GMC', model: 'Sierra ', color: 'Blue ' }))
       .toEqual({ vin: '1GT12SEG4GF221480', year: '2016', make: 'GMC', model: 'Sierra', color: 'Blue ' })
+  })
+})
+
+describe('savedVehicleComplete — opens the saved-vehicle editor (captured at selection, not re-derived while typing)', () => {
+  it('make/model on file but no year → incomplete; stays a selection-time decision so typing "2", "20", "201", "2019" cannot close the editor', () => {
+    expect(savedVehicleComplete({ year: null, make: 'GMC', model: 'Sierra' })).toBe(false)
+    // The screen stores the result of this call when the vehicle is chosen; it is not called per keystroke.
+    for (const partial of ['2', '20', '201']) expect(savedVehicleComplete({ year: partial, make: 'GMC', model: 'Sierra' })).toBe(false)
+    expect(savedVehicleComplete({ year: '2019', make: 'GMC', model: 'Sierra' })).toBe(true)
+  })
+  it('missing make or model → incomplete; a nonempty invalid year ("19") → incomplete so correction is offered', () => {
+    expect(savedVehicleComplete({ year: '2019', make: '', model: 'Sierra' })).toBe(false)
+    expect(savedVehicleComplete({ year: '2019', make: 'GMC', model: null })).toBe(false)
+    expect(savedVehicleComplete({ year: '19', make: 'GMC', model: 'Sierra' })).toBe(false)
   })
 })

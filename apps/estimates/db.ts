@@ -5,6 +5,7 @@ import { getDb } from '@/platform/db'
 import { serviceOrders, vehicles, jobEstimates, jobServices, jobLineItems, serviceOrderEvents } from '@/apps/workflow/schema'
 import { quickEntryJobs } from '@/apps/quick-entry/schema'
 import { estimateIntakes } from './schema'
+import { completeSavedVehicle } from './vehicle-completion'
 import { z } from 'zod'
 import { recomputeEstimate, getEstimateRow } from '@/apps/workflow/estimate-db'
 import { resolveCatalogIds, normalizeServiceKey } from '@/apps/quick-entry/catalog-identity'
@@ -43,7 +44,11 @@ export async function createIntake(input: z.infer<typeof intakeInput>, actor: st
     : input.vin ? await db.select().from(vehicles).where(eq(vehicles.vin, input.vin)).orderBy(desc(vehicles.createdAt)).limit(1) : []
   if (input.vehicleId && !savedVehicle) throw new Error('Saved vehicle not found')
   const vehicleId = savedVehicle?.id ?? randomUUID()
-  const vehicle = savedVehicle ?? input
+  // A saved vehicle keeps every valid field it has (and its VIN); the typed year/make/model fill only what is
+  // blank or not a 4-digit year — on the SAME row (no duplicate), re-checked at write time below so a
+  // concurrent correction is never overwritten. The estimate/intake records the completed vehicle.
+  const completion = savedVehicle ? completeSavedVehicle(savedVehicle, input) : null
+  const vehicle = completion?.vehicle ?? input
   const estimateId = randomUUID()
   // Stamp each service's STABLE catalog identity so the shared QB payload keeps the correct item +
   // canonical description even after the label is later edited (same policy as retail jobs).
@@ -66,6 +71,18 @@ export async function createIntake(input: z.infer<typeof intakeInput>, actor: st
   // and a failed contact/estimate insert cannot leave a half-created intake behind.
   const statements = [
     ...(!savedVehicle ? [db.insert(vehicles).values({ id: vehicleId, year: input.year, make: input.make, model: input.model, vin: input.vin || null })] : []),
+    // Fill the saved vehicle's missing details in place. Each field is guarded in SQL: a field that became
+    // valid since it was read (someone corrected it meanwhile) is kept, never overwritten. Audited like the
+    // Job's Edit Vehicle (service_order_events 'vehicle_corrected', old/new per field, append-only).
+    ...(completion?.filled.length ? [
+      db.update(vehicles).set({
+        year: sql`CASE WHEN ${vehicles.year} ~ '^[0-9]{4}$' THEN ${vehicles.year} ELSE ${completion.vehicle.year} END`,
+        make: sql`COALESCE(NULLIF(btrim(${vehicles.make}), ''), ${completion.vehicle.make})`,
+        model: sql`COALESCE(NULLIF(btrim(${vehicles.model}), ''), ${completion.vehicle.model})`,
+      }).where(eq(vehicles.id, vehicleId)),
+      db.insert(serviceOrderEvents).values({ serviceOrderId: id, eventType: 'vehicle_corrected', employeeName: actor,
+        note: JSON.stringify({ changed: completion.filled, old: completion.old, new: completion.new, reason: 'estimate_intake_completed_saved_vehicle', qb: 'not_linked' }) }),
+    ] : []),
     db.insert(serviceOrders).values({ id, orderNumber: `ES-${id.replaceAll('-', '').slice(0, 16)}`, vehicleId,
       source: 'estimate', serviceType: 'retail', status: 'estimate', customerName: input.customerName,
       notes: input.notes || null, checkedInBy: actor }),
