@@ -38,3 +38,20 @@ with year/make/model but no VIN.
   `apps/quick-entry/saved-vehicle-vin.test.ts` (3 cases). 8 of the 9 fail on the pre-fix code.
 - `tsc --noEmit` clean for the changed files (the only errors are pre-existing in `apps/estimates/quickbooks.test.ts`).
 - No migration, no flag, no QuickBooks/email path touched. Nothing deployed; no production data changed.
+
+## Independent review and release preparation (Codex, November 6)
+
+Owner authorized review and deployment. Isolated release branch `codex/appointment-vin-release` starts at
+02cbd48, one commit ahead of verified origin/main / live Vercel SHA 3b54ebb. Original worktree preserved.
+
+Review caught a release-blocking VIN precedence bug: a hidden preselected saved vehicle could override
+a staff-entered appointment VIN. Claude session `8201d277-cdb1-4158-81b5-88c419724f0a` corrected both client
+submission and server precedence. The regression fails on the original code with the wrong vehicle ID
+and passes with the correction. Also corrected a flaky membership assertion (equal timestamps mean
+UUID ordering, not insertion ordering) and ES2017 compatibility in the new client test.
+
+Independent verification: final full suite 243 files / 3,138 tests PASS; production `next build --webpack`
+PASS; all changed files lint clean; diff whitespace check clean. Full `tsc --noEmit` retains only the
+10 previously documented errors in unchanged `apps/estimates/quickbooks.test.ts`; changed files are clean.
+No migration or feature flag needed. No real check-in, customer data correction, or send used for testing.
+Charles's VIN remains absent until staff scan it on his job.

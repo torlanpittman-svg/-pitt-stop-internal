@@ -6,6 +6,16 @@ import SlotPicker from '../SlotPicker'
 
 export interface SavedVehicleOption { id: string; label: string; color: string | null; vin: string | null; matches: boolean }
 
+/**
+ * The answer check-in actually submits. While the selector is hidden the answer is ALWAYS null: a
+ * preselected match must never ride along invisibly and override the appointment's own VIN — the
+ * server gives that VIN precedence over any choice, and the client must not send one.
+ */
+export function submittedVehicleChoice(selectorShown: boolean, selection: string): { vehicleId: string } | { newVehicle: true } | null {
+  if (!selectorShown || !selection) return null
+  return selection === 'new' ? { newVehicle: true } : { vehicleId: selection }
+}
+
 export default function AppointmentActions({ id, status, hasJob, isManager, past, date, time, serviceKeys, bookedVehicle, bookedVin, savedVehicles }: {
   id: string; status: string; hasJob: boolean; isManager: boolean; past: boolean; date: string; time: string; serviceKeys: string[]
   /** What the customer booked (year make model) and the VIN if staff entered one on the appointment. */
@@ -27,12 +37,14 @@ export default function AppointmentActions({ id, status, hasJob, isManager, past
     else { setPanel('none'); after?.() }
   })
 
-  // Which vehicle is here? Pre-selected only when exactly ONE saved vehicle is the booked year/make/model
+  // Which vehicle is here? Asked only when the answer can matter: the customer has saved vehicles AND the
+  // appointment carries no VIN of its own (a staff-entered VIN already names the vehicle; the server honours
+  // it over any choice). Pre-selected only when exactly ONE saved vehicle is the booked year/make/model
   // (the server applies the same rule); otherwise staff must choose — check-in never guesses a VIN.
-  const matching = savedVehicles.filter((v) => v.matches)
-  const [vehicleChoice, setVehicleChoice] = useState<string>(matching.length === 1 ? matching[0].id : '')
   const needsVehicleChoice = savedVehicles.length > 0 && !bookedVin
-  const chosen = vehicleChoice === 'new' ? { newVehicle: true } : vehicleChoice ? { vehicleId: vehicleChoice } : null
+  const matching = savedVehicles.filter((v) => v.matches)
+  const [vehicleChoice, setVehicleChoice] = useState<string>(needsVehicleChoice && matching.length === 1 ? matching[0].id : '')
+  const chosen = submittedVehicleChoice(needsVehicleChoice, vehicleChoice)
 
   const confirmed = status === 'confirmed'
   const canCheckIn = !hasJob && (confirmed || status === 'arrived')

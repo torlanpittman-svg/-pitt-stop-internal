@@ -165,9 +165,12 @@ describe('check-in → which vehicle (saved VIN retained, never guessed)', () =>
   it('exactly one saved vehicle is the booked year/make/model: that row (and so its VIN) is reused', async () => {
     const a = await book()
     const truck = await saveVehicle(a.customerId!, { vin: '1FTFW1E52KFA00001', year: '2019', make: 'FORD', model: 'f-150', color: 'Blue' })
-    await saveVehicle(a.customerId!, { vin: 'JF2SKAJC8PH542607', year: '2023', make: 'Subaru', model: 'Forester' })
+    const forester = await saveVehicle(a.customerId!, { vin: 'JF2SKAJC8PH542607', year: '2023', make: 'Subaru', model: 'Forester' })
     const saved = await savedVehiclesFor(a)
-    expect(saved.map((v) => [v.id, v.matches])).toEqual([[truck, true], [expect.any(String), false]])
+    // firstSeenAt can tie (same-transaction inserts), leaving the order to the UUID tiebreak — so assert
+    // exact membership and match flags, not position.
+    expect(saved).toHaveLength(2)
+    expect(Object.fromEntries(saved.map((v) => [v.id, v.matches]))).toEqual({ [truck]: true, [forester]: false })
     await checkInAppointment(a.id, 'Tony')
     const arg = createJob.mock.calls[0][0]
     expect(arg.vehicleId).toBe(truck)
@@ -219,6 +222,23 @@ describe('check-in → which vehicle (saved VIN retained, never guessed)', () =>
     await checkInAppointment(a.id, 'Tony')
     expect(createJob.mock.calls[0][0]).toMatchObject({ vehicleId: null, vehicle: { vin: '1FTFW1E52KFA00001' } })
     expect(await checkedIn(a.id)).toMatchObject([{ meta: { vehicle: 'vin' } }])
+  })
+
+  it("the appointment's own VIN outranks a choice: a hidden preselection must never override the VIN staff typed", async () => {
+    // The UI hides the selector when the appointment carries a VIN, but it used to submit the single
+    // matching saved vehicle anyway — and the server preferred that choice, silently replacing VIN A
+    // with saved vehicle B's row (and so B's VIN) on the Job.
+    const a = await book({ vehicleVin: '1FTFW1E52KFA00001' })                                       // VIN A, staff-entered
+    const b = await saveVehicle(a.customerId!, { vin: '1FTFW1E52KFA00002', year: '2019', make: 'Ford', model: 'F-150' }) // saved same-YMM VIN B
+    await checkInAppointment(a.id, 'Tony', { vehicleId: b })
+    expect(createJob.mock.calls[0][0]).toMatchObject({ vehicleId: null, vehicle: { vin: '1FTFW1E52KFA00001' } })
+    expect(await checkedIn(a.id)).toMatchObject([{ meta: { vehicle: 'vin', vehicleId: null } }])
+
+    // Likewise a stale "new vehicle" answer: the typed VIN still names the vehicle.
+    const c = await book({ vehicleVin: '1FTFW1E52KFA00001', time: '09:00' })
+    await checkInAppointment(c.id, 'Tony', { newVehicle: true })
+    expect(createJob.mock.calls[1][0]).toMatchObject({ vehicleId: null, vehicle: { vin: '1FTFW1E52KFA00001' } })
+    expect(await checkedIn(c.id)).toMatchObject([{ meta: { vehicle: 'vin', vehicleId: null } }])
   })
 })
 

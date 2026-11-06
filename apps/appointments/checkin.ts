@@ -47,12 +47,15 @@ export function requestNoteForAppointment(a: Pick<Appointment, 'serviceLabels' |
 // field). The VIN lives on the customer's SAVED vehicle row (vehicles.vin, linked via customer_vehicles),
 // so check-in must hand the Quick Entry creator that row's id — never a VIN guessed from year/make/model,
 // and never a silent pick between two saved vehicles. Rules, in order:
-//   1. a vehicle already linked to the appointment, or one staff explicitly chose (must be on the
-//      customer's file) → reused; staff chose "new vehicle" → a new row;
-//   2. the appointment itself carries a VIN (staff-entered) → the creator de-dupes by that VIN;
-//   3. nothing on file for the customer → a new row (no VIN — scan it on the Job);
-//   4. exactly ONE saved vehicle has the booked year/make/model → reused;
-//   5. otherwise (several match, or none match but others are on file) → check-in REFUSES until staff choose.
+//   1. a vehicle already linked to the appointment → reused (authoritative — any choice is ignored);
+//   2. the appointment itself carries a VIN (staff-entered) → the creator de-dupes by that VIN. The VIN
+//      outranks any choice: the selector is hidden whenever a VIN exists, so a choice arriving here is a
+//      stale or hidden preselection and must never override the VIN staff typed;
+//   3. a vehicle staff explicitly chose (must be on the customer's file) → reused; staff chose
+//      "new vehicle" → a new row;
+//   4. nothing on file for the customer → a new row (no VIN — scan it on the Job);
+//   5. exactly ONE saved vehicle has the booked year/make/model → reused;
+//   6. otherwise (several match, or none match but others are on file) → check-in REFUSES until staff choose.
 
 export interface SavedVehicle {
   id: string; vin: string | null; year: string | null; make: string | null; model: string | null; color: string | null
@@ -83,13 +86,13 @@ export async function savedVehiclesFor(a: Pick<Appointment, 'customerId' | 'vehi
 /** Decide the vehicle row for the Job BEFORE anything is claimed or created; throws when staff must choose. */
 export async function resolveCheckinVehicle(a: Appointment, choice?: VehicleChoice | null): Promise<VehicleResolution> {
   if (a.vehicleId) return { vehicleId: a.vehicleId, how: 'linked' }
+  if (a.vehicleVin) return { vehicleId: null, how: 'vin' }
   if (choice && 'vehicleId' in choice) {
     const saved = await savedVehiclesFor(a)
     if (!saved.some((v) => v.id === choice.vehicleId)) throw new BookingError('invalid', 'That vehicle is not on this customer\'s file. Refresh and choose again.')
     return { vehicleId: choice.vehicleId, how: 'chosen' }
   }
   if (choice && 'newVehicle' in choice && choice.newVehicle) return { vehicleId: null, how: 'new' }
-  if (a.vehicleVin) return { vehicleId: null, how: 'vin' }
   const saved = await savedVehiclesFor(a)
   if (saved.length === 0) return { vehicleId: null, how: 'none_on_file' }
   const matching = saved.filter((v) => v.matches)
