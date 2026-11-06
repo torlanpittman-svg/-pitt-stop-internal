@@ -19,6 +19,8 @@ import { type JobLine, type InterpEntry, linesFromEntries, chooseCandidate, keep
 import { type CustomerMatch, type CustVehicle } from '@/apps/quick-entry/customers'
 import { draftKey as draftKeyFor, saveDraft, loadDraftEntry, clearDraft, draftAgeLabel } from '@/app/lib/draft'
 import { REFERRAL_SOURCES } from '@/apps/quick-entry/referral-source'
+import { continueBlockers, normalizeVehicleText, blockerInputId, type BlockerField } from './continue-gate'
+import ContinueBar from './ContinueBar'
 
 type DraftShape = {
   cust?: { first: string; last: string; phone: string; email: string }
@@ -127,6 +129,22 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null)
   const [vehicleMode, setVehicleMode] = useState<'new' | 'existing' | 'pick'>('new')
   const vinVersion = useRef(0)
+  // "Continue →" gate — ONE rule (continue-gate.ts) names what is missing instead of silently dimming
+  // the button. Field highlights + the reason list appear once Continue has been tapped with a gap.
+  const [continueAttempted, setContinueAttempted] = useState(false)
+  const blockers = continueBlockers({ isEstimate, first: cust.first, vinBusy, vehicleMode, pickCount: custVehicles.length, year: veh.year, make: veh.make, model: veh.model })
+  const invalidFields = new Set<BlockerField>(continueAttempted ? blockers.map((b) => b.field) : [])
+  const onContinue = () => {
+    if (blockers.length) {
+      setContinueAttempted(true)
+      const el = document.getElementById(blockerInputId(blockers[0].field))
+      el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      return
+    }
+    setContinueAttempted(false)
+    setVeh((v) => normalizeVehicleText(v))   // what the gate judged ("2019 " → "2019") is what gets saved
+    setPhase('services')
+  }
 
   // Identification is VIN-photo only (camera or upload). Plate lookup / manual entry are
   // removed from the employee UI (provider code + DB kept, feature-flag disabled).
@@ -464,7 +482,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ requestId: requestId.current,
             customerName: `${cust.first} ${cust.last}`.trim(), customerPhone: cust.phone, customerEmail: cust.email,
-            ...veh, vehicleId: vehicleMode === 'existing' ? selectedVehicleId : null,
+            ...normalizeVehicleText(veh), vehicleId: vehicleMode === 'existing' ? selectedVehicleId : null,
             notes: nlNote.trim(), lines: lines.filter(l => l.name.trim()).map(l => ({ name: l.name.trim(), priceCents: l.priceCents || 0, catalogId: l.catalogId ?? null, entryText: l.entryText ?? null, detail: l.detail ?? null })),
             workPriceCents: dollarsToCents(workPrice) || null,
           }),
@@ -519,6 +537,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
   }, [cust, veh, lines, tech, vehicleMode, selectedVehicleId, workPrice, nlNote, expectedTotalCents, suggByKey, isUrgent, isEstimate, router, referral])
 
   const input = 'w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500'
+  const inputFlagged = `${input} border-red-500 ring-1 ring-red-500/60`   // an input the Continue gate named
 
   return (
     <main className="min-h-screen bg-gray-950 text-white flex flex-col">
@@ -540,7 +559,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
             <p className="text-gray-500 text-xs uppercase tracking-widest mb-2">Customer</p>
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-2">
-                <input className={input} placeholder="First name *" value={cust.first} onChange={(e) => { setCust({ ...cust, first: e.target.value }); searchCustomers(e.target.value) }} />
+                <input id={blockerInputId('first')} aria-invalid={invalidFields.has('first') || undefined} className={invalidFields.has('first') ? inputFlagged : input} placeholder="First name *" value={cust.first} onChange={(e) => { setCust({ ...cust, first: e.target.value }); searchCustomers(e.target.value) }} />
                 <input className={input} placeholder="Last name" value={cust.last} onChange={(e) => { setCust({ ...cust, last: e.target.value }); searchCustomers(`${cust.first} ${e.target.value}`.trim()) }} />
               </div>
               <input className={input} placeholder="Phone number" inputMode="tel" value={cust.phone} onChange={(e) => { setCust({ ...cust, phone: e.target.value }); searchCustomers(e.target.value) }} />
@@ -596,7 +615,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
             {/* Returning customer with multiple vehicles → pick one or add new */}
             {vehicleMode === 'pick' && (
               <div className="space-y-2">
-                <p className="text-gray-500 text-xs">Which vehicle is this?</p>
+                <p id={blockerInputId('vehicle')} className={`text-xs ${invalidFields.has('vehicle') ? 'text-red-300' : 'text-gray-500'}`}>Which vehicle is this?{custVehicles.length === 0 ? ' (the saved list is no longer available — add a new vehicle, or pick the customer again)' : ''}</p>
                 {custVehicles.map((vh) => (
                   <button key={vh.id} onClick={() => selectVehicle(vh)} className="w-full text-left rounded-xl bg-gray-900 border border-gray-800 px-3 py-3 active:bg-gray-800">
                     <p className="text-white text-sm font-semibold">{vh.label}</p>
@@ -619,6 +638,18 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
                   {custVehicles.length > 1 && <button onClick={() => setVehicleMode('pick')} className="text-gray-400 underline">Use a different vehicle</button>}
                   <button onClick={addNewVehicle} className="text-blue-400 underline">Add new vehicle</button>
                 </div>
+                {/* An estimate needs year/make/model; a saved vehicle may have none on file. Complete it HERE
+                    (still the same saved vehicle — vehicleId is kept, no duplicate row). */}
+                {isEstimate && (!veh.year.trim() || !veh.make.trim() || !veh.model.trim()) && (
+                  <div className="rounded-xl border border-amber-700/50 bg-amber-950/30 px-3 py-2.5">
+                    <p className="text-amber-200 text-xs">This saved vehicle is missing details an estimate needs. Fill them in — it stays the same saved vehicle.</p>
+                    <div className="grid grid-cols-3 gap-2 mt-2">
+                      <input id={blockerInputId('year')} aria-invalid={invalidFields.has('year') || undefined} className={invalidFields.has('year') ? inputFlagged : input} placeholder="Year" inputMode="numeric" value={veh.year} onChange={(e) => { setVeh({ ...veh, year: e.target.value }); markVehicleEdited() }} />
+                      <input id={blockerInputId('make')} aria-invalid={invalidFields.has('make') || undefined} className={invalidFields.has('make') ? inputFlagged : input} placeholder="Make" value={veh.make} onChange={(e) => { setVeh({ ...veh, make: e.target.value }); markVehicleEdited() }} />
+                      <input id={blockerInputId('model')} aria-invalid={invalidFields.has('model') || undefined} className={invalidFields.has('model') ? inputFlagged : input} placeholder="Model" value={veh.model} onChange={(e) => { setVeh({ ...veh, model: e.target.value }); markVehicleEdited() }} />
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -635,7 +666,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
                   <img src={vinPhotoUrl} alt="VIN photo" className="mt-3 w-full max-h-56 object-contain rounded-2xl bg-gray-900 border border-gray-800" />
                 )}
                 {vinBusy && (
-                  <div className="mt-2 flex items-center gap-2 rounded-xl bg-blue-950/40 border border-blue-800/50 px-3 py-2">
+                  <div id={blockerInputId('vin')} className="mt-2 flex items-center gap-2 rounded-xl bg-blue-950/40 border border-blue-800/50 px-3 py-2">
                     <span className="w-4 h-4 border-2 border-blue-300 border-t-transparent rounded-full animate-spin" />
                     <span className="text-blue-200 text-sm">{vinMsg ?? 'Reading VIN…'}</span>
                   </div>
@@ -655,9 +686,9 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
                 <input className={`${input} font-mono tracking-widest mt-2`} placeholder="VIN (17)" autoCapitalize="characters" autoCorrect="off"
                   value={veh.vin} onChange={(e) => onVinEdit(e.target.value)} />
                 <div className="grid grid-cols-3 gap-2 mt-2">
-                  <input className={input} placeholder="Year" inputMode="numeric" value={veh.year} onChange={(e) => { setVeh({ ...veh, year: e.target.value }); markVehicleEdited() }} />
-                  <input className={input} placeholder="Make" value={veh.make} onChange={(e) => { setVeh({ ...veh, make: e.target.value }); markVehicleEdited() }} />
-                  <input className={input} placeholder="Model" value={veh.model} onChange={(e) => { setVeh({ ...veh, model: e.target.value }); markVehicleEdited() }} />
+                  <input id={blockerInputId('year')} aria-invalid={invalidFields.has('year') || undefined} className={invalidFields.has('year') ? inputFlagged : input} placeholder={isEstimate ? 'Year *' : 'Year'} inputMode="numeric" value={veh.year} onChange={(e) => { setVeh({ ...veh, year: e.target.value }); markVehicleEdited() }} />
+                  <input id={blockerInputId('make')} aria-invalid={invalidFields.has('make') || undefined} className={invalidFields.has('make') ? inputFlagged : input} placeholder={isEstimate ? 'Make *' : 'Make'} value={veh.make} onChange={(e) => { setVeh({ ...veh, make: e.target.value }); markVehicleEdited() }} />
+                  <input id={blockerInputId('model')} aria-invalid={invalidFields.has('model') || undefined} className={invalidFields.has('model') ? inputFlagged : input} placeholder={isEstimate ? 'Model *' : 'Model'} value={veh.model} onChange={(e) => { setVeh({ ...veh, model: e.target.value }); markVehicleEdited() }} />
                 </div>
               </>
             )}
@@ -670,10 +701,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
             <span className="text-left"><span className={`font-semibold ${isUrgent ? 'text-amber-300' : 'text-white'}`}>Urgent · Needs back ASAP</span></span>
           </button>}
 
-          <div className="fixed bottom-0 inset-x-0 p-4 bg-gray-950/95 border-t border-gray-900">
-            <button disabled={!cust.first.trim() || vinBusy || vehicleMode === 'pick' || (isEstimate && (!/^\d{4}$/.test(veh.year) || !veh.make.trim() || !veh.model.trim()))} onClick={() => setPhase('services')}
-              className="w-full h-14 rounded-2xl bg-blue-600 active:bg-blue-700 text-white text-lg font-bold disabled:opacity-40">Continue →</button>
-          </div>
+          <ContinueBar blockers={blockers} attempted={continueAttempted} onContinue={onContinue} />
         </div>
       )}
 

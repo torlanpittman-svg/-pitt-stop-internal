@@ -16,7 +16,7 @@ export const intakeInput = z.object({
   customerName: z.string().trim().min(1).max(200),
   customerEmail: z.union([z.email().max(200), z.literal('')]).default(''),
   customerPhone: z.string().trim().max(40).default(''),
-  year: z.string().regex(/^\d{4}$/),
+  year: z.string().trim().regex(/^\d{4}$/),
   make: z.string().trim().min(1).max(100),
   model: z.string().trim().min(1).max(100),
   vin: z.union([z.string().trim().toUpperCase().regex(/^[A-HJ-NPR-Z0-9]{17}$/), z.literal('')]).default(''),
