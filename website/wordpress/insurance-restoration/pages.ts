@@ -6,14 +6,24 @@
  *   - dist/<slug>.json with the SEO title, meta description, slug and FAQ JSON-LD for Rank Math.
  * Build: `npx tsx scripts/build-restoration-pages.ts`. Nothing here publishes anything.
  *
- * Writing rules (enforced by pages.test.ts):
+ * Writing rules (enforced by pages.test.ts; owner steering 2026-11-07):
  *   - insurance language is QUALIFIED: "may be covered", "your insurer decides"; never guaranteed coverage,
- *     free repairs, waived deductibles, guaranteed approval or reimbursement, and no direct-billing claim
- *     (that capability is UNVERIFIED — see docs/insurance-restoration/README.md §1.5);
+ *     free repairs, waived deductibles, guaranteed approval or reimbursement. Billing arrangements with
+ *     insurers are UNVERIFIED either way, so pages neither claim "we bill your insurer" nor "we don't bill
+ *     your insurer" — they state the neutral process (itemized estimate + documentation, customer contacts
+ *     the insurer, we coordinate the repair);
+ *   - no absolute-outcome promises: no "every shard" / "all the glass" glass-removal guarantees and no
+ *     promised adjuster meetings;
+ *   - no insurance-premium advice (no "protect your rates" / "comprehensive doesn't affect your rate") —
+ *     only "ask your insurer how a claim could affect your premium" + the customer decides after the
+ *     itemized estimate; and no speculative total-loss determinations — severe flood/electrical damage
+ *     needs a qualified inspection and the insurer's review; our scope is interior cleanup/restoration;
+ *   - glass replacement is third-party work coordinated through the shop's glass partner (not named);
  *   - every page distinguishes what the shop does from what it does not (glass replacement, structural/body
  *     work, severe flood / total loss);
- *   - no fabricated photos, reviews, prices or turnaround promises. Photos are listed as REQUIRED ASSETS and
- *     rendered as labelled placeholders in the preview only;
+ *   - no fabricated reviews, prices or turnaround promises. Images are either real shop photos or
+ *     owner-approved GENERATED ILLUSTRATIONS that always render with a visible "Illustrative image — not a
+ *     completed Pitt Stop job." caption (render.ts enforces this); never a fake before/after;
  *   - facts (phone, address, hours) come from the live site as read on 2026-11-07.
  */
 import type { QuoteService } from '@/apps/marketing/quote-shared'
@@ -48,16 +58,36 @@ export interface LandingPage {
   trust: string[]
   sections: Section[]
   insurance: { heading: string; paras: string[] }
-  photos: PhotoNeed[]
+  /** Generated-illustration slot for this page (ILLUSTRATIONS key); the hub reuses the four service ones. */
+  illustrationId: string | null
+  photos: PhotoNeed[]                 // OPTIONAL real-photo upgrades — never a publish blocker
   faqs: Faq[]
   related: string[]                   // slugs
   ctaLabel: string
 }
 
+/**
+ * Owner-approved (2026-11-07) generated-illustration slots: one landscape image per damage type, reused on
+ * the hub cards. These are ILLUSTRATIONS, not photos of completed Pitt Stop jobs — render.ts always prints
+ * the visible provenance caption and refuses before/after or completed-job claims on them. The actual
+ * files/URLs arrive later via assets.json; NOTHING renders for a slot until its asset is really supplied.
+ */
+export const ILLUSTRATIONS: Record<string, { caption: string }> = {
+  'illustration-vandalism':     { caption: 'Vandalized vehicle with keyed paint and a broken side window' },
+  'illustration-overspray':     { caption: 'Paint overspray speckled across an automotive panel' },
+  'illustration-water-damage':  { caption: 'Water soaked into the carpet of a vehicle interior' },
+  'illustration-glass-cleanup': { caption: 'Shattered tempered glass across a vehicle seat and carpet' },
+}
+
 /** The one sentence every page must carry, verbatim or near it (tested). */
 export const INSURER_DECIDES = 'Coverage, and what your deductible is, are always your insurance company’s decision, never ours.'
-/** Direct billing is unverified, so every page says the same thing. */
-export const NO_DIRECT_BILLING = 'We don’t bill your insurance company for you: you receive a written, itemized estimate and photos you can submit with your claim, and we work from the estimate once you decide to proceed.'
+/**
+ * Neutral claim-process statement (owner steering 2026-11-07). Billing arrangements with insurers are
+ * unverified either way, so pages assert NEITHER "we bill your insurer" NOR "we don't" — only the process.
+ */
+export const CLAIM_PROCESS = 'Contact your insurer to open or discuss a claim; we provide an itemized, written estimate and damage documentation, and we coordinate the repair process once you decide to proceed.'
+/** Glass fulfilment statement (owner-confirmed 2026-11-07: third party through the shop's existing partner). */
+export const GLASS_COORDINATION = 'We coordinate glass replacement through our third-party glass partner and handle the related cleanup and restoration.'
 
 export const PAGES: LandingPage[] = [
   {
@@ -77,7 +107,7 @@ export const PAGES: LandingPage[] = [
           '[[car-vandalism-repair|Vandalism and break-in restoration]]: keyed paint, spray paint, broken-glass cleanup, damaged or soiled interiors.',
           '[[car-overspray-removal|Paint overspray removal]]: construction, roofing and industrial overspray lifted off paint, glass and trim without repainting.',
           '[[car-water-damage|Water damage restoration]]: rain and leak intrusion, wet carpet and padding, odor and mildew prevention.',
-          '[[auto-glass-repair|Broken glass and interior cleanup]]: the glass is replaced by a glass shop; we handle everything the break left behind.',
+          '[[auto-glass-repair|Broken glass and interior cleanup]]: replacement glass is coordinated through our third-party glass partner; we clean the broken glass out of the interior and restore the damage the break caused.',
         ],
       },
       {
@@ -85,16 +115,16 @@ export const PAGES: LandingPage[] = [
         steps: [
           'Send photos and a short description through our estimate form, or call the shop.',
           'We review the damage and reply with next steps during business hours. Some jobs we can estimate from photos; others need a look in person.',
-          'You receive a written, itemized estimate with photos. If you are filing a claim, that is what you send your insurer or show the adjuster.',
-          'Once you (and your insurer, if you are claiming) decide to proceed, we schedule the work and keep you posted until pickup.',
+          'You receive a written, itemized estimate with photos — the documentation you share with your insurer if you are filing a claim.',
+          'Once you (and your insurer, if you are claiming) decide to proceed, we coordinate and schedule the work and keep you posted until pickup.',
         ],
       },
       {
         heading: 'What we are honest about',
         bullets: [
           'Deep scratches that are through the clear coat and paint need a body shop. We will tell you that instead of polishing something that cannot be polished.',
-          'We are not a glass shop. We coordinate the cleanup and interior side and can work alongside whichever glass shop you or your insurer choose.',
-          'Severe flooding (water above the seat bottoms, submerged electronics, standing water for days) is often a total-loss conversation with your insurer, not a restoration job. We will say so.',
+          'We do not install glass ourselves. ' + GLASS_COORDINATION,
+          'Severe flooding (water above the seat bottoms, submerged electronics, standing water for days) needs a qualified inspection and your insurer’s review before anyone talks restoration. Our work is interior cleanup and restoration, and we will tell you when damage is beyond that.',
           'Hail and dent repair: ask us. We will point you to the right option for the damage rather than promise a result.',
         ],
       },
@@ -102,19 +132,20 @@ export const PAGES: LandingPage[] = [
     insurance: {
       heading: 'Working with your insurance',
       paras: [
-        'Vandalism, falling objects, water and glass damage are typically handled under the comprehensive portion of an auto policy, but every policy is different, and some people choose to pay out of pocket to protect their rates. ' + INSURER_DECIDES,
-        NO_DIRECT_BILLING + ' If an adjuster wants to see the vehicle or talk through the estimate, we are glad to walk them through it.',
+        'Vandalism, falling objects, water and glass damage are typically handled under the comprehensive portion of an auto policy, but every policy is different. Ask your insurer how a claim could affect your premium; with the itemized estimate in hand, whether to claim or pay out of pocket is your choice. ' + INSURER_DECIDES,
+        CLAIM_PROCESS,
       ],
     },
+    illustrationId: null,
     photos: [
       { id: 'hub-hero', caption: 'Our College Station shop with a vehicle on the restoration bay', note: 'Wide exterior or bay shot of the real shop. No stock imagery.' },
       { id: 'hub-estimate', caption: 'An itemized Pitt Stop estimate beside the photos it was built from', note: 'Photograph a real (customer details redacted) estimate printout or screen.' },
     ],
     faqs: [
       { q: 'Do I have to file an insurance claim to use you?', a: 'No. Many customers pay out of pocket, especially when the repair is close to their deductible. You get the same written estimate either way, so you can decide after you see the number.' },
-      { q: 'Will you talk to my adjuster?', a: 'Yes. We will explain the estimate line by line and show the adjuster the damage in person or by photo. The coverage decision stays with your insurer.' },
+      { q: 'How does the estimate work with my insurance claim?', a: 'You receive a written, itemized estimate with dated photos of the damage. Contact your insurer to open or discuss the claim and share that documentation with them; coverage, deductible and approval decisions are your insurance company’s.' },
       { q: 'How fast can you look at my vehicle?', a: 'Send photos through the estimate form and we will reply with next steps during business hours. If the damage needs an in-person look, we will tell you when to bring it by.' },
-      { q: 'Do you repair body damage or replace glass?', a: 'We are a detail and restoration shop. We handle paint correction, interior restoration, odor and cleanup. Dents, panel repair and glass replacement go to a body or glass shop, and we are happy to work alongside them.' },
+      { q: 'Do you repair body damage or replace glass?', a: 'We are a detail and restoration shop. We handle paint correction, interior restoration, odor and cleanup. Dents and panel repair go to a body shop. Glass replacement is third-party work we coordinate through our glass partner.' },
     ],
     related: ['car-vandalism-repair', 'car-overspray-removal', 'car-water-damage', 'auto-glass-repair'],
     ctaLabel: 'Request an estimate',
@@ -126,15 +157,15 @@ export const PAGES: LandingPage[] = [
     metaDescription: 'Keyed paint, spray paint, glass inside the car, soiled interiors. Pitt Stop restores vandalized vehicles in Bryan–College Station and documents your claim.',
     kicker: 'Vandalism & break-ins',
     h1: 'Vandalism and Break-In Restoration',
-    lede: 'A keyed door, a smashed window, spray paint, a glovebox dumped on the floor. Our job is to get the vehicle back to looking and smelling like yours, and to document everything so your claim goes smoothly.',
-    trust: ['Scratch assessment: polish vs. repaint, explained honestly', 'Every shard of glass out of seats, carpet and vents', 'Spray paint and adhesive removal', 'Interior cleaning, odor treatment and upholstery repair'],
+    lede: 'A keyed door, a smashed window, spray paint, a glovebox dumped on the floor. Our job is to get the vehicle back to looking and smelling like yours, and to document the damage so your claim goes smoothly.',
+    trust: ['Scratch assessment: polish vs. repaint, explained honestly', 'Deep glass cleanup of seats, carpet and vents', 'Spray paint and adhesive removal', 'Interior cleaning, odor treatment and upholstery repair'],
     sections: [
       {
         heading: 'What we do after a break-in or vandalism',
         bullets: [
           'Keyed and scratched paint: we measure how deep the scratch goes. Scratches in the clear coat can usually be polished out; scratches to primer or metal need paint, and we will tell you which is which.',
           'Spray paint, markers, egg and adhesive: removed from paint, glass and trim with methods that lift the contaminant rather than grind the finish.',
-          'Broken glass cleanup: tempered glass shatters into thousands of pieces that travel into seat tracks, vents and under carpet. We remove them so nobody finds one later.',
+          'Broken glass cleanup: tempered glass shatters into thousands of pieces that travel into seat tracks, vents and under carpet. We remove seats and trim where needed and clean those areas out properly.',
           'Interior restoration: dumped contents, spills, footprints, cut seats and torn panels. Shampoo, extraction, upholstery repair and odor treatment as needed.',
           'Documentation: dated photos of every damaged area and an itemized estimate you can submit with a police report and claim.',
         ],
@@ -150,17 +181,18 @@ export const PAGES: LandingPage[] = [
       },
       {
         heading: 'What we do not do',
-        bullets: ['Panel replacement, dent repair and repainting are body-shop work. We will say so plainly if that is what your vehicle needs.', 'Glass replacement itself is done by a glass shop; see our [[auto-glass-repair|broken glass and interior cleanup]] page for how that fits together.'],
+        bullets: ['Panel replacement, dent repair and repainting are body-shop work. We will say so plainly if that is what your vehicle needs.', 'Glass replacement itself is third-party work we coordinate through our glass partner; see our [[auto-glass-repair|broken glass and interior cleanup]] page for how that fits together.'],
         callout: { tone: 'yellow', text: 'Deep scratches: if you can catch a fingernail in the scratch, it is probably through the clear coat. We can still improve how it looks, but we will not promise it disappears.' },
       },
     ],
     insurance: {
       heading: 'Vandalism and your insurance',
       paras: [
-        'Vandalism is typically a comprehensive claim, not collision, and comprehensive claims often do not affect your rate the way an at-fault accident does, but that depends on your policy and your insurer. If the repair is close to your deductible, many people simply pay out of pocket. ' + INSURER_DECIDES,
-        NO_DIRECT_BILLING,
+        'Vandalism is typically a comprehensive claim, not collision. Ask your insurer how a claim could affect your premium; with the itemized estimate in hand, whether to claim or pay out of pocket is your choice. ' + INSURER_DECIDES,
+        CLAIM_PROCESS,
       ],
     },
+    illustrationId: 'illustration-vandalism',
     photos: [
       { id: 'vandal-keyed-before-after', caption: 'Keyed door panel before and after paint correction', note: 'Real customer vehicle, permission on file. Same angle, same light for both shots.' },
       { id: 'vandal-glass-cleanup', caption: 'Shattered side glass removed from seat tracks and carpet', note: 'Interior shot during cleanup.' },
@@ -168,8 +200,8 @@ export const PAGES: LandingPage[] = [
     faqs: [
       { q: 'Can keyed paint be fixed without repainting?', a: 'Often, if the scratch is only in the clear coat. We polish the area and blend it. If the key went through to primer or metal, the panel needs paint, which is body-shop work; we will tell you which case you have before any work starts.' },
       { q: 'Do I need a police report?', a: 'For a vandalism or theft claim your insurer will usually want a report number. For the estimate itself we do not need it, so send photos first and file the report in parallel.' },
-      { q: 'Will a vandalism claim raise my rates?', a: 'Vandalism is normally a comprehensive claim, which many insurers treat differently from an at-fault accident, but it varies by company and policy. Ask your agent. We can give you the estimate first so you can decide whether to claim.' },
-      { q: 'Can you get all the glass out of the car?', a: 'Yes. Tempered glass spreads into seat tracks, door cavities, vents and under the carpet, so we remove seats and trim where needed and vacuum, brush and blow every cavity out.' },
+      { q: 'Should I file a claim or pay out of pocket?', a: 'That is your call, and it is easier with numbers: we write the itemized estimate first so you can compare it against your deductible. Ask your insurer or agent how a claim could affect your premium — only they can answer that.' },
+      { q: 'How thorough is the glass cleanup?', a: 'Tempered glass spreads into seat tracks, door cavities, vents and under the carpet, so we remove seats and trim where needed and vacuum, brush and blow those areas out — far beyond what a household vacuum can reach.' },
       { q: 'How long does it take?', a: 'It depends on the damage. Light scratch polishing and glass cleanup is often a same-day or next-day job once scheduled; interior repairs take longer. We give you a time estimate with the written estimate.' },
     ],
     related: ['auto-glass-repair', 'insurance-auto-repair', 'car-water-damage'],
@@ -214,9 +246,10 @@ export const PAGES: LandingPage[] = [
       heading: 'Overspray and insurance',
       paras: [
         'Overspray damage is often handled one of two ways: a claim against the responsible contractor’s liability insurance, or a comprehensive claim on your own policy. Which route is better depends on the deductibles involved and how cooperative the contractor is. ' + INSURER_DECIDES,
-        NO_DIRECT_BILLING,
+        CLAIM_PROCESS,
       ],
     },
+    illustrationId: 'illustration-overspray',
     photos: [
       { id: 'overspray-before-after', caption: 'Overspray speckling on a hood before and after removal', note: 'Macro shot of the specks plus the same panel after. Real vehicle.' },
       { id: 'overspray-test-spot', caption: 'Test spot during assessment', note: 'Shows the method is matched to the coating.' },
@@ -264,7 +297,7 @@ export const PAGES: LandingPage[] = [
         paras: ['These are different situations, and we will tell you which one you have.'],
         bullets: [
           'Repairable: rain through an open window or sunroof, a leaking seal, a spilled cooler, a wet floorboard from a clogged drain. The interior is saved with extraction, drying and treatment, sometimes with new carpet or padding.',
-          'Flooded: water above the seat bottoms, water in the dash or electrical modules, standing water for days, or any saltwater or sewage contamination. Electrical and corrosion problems show up for months. This is usually a conversation with your insurer about the vehicle’s value, and we will not sell you an interior restoration on a car that should be totaled.',
+          'Flooded: water above the seat bottoms, water in the dash or electrical modules, standing water for days, or any saltwater or sewage contamination. Electrical and corrosion problems can surface for months, so a vehicle like this needs a qualified mechanical and electrical inspection and your insurer’s review first. Our work is interior cleanup and restoration — we will tell you when the damage is beyond that instead of selling you a cleanup.',
         ],
         callout: { tone: 'yellow', text: 'Mildew can start within a day or two in a closed, warm car. If the interior is wet, treat it as urgent.' },
       },
@@ -273,9 +306,10 @@ export const PAGES: LandingPage[] = [
       heading: 'Water damage and insurance',
       paras: [
         'Flood and water damage from storms is typically handled under comprehensive coverage. Water that got in because a window was left open may be treated differently by some insurers, and a slow leak from a worn seal is usually considered maintenance. ' + INSURER_DECIDES,
-        NO_DIRECT_BILLING + ' If the vehicle may be a total loss, we will tell you that before you spend money on an estimate you will not use.',
+        CLAIM_PROCESS + ' If the damage looks severe, have the vehicle inspected and reviewed by your insurer first — whether it is repaired or declared a total loss is their decision — before paying for restoration work.',
       ],
     },
+    illustrationId: 'illustration-water-damage',
     photos: [
       { id: 'water-extraction', caption: 'Hot-water extraction of a saturated floorboard', note: 'Real job in progress, carpet lifted.' },
       { id: 'water-before-after', caption: 'Water-stained carpet before and after restoration', note: 'Same area, same angle.' },
@@ -294,52 +328,53 @@ export const PAGES: LandingPage[] = [
     slug: 'auto-glass-repair',
     service: 'glass',
     seoTitle: 'Broken Car Window Cleanup | College Station, TX | Pitt Stop',
-    metaDescription: 'Side or rear window smashed? Pitt Stop clears every piece of glass from the interior, repairs the damage and works alongside your glass shop in College Station.',
+    metaDescription: 'Smashed side or rear window? Pitt Stop removes the glass, restores the interior and coordinates replacement via our glass partner in College Station.',
     kicker: 'Broken glass',
     h1: 'Broken Side and Rear Glass: Cleanup, Interior Repair and Coordination',
-    lede: 'The glass shop replaces the window. The glass that exploded into your seats, carpet, vents and door is still your problem, and so is whatever else the break damaged. That part is ours.',
-    trust: ['Every shard out of seat tracks, vents, carpet and door cavities', 'Interior and paint damage from the break-in restored', 'We work alongside the glass shop you or your insurer choose', 'Itemized estimate for your comprehensive or glass claim'],
+    lede: 'Replacement glass is installed by our third-party glass partner. The glass that exploded into your seats, carpet, vents and door is still your problem, and so is the interior and paint damage around the break. That part is ours.',
+    trust: ['Deep glass removal from seat tracks, vents, carpet and door cavities', 'Interior and paint damage from the break-in restored', 'Replacement glass coordinated through our third-party glass partner', 'Itemized estimate for your comprehensive or glass claim'],
     sections: [
       {
         heading: 'What we do when a window is broken',
         bullets: [
-          'Complete glass removal: tempered side and rear glass breaks into thousands of pieces that end up under seats, inside door panels, in vents and defroster ducts. We remove trim and seats as needed and clear every cavity.',
+          'Deep glass removal: tempered side and rear glass breaks into thousands of pieces that end up under seats, inside door panels, in vents and defroster ducts. We remove trim and seats as needed and clean those cavities out.',
           'Interior repair: cut or scuffed seats, scratched panels, a dumped console, footprints and spills from the break-in.',
           'Paint around the opening: scratches and scuffs on the door frame or quarter panel from the break or the tool used.',
           'Weather protection: we can secure the opening with a temporary cover while the replacement glass is on the way.',
-          'Coordination: we schedule around the glass installer so the interior is clean before the new glass goes in, and you are not vacuuming glass out of your defroster next summer.',
+          'Coordination: we coordinate the replacement glass through our glass partner and schedule the cleanup around the installation, so the interior is clean before the new glass goes in.',
         ],
       },
       {
         heading: 'What we are honest about',
-        paras: ['We are a detail and restoration shop, not a glass shop. We do not stock or install glass. In Bryan–College Station there are several established auto-glass installers, and many insurers have a preferred glass network; use whichever you and your insurer prefer, and we will handle everything around it.'],
-        callout: { tone: 'navy', text: 'Windshields: windshield chips and cracks are a glass-shop job and often a separate glass-coverage claim. We do not repair windshields.' },
+        paras: ['We are a detail and restoration shop; we do not stock or install glass ourselves. ' + GLASS_COORDINATION + ' If your insurer arranges an installer through its own glass network, we are glad to work alongside them instead.'],
+        callout: { tone: 'navy', text: 'Windshields: windshield chips and cracks are an installer’s job and often a separate glass-coverage claim. We do not repair windshields.' },
       },
       {
         heading: 'What to do right now',
         steps: [
           'If it was a break-in, file a police report and photograph the vehicle before touching anything.',
           'Cover the opening with plastic and tape so rain and more debris stay out.',
-          'Call your insurer or glass network to arrange the replacement glass, and send us photos so the cleanup and interior repair can be scheduled around it.',
+          'Contact your insurer to open or discuss the claim, and send us photos — we coordinate the replacement glass through our glass partner and schedule the cleanup and interior repair around it.',
         ],
       },
     ],
     insurance: {
       heading: 'Glass, cleanup and your insurance',
       paras: [
-        'Broken glass from a break-in or vandalism is typically part of a comprehensive claim, and some policies carry separate glass coverage with its own deductible. The interior cleanup and repair that goes with a break-in is usually part of the same claim, and we itemize it so the adjuster can see exactly what was done and why. ' + INSURER_DECIDES,
-        NO_DIRECT_BILLING,
+        'Broken glass from a break-in or vandalism is typically part of a comprehensive claim, and some policies carry separate glass coverage with its own deductible. The interior cleanup and repair that goes with a break-in is usually part of the same claim, and we itemize it so your insurer can see exactly what was done and why. ' + INSURER_DECIDES,
+        CLAIM_PROCESS,
       ],
     },
+    illustrationId: 'illustration-glass-cleanup',
     photos: [
       { id: 'glass-cleanup-tracks', caption: 'Glass fragments removed from seat tracks and the door cavity', note: 'Real cleanup in progress.' },
       { id: 'glass-finished-interior', caption: 'Interior restored after a break-in, before the new glass is installed', note: 'Same vehicle, finished.' },
     ],
     faqs: [
-      { q: 'Do you replace car windows?', a: 'No. Glass replacement is done by a glass shop. We remove the broken glass from the interior, repair the damage the break caused and coordinate with the installer you or your insurer choose.' },
+      { q: 'Do you replace car windows?', a: 'Not in-house. We coordinate glass replacement through our third-party glass partner, remove the broken glass from the interior and repair the damage the break caused. If your insurer arranges its own installer, we work alongside them.' },
       { q: 'Why not just vacuum the glass myself?', a: 'You can get the big pieces, but tempered glass spreads into seat tracks, door panels, vents and under the carpet, and a household vacuum will not survive it. Fragments left behind come out of the vents for months and cut hands and upholstery.' },
-      { q: 'Should the cleanup happen before or after the new glass?', a: 'Before is better, so the installer is not sealing new glass over a dirty channel and nothing gets trapped behind the new trim. We schedule around the glass appointment.' },
-      { q: 'Will insurance pay for the cleanup?', a: 'When the glass broke in a covered event such as a break-in, the related interior cleanup and repair is usually part of the same claim, but your insurer decides. Our itemized estimate explains each line so the adjuster can see what was needed.' },
+      { q: 'Should the cleanup happen before or after the new glass?', a: 'Before is better, so the installer is not sealing new glass over a dirty channel and nothing gets trapped behind the new trim. We schedule the cleanup around the glass installation.' },
+      { q: 'Will insurance pay for the cleanup?', a: 'When the glass broke in a covered event such as a break-in, the related interior cleanup and repair is usually part of the same claim, but your insurer decides. Our itemized estimate explains each line so your insurer can see what was needed.' },
     ],
     related: ['car-vandalism-repair', 'insurance-auto-repair', 'car-water-damage'],
     ctaLabel: 'Request a cleanup estimate',

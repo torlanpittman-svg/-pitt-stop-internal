@@ -2,9 +2,18 @@
 
 Status 2026-11-07: three Search campaigns are drafted as Google Ads Editor import files in `docs/insurance-restoration/ads/`
 (`campaigns.csv`, `adgroups.csv`, `keywords.csv`, `negatives.csv`, `ads_rsa.csv`). **Every campaign row is `Paused`.**
-Nothing has been imported, created, enabled or budgeted in account 684-374-8548. Importing them is itself a change to the
-account and needs the owner's go-ahead; enabling them is the spending decision and needs separate, explicit approval.
-The proposed $600/month is a ceiling to approve, not an approved spend.
+Nothing has been imported, created, enabled or budgeted in account 684-374-8548.
+
+**Update (2026-11-07 evening):** the owner **approved the release and the $600/month ceiling**; Codex verifies readiness
+and executes. Live read-only checks in the account: it is accessible, an existing primary payment method is present, and
+all 16 conversion actions were reviewed — `booking_confirmed` exists (secondary, count: One); `quote_requested` does not
+exist yet (created only after deploy + first real event, approvals E/D in APPROVAL_PACKAGE §4). `campaigns.csv` was
+uploaded for **PREVIEW ONLY**: 3 errors / 0 successes — the current Google Ads Editor template requires an EU
+political-ads field the draft lacks. **No Apply was run; no campaign, ad or budget exists and nothing was spent.** Codex
+is adapting the CSV columns to the current official template; the campaign CONTENT and budgets in this repo
+($9.00 / $6.00 / $4.70 daily, all Paused) are the source of truth and stay stable meanwhile. The ad copy in
+`ads_rsa.csv` was revised 2026-11-07 (absolute glass-removal and total-loss lines removed, glass-partner coordination
+wording) — **re-run the headline ≤30 / description ≤90 length check after any further copy edit.**
 
 ## 1. What the account's own history says (read-only, all time Dec 2019 – Nov 7 2026)
 The paused **Hail Damage** Search campaign (id 22343541033, $29.09/day, Maximize conversions, 13 keywords all broad or
@@ -65,16 +74,17 @@ the paused Hail campaign bought.
   (vandalism: windshield/glass replacement/Safelite/dent/PDR/body shop/repaint; overspray: spray guns/booths/house/roof
   coatings/tint; water: engine/radiator/hydrolock/sunroof replacement/salvage/junk-car). Review search terms weekly and
   promote new negatives.
-- **Ads:** one responsive search ad per ad group (`ads_rsa.csv`, 8 headlines ≤ 30 chars, 4 descriptions ≤ 90 chars,
-  length-checked). Copy follows the landing-page guardrails: "itemized estimate for your claim", "coverage is your
-  insurer's call", never "covered", "free", "deductible", "we bill insurance". Pin nothing; let Google test.
+- **Ads:** one responsive search ad per ad group (`ads_rsa.csv`, 8 headlines ≤ 30 chars, 4 descriptions ≤ 90 chars —
+  copy revised 2026-11-07, lengths must be re-checked before import). Copy follows the landing-page guardrails:
+  "itemized estimate for your claim", "coverage is your insurer's call", never "covered", "free", "deductible", any
+  billing-status claim, absolute glass-removal promises or total-loss calls. Pin nothing; let Google test.
 - **Final URLs:** the WordPress landing pages (`/car-vandalism-repair/`, `/auto-glass-repair/`, `/car-overspray-removal/`,
   `/car-water-damage/`). **Final URL suffix** per campaign carries `utm_source=google&utm_medium=cpc&utm_campaign=
-  restoration_<type>&utm_content={adgroupid}&utm_term={keyword}&lp=<slug>`; the page's estimate CTA passes the visitor
-  on to `/quote` with `utm_source=website&utm_medium=landing&lp=<slug>` — so the **gclid** (auto-tagging, on) is what
-  identifies the paid click on the quote form, and `classifySource` maps `gclid` → `google_ads` ahead of any utm.
-  **Keep auto-tagging ON.** (Auto-tagging appends gclid to the landing page URL; the WordPress page must pass the query
-  string through to the CTA link — see §6, launch check 4.)
+  restoration_<type>&utm_content={adgroupid}&utm_term={keyword}&lp=<slug>`. The landing pages now SHIP an attribution
+  pass-through script (render.ts, rev. 2026-11-07) that forwards the incoming allow-listed click parameters (gclid,
+  utm_*, …) onto every estimate CTA and cross-page landing link — a paid click reaches `/quote` carrying its gclid/UTMs
+  instead of being relabelled `utm_source=website`, and `classifySource` maps `gclid` → `google_ads` ahead of any utm.
+  **Keep auto-tagging ON** (it appends the gclid to the landing-page URL the script forwards).
 - **Assets (extensions):** call asset (979) 696-6640 (tracked, business hours), location asset from the GBP, sitelinks to
   the four pages + /contact/, callouts "Written itemized estimates", "Photos welcome", "College Station shop".
 - **Campaign category mapping for reporting:** add the three new campaign ids to `GOOGLE_ADS_CAMPAIGN_CATEGORIES_JSON`

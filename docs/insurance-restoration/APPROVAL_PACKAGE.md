@@ -5,6 +5,85 @@ Everything below exists only on branch `feat/insurance-restoration` in the workt
 files, or as drafts. **Nothing has been published, deployed, migrated, imported, enabled, spent or sent.** Each section ends
 with the exact approval it needs. The main checkout (`cleanup/usability-pass`, 118 dirty files) was not touched.
 
+## Revision 2 — 2026-11-07 correction pass (owner steering + independent review fixes)
+
+The owner **approved the release and the proposed $600/month new-ad budget**; Codex independently verifies final
+readiness and executes deploy/publish/ads — nothing in this worktree deploys itself. This revision changed code and
+copy AFTER the verification evidence recorded below, so **the §1 test counts and the `dist/` outputs are STALE until
+Codex re-runs the suite and rebuilds** (`npx vitest run apps/marketing website/wordpress/insurance-restoration app/marketing/restoration`,
+`npx tsx scripts/build-restoration-pages.ts`, `tsc`, `eslint`, `next build --webpack`). What changed:
+
+1. **Owner steering applied to all public copy** (pages + /quote form): glass replacement is third-party through the
+   shop's existing partner (not named) — pages now say so; billing arrangements are unverified EITHER WAY, so the old
+   blanket "we don't bill your insurance company" was removed along with adjuster-meeting promises and "every shard"
+   absolute glass-removal claims. Every page carries the neutral process: *contact your insurer to open or discuss a
+   claim; we provide an itemized estimate and damage documentation and coordinate the repair.* Guardrail tests updated
+   to FORBID both billing-status claims and the absolutes.
+2. **Attribution pass-through fixed** (review finding 1): the landing pages now ship a small self-contained script that
+   forwards allow-listed incoming click parameters (gclid, utm_*, fbclid, ps_cid, ref — exactly
+   `apps/appointments/attribution.ts` minus `lp`) onto the estimate CTAs and cross-page landing links, so a paid click
+   is never relabelled `website`. Each link keeps its own `service` and `lp`. No cookies/storage/third parties; values
+   are cleaned with the same filter the server applies; only the shop's own funnel/pages are rewritten. Tested by
+   executing the shipped script's pure functions (gclid/UTM forwarding, hub→child chains, organic no-op, hostile input).
+3. **Report corrections** (findings 2–4): missing restoration ad data is now **unknown (null), never $0**, even when
+   other categories report (regression-tested: live meta + ceramic-only rollup). Unit economics were split and
+   relabelled: *cost per paid lead* (spend ÷ Google Ads leads), *blended cost per completed job* (explicitly NOT an
+   acquisition cost), and *paid CAC* (spend ÷ distinct NEW customers with an invoiced Google Ads job — repeat
+   customers, organic and unknown-source jobs excluded; new = no earlier completed order on the customer record).
+   Duplicate handling: the canonical lead of a duplicate group is now the one that converted/progressed, and ALL
+   breakdowns count unique leads only, matching the funnel headline; duplicate rows stay visible and flagged.
+4. **Labor-cost modeling and contribution REMOVED** (owner decision — actual labor costs are not captured):
+   no owner-set percent, no contribution/margin figures or targets anywhere. The report states **profitability:
+   unmeasured** (never $0, never an estimate). The `restoration_labor_cost_pct` setting, its server action and the
+   0076 seed were deleted (0076 is unapplied outside PGlite, so revising it is safe; it now only adds columns + index).
+5. **Generated illustrations approved** (owner): the renderer takes an asset manifest (`assets.json`) with per-image
+   src/alt/caption/provenance; generated illustrations always render the visible caption *"Illustrative image — not a
+   completed Pitt Stop job."*, are reused hub + service pages, are rejected on real-photo slots and may not claim
+   before/after or real-job results (enforced + tested). Real photos are optional upgrades, **no longer a publish
+   blocker**. Codex supplies the 4 generated landscape files/URLs; nothing renders until they exist in the manifest.
+6. **WordPress export is self-contained** (finding 5): `wpBody` now includes production styles scoped entirely under
+   a `.ps-restore` wrapper (no `body`/`:root`/bare-element rules, every used class covered — tested), so the
+   `.wp.html` no longer depends on undefined theme classes and cannot leak styles into Avada.
+7. **Safe report review harness**: `/marketing/restoration` rendering was split into a pure
+   `RestorationReportView` + synthetic fixtures (`app/marketing/restoration/report-fixture.ts`), rendered without any
+   DB by `ReportView.test.tsx` and `scripts/preview-restoration-report.ts` (writes HTML to
+   `docs/insurance-restoration/evidence/`). This proves markup + honesty rules locally; the live page against real
+   0076 data is still verified only in the deployed app after migration A.
+8. **Search Console**: owner reports access was granted — recorded as owner-reported, **pending Codex verification**.
+
+## Revision 3 — 2026-11-07 (late): live read-only verification + generated assets + review fixes
+
+Facts from Codex's live read-only session and independent review (nothing was published, created, applied or spent):
+
+- **Generated illustrations supplied**: the four landscape files live at
+  `website/wordpress/insurance-restoration/dist/images/*.webp` with `assets.json` entries (provenance
+  `"generated illustration"`, generation prompts recorded; all four visually inspected and visibly labelled).
+  `assets.json` currently points at local `images/…` paths for previews; after the WordPress media upload the `src`
+  values are replaced with the public URLs and the pages rebuilt. **Preserve these files.** GBP must never use them
+  (real photos only there).
+- **Search Console: access VERIFIED** for `https://www.pittstopdetailandautosales.com/` (in-app connected browser,
+  signed in as Torlan Pittman, 2026-11-07). Supersedes "owner-reported, pending" in Revision 2 item 8.
+- **Google Ads 684-374-8548**: accessible; an existing primary payment method is present; all 16 conversion actions
+  reviewed — `booking_confirmed` exists (secondary, count One), `quote_requested` absent (expected pre-deploy). No
+  campaign/ad/budget edits were performed. `campaigns.csv` was uploaded for **preview only**: 3 errors / 0 successes
+  (current template requires an EU political-ads field) — no Apply, no campaigns created, no spend. Codex is adapting
+  the CSV to the current official template; repo campaign content and budgets ($9 / $6 / $4.70, Paused) stay stable.
+- **WordPress and Vercel**: the owner reports being logged in to BOTH — recorded as owner-reported, **pending Codex
+  verification**. The Vercel MCP connection is still pending (no tools), so there is no deployed-version evidence yet.
+- **Production schema preflight (read-only)**: endpoint `ep-morning-base-adq5h6rq-pooler`, role `pitt_stop_app`, local
+  write guard ACTIVE. `quote_requests` exists with its original 10 columns and **NONE of the five 0076 columns or the
+  damage_type index**. Confirms the §4 ordering: **apply migration A before deploying B** — the new `/quote` CTE writes
+  those columns and would fail without them. No business data was read or written; no local tests ran against production.
+- **Review fixes landed after Revision 2** (all source-only, suite re-run required): transitive duplicate-group merging
+  (a bridging lead now merges two existing contact groups into one; canonical prefers completed > open > cancelled
+  linked outcome, never "older cancelled" over "completed"); the landing-page attribution script now runs at
+  DOMContentLoaded so late markup (the preview sticky CTA) is rewritten too, with fake-DOM execution tests; glass meta
+  description shortened to the declared ≤155 contract (test tightened from the stale 160); public pages drop
+  insurance-premium advice and speculative total-loss determinations (new guardrail tests); ads/GBP drafts drop
+  "every shard"/"we handle everything"/fixed-sequence/total-loss lines in favor of glass-partner coordination wording;
+  the report states the paid-metrics scope limitation (spend = restoration-mapped campaigns only vs. any-gclid
+  attribution → category-level approximation, not exact campaign CAC).
+
 ## 1. What was built (and how it was verified)
 
 | Deliverable | Where | Verification |
@@ -13,7 +92,7 @@ with the exact approval it needs. The main checkout (`cleanup/usability-pass`, 1
 | Estimate funnel on the existing `/quote` form: damage-type picker (restoration group + detailing group), per-type prompts, claim status, incident date, insurance disclaimer, up to 4 photos, estimate-language success screen, `quote_requested` event (never on replay) | `app/quote/{page,QuoteForm,conversion}.tsx/.ts`, `apps/marketing/quote-shared.ts`, `apps/marketing/quote-request.ts`, `app/api/quote/route.ts` | unit tests (parse, claim-status normalisation, date rules, hash, email text), conversion tests, live dev-server validation run (see §3), mobile + desktop render |
 | Durable storage + attribution: `quote_requests.damage_type / claim_status / incident_date / landing_page / attribution` written in the same atomic CTE; `lp` added to the attribution allow-list; landing-page-only visits classify as `website` | migration `drizzle/migrations/manual/0076_restoration_quote_requests.sql`, `apps/marketing/schema.ts`, `apps/appointments/attribution.ts` | PGlite integration tests run the real migration (twice, idempotent) |
 | Taxonomy: `restoration` service category + classifier rules (overspray, vandal, keyed, break-in, broken glass, water damage, flood, extraction, mold/mildew, hail, insurance/claim) | `apps/marketing/{types,services,calendar}.ts` | classifier tests |
-| Weekly report `/marketing/restoration` (new Marketing tab): funnel, revenue by damage type/channel, parts+sublet cost, MODELED labor cost (owner-set %), ad spend with provenance, CPL/CAC/contribution, matched/unmatched/duplicates, lead table with link-to-job shortcut | `apps/marketing/restoration-report.ts`, `app/marketing/restoration/page.tsx`, `app/marketing/actions.ts` (`updateRestorationLaborCostAction`), setting `restoration_labor_cost_pct` | 10-test end-to-end integration suite (`apps/marketing/restoration.integration.test.ts`); page compiles — **not browser-rendered** (needs 0076 on a non-production DB; see §3) |
+| Weekly report `/marketing/restoration` (new Marketing tab): funnel, revenue by damage type/channel, recorded parts+sublet cost, ad spend with provenance, separated paid unit costs (paid CPL / blended / paid CAC), profitability shown as UNMEASURED, matched/unmatched/duplicates, lead table with link-to-job shortcut | `apps/marketing/restoration-report.ts`, `app/marketing/restoration/{page,ReportView,report-fixture}.tsx/.ts` (Revision 2: labor-cost setting + action removed) | end-to-end integration suite (`apps/marketing/restoration.integration.test.ts`) + synthetic-props render tests (`ReportView.test.tsx`); live page render still needs 0076 in the deployed app (see §3) |
 | Google Ads drafts (3 Search campaigns, Paused) + budget mechanics + conversion definitions + stop rules | `docs/insurance-restoration/GOOGLE_ADS_DRAFTS.md`, `docs/insurance-restoration/ads/*.csv` | copy length-checked programmatically; account history read (read-only) |
 | GBP prep + review-request process | `docs/insurance-restoration/GBP_AND_REVIEWS.md` | — (drafts) |
 | Research + baseline | `BASELINE_2026-11-07.md`, `KEYWORD_RESEARCH_2026-11-07.md`, `README.md`, `CAPABILITY_READINESS.md` | read-only production queries + Keyword Planner |
@@ -65,7 +144,7 @@ Google (needs a deployed page); WordPress rendering of the HTML inside the Avada
 ## 4. Exact production changes requested (each a separate yes/no)
 | # | Change | Reversible? | Approval needed |
 |---|---|---|---|
-| A | Apply migration `0076_restoration_quote_requests.sql` to production Neon (`ep-morning-base-adq5h6rq`) via the owner role — adds 5 nullable/defaulted columns + 1 partial index to `quote_requests`, seeds `restoration_labor_cost_pct=0` | additive; columns can stay unused; no data rewritten | **yes** |
+| A | Apply migration `0076_restoration_quote_requests.sql` to production Neon (`ep-morning-base-adq5h6rq`) via the owner role — adds 5 nullable/defaulted columns + 1 partial index to `quote_requests` (Revision 2 removed the former settings seed) | additive; columns can stay unused; no data rewritten | **yes — approved 2026-11-07; Codex executes** |
 | B | Deploy branch `feat/insurance-restoration` (fast-forward onto `origin/main`; the push itself triggers Vercel production) | rollback = redeploy `021f7c1`; the form keeps working without 0076? **No** — the CTE writes the new columns, so A must precede B | **yes** (after A) |
 | C | Publish the five WordPress pages (Custom HTML block from `dist/<slug>.wp.html`, Rank Math title/description from `dist/<slug>.json`), after real photos are added | unpublish/trash restores; back up each new page draft | **yes**, per page |
 | D | Vercel Production env: add the new campaign ids to `GOOGLE_ADS_CAMPAIGN_CATEGORIES_JSON` as `restoration` (only after campaigns exist) | remove the keys | **yes** |
@@ -77,21 +156,23 @@ Google (needs a deployed page); WordPress rendering of the HTML inside the Avada
 Suggested order: A → B → (verify `/quote` and `/marketing/restoration` in production with a synthetic lead on the owner's
 instruction, then soft-cancel it) → C → E → F → D → G → H.
 
-## 5. Open decisions for the owner
-1. **Glass fulfilment wording** — pages say "we are not a glass shop; we coordinate with the installer you or your insurer
-   choose". Confirm, or name a partner shop to mention.
-2. **Direct billing / claim assistance** — pages say "we don't bill your insurance company for you" and "we'll walk the
-   adjuster through the estimate". Confirm this is what staff will do.
-3. **Labor-cost percent** for the contribution figure (set on `/marketing/restoration`; 0 keeps contribution "unknown").
-4. **Photos** — 10 real shop photos are needed (list in each `dist/<slug>.json` → `photosNeeded`). Pages can publish
-   without images, but they will convert worse.
-5. **Budget** — approve, trim or defer the $600/month ceiling; the account's own hail history ($9–$22 CPC, ~$253 per
-   Google conversion) says the < $200 CAC target is unlikely at launch. Recommendation: launch vandalism + overspray only
-   ($15/day ≈ $456/month) for 30 days, add water damage only if CPL < $60.
-6. **Search Console access** — add `pittstopautodetail@gmail.com` as a Full user (5 minutes) so organic impressions can be
-   reported; currently unavailable, not zero.
-7. **Hub-page CTA** — the hub has one CTA per damage type (no generic estimate button) because the form must know the
-   damage type; confirm that is acceptable.
+## 5. Owner decisions — RESOLVED 2026-11-07 (see Revision 2 for how each was applied)
+1. **Glass fulfilment** — RESOLVED: third party through the shop's existing glass partner; pages say "we coordinate
+   glass replacement through our third-party glass partner" without naming them.
+2. **Billing / claim assistance** — RESOLVED: billing arrangements believed set up but NOT verified in detail, so pages
+   assert nothing about billing either way and promise no adjuster meetings; they state the neutral process (itemized
+   estimate + damage documentation; customer contacts the insurer; shop coordinates the repair).
+3. **Labor cost** — RESOLVED: not required. The owner-facing setting and all contribution/profit figures were removed;
+   profitability is reported as unmeasured until real costs are captured.
+4. **Images** — RESOLVED: owner approved generated illustrative images (with the visible "Illustrative image — not a
+   completed Pitt Stop job." caption) so launch does not wait on real photos; real photos remain optional upgrades.
+5. **Budget** — APPROVED: release + up to $600/month for the new restoration ads. Codex verifies final readiness and
+   executes; existing unrelated campaigns stay unchanged. The hail history caution stands ($9–$22 CPC, ~$253 per Google
+   conversion): the staged launch (vandalism + overspray first, ~$15/day, add water damage only if CPL < $60) is still
+   the recommended execution of the approved ceiling.
+6. **Search Console** — owner reports access was GRANTED (owner-reported, pending Codex verification before any
+   SEO reporting relies on it).
+7. **Hub-page CTA** — stands as built (one CTA per damage type, approved with the release).
 
 ## 6. Costs
 No new subscriptions. Postmark free tier covers expected quote volume. The only money is item G.
@@ -104,13 +185,23 @@ Rollback: redeploy `021f7c1` from the Vercel dashboard; leave 0076 in place (add
 Kill switches without redeploy: none needed for the form (it degrades to the old behaviour only by redeploy); ads =
 pause; GA4 = un-star.
 
-## 8. Weekly reporting definitions (what each number means)
-- **Leads** = unique restoration estimate requests in the window by request date (duplicates by phone/email removed, shown separately).
+## 8. Weekly reporting definitions (what each number means — Revision 2)
+- **Leads** = unique restoration estimate requests in the window by request date. Duplicates (same normalized phone or
+  email) are flagged and excluded from the funnel AND from every breakdown; the canonical lead of a duplicate group is
+  the one that converted/progressed, never just the earliest. All rows stay visible in the lead table.
 - **Qualified** = lead status moved past `new` and not `lost`/`no_response` (a human judged it real).
 - **Estimates** = a written estimate exists on the linked job (total > 0) or status `estimate_sent`+.
 - **Booked** = linked to a job or status `booked`/`won`. **Cancelled** = linked job cancelled (never a completion).
 - **Completed** = restoration jobs completed in the window (linked from a restoration lead or classified from job text), by completion date.
 - **Invoiced revenue** = `job_estimates.total_cents` only when QuickBooks-anchored. **Quoted, not invoiced** shown separately. Refunds not modeled.
-- **Costs** = recorded part/sublet cost on invoiced jobs + MODELED labor (owner %). **Ad spend** = Google Ads, `restoration` category; "Unavailable" when the API is.
-- **CPL** = spend ÷ unique leads. **CAC** = spend ÷ completed jobs. **Contribution** = invoiced − parts − sublet − modeled labor − spend; null when any input is unknown.
-- **SEO** = not reportable until Search Console access exists (owner action).
+- **Costs** = recorded part/sublet line-item cost on invoiced jobs. **Profitability = UNMEASURED** (labor cost is not
+  captured; no contribution or margin is computed — never $0, never an estimate).
+- **Ad spend** = the Google Ads figure for campaigns mapped to the `restoration` category. No restoration rollup (even
+  when other categories report) or API unavailable ⇒ spend is UNKNOWN (null), never $0; a genuine $0 requires an
+  explicit restoration row reporting zero.
+- **Cost per paid lead** = spend ÷ unique Google Ads–attributed leads.
+  **Blended cost per completed job** = spend ÷ ALL completed restoration jobs (explicitly NOT an acquisition cost).
+  **Paid CAC** = spend ÷ distinct NEW customers with an invoiced, Google Ads–attributed completed job (repeat/organic/
+  unknown-source excluded; "new" = no earlier completed order on the customer record). All three are same-window
+  approximations, not click-cohort tracking, and are null whenever spend or the denominator is unknown/zero.
+- **SEO** = reportable once the owner-reported Search Console access is verified by Codex.

@@ -1,6 +1,7 @@
 /**
  * Insurance-restoration acquisition report (2026-11-07): Lead → estimate → booked → completed → invoiced
- * revenue → costs → CAC / contribution, for the restoration damage types only (quote_requests.damage_type).
+ * revenue → recorded costs → paid-acquisition unit costs, for the restoration damage types only
+ * (quote_requests.damage_type).
  *
  * Rules (the same canon as apps/marketing/report.ts — nothing here is a parallel truth):
  *   - Revenue is INVOICED only when the job's estimate is QB-anchored (job_estimates.qb_invoice_id or an
@@ -8,14 +9,27 @@
  *   - Leads are counted by quote_requests.created_at in the window; completions and revenue by
  *     service_orders.completed_at in the window (period basis, like the weekly report). Cancelled orders
  *     (cancelled_at set) are never completions.
- *   - Costs: parts/sublet = job_line_items.cost_cents (type part|sublet). Labor cost is NOT recorded on labor
- *     lines in production (cost_cents is 0 on every labor line — see docs/insurance-restoration/BASELINE),
- *     so labor cost is MODELED as restoration_labor_cost_pct × invoiced labor price, and clearly labelled.
- *     When the percent is 0 (unset) labor cost is null and contribution is null — never "labor is free".
+ *   - Costs: parts/sublet = recorded job_line_items.cost_cents (type part|sublet) on invoiced jobs. Labor
+ *     cost is NOT captured anywhere (0 of the production labor lines carry cost_cents — see
+ *     docs/insurance-restoration/BASELINE), so PROFITABILITY IS UNMEASURED: no contribution/margin number
+ *     is computed or shown, and it is never presented as $0 or as an estimate (owner decision 2026-11-07).
  *   - Ad spend comes from loadAdReporting (Google Ads API, category 'restoration' via
- *     GOOGLE_ADS_CAMPAIGN_CATEGORIES_JSON). Unavailable → spend null → CAC/contribution null. Missing ≠ zero.
- *   - Refunds / credit memos live in QuickBooks and are not modeled here: the report says so.
- *   - Duplicates = restoration requests in the window from the same normalized phone or email after the first.
+ *     GOOGLE_ADS_CAMPAIGN_CATEGORIES_JSON). Spend is known ONLY when a restoration rollup row actually
+ *     exists; "other categories reported but no restoration row" means the restoration mapping/data is not
+ *     established — that is unknown (null), NEVER $0. A genuine $0 needs an explicit restoration row.
+ *   - Unit costs are separated and labelled (never a single blended "CAC"):
+ *       cost per paid lead        = spend ÷ unique Google Ads–attributed leads;
+ *       blended cost / completed  = spend ÷ ALL completed restoration jobs (incl. organic + repeat) —
+ *                                   a sanity figure, explicitly NOT an acquisition cost;
+ *       paid CAC                  = spend ÷ DISTINCT NEW customers with an invoiced, Google Ads–attributed
+ *                                   completed job. "New" = the customer record has no earlier completed
+ *                                   order; repeat customers, organic and unknown-source jobs are excluded
+ *                                   from this denominator. Unknown customer identity → excluded (caveated).
+ *     All three are same-window approximations, not click-cohort tracking (caveated).
+ *   - Duplicates = restoration requests in the window from the same normalized phone or email. The CANONICAL
+ *     lead of a duplicate group is the one that actually progressed (linked to an order, else the furthest
+ *     status, else the earliest) — a later submission that converted is never hidden behind an earlier
+ *     unmatched one. All rows are preserved and shown; only the funnel/breakdowns count canonicals.
  *   - A lead is "qualified" once a manager moved it past 'new' and it is not lost/no_response.
  *   - No PII leaves this module except what the manager page itself renders (names on the lead table);
  *     the aggregate numbers carry none.
@@ -25,11 +39,13 @@ import { getDb } from '@/platform/db'
 import { loadAdReporting, type AdDataMeta } from './ads-reporting'
 import { attributedCompletedJobs } from './attribution'
 import { primaryServiceCategory } from './services'
-import { restorationLaborCostPct } from '@/apps/settings/db'
 import { ymdInZone, accountLocalPeriodToUtc } from './ad-dates'
 import { QUOTE_SERVICES, RESTORATION_SERVICES, CLAIM_STATUSES, type QuoteService } from './quote-shared'
 
 export const RESTORATION_CATEGORY = 'restoration'
+
+/** The spend figure is Google Ads only, so paid denominators count only Google Ads–attributed activity. */
+export const PAID_SOURCES = new Set<string>(['google_ads'])
 
 /** Lead statuses that mean a human qualified the lead (moved it past 'new' and did not close it out). */
 export const QUALIFIED_LEAD_STATUSES = ['contacted', 'estimate_needed', 'estimate_sent', 'booked', 'won'] as const
@@ -68,7 +84,8 @@ export interface RestorationOrderRow {
   quotedValueCents: number | null
   partsCostCents: number
   subletCostCents: number
-  laborPriceCents: number
+  /** true = the customer record has no earlier completed order; null = customer identity unknown. */
+  newCustomer: boolean | null
   customerId: string | null
   leadId: string | null
 }
@@ -79,11 +96,12 @@ export interface RestorationReport {
     total: number
     qualified: number
     duplicates: number
+    /** Breakdowns count UNIQUE (canonical) leads only, matching the funnel. Duplicate rows stay visible in `rows`. */
     byDamageType: Record<string, number>
     bySource: Record<string, number>
     byLandingPage: Record<string, number>
     byClaimStatus: Record<string, number>
-    matched: number        // linked to a service order
+    matched: number        // unique leads linked to a service order
     unmatched: number
     emailNotSent: number   // claim rows whose shop email is not 'sent' (still saved — follow up by phone)
     rows: RestorationLeadRow[]
@@ -107,19 +125,18 @@ export interface RestorationReport {
     refundsNote: string
   }
   costs: {
+    /** Recorded line-item cost on invoiced jobs. Labor cost is not captured → profitability is unmeasured. */
     partsCostCents: number
     subletCostCents: number
-    laborPriceCents: number
-    laborCostPct: number
-    laborCostCents: number | null       // null when not modeled
-    labelled: 'modeled' | 'not_modeled'
+    profitability: 'unmeasured'
   }
   ads: { meta: AdDataMeta; spendCents: number | null; clicks: number | null; conversions: number | null }
   unit: {
-    costPerLeadCents: number | null
-    cacCents: number | null             // spend ÷ completed restoration orders
-    contributionCents: number | null    // invoiced − parts − sublet − modeled labor − spend
-    contributionBeforeAdsCents: number | null
+    paidLeads: number                              // unique Google Ads–attributed leads in the window
+    costPerPaidLeadCents: number | null            // spend ÷ paidLeads
+    blendedCostPerCompletedJobCents: number | null // spend ÷ ALL completed jobs — NOT an acquisition cost
+    paidNewCustomersInvoiced: number               // distinct new customers w/ an invoiced Google Ads job
+    paidCacCents: number | null                    // spend ÷ paidNewCustomersInvoiced
   }
   orders: RestorationOrderRow[]
   caveats: string[]
@@ -132,18 +149,61 @@ const bump = (m: Record<string, number>, k: string | null | undefined, by = 1) =
 export const normalizePhoneKey = (p: string | null | undefined): string | null => { const d = (p ?? '').replace(/\D/g, ''); return d.length >= 10 ? `p:${d.slice(-10)}` : null }
 export const normalizeEmailKey = (e: string | null | undefined): string | null => { const v = (e ?? '').trim().toLowerCase(); return v.includes('@') ? `e:${v}` : null }
 
+/** Rank of a lead inside its duplicate group: linked-to-order wins, then the furthest status, then age. */
+const STATUS_RANK: Record<string, number> = { won: 6, booked: 5, estimate_sent: 4, estimate_needed: 3, contacted: 2, new: 1, lost: 0, no_response: 0 }
+
+export interface DuplicatableLead {
+  leadId: string; phone: string | null; email: string | null; createdAt: Date
+  serviceOrderId?: string | null; status?: string; orderCompleted?: boolean; orderCancelled?: boolean
+}
+
 /**
- * Mark duplicate submissions: within the window, any restoration request from the same normalized phone
- * OR email as an earlier one is a duplicate OF that earlier lead. Pure — unit tested.
+ * Mark duplicate submissions: within the window, restoration requests sharing a normalized phone OR email
+ * form ONE group, including TRANSITIVELY — A(p1,e1), B(p2,e2) and a later C(p1,e2) merge into a single
+ * group (union-find over contact keys), never two. The group's CANONICAL lead is the one that progressed
+ * furthest by OUTCOME (completed linked order > open linked order > cancelled linked order > unlinked —
+ * a cancelled job never outranks a completed one just by being older), then by lead status, then the
+ * earliest submission; so a later submission that actually converted is never hidden behind an earlier
+ * unmatched one. Matching never uses the name. Pure — unit tested. Rows come back sorted by createdAt,
+ * all preserved; duplicates point at their canonical via duplicateOf.
  */
-export function markDuplicates<T extends { leadId: string; phone: string | null; email: string | null; createdAt: Date }>(leads: T[]): Array<T & { duplicateOf: string | null }> {
-  const seen = new Map<string, string>()
-  return [...leads].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).map((l) => {
-    const keys = [normalizePhoneKey(l.phone), normalizeEmailKey(l.email)].filter((k): k is string => !!k)
-    const prior = keys.map((k) => seen.get(k)).find((id) => id && id !== l.leadId) ?? null
-    for (const k of keys) if (!seen.has(k)) seen.set(k, l.leadId)
-    return { ...l, duplicateOf: prior }
-  })
+export function markDuplicates<T extends DuplicatableLead>(leads: T[]): Array<T & { duplicateOf: string | null }> {
+  const sorted = [...leads].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+  const keysOf = (l: T) => [normalizePhoneKey(l.phone), normalizeEmailKey(l.email)].filter((k): k is string => !!k)
+  // Union-find over contact keys so a lead bridging two existing groups merges them.
+  const parent = new Map<string, string>()
+  const find = (k: string): string => {
+    let root = k
+    while (parent.get(root) !== root) root = parent.get(root)!
+    let cur = k
+    while (parent.get(cur) !== cur) { const next = parent.get(cur)!; parent.set(cur, root); cur = next }
+    return root
+  }
+  const union = (a: string, b: string) => { const ra = find(a); const rb = find(b); if (ra !== rb) parent.set(ra, rb) }
+  for (const l of sorted) {
+    const keys = keysOf(l)
+    for (const k of keys) if (!parent.has(k)) parent.set(k, k)
+    for (let i = 1; i < keys.length; i++) union(keys[0], keys[i])
+  }
+  const groups = new Map<string, T[]>()
+  let anon = 0
+  for (const l of sorted) {
+    const keys = keysOf(l)
+    const root = keys.length ? find(keys[0]) : `anon:${anon++}` // leads with no usable contact never group
+    const g = groups.get(root) ?? []
+    g.push(l)
+    groups.set(root, g)
+  }
+  const outcome = (l: T) => (l.serviceOrderId ? (l.orderCompleted ? 3 : l.orderCancelled ? 1 : 2) : 0)
+  const canonicalOf = new Map<string, string>()
+  for (const group of groups.values()) {
+    const canonical = [...group].sort((a, b) =>
+      outcome(b) - outcome(a)
+      || (STATUS_RANK[b.status ?? 'new'] ?? 1) - (STATUS_RANK[a.status ?? 'new'] ?? 1)
+      || a.createdAt.getTime() - b.createdAt.getTime())[0]
+    for (const l of group) canonicalOf.set(l.leadId, canonical.leadId)
+  }
+  return sorted.map((l) => { const c = canonicalOf.get(l.leadId)!; return { ...l, duplicateOf: c === l.leadId ? null : c } })
 }
 
 interface LeadSqlRow {
@@ -185,7 +245,8 @@ interface OrderSqlRow {
   serviceOrderId: string; completedAt: string | Date; customerId: string | null; services: unknown
   leadId: string | null; damageType: string | null; leadSource: string | null
   invoicedCents: string | number | null; quotedValueCents: string | number | null
-  partsCostCents: string | number | null; subletCostCents: string | number | null; laborPriceCents: string | number | null
+  partsCostCents: string | number | null; subletCostCents: string | number | null
+  newCustomer: boolean | 't' | 'f' | null
 }
 
 /**
@@ -200,7 +261,12 @@ async function restorationOrders(range: { from: Date; to: Date }): Promise<Resto
            COALESCE(NULLIF(je.total_cents, 0), so.approved_price_cents) AS "quotedValueCents",
            COALESCE((SELECT SUM(li.cost_cents) FROM job_line_items li JOIN job_services js ON js.id = li.job_service_id WHERE js.job_estimate_id = je.id AND li.type = 'part'), 0) AS "partsCostCents",
            COALESCE((SELECT SUM(li.cost_cents) FROM job_line_items li JOIN job_services js ON js.id = li.job_service_id WHERE js.job_estimate_id = je.id AND li.type = 'sublet'), 0) AS "subletCostCents",
-           COALESCE((SELECT SUM(li.price_cents) FROM job_line_items li JOIN job_services js ON js.id = li.job_service_id WHERE js.job_estimate_id = je.id AND li.type = 'labor'), 0) AS "laborPriceCents"
+           CASE WHEN so.customer_id IS NULL THEN NULL ELSE NOT EXISTS (
+             SELECT 1 FROM service_orders prior
+             WHERE prior.customer_id = so.customer_id AND prior.id <> so.id
+               AND prior.completed_at IS NOT NULL AND prior.cancelled_at IS NULL
+               AND prior.completed_at < so.completed_at
+           ) END AS "newCustomer"
     FROM service_orders so
     LEFT JOIN job_estimates je ON je.service_order_id = so.id
     LEFT JOIN LATERAL (
@@ -229,7 +295,8 @@ async function restorationOrders(range: { from: Date; to: Date }): Promise<Resto
       source: r.leadSource ?? attributed.get(r.serviceOrderId) ?? 'unknown',
       invoicedCents: r.invoicedCents == null ? null : Number(r.invoicedCents),
       quotedValueCents: r.quotedValueCents == null ? null : Number(r.quotedValueCents),
-      partsCostCents: Number(r.partsCostCents ?? 0), subletCostCents: Number(r.subletCostCents ?? 0), laborPriceCents: Number(r.laborPriceCents ?? 0),
+      partsCostCents: Number(r.partsCostCents ?? 0), subletCostCents: Number(r.subletCostCents ?? 0),
+      newCustomer: r.newCustomer == null ? null : r.newCustomer === true || r.newCustomer === 't',
       customerId: r.customerId, leadId: r.leadId,
     })
   }
@@ -239,23 +306,21 @@ async function restorationOrders(range: { from: Date; to: Date }): Promise<Resto
 export interface RestorationReportDeps {
   /** Injected for tests (the real one calls Google Ads / manual metrics). */
   loadAds?: typeof loadAdReporting
-  laborCostPct?: () => Promise<number>
   now?: Date
 }
 
 /** `from`/`to` are account-local YYYY-MM-DD (inclusive). */
 export async function restorationReport(ymd: { from: string; to: string }, deps: RestorationReportDeps = {}): Promise<RestorationReport> {
   const range = accountLocalPeriodToUtc(ymd.from, ymd.to)
-  const [leads, orders, ads, laborCostPct] = await Promise.all([
+  const [leads, orders, ads] = await Promise.all([
     restorationLeads(range),
     restorationOrders(range),
     (deps.loadAds ?? loadAdReporting)(ymd),
-    (deps.laborCostPct ?? restorationLaborCostPct)(),
   ])
 
-  const byDamageType: Record<string, number> = {}; const bySource: Record<string, number> = {}; const byLandingPage: Record<string, number> = {}; const byClaimStatus: Record<string, number> = {}
-  for (const l of leads) { bump(byDamageType, l.damageType); bump(bySource, l.source); bump(byLandingPage, l.landingPage ?? '(none)'); bump(byClaimStatus, l.claimStatus ?? 'not_answered') }
   const unique = leads.filter((l) => !l.duplicateOf)
+  const byDamageType: Record<string, number> = {}; const bySource: Record<string, number> = {}; const byLandingPage: Record<string, number> = {}; const byClaimStatus: Record<string, number> = {}
+  for (const l of unique) { bump(byDamageType, l.damageType); bump(bySource, l.source); bump(byLandingPage, l.landingPage ?? '(none)'); bump(byClaimStatus, l.claimStatus ?? 'not_answered') }
   const qualified = unique.filter((l) => (QUALIFIED_LEAD_STATUSES as readonly string[]).includes(l.status)).length
   const estimates = unique.filter((l) => l.hasEstimate || ESTIMATE_LEAD_STATUSES.has(l.status)).length
   const booked = unique.filter((l) => l.serviceOrderId || BOOKED_LEAD_STATUSES.has(l.status)).length
@@ -274,29 +339,40 @@ export async function restorationReport(ymd: { from: string; to: string }, deps:
   }
   const repeatCustomers = Object.values(perCustomer).filter((n) => n > 1).length
 
-  // Costs are taken on INVOICED orders only, so contribution compares like with like.
+  // Costs are recorded line-item costs on INVOICED orders. Labor cost is not captured → profitability unmeasured.
   const partsCostCents = invoicedOrders.reduce((s, o) => s + o.partsCostCents, 0)
   const subletCostCents = invoicedOrders.reduce((s, o) => s + o.subletCostCents, 0)
-  const laborPriceCents = invoicedOrders.reduce((s, o) => s + o.laborPriceCents, 0)
-  const laborCostCents = laborCostPct > 0 ? Math.round(laborPriceCents * laborCostPct / 100) : null
 
+  // Spend is known ONLY from an explicit restoration rollup row. Other categories having data is NOT
+  // evidence that restoration spend is $0 — the restoration campaign mapping may simply not exist yet.
   const adRow = ads.meta.status === 'unavailable' ? null : (ads.byCategory.find((c) => c.serviceCategory === RESTORATION_CATEGORY) ?? null)
-  // Manual/live with no restoration rollup at all = no campaign data recorded; that is "no data", not $0 spend.
-  const spendCents = ads.meta.status === 'unavailable' ? null : adRow ? adRow.spendCents : (ads.byCategory.length ? 0 : null)
+  const spendCents = adRow ? adRow.spendCents : null
   const clicks = adRow ? adRow.clicks : null
   const conversions = adRow ? adRow.conversions : null
 
   const completed = orders.length
-  const costPerLeadCents = spendCents == null || unique.length === 0 ? null : Math.round(spendCents / unique.length)
-  const cacCents = spendCents == null || completed === 0 ? null : Math.round(spendCents / completed)
-  const contributionBeforeAdsCents = laborCostCents == null ? null : invoicedCents - partsCostCents - subletCostCents - laborCostCents
-  const contributionCents = contributionBeforeAdsCents == null || spendCents == null ? null : contributionBeforeAdsCents - spendCents
+  const paidLeads = unique.filter((l) => PAID_SOURCES.has(l.source)).length
+  const paidNewInvoicedCustomers = new Set(
+    orders.filter((o) => PAID_SOURCES.has(o.source) && o.invoicedCents != null && o.newCustomer === true && o.customerId)
+      .map((o) => o.customerId as string),
+  )
+  const paidNewCustomersInvoiced = paidNewInvoicedCustomers.size
+  const costPerPaidLeadCents = spendCents == null || paidLeads === 0 ? null : Math.round(spendCents / paidLeads)
+  const blendedCostPerCompletedJobCents = spendCents == null || completed === 0 ? null : Math.round(spendCents / completed)
+  const paidCacCents = spendCents == null || paidNewCustomersInvoiced === 0 ? null : Math.round(spendCents / paidNewCustomersInvoiced)
 
   const caveats = [
     'Revenue counts only completed jobs whose estimate is anchored to a QuickBooks invoice. Completed-but-uninvoiced work is shown as quoted, not revenue.',
     'Refunds and credit memos are recorded in QuickBooks and are not reflected here.',
-    laborCostCents == null ? 'Labor cost is not modeled (restoration labor cost % is 0), so contribution is shown as unknown — never as if labor were free.' : `Labor cost is MODELED at ${laborCostPct}% of invoiced labor; parts and sublet use recorded line-item cost.`,
-    spendCents == null ? 'Ad spend is unavailable for this window, so cost per lead, CAC and contribution after ads are unknown (not zero).' : 'Ad spend is the Google Ads figure for campaigns mapped to the restoration category.',
+    'Profitability is UNMEASURED: labor cost is not captured on jobs, so no contribution or margin is computed — parts and sublet figures are recorded line-item costs only, not a profit statement.',
+    spendCents == null
+      ? (ads.meta.status === 'unavailable'
+        ? 'Ad spend is unavailable for this window, so all spend-based unit costs are unknown (not zero).'
+        : 'No Google Ads rollup is mapped to the restoration category for this window, so restoration spend is unknown — not $0. A genuine $0 appears only when a restoration-mapped campaign reports zero spend.')
+      : 'Ad spend is the Google Ads figure for campaigns mapped to the restoration category.',
+    '“Cost per paid lead” and “paid CAC” divide Google Ads spend by Google Ads–attributed leads and newly acquired invoiced customers only; organic, repeat-customer and unknown-source activity is excluded from those denominators. “Blended cost per completed job” divides the same spend by ALL completed restoration jobs and is not an acquisition cost.',
+    'Scope mismatch to keep in mind: spend covers ONLY campaigns mapped to the restoration category, while the lead/job denominators count ANY Google Ads click (gclid) — another Google Ads campaign can drive a restoration lead without its spend appearing here. These are category-level approximations, not exact per-campaign CAC.',
+    'Unit costs are same-window approximations: spend, leads and completions are each counted inside the window, so a job completed this week may come from a click in an earlier week (no click-cohort tracking). New-customer detection sees only this system’s customer records — history under a different customer record is invisible, and jobs without a customer record are excluded from paid CAC.',
     'Leads are counted by request date; completions and revenue by completion date. A lead from one week that completes the next shows in both weeks’ respective columns.',
   ]
 
@@ -305,9 +381,9 @@ export async function restorationReport(ymd: { from: string; to: string }, deps:
     leads: { total: leads.length, qualified, duplicates: leads.length - unique.length, byDamageType, bySource, byLandingPage, byClaimStatus, matched, unmatched: unique.length - matched, emailNotSent: leads.filter((l) => l.emailStatus !== 'sent').length, rows: leads },
     funnel: { leads: unique.length, qualified, estimates, booked, completed, invoiced: invoicedOrders.length, cancelled },
     revenue: { invoicedCents, quotedUninvoicedCents, avgInvoicedTicketCents: invoicedOrders.length ? Math.round(invoicedCents / invoicedOrders.length) : null, byDamageType: revByType, bySource: revBySource, repeatCustomers, refundsNote: caveats[1] },
-    costs: { partsCostCents, subletCostCents, laborPriceCents, laborCostPct, laborCostCents, labelled: laborCostCents == null ? 'not_modeled' : 'modeled' },
+    costs: { partsCostCents, subletCostCents, profitability: 'unmeasured' },
     ads: { meta: ads.meta, spendCents, clicks, conversions },
-    unit: { costPerLeadCents, cacCents, contributionCents, contributionBeforeAdsCents },
+    unit: { paidLeads, costPerPaidLeadCents, blendedCostPerCompletedJobCents, paidNewCustomersInvoiced, paidCacCents },
     orders,
     caveats,
   }

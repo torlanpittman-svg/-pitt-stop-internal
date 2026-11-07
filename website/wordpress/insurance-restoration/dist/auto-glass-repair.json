@@ -2,7 +2,7 @@
   "slug": "auto-glass-repair",
   "url": "https://www.pittstopdetailandautosales.com/auto-glass-repair/",
   "title": "Broken Car Window Cleanup | College Station, TX | Pitt Stop",
-  "metaDescription": "Side or rear window smashed? Pitt Stop clears every piece of glass from the interior, repairs the damage and works alongside your glass shop in College Station.",
+  "metaDescription": "Smashed side or rear window? Pitt Stop removes the glass, restores the interior and coordinates replacement via our glass partner in College Station.",
   "canonical": "https://www.pittstopdetailandautosales.com/auto-glass-repair/",
   "robots": "index, follow",
   "h1": "Broken Side and Rear Glass: Cleanup, Interior Repair and Coordination",
@@ -12,7 +12,14 @@
     "https://www.pittstopdetailandautosales.com/insurance-auto-repair/",
     "https://www.pittstopdetailandautosales.com/car-water-damage/"
   ],
-  "photosNeeded": [
+  "illustrations": [
+    {
+      "id": "illustration-glass-cleanup",
+      "supplied": true,
+      "notice": "Illustrative image — not a completed Pitt Stop job."
+    }
+  ],
+  "optionalRealPhotos": [
     {
       "id": "glass-cleanup-tracks",
       "caption": "Glass fragments removed from seat tracks and the door cavity",
@@ -34,7 +41,7 @@
           "name": "Do you replace car windows?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "No. Glass replacement is done by a glass shop. We remove the broken glass from the interior, repair the damage the break caused and coordinate with the installer you or your insurer choose."
+            "text": "Not in-house. We coordinate glass replacement through our third-party glass partner, remove the broken glass from the interior and repair the damage the break caused. If your insurer arranges its own installer, we work alongside them."
           }
         },
         {
@@ -50,7 +57,7 @@
           "name": "Should the cleanup happen before or after the new glass?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Before is better, so the installer is not sealing new glass over a dirty channel and nothing gets trapped behind the new trim. We schedule around the glass appointment."
+            "text": "Before is better, so the installer is not sealing new glass over a dirty channel and nothing gets trapped behind the new trim. We schedule the cleanup around the glass installation."
           }
         },
         {
@@ -58,7 +65,7 @@
           "name": "Will insurance pay for the cleanup?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "When the glass broke in a covered event such as a break-in, the related interior cleanup and repair is usually part of the same claim, but your insurer decides. Our itemized estimate explains each line so the adjuster can see what was needed."
+            "text": "When the glass broke in a covered event such as a break-in, the related interior cleanup and repair is usually part of the same claim, but your insurer decides. Our itemized estimate explains each line so your insurer can see what was needed."
           }
         }
       ]
@@ -68,7 +75,7 @@
       "@type": "Service",
       "name": "Broken Side and Rear Glass: Cleanup, Interior Repair and Coordination",
       "serviceType": "Broken glass + interior cleanup",
-      "description": "Side or rear window smashed? Pitt Stop clears every piece of glass from the interior, repairs the damage and works alongside your glass shop in College Station.",
+      "description": "Smashed side or rear window? Pitt Stop removes the glass, restores the interior and coordinates replacement via our glass partner in College Station.",
       "url": "https://www.pittstopdetailandautosales.com/auto-glass-repair/",
       "provider": {
         "@type": "AutoRepair",
@@ -99,10 +106,11 @@
     }
   ],
   "publishChecklist": [
-    "Create the page in wp-admin → Pages → Add New with this slug; paste dist/<slug>.wp.html into a Custom HTML block.",
+    "Create the page in wp-admin → Pages → Add New with this slug; paste dist/<slug>.wp.html into a Custom HTML block. The block is self-contained (scoped styles + attribution script) — no theme CSS or JS dependency.",
     "Rank Math: set the SEO title and meta description from this file; keep \"index, follow\"; confirm the canonical URL.",
-    "Add real shop photos for each photosNeeded id with the listed caption as alt text (no stock images).",
+    "Upload the generated illustration(s) to the WordPress media library, record each URL in website/wordpress/insurance-restoration/assets.json with provenance \"generated illustration\", rebuild (npx tsx scripts/build-restoration-pages.ts) and re-paste. Verify the visible caption \"Illustrative image — not a completed Pitt Stop job.\" renders under each generated image.",
+    "Optional: replace/augment illustrations with real shop photos (optionalRealPhotos list) — real jobs with permission only; never present a generated image as a completed job or before/after.",
     "Link the page from /detailing/ and the footer or services menu; the hub page links to the four service pages.",
-    "After publishing: request indexing in Search Console (access still to be granted) and add the URL to the Google Ads final-URL list for its campaign."
+    "After publishing: request indexing in Search Console (owner reports access was granted — verify before relying on it) and add the URL to the Google Ads final-URL list for its campaign."
   ]
 }

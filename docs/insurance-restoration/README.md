@@ -55,31 +55,51 @@ Companion files in this folder: `BASELINE_2026-11-07.md` (production numbers), `
 
 ### 1.5 Constraints, conflicts, missing context
 - **No local/staging database.** Local env is production with writes blocked; all write-path testing is PGlite. A preview/dev Neon branch is a parked backlog item (`outstanding-backlog` memory). The end-to-end test in this project is therefore PGlite + local `next dev` — stated as such.
-- **Labor cost is not recorded** on any job (0 of 238 labor lines in 12 months carry `cost_cents`); parts mostly are. Contribution profit must be MODELED until the shop records labor/sublet cost. Reported as an assumption, not a measurement.
-- **Google Search Console: no access** from either Google account in the automation browser; Site Kit is installed but never connected; Rank Math Analytics state checked separately. Organic impressions/clicks/rankings are UNAVAILABLE (not zero) until the owner grants GSC access or connects Site Kit.
+- **Labor cost is not recorded** on any job (0 of 238 labor lines in 12 months carry `cost_cents`); parts mostly are.
+  **Owner decision 2026-11-07: do NOT model it.** The report states profitability as UNMEASURED — no contribution or
+  margin figures exist anywhere in the UI until real costs are captured (the earlier modeled-labor setting was removed).
+- **Google Search Console: access VERIFIED 2026-11-07** (read-only, connected in-app browser, Torlan Pittman) for the
+  `pittstopdetailandautosales.com` property — supersedes the earlier "no access" finding from the same day's morning.
 - **Keyword tools:** Ahrefs connector = "Insufficient plan"; Semrush = "no API units". Keyword Planner (inside the Ads account) is the only working source; local volumes are ≤ 10–40/month per phrase.
-- **Glass fulfilment:** the website's own 2020 insurance post and the cosmetic-bodywork FAQ never claim in-house glass; historical glass-related jobs exist (7 in 24 months) but the shop sources glass through partners. Public pages must say "we coordinate replacement glass through a local auto-glass partner and handle the cleanup/interior" until the owner confirms otherwise.
-- **Claim assistance / direct billing: UNVERIFIED.** Nothing in code, docs or the website shows direct-to-insurer billing. Pages promise only: itemized written estimate + photos the customer can submit to their insurer. No "we bill your insurance" claims.
+- **Glass fulfilment: owner-confirmed 2026-11-07** — third party through the shop's existing glass partner (not named
+  publicly). All pages/ads/GBP drafts say "we coordinate glass replacement through our third-party glass partner and
+  handle the related cleanup and restoration".
+- **Claim assistance / billing: owner steering 2026-11-07** — billing arrangements are believed set up but the exact
+  direct-to-insurer details are UNVERIFIED, so public copy asserts NOTHING about billing in either direction (the old
+  "we don't bill your insurance company" blanket was removed too) and promises no adjuster meetings. Standard wording:
+  contact your insurer to open or discuss a claim; we provide an itemized estimate and damage documentation and
+  coordinate the repair process. Also removed 2026-11-07: insurance-premium advice ("protect your rates" etc. — now
+  "ask your insurer how a claim could affect your premium") and speculative total-loss determinations (severe
+  flood/electrical damage needs a qualified inspection and the insurer's review; our scope is interior
+  cleanup/restoration).
 - **Doc conflicts noted:** `AGENTS.md` still says "the ONLY email channel is QuickBooks" (stale — Postmark booking/quote email is live; `CLAUDE.md` is correct). `docs/GOOGLE_ADS_CONNECTION_2026-10-28.md` header says "not deployed" (stale — it is live; memory `google-ads-reporting-live`). The ceramic memory's "NOT deployed" note is superseded (3b54ebb is in production).
 - **Prior attempt to learn from:** the paused **Hail Damage** Search campaign ($29.09/day, Maximize conversions) in the Ads account — its search terms/CPCs are the closest real-world signal for insurance-adjacent demand here; read before launch.
 - **Side effect of research:** one Keyword Planner *plan* (id 1444077024) now exists in the Ads account; harmless, deletable.
 
-## Build status (2026-11-07, end of session)
-All authorized nonproduction work is done on branch `feat/insurance-restoration` (worktree
-`/Users/torlanpittman/Projects/.ps-worktrees/insurance-restoration`, cut from production `021f7c1`):
-- **Read first:** `APPROVAL_PACKAGE.md` (what was built, how verified, exact production changes, open decisions, rollback).
-- Companion docs: `CAPABILITY_READINESS.md` (corrected to what was actually verified), `BASELINE_2026-11-07.md`,
-  `KEYWORD_RESEARCH_2026-11-07.md`, `GOOGLE_ADS_DRAFTS.md` + `ads/*.csv` (Paused drafts, not imported),
-  `GBP_AND_REVIEWS.md`, `evidence/` (form screenshots).
-- Landing pages: `website/wordpress/insurance-restoration/` (source `pages.ts`, renderer `render.ts`, guardrail tests,
-  built `dist/`; rebuild with `npx tsx scripts/build-restoration-pages.ts`).
-- App: `/quote` extended, migration `0076`, `restoration` category, `/marketing/restoration` report + tab.
-- Verification: 251 test files / 3,238 tests green; `tsc` clean apart from 11 pre-existing errors in
-  `apps/estimates/quickbooks.test.ts`; `eslint` clean on changed files; `next build --webpack` exit 0.
-- **Not done, by rule:** no push/deploy, no migration applied anywhere but PGlite, no WordPress publish, no Ads import or
-  spend, no GBP edit, no GA4 key event, no customer email.
+## Build status (2026-11-07, after the correction pass — read APPROVAL_PACKAGE Revisions 2–3)
+All authorized nonproduction work is on branch `feat/insurance-restoration` (worktree
+`/Users/torlanpittman/Projects/.ps-worktrees/insurance-restoration`, cut from production `021f7c1`). The owner
+**approved the release and the $600/month ad ceiling**; Codex verifies readiness and executes deploy/publish/ads.
+- **Read first:** `APPROVAL_PACKAGE.md` — Revision 2 (owner steering + independent-review fixes: attribution
+  pass-through script, unknown-not-$0 ad spend, separated paid unit costs, converted-duplicate canonicals + transitive
+  group merging, scoped WP CSS, labor-cost/contribution removal, generated-illustration manifest) and Revision 3 (live
+  read-only verification: Search Console VERIFIED, Ads account/conversions reviewed, production schema preflight shows
+  0076 NOT applied, campaigns.csv preview errors, Codex-supplied illustration assets).
+- Companion docs: `CAPABILITY_READINESS.md`, `BASELINE_2026-11-07.md`, `KEYWORD_RESEARCH_2026-11-07.md`,
+  `GOOGLE_ADS_DRAFTS.md` + `ads/*.csv` (Paused drafts; copy revised 2026-11-07; Codex adapting the CSV template),
+  `GBP_AND_REVIEWS.md` (revised), `evidence/` (form screenshots + synthetic report-view HTML).
+- Landing pages: `website/wordpress/insurance-restoration/` (source `pages.ts`, renderer `render.ts`, guardrail +
+  script-execution tests, Codex-supplied `assets.json` + `dist/images/`; rebuild with
+  `npx tsx scripts/build-restoration-pages.ts`).
+- App: `/quote` extended, migration `0076` (columns + index only; the settings seed was removed), `restoration`
+  category, `/marketing/restoration` report + pure `ReportView` with synthetic fixtures.
+- Verification: the 2026-11-07 morning full-suite numbers (251 files / 3,238 tests) predate the correction pass and are
+  STALE for the changed files — Codex re-runs the affected suites and the full gate before release (commands in the
+  handoff / APPROVAL_PACKAGE Revision 2).
+- **Not done, by rule:** no push/deploy, no migration applied anywhere but PGlite, no WordPress publish, no Ads
+  import/Apply or spend, no GBP edit, no GA4 key event, no customer email.
 - **Doc-map note:** `docs/ARCHITECTURE_MAP.md` / `docs/DATA_FLOWS.md` do not exist on the production branch (they live on
   `cleanup/usability-pass` in the main checkout). When this branch merges, add a "Marketing → insurance restoration"
   entry there: files above, routes `/quote`, `/api/quote`, `/marketing/restoration`, table `quote_requests` (0076),
-  setting `restoration_labor_cost_pct`, tests `apps/marketing/restoration.integration.test.ts` +
-  `website/wordpress/insurance-restoration/pages.test.ts`.
+  tests `apps/marketing/restoration.integration.test.ts`, `app/marketing/restoration/ReportView.test.tsx` +
+  `website/wordpress/insurance-restoration/pages.test.ts` (no settings — the labor-cost setting was removed pre-release).

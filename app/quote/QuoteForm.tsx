@@ -116,7 +116,7 @@ export default function QuoteForm({ preselect, attribution, phone }: { preselect
           <p className="mt-2 text-[var(--ps-body)]">Your request was saved, but our email delivery hiccupped. To be safe, please call us at <a className="font-medium underline" href={telHref(phone)}>{phone}</a> and mention your {QUOTE_SERVICES[service].label.toLowerCase()} {noun}.</p>
         )}
         {restoration && (
-          <p className="mt-3 text-sm text-[var(--ps-body)]">You&apos;ll get a written, itemized estimate you can share with your insurer if you file a claim. Whether a claim is covered is always your insurance company&apos;s decision, not ours — we don&apos;t bill insurers directly.</p>
+          <p className="mt-3 text-sm text-[var(--ps-body)]">You&apos;ll get a written, itemized estimate and damage documentation you can share with your insurer if you file a claim. Whether a claim is covered is always your insurance company&apos;s decision, not ours.</p>
         )}
         <a href="https://www.pittstopdetailandautosales.com/" className="ps-btn-call mt-6 inline-block">Back to the website</a>
       </div>
@@ -184,7 +184,7 @@ export default function QuoteForm({ preselect, attribution, phone }: { preselect
             {errors.incidentDate && <p className={err}>{errors.incidentDate}</p>}
           </div>
           <p className="text-xs text-[var(--ps-body)] sm:col-span-2">
-            This helps us plan, nothing more. Coverage, deductibles and approval are decided by your insurance company. We provide a written, itemized estimate you can submit with your claim and we don&apos;t bill insurers directly.
+            This helps us plan, nothing more. Coverage, deductibles and approval are decided by your insurance company. Contact your insurer to open or discuss a claim; we provide a written, itemized estimate and damage documentation and coordinate the repair once you decide to proceed.
           </p>
         </div>
       )}

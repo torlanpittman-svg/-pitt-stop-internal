@@ -25,10 +25,6 @@ ALTER TABLE quote_requests ADD COLUMN IF NOT EXISTS attribution   jsonb NOT NULL
 CREATE INDEX IF NOT EXISTS quote_requests_damage_type_created_idx
   ON quote_requests (damage_type, created_at) WHERE damage_type IS NOT NULL;
 
--- Modeled labor cost for the restoration contribution report. 0 = not configured, and the report then
--- shows contribution as "labor cost not modeled" instead of pretending labor is free. Owner-set via
--- /marketing/restoration; stored as a whole percent of invoiced labor (e.g. 35 = 35%).
-INSERT INTO app_settings (key, value, type, category, label, description)
-VALUES ('restoration_labor_cost_pct', '0'::jsonb, 'int', 'marketing', 'Restoration labor cost %',
-        'Modeled labor cost as a percent of invoiced labor on insurance-restoration jobs. 0 = not modeled.')
-ON CONFLICT (key) DO NOTHING;
+-- (2026-11-07, pre-release revision: the restoration_labor_cost_pct app_settings seed was removed. Actual
+-- labor costs are not captured, so the report states profitability as UNMEASURED instead of modeling it.
+-- This migration has not been applied outside PGlite tests, so revising it is safe.)

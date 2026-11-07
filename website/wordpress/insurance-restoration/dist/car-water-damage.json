@@ -12,7 +12,14 @@
     "https://www.pittstopdetailandautosales.com/car-vandalism-repair/",
     "https://www.pittstopdetailandautosales.com/auto-glass-repair/"
   ],
-  "photosNeeded": [
+  "illustrations": [
+    {
+      "id": "illustration-water-damage",
+      "supplied": true,
+      "notice": "Illustrative image — not a completed Pitt Stop job."
+    }
+  ],
+  "optionalRealPhotos": [
     {
       "id": "water-extraction",
       "caption": "Hot-water extraction of a saturated floorboard",
@@ -107,10 +114,11 @@
     }
   ],
   "publishChecklist": [
-    "Create the page in wp-admin → Pages → Add New with this slug; paste dist/<slug>.wp.html into a Custom HTML block.",
+    "Create the page in wp-admin → Pages → Add New with this slug; paste dist/<slug>.wp.html into a Custom HTML block. The block is self-contained (scoped styles + attribution script) — no theme CSS or JS dependency.",
     "Rank Math: set the SEO title and meta description from this file; keep \"index, follow\"; confirm the canonical URL.",
-    "Add real shop photos for each photosNeeded id with the listed caption as alt text (no stock images).",
+    "Upload the generated illustration(s) to the WordPress media library, record each URL in website/wordpress/insurance-restoration/assets.json with provenance \"generated illustration\", rebuild (npx tsx scripts/build-restoration-pages.ts) and re-paste. Verify the visible caption \"Illustrative image — not a completed Pitt Stop job.\" renders under each generated image.",
+    "Optional: replace/augment illustrations with real shop photos (optionalRealPhotos list) — real jobs with permission only; never present a generated image as a completed job or before/after.",
     "Link the page from /detailing/ and the footer or services menu; the hub page links to the four service pages.",
-    "After publishing: request indexing in Search Console (access still to be granted) and add the URL to the Google Ads final-URL list for its campaign."
+    "After publishing: request indexing in Search Console (owner reports access was granted — verify before relying on it) and add the URL to the Google Ads final-URL list for its campaign."
   ]
 }

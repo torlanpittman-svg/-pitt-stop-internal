@@ -1,0 +1,26 @@
+{
+  "illustration-vandalism": {
+    "src": "https://www.pittstopdetailandautosales.com/wp-content/uploads/2026/11/vandalism-illustration.webp",
+    "alt": "Illustration of keyed scratches across a vehicle door and fender",
+    "caption": "Keyed scratches across a vehicle door and fender",
+    "provenance": "generated illustration"
+  },
+  "illustration-overspray": {
+    "src": "https://www.pittstopdetailandautosales.com/wp-content/uploads/2026/11/overspray-illustration.webp",
+    "alt": "Illustration of paint overspray specks on a vehicle panel",
+    "caption": "Paint overspray specks on a vehicle panel",
+    "provenance": "generated illustration"
+  },
+  "illustration-water-damage": {
+    "src": "https://www.pittstopdetailandautosales.com/wp-content/uploads/2026/11/water-damage-illustration.webp",
+    "alt": "Illustration of water extraction from a wet vehicle carpet",
+    "caption": "Water extraction from a wet vehicle carpet",
+    "provenance": "generated illustration"
+  },
+  "illustration-glass-cleanup": {
+    "src": "https://www.pittstopdetailandautosales.com/wp-content/uploads/2026/11/glass-cleanup-illustration.webp",
+    "alt": "Illustration of broken tempered glass on a vehicle seat and floor",
+    "caption": "Broken tempered glass on a vehicle seat and floor",
+    "provenance": "generated illustration"
+  }
+}

@@ -174,9 +174,8 @@ export const SETTINGS: Record<string, SettingDef> = {
   // Drop-off appointment booking rules (apps/appointments/policy.ts merges this onto safe defaults).
   // Public booking stays OFF until a manager sets the capacity numbers on /appointments/settings.
   booking_config:               { key: 'booking_config',               type: 'json',   def: '{}',  env: 'BOOKING_CONFIG' },
-  // Insurance-restoration report (apps/marketing/restoration-report.ts): modeled labor cost as a whole percent
-  // of invoiced labor. 0 = not modeled -> contribution is reported as unknown, never as "labor is free".
-  restoration_labor_cost_pct:   { key: 'restoration_labor_cost_pct',   type: 'int',    def: 0,     env: 'RESTORATION_LABOR_COST_PCT' },
+  // NOTE (2026-11-07): restoration_labor_cost_pct was removed before release — actual labor costs are not
+  // captured, so the restoration report states profitability as UNMEASURED instead of modeling it.
 }
 
 function coerce(type: SettingType, raw: unknown): number | boolean | string {
@@ -336,13 +335,6 @@ export async function getAllSettings(): Promise<SettingView[]> {
 }
 
 /** Marketing Agent V1 feature flag (default OFF). */
-/** Whole percent (0–100) of invoiced labor modeled as labor cost on restoration jobs; 0 = not modeled. */
-export async function restorationLaborCostPct(): Promise<number> {
-  const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'restoration_labor_cost_pct'))
-  const n = resolve(SETTINGS.restoration_labor_cost_pct, rows[0]?.value) as number
-  return Math.min(100, Math.max(0, n))
-}
-
 export async function marketingEnabled(): Promise<boolean> {
   const rows = await getDb().select().from(appSettings).where(eq(appSettings.key, 'marketing_enabled'))
   return resolve(SETTINGS.marketing_enabled, rows[0]?.value) as boolean

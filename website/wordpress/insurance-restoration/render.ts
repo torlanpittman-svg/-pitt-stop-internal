@@ -1,19 +1,117 @@
 /**
  * Renders a LandingPage (pages.ts) into:
- *   - wpBody(page)     — the HTML body for a WordPress Custom HTML block (no <html>/<head>, no preview-only
- *                        chrome, no photo placeholders — only the figures whose asset exists in `assets`);
- *   - previewHtml(page) — a standalone page for owner review, in the same visual language as the approved
- *                        ceramic landing draft, with labelled PHOTO NEEDED placeholders and a review box;
- *   - faqJsonLd(page) / serviceJsonLd(page) — structured data for Rank Math's schema or a Custom HTML block;
- *   - seoSidecar(page) — title / description / slug / canonical / schema for the publisher.
+ *   - wpBody(page, assets) — the COMPLETE body for a WordPress Custom HTML block: content, scoped styles
+ *                        (every rule under `.ps-restore`, so nothing leaks into Avada and nothing depends
+ *                        on theme classes), JSON-LD, and the attribution pass-through script. Images render
+ *                        ONLY for assets really supplied in the manifest; generated illustrations always
+ *                        carry the visible "Illustrative image — not a completed Pitt Stop job." caption;
+ *   - previewHtml(page, assets) — a standalone page for owner review (adds preview chrome + labelled
+ *                        optional-photo placeholders around the exact production body);
+ *   - faqJsonLd(page) / serviceJsonLd(page) — structured data;
+ *   - seoSidecar(page, assets) — title / description / slug / canonical / schema / publish steps.
  * Pure functions, no I/O (the build script writes files; pages.test.ts asserts on the output).
  */
-import { PAGES, SHOP, SITE, BOOK_HOST, CAMPAIGN, pageBySlug, type LandingPage, type Section } from './pages'
+import { PAGES, SHOP, SITE, BOOK_HOST, CAMPAIGN, ILLUSTRATIONS, pageBySlug, type LandingPage, type Section } from './pages'
 import { QUOTE_SERVICES } from '@/apps/marketing/quote-shared'
+import { ATTRIBUTION_KEYS } from '@/apps/appointments/attribution'
 
 export const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
 export const pageUrl = (slug: string): string => `${SITE}/${slug}/`
+
+// ── Asset manifest (assets.json) ──────────────────────────────────────────────────────────────────────
+// Maps an asset id (ILLUSTRATIONS key or a page `photos` id) to its published file. Two shapes:
+//   "<id>": "https://…/x.jpg"                                  — legacy shorthand: a REAL shop photo
+//   "<id>": { src, alt?, caption?, provenance }                — explicit, provenance required
+// Generated illustrations (owner-approved 2026-11-07) are allowed ONLY on illustration slots, always
+// render the visible provenance caption, and may never claim before/after or completed-job results.
+// Nothing renders for an id that is absent from the manifest — no URL is ever invented here.
+export const GENERATED_PROVENANCE = 'generated illustration'
+export const SHOP_PHOTO_PROVENANCE = 'shop photo'
+export const ILLUSTRATION_NOTICE = 'Illustrative image — not a completed Pitt Stop job.'
+export interface AssetEntry { src: string; alt?: string; caption?: string; provenance: typeof GENERATED_PROVENANCE | typeof SHOP_PHOTO_PROVENANCE }
+export type AssetManifest = Record<string, string | AssetEntry>
+
+/** Claims a generated image must never make (checked against its caption + alt). */
+const GENERATED_FORBIDDEN = /before (and|&|\/) ?after|completed (job|work)|real (job|vehicle|customer)|our customer|finished result/i
+
+function assetEntry(assets: AssetManifest, id: string): AssetEntry | null {
+  const raw = assets[id]
+  if (!raw) return null
+  const entry: AssetEntry = typeof raw === 'string' ? { src: raw, provenance: SHOP_PHOTO_PROVENANCE } : raw
+  if (!entry.src) return null
+  if (entry.provenance !== GENERATED_PROVENANCE && entry.provenance !== SHOP_PHOTO_PROVENANCE) {
+    throw new Error(`asset ${id}: provenance must be "${GENERATED_PROVENANCE}" or "${SHOP_PHOTO_PROVENANCE}"`)
+  }
+  // https URL or a plain local/site path — never javascript:, data:, protocol-relative or traversal.
+  const ok = /^https:\/\/[\w.-]+\/[\w%@&=?./-]*$/.test(entry.src) || (/^[\w%@./-]+$/.test(entry.src) && !entry.src.includes('..') && !entry.src.startsWith('//'))
+  if (!ok) throw new Error(`asset ${id}: src must be an https URL or a local relative path (got ${entry.src})`)
+  return entry
+}
+
+/** A generated illustration's figure. Returns '' until the asset is actually supplied. */
+export function illustrationFigure(illustrationId: string | null, assets: AssetManifest, compact = false): string {
+  if (!illustrationId) return ''
+  const meta = ILLUSTRATIONS[illustrationId]
+  if (!meta) throw new Error(`unknown illustration id: ${illustrationId}`)
+  const a = assetEntry(assets, illustrationId)
+  if (!a) return ''
+  const caption = a.caption ?? meta.caption
+  if (a.provenance === GENERATED_PROVENANCE && GENERATED_FORBIDDEN.test(`${caption} ${a.alt ?? ''}`)) {
+    throw new Error(`illustration ${illustrationId}: a generated image may not claim real-job results ("${caption}")`)
+  }
+  const note = a.provenance === GENERATED_PROVENANCE ? ` <span class="illus-note">${esc(ILLUSTRATION_NOTICE)}</span>` : ''
+  const cap = compact && a.provenance === GENERATED_PROVENANCE ? `<figcaption><span class="illus-note">${esc(ILLUSTRATION_NOTICE)}</span></figcaption>` : `<figcaption>${esc(caption)}${note}</figcaption>`
+  return `<figure class="${compact ? 'card-fig' : 'lead-fig'}"><img src="${esc(a.src)}" alt="${esc(a.alt ?? caption)}" loading="lazy">${cap}</figure>`
+}
+
+// ── Attribution pass-through (review fix 2026-11-07) ──────────────────────────────────────────────────
+// The landing pages are static WordPress HTML, but their visitors can arrive from a Google Ads click
+// carrying gclid / utm_*. The CTAs ship with organic defaults (utm_source=website); without forwarding,
+// a paid click that navigates hub → service page → /quote would be relabelled as plain website traffic.
+// This script forwards ONLY the allow-listed click keys (ATTRIBUTION_KEYS minus `lp` — each link keeps its
+// OWN page slug and service) from location.search onto (a) estimate CTAs on the booking host and (b) links
+// to the other restoration landing pages, so the chain survives cross-page navigation. No cookies, no
+// storage, no third-party transmission — it only edits the query string of links that already point at the
+// shop's own funnel/pages, with the same character filter cleanAttribution() applies server-side.
+export const FORWARDED_ATTRIBUTION_KEYS = ATTRIBUTION_KEYS.filter((k) => k !== 'lp')
+
+export function attributionScript(): string {
+  const keys = JSON.stringify(FORWARDED_ATTRIBUTION_KEYS)
+  const landing = JSON.stringify(Object.fromEntries(PAGES.map((p) => [p.slug, 1])))
+  return `<script>
+/* Pitt Stop attribution pass-through: forwards allow-listed ad-click parameters (gclid, utm_*, fbclid,
+   ps_cid, ref) from this page's URL onto the estimate CTAs and the other restoration landing pages, so a
+   paid visit is not relabelled as organic website traffic. No cookies/storage, no third parties; it only
+   rewrites the query string of links that already point at the shop's own funnel or landing pages. */
+function psRestoreClean(v){return String(v).replace(/[^\\w.\\-:/@ +%]/g,'').slice(0,120)}
+function psRestoreRewrite(href,incoming){
+  'use strict';
+  var u;try{u=new URL(href,${JSON.stringify(SITE + '/')})}catch(e){return null}
+  if(u.protocol!=='https:')return null;
+  var KEYS=${keys},LANDING=${landing},changed=false,i,k;
+  var isQuote=u.origin===${JSON.stringify(BOOK_HOST)}&&u.pathname==='/quote';
+  var m=u.origin===${JSON.stringify(SITE)}?u.pathname.match(/^\\/([a-z0-9-]+)\\/?$/):null;
+  if(!isQuote&&!(m&&LANDING[m[1]]===1))return null;
+  for(i=0;i<KEYS.length;i++){k=KEYS[i];if(Object.prototype.hasOwnProperty.call(incoming,k)&&incoming[k]){u.searchParams.set(k,incoming[k]);changed=true}}
+  return changed?u.toString():null
+}
+(function(){
+  if(typeof document==='undefined'||typeof window==='undefined')return;
+  function psRestoreApply(){
+    var KEYS=${keys},incoming={},found=false,i,v;
+    try{var sp=new URLSearchParams(window.location.search);for(i=0;i<KEYS.length;i++){v=sp.get(KEYS[i]);if(v){v=psRestoreClean(v);if(v){incoming[KEYS[i]]=v;found=true}}}}catch(e){return}
+    if(!found)return;
+    var links=document.querySelectorAll('.ps-restore a[href]');
+    for(i=0;i<links.length;i++){var next=psRestoreRewrite(links[i].getAttribute('href')||'',incoming);if(next)links[i].setAttribute('href',next)}
+  }
+  /* Run only once the whole document is parsed: this inline script sits mid-page, and markup AFTER it
+     (e.g. the preview's sticky CTA) must be rewritten too. */
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',psRestoreApply);
+  else psRestoreApply();
+})();
+</script>`
+}
 
 /** CTA to the ONE estimate funnel on the booking host, carrying website attribution + the landing-page slug. */
 export function ctaUrl(page: LandingPage, position: string, service = page.service): string {
@@ -39,10 +137,11 @@ function section(s: Section): string {
   return parts.join('\n')
 }
 
-function hubCards(page: LandingPage): string {
+function hubCards(page: LandingPage, assets: AssetManifest): string {
   if (page.service) return ''
   const cards = PAGES.filter((p) => p.service).map((p) => `
     <div class="card">
+      ${illustrationFigure(p.illustrationId, assets, true)}
       <span class="tag">${esc(p.kicker)}</span>
       <h3><a href="${pageUrl(p.slug)}">${esc(p.h1)}</a></h3>
       <p class="note">${esc(p.lede.split('. ')[0])}.</p>
@@ -65,13 +164,16 @@ function ctaBlock(page: LandingPage, position: string): string {
   return `<div class="btns">${primary}<a class="btn btn-line" href="tel:${SHOP.tel}">Call ${esc(SHOP.phone)}</a></div>`
 }
 
-/** Figures for photos whose real asset exists. `assets` maps photo id → published image URL (WordPress media). */
-function figures(page: LandingPage, assets: Record<string, string>, placeholders: boolean): string {
+/** Figures for the OPTIONAL real-photo slots. A generated image may never stand in for a real-photo slot. */
+function figures(page: LandingPage, assets: AssetManifest, placeholders: boolean): string {
   const items = page.photos.map((ph) => {
-    const src = assets[ph.id]
-    if (src) return `<figure><img src="${esc(src)}" alt="${esc(ph.caption)}" loading="lazy"><figcaption>${esc(ph.caption)}</figcaption></figure>`
+    const a = assetEntry(assets, ph.id)
+    if (a) {
+      if (a.provenance === GENERATED_PROVENANCE) throw new Error(`photo slot ${ph.id}: generated illustrations may not stand in for real shop photos`)
+      return `<figure><img src="${esc(a.src)}" alt="${esc(a.alt ?? ph.caption)}" loading="lazy"><figcaption>${esc(a.caption ?? ph.caption)}</figcaption></figure>`
+    }
     if (!placeholders) return ''
-    return `<figure class="ph"><div class="ph-box">PHOTO NEEDED<br><small>${esc(ph.id)}</small></div><figcaption>${esc(ph.caption)} — <em>${esc(ph.note)}</em></figcaption></figure>`
+    return `<figure class="ph"><div class="ph-box">OPTIONAL REAL PHOTO<br><small>${esc(ph.id)}</small></div><figcaption>${esc(ph.caption)} — <em>${esc(ph.note)}</em></figcaption></figure>`
   }).filter(Boolean)
   return items.length ? `<div class="grid2">${items.join('')}</div>` : ''
 }
@@ -92,66 +194,96 @@ export function serviceJsonLd(page: LandingPage): Record<string, unknown> {
   return { '@context': 'https://schema.org', '@type': 'Service', name: page.h1, serviceType: page.service ? QUOTE_SERVICES[page.service].label : 'Insurance-related auto restoration', description: page.metaDescription, url: pageUrl(page.slug), provider, areaServed: provider.areaServed }
 }
 
-/** The body to paste into a WordPress Custom HTML block (structured data included as inline scripts). */
-export function wpBody(page: LandingPage, assets: Record<string, string> = {}): string {
+// Production styles for the WP body. EVERY rule is scoped under `.ps-restore` (including the custom
+// properties) so nothing leaks into or depends on the Avada theme. Light palette only — the page lives
+// inside the site's light theme. Responsive grids + 44px touch targets + visible focus preserved.
+export const WP_CSS = `
+.ps-restore{--psr-fg:#0b1f33;--psr-muted:#4b5b6b;--psr-navy:#0d4469;--psr-bar:#0a2f4a;--psr-red:#c8102e;--psr-yellow:#f5c518;--psr-line:#d9e1ea;--psr-panel:#f3f6f9;--psr-ok:#1a7f4b;color:var(--psr-fg);font-size:16px;line-height:1.55}
+.ps-restore h1,.ps-restore h2,.ps-restore h3{line-height:1.2}
+.ps-restore h2{font-size:1.6rem;margin:40px 0 12px;color:var(--psr-fg)}
+.ps-restore h3{font-size:1.15rem;margin:0 0 8px}
+.ps-restore p{margin:0 0 12px}
+.ps-restore a{color:var(--psr-navy)}
+.ps-restore .ps-hero{background:var(--psr-bar);color:#fff;padding:36px 20px 28px;border-radius:14px}
+.ps-restore .ps-hero h1{font-size:clamp(1.9rem,5vw,2.6rem);margin:0 0 10px;color:#fff}
+.ps-restore .ps-hero .lede{font-size:1.1rem;max-width:40rem;color:#e8eef4}
+.ps-restore .kick{display:inline-block;background:var(--psr-yellow);color:#0b1f33;font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;padding:3px 10px;border-radius:4px;margin-bottom:12px}
+.ps-restore .btns{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+.ps-restore .btn{display:inline-block;padding:12px 18px;border-radius:8px;font-weight:700;text-decoration:none;border:2px solid transparent;min-height:44px;box-sizing:border-box}
+.ps-restore .btn:focus-visible{outline:3px solid var(--psr-yellow);outline-offset:2px}
+.ps-restore .btn-red{background:var(--psr-red);color:#fff}
+.ps-restore .btn-line{border-color:currentColor;color:inherit;background:transparent}
+.ps-restore .ps-hero .btn-line{color:#fff}
+.ps-restore .trust{display:flex;flex-wrap:wrap;gap:8px 20px;margin:14px 0 0;padding:0;list-style:none;font-size:14px;color:var(--psr-muted)}
+.ps-restore .trust li::before{content:"\\2713 ";color:var(--psr-ok);font-weight:700}
+.ps-restore .grid2{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.ps-restore .card{background:#fff;border:1px solid var(--psr-line);border-radius:12px;padding:18px;min-width:0}
+.ps-restore .card .btn{margin-top:8px}
+.ps-restore .tag{display:inline-block;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;background:var(--psr-panel);border:1px solid var(--psr-line);border-radius:999px;padding:2px 10px;color:var(--psr-muted)}
+.ps-restore .note{font-size:14px;color:var(--psr-muted)}
+.ps-restore ul{padding-left:20px}
+.ps-restore .steps{counter-reset:s;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));padding:0;margin:0;list-style:none}
+.ps-restore .steps li{counter-increment:s;background:var(--psr-panel);border-radius:10px;padding:14px 14px 14px 52px;position:relative;min-width:0}
+.ps-restore .steps li::before{content:counter(s);position:absolute;left:14px;top:12px;width:28px;height:28px;border-radius:50%;background:var(--psr-navy);color:#fff;font-weight:800;display:grid;place-items:center}
+.ps-restore .callout{background:var(--psr-panel);border-left:5px solid var(--psr-yellow);padding:14px 16px;border-radius:0 10px 10px 0;margin:16px 0}
+.ps-restore .callout.navy{border-left-color:var(--psr-navy)}
+.ps-restore figure{margin:0 0 12px;min-width:0}
+.ps-restore figure img{width:100%;height:auto;aspect-ratio:16/9;object-fit:cover;border-radius:10px;display:block}
+.ps-restore figcaption{font-size:13px;color:var(--psr-muted);margin-top:6px}
+.ps-restore .lead-fig{margin:20px 0}
+.ps-restore .card-fig{margin:0 0 12px}
+.ps-restore .illus-note{display:inline-block;font-style:italic;color:var(--psr-muted)}
+.ps-restore details{border:1px solid var(--psr-line);border-radius:10px;padding:10px 14px;margin:8px 0;background:#fff}
+.ps-restore summary{font-weight:700;cursor:pointer;min-height:24px}
+.ps-restore details p{margin:8px 0 0}
+`
+
+/** The body to paste into a WordPress Custom HTML block — self-contained: scoped CSS + content + JSON-LD + script. */
+export function wpBody(page: LandingPage, assets: AssetManifest = {}): string {
   return [
     `<!-- Pitt Stop insurance-restoration landing page: ${page.slug}. Generated from website/wordpress/insurance-restoration/pages.ts — edit the source, not this file. -->`,
+    `<div class="ps-restore">`,
+    `<style>${WP_CSS}</style>`,
     `<section class="ps-hero"><span class="kick">${esc(page.kicker)}</span><h1>${esc(page.h1)}</h1><p class="lede">${esc(page.lede)}</p>${ctaBlock(page, 'hero')}</section>`,
     `<ul class="trust">${page.trust.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`,
-    hubCards(page),
+    illustrationFigure(page.illustrationId, assets),
+    hubCards(page, assets),
     ...page.sections.map(section),
     figures(page, assets, false),
     `<h2>${esc(page.insurance.heading)}</h2>${page.insurance.paras.map((p) => `<p>${inline(p)}</p>`).join('')}`,
     `<div class="callout navy"><p><strong>Ready when you are.</strong> Send photos and we will reply with next steps during business hours (${esc(SHOP.hours)}). ${esc(SHOP.street)}, ${esc(SHOP.city)}, ${SHOP.state} ${SHOP.zip}.</p>${ctaBlock(page, 'mid')}</div>`,
     faqHtml(page),
     relatedHtml(page),
+    `</div>`,
     `<script type="application/ld+json">${JSON.stringify(faqJsonLd(page))}</script>`,
     `<script type="application/ld+json">${JSON.stringify(serviceJsonLd(page))}</script>`,
+    attributionScript(),
   ].filter(Boolean).join('\n')
 }
 
+// Preview-only chrome (review bar, placeholder boxes, review notes, sticky CTA). The page content itself
+// is styled by the SAME scoped WP_CSS the production body ships, so the preview shows production styling.
 const PREVIEW_CSS = `
-:root{--bg:#fff;--fg:#0b1f33;--muted:#4b5b6b;--navy:#0d4469;--navy-bar:#0a2f4a;--red:#c8102e;--yellow:#f5c518;--line:#d9e1ea;--panel:#f3f6f9;--ok:#1a7f4b;--flag:#b45309;--flagbg:#fff4e0;--card:#fff;color-scheme:light}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0b1620;--fg:#e8eef4;--muted:#a9b6c3;--navy:#8fc1ec;--navy-bar:#071a2a;--line:#22364a;--panel:#10202e;--card:#0f1c28;--flag:#f0b358;--flagbg:#2a1f0c;color-scheme:dark}}
-:root[data-theme="dark"]{--bg:#0b1620;--fg:#e8eef4;--muted:#a9b6c3;--navy:#8fc1ec;--navy-bar:#071a2a;--line:#22364a;--panel:#10202e;--card:#0f1c28;--flag:#f0b358;--flagbg:#2a1f0c;color-scheme:dark}
-body{background:var(--bg);color:var(--fg);font:16px/1.55 Roboto,Arial,Helvetica,sans-serif;margin:0}
+body{background:#fff;color:#0b1f33;font:16px/1.55 Roboto,Arial,Helvetica,sans-serif;margin:0}
 .wrap{max-width:900px;margin:0 auto;padding:0 16px 96px}
-h1,h2,h3{text-wrap:balance;line-height:1.2}h2{font-size:1.6rem;margin:40px 0 12px}h3{font-size:1.15rem;margin:0 0 8px}p{margin:0 0 12px}
-.bar{background:var(--navy-bar);color:#fff;text-align:center;padding:8px 16px;font-size:14px}
-.ps-hero{background:var(--navy-bar);color:#fff;padding:48px 16px 28px}.ps-hero>*{max-width:900px;margin-left:auto;margin-right:auto}
-.ps-hero h1{font-size:clamp(1.9rem,5vw,2.8rem);margin:0 0 10px}.ps-hero .lede{font-size:1.1rem;max-width:40rem;color:#e8eef4}
-.kick{display:inline-block;background:var(--yellow);color:#0b1f33;font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;padding:3px 10px;border-radius:4px;margin-bottom:12px}
-.btns{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
-.btn{display:inline-block;padding:12px 18px;border-radius:8px;font-weight:700;text-decoration:none;border:2px solid transparent;min-height:44px;box-sizing:border-box}
-.btn-red{background:var(--red);color:#fff}.btn-line{border-color:currentColor;color:inherit;background:transparent}.ps-hero .btn-line{color:#fff}
-.trust{display:flex;flex-wrap:wrap;gap:8px 20px;margin:14px 0 0;padding:0;list-style:none;font-size:14px;color:var(--muted)}.trust li::before{content:"✓ ";color:var(--ok);font-weight:700}
-.grid2{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;min-width:0}.card .btn{margin-top:8px}
-.tag{display:inline-block;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:2px 10px;color:var(--muted)}
-.note{font-size:14px;color:var(--muted)}
-.steps{counter-reset:s;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));padding:0;margin:0;list-style:none}
-.steps li{counter-increment:s;background:var(--panel);border-radius:10px;padding:14px 14px 14px 52px;position:relative;min-width:0}
-.steps li::before{content:counter(s);position:absolute;left:14px;top:12px;width:28px;height:28px;border-radius:50%;background:var(--navy);color:#fff;font-weight:800;display:grid;place-items:center}
-.callout{background:var(--panel);border-left:5px solid var(--yellow);padding:14px 16px;border-radius:0 10px 10px 0;margin:16px 0}.callout.navy{border-left-color:var(--navy)}
-figure{margin:0;min-width:0}figure img{width:100%;height:220px;object-fit:cover;border-radius:10px;display:block}figcaption{font-size:13px;color:var(--muted);margin-top:6px}
-.ph-box{height:220px;border:2px dashed var(--flag);border-radius:10px;display:grid;place-items:center;text-align:center;color:var(--flag);font-weight:800;background:var(--flagbg)}
-details{border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:8px 0;background:var(--card)}summary{font-weight:700;cursor:pointer;min-height:24px}details p{margin:8px 0 0}
-.sticky{position:fixed;left:0;right:0;bottom:0;background:var(--navy-bar);display:flex;gap:8px;padding:10px;padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:5}
+.bar{background:#0a2f4a;color:#fff;text-align:center;padding:8px 16px;font-size:14px}
+.ph-box{height:220px;border:2px dashed #b45309;border-radius:10px;display:grid;place-items:center;text-align:center;color:#b45309;font-weight:800;background:#fff4e0}
+.sticky{position:fixed;left:0;right:0;bottom:0;background:#0a2f4a;display:flex;gap:8px;padding:10px;padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:5}
 .sticky a{flex:1;text-align:center;padding:12px 8px;border-radius:8px;font-weight:700;text-decoration:none;font-size:15px;min-height:44px;box-sizing:border-box}
-.review-box{background:var(--flagbg);border:1px dashed var(--flag);border-radius:10px;padding:12px 14px;margin:28px 0 0;font-size:14px}.review-box b{color:var(--flag)}.review-box ul{margin:6px 0 0;padding-left:18px}
-footer{color:var(--muted);font-size:14px;margin-top:40px;border-top:1px solid var(--line);padding-top:16px}
-a{color:var(--navy)}
+.review-box{background:#fff4e0;border:1px dashed #b45309;border-radius:10px;padding:12px 14px;margin:28px 0 0;font-size:14px}.review-box b{color:#b45309}.review-box ul{margin:6px 0 0;padding-left:18px}
+footer{color:#4b5b6b;font-size:14px;margin-top:40px;border-top:1px solid #d9e1ea;padding-top:16px}
 `
 
 /** Standalone preview for owner review. Contains everything the WP body does, plus placeholders + review notes. */
-export function previewHtml(page: LandingPage, assets: Record<string, string> = {}): string {
+export function previewHtml(page: LandingPage, assets: AssetManifest = {}): string {
   const body = wpBody(page, assets)
-  // inject placeholders where the WP body omitted missing figures
+  // inject optional-photo placeholders where the WP body omitted missing figures
   const withPlaceholders = body.replace(`<h2>${esc(page.insurance.heading)}</h2>`, `${figures(page, assets, true)}\n<h2>${esc(page.insurance.heading)}</h2>`)
-  const missing = page.photos.filter((p) => !assets[p.id])
+  const missingIllustration = page.service && page.illustrationId && !assetEntry(assets, page.illustrationId)
+  const missingPhotos = page.photos.filter((p) => !assetEntry(assets, p.id))
   const sticky = page.service
-    ? `<div class="sticky"><a class="btn-red" style="background:var(--red);color:#fff" href="${ctaUrl(page, 'sticky')}">${esc(page.ctaLabel)}</a><a style="background:#fff;color:var(--navy-bar)" href="tel:${SHOP.tel}">Call</a></div>`
-    : `<div class="sticky"><a class="btn-red" style="background:var(--red);color:#fff" href="#types">${esc(page.ctaLabel)}</a><a style="background:#fff;color:var(--navy-bar)" href="tel:${SHOP.tel}">Call</a></div>`
+    ? `<div class="sticky ps-restore"><a class="btn-red" style="background:#c8102e;color:#fff" href="${ctaUrl(page, 'sticky')}">${esc(page.ctaLabel)}</a><a style="background:#fff;color:#0a2f4a" href="tel:${SHOP.tel}">Call</a></div>`
+    : `<div class="sticky ps-restore"><a class="btn-red" style="background:#c8102e;color:#fff" href="#types">${esc(page.ctaLabel)}</a><a style="background:#fff;color:#0a2f4a" href="tel:${SHOP.tel}">Call</a></div>`
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(page.seoTitle)}</title><meta name="description" content="${esc(page.metaDescription)}"><meta name="robots" content="noindex">
@@ -164,9 +296,9 @@ ${withPlaceholders}
 <ul>
 <li>SEO title (${page.seoTitle.length} chars): ${esc(page.seoTitle)}</li>
 <li>Meta description (${page.metaDescription.length} chars): ${esc(page.metaDescription)}</li>
-<li>Estimate CTA → ${esc(ctaUrl(page, 'hero'))}</li>
-<li>${missing.length ? `Photos still needed (${missing.length}): ${missing.map((m) => esc(m.id)).join(', ')}. The published body ships WITHOUT images until real shop photos are supplied.` : 'All photo assets supplied.'}</li>
-<li>Owner decisions: confirm the glass-coordination wording and the no-direct-billing statement match what staff will actually do.</li>
+<li>Estimate CTA → ${esc(ctaUrl(page, 'hero'))} (ad-click parameters are forwarded onto the CTAs by the included script)</li>
+<li>${missingIllustration ? `Generated illustration pending (${page.illustrationId}): supply it via assets.json; it will render with the visible caption “${ILLUSTRATION_NOTICE}”.` : page.illustrationId ? `Illustration supplied; the caption “${ILLUSTRATION_NOTICE}” renders under it.` : 'Hub page: reuses the four service illustrations on its cards once supplied.'}</li>
+<li>${missingPhotos.length ? `Optional real shop photos (${missingPhotos.length}): ${missingPhotos.map((m) => esc(m.id)).join(', ')} — upgrades, NOT publish blockers. Real jobs only, never a generated image.` : 'All optional real-photo slots supplied.'}</li>
 </ul></div>
 <footer>${esc(SHOP.name)} · ${esc(SHOP.street)}, ${esc(SHOP.city)}, ${SHOP.state} ${SHOP.zip} · ${esc(SHOP.phone)} · ${esc(SHOP.hours)}</footer>
 </div>
@@ -174,7 +306,8 @@ ${sticky}
 </body></html>`
 }
 
-export function seoSidecar(page: LandingPage, assets: Record<string, string> = {}) {
+export function seoSidecar(page: LandingPage, assets: AssetManifest = {}) {
+  const illus = page.service ? [page.illustrationId].filter((x): x is string => !!x) : PAGES.filter((p) => p.service && p.illustrationId).map((p) => p.illustrationId as string)
   return {
     slug: page.slug,
     url: pageUrl(page.slug),
@@ -185,14 +318,16 @@ export function seoSidecar(page: LandingPage, assets: Record<string, string> = {
     h1: page.h1,
     primaryCta: page.service ? ctaUrl(page, 'hero') : null,
     internalLinks: page.related.map(pageUrl),
-    photosNeeded: page.photos.filter((p) => !assets[p.id]),
+    illustrations: illus.map((id) => ({ id, supplied: !!assetEntry(assets, id), notice: ILLUSTRATION_NOTICE })),
+    optionalRealPhotos: page.photos.filter((p) => !assetEntry(assets, p.id)),
     schema: [faqJsonLd(page), serviceJsonLd(page)],
     publishChecklist: [
-      'Create the page in wp-admin → Pages → Add New with this slug; paste dist/<slug>.wp.html into a Custom HTML block.',
+      'Create the page in wp-admin → Pages → Add New with this slug; paste dist/<slug>.wp.html into a Custom HTML block. The block is self-contained (scoped styles + attribution script) — no theme CSS or JS dependency.',
       'Rank Math: set the SEO title and meta description from this file; keep "index, follow"; confirm the canonical URL.',
-      'Add real shop photos for each photosNeeded id with the listed caption as alt text (no stock images).',
+      'Upload the generated illustration(s) to the WordPress media library, record each URL in website/wordpress/insurance-restoration/assets.json with provenance "generated illustration", rebuild (npx tsx scripts/build-restoration-pages.ts) and re-paste. Verify the visible caption "Illustrative image — not a completed Pitt Stop job." renders under each generated image.',
+      'Optional: replace/augment illustrations with real shop photos (optionalRealPhotos list) — real jobs with permission only; never present a generated image as a completed job or before/after.',
       'Link the page from /detailing/ and the footer or services menu; the hub page links to the four service pages.',
-      'After publishing: request indexing in Search Console (access still to be granted) and add the URL to the Google Ads final-URL list for its campaign.',
+      'After publishing: request indexing in Search Console (owner reports access was granted — verify before relying on it) and add the URL to the Google Ads final-URL list for its campaign.',
     ],
   }
 }

@@ -1,0 +1,23 @@
+{
+  "method": "Built-in image generation",
+  "created": "2026-11-07",
+  "usage": "Illustrative service imagery; not actual Pitt Stop jobs, staff, premises, or results",
+  "prompts": [
+    [
+      "vandalism",
+      "Use case: ads-marketing. Asset: landscape service-page illustration, 3:2 aspect ratio. Create a high-quality photographic illustration of keyed paint damage on a modern unbranded dark gray sedan: close oblique view of the front door and fender with a few believable superficial scratches, daylight, neutral uncluttered setting. Show the problem clearly with realistic automotive surfaces, no dramatic destruction. No people, shop building, company branding, visible license plates, insurer logos, text, watermark, before-and-after layout, or claim of a completed repair. This will be visibly captioned as an illustrative image, not a real Pitt Stop job."
+    ],
+    [
+      "overspray",
+      "Use case: ads-marketing. Asset: landscape service-page illustration, 3:2 aspect ratio. Create a high-quality photographic illustration of fine white construction-paint overspray speckles on the blue-gray hood and lower windshield edge of an unbranded vehicle. Close-up composition, soft natural side light revealing many tiny paint dots, believable paint texture, neutral background, clean editorial automotive photograph style. Show the damage, not a claimed repair result. No people, shop identifiers, logos, plates, text, watermark, before-and-after layout. It will be captioned as an illustrative image rather than a real customer job."
+    ],
+    [
+      "water-damage",
+      "Use case: ads-marketing. Asset: landscape service-page illustration, 3:2 aspect ratio. Create a high-quality photographic illustration of a damp vehicle footwell being cleaned with a professional upholstery extraction nozzle. Close view through an open car door: wet dark carpet, nozzle resting on the carpet, realistic subtle moisture, daylight. Only clean rainwater intrusion; no deep flood, submerged vehicle, sewage, visible mold, exposed electrical equipment, or implied declaration that the car is safe. No people or hands, company branding, text, plates, watermark, before-and-after composition. Generic educational automotive service imagery, to be visibly labeled illustrative, not a real Pitt Stop job."
+    ],
+    [
+      "glass-cleanup",
+      "Use case: ads-marketing. Asset: landscape service-page illustration, 3:2 aspect ratio. Create a high-quality photographic illustration of a vehicle after a side-window break-in: close view through an open passenger door showing small realistic tempered-glass fragments on dark cloth seat and floor mat, intact windshield and dashboard, side-window frame partly visible. Clear but calm daylight composition, professional editorial detail, neutral surroundings. No people, injuries, blood, weapons, criminal actors, license plates, logos, text, watermark, before-and-after comparison, or fabricated repair result. This is illustrative service imagery to be visibly captioned as not a completed Pitt Stop job."
+    ]
+  ]
+}

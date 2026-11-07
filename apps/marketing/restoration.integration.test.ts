@@ -4,8 +4,10 @@
  *
  *   synthetic lead with a test photo → claim row + lead + attribution persisted → shop email (fake provider)
  *   → lead linked to a job → estimate written → job completed + QuickBooks-anchored invoice
- *   → restorationReport shows the right funnel, revenue, cost, CAC and contribution
- *   → duplicate submission, replayed submission and provider failure are handled without a second lead.
+ *   → restorationReport shows the right funnel, revenue, recorded costs and SEPARATED paid unit costs
+ *   → duplicate / replayed submissions and provider failures are handled without a second lead
+ *   → missing restoration ad data is UNKNOWN (null), never $0, even when other categories report
+ *   → profitability is unmeasured (labor cost is not captured) — no contribution figure exists.
  *
  * Nothing here touches Neon, Postmark, QuickBooks or Google Ads. Ad spend is injected.
  */
@@ -65,10 +67,15 @@ const ADS_CLICK = { gclid: 'TEST-GCLID-1', utm_source: 'google', utm_medium: 'cp
 const req = (over: Record<string, unknown> = {}) => { const p = parseQuoteRequest({ ...LEAD, ...over }); if (!p.ok) throw new Error(JSON.stringify(p.errors)); return p.req }
 const WEEK = currentWeekYmd(new Date())
 
-const ads = (spendCents: number | null): typeof import('./ads-reporting').loadAdReporting => async () => (spendCents == null
+type LoadAds = typeof import('./ads-reporting').loadAdReporting
+const LIVE_META = () => ({ status: 'live', source: 'google_ads_api', fetchedAt: new Date().toISOString(), error: null, errorKind: null, account: null }) as AdReporting['meta']
+/** null = Google Ads API unavailable; a number = a live restoration rollup with that spend (plus a ceramic row). */
+const ads = (spendCents: number | null): LoadAds => async () => (spendCents == null
   ? { meta: { status: 'unavailable', source: 'google_ads_api', fetchedAt: null, error: 'google_ads_auth', errorKind: 'auth', account: null }, byCategory: [] }
-  : { meta: { status: 'live', source: 'google_ads_api', fetchedAt: new Date().toISOString(), error: null, errorKind: null, account: null },
+  : { meta: LIVE_META(),
       byCategory: [{ serviceCategory: 'restoration', spendCents, impressions: 1000, clicks: 40, conversions: 2, revenueCents: 0 }, { serviceCategory: 'ceramic', spendCents: 99900, impressions: 1, clicks: 1, conversions: 0, revenueCents: 0 }] }) as AdReporting
+/** LIVE data where only OTHER categories report — the restoration mapping/data is not established. */
+const adsCeramicOnly: LoadAds = async () => ({ meta: LIVE_META(), byCategory: [{ serviceCategory: 'ceramic', spendCents: 99900, impressions: 1, clicks: 1, conversions: 0, revenueCents: 0 }] }) as AdReporting
 
 async function one<T = Record<string, unknown>>(q: string, params: unknown[] = []): Promise<T> { const r = await pg.query<T>(q, params); return r.rows[0] }
 
@@ -85,10 +92,10 @@ async function fulfil(leadId: string, opts: { invoice?: boolean; cancel?: boolea
   await pg.query('INSERT INTO job_line_items (job_service_id, type, name, cost_cents, price_cents) VALUES ($1,$2,$3,$4,$5)', [svcId, 'sublet', 'Quarter glass (partner)', opts.subletCost ?? 22000, 30000])
   await pg.query('INSERT INTO job_line_items (job_service_id, type, name, cost_cents, price_cents) VALUES ($1,$2,$3,$4,$5)', [svcId, 'part', 'Touch-up materials', opts.partCost ?? 3000, 10000])
   await updateLead(leadId, { status: 'estimate_sent' }, 'manager:test')
-  if (opts.cancel) { await pg.query("UPDATE service_orders SET status='cancelled', cancelled_at=now() WHERE id=$1", [orderId]); return { orderId, estimateId } }
+  if (opts.cancel) { await pg.query("UPDATE service_orders SET status='cancelled', cancelled_at=now() WHERE id=$1", [orderId]); return { orderId, estimateId, customerId } }
   await pg.query("UPDATE service_orders SET status='delivered', completed_at=now() WHERE id=$1", [orderId])
   if (opts.invoice !== false) await pg.query("UPDATE job_estimates SET qb_invoice_id='QB-TEST-1001' WHERE id=$1", [estimateId])
-  return { orderId, estimateId }
+  return { orderId, estimateId, customerId }
 }
 
 describe('synthetic lead → storage + attribution', () => {
@@ -132,16 +139,31 @@ describe('duplicate and failure handling', () => {
     // same customer, new key, different wording → a second lead, which the report marks as a duplicate of the first
     const c = await submitQuoteRequest(req({ message: 'Sent this twice, sorry' }), { utm_source: 'website', lp: 'car-vandalism-repair' }, { provider, requestKey: randomUUID() })
     expect(c.leadId).not.toBe(a.leadId)
-    const r = await restorationReport(WEEK, { loadAds: ads(null), laborCostPct: async () => 0 })
+    const r = await restorationReport(WEEK, { loadAds: ads(null) })
     expect(r.leads.total).toBe(2); expect(r.leads.duplicates).toBe(1); expect(r.funnel.leads).toBe(1)
     expect(r.leads.rows.find((l) => l.leadId === c.leadId)?.duplicateOf).toBe(a.leadId)
+    // breakdowns count the canonical lead only — they agree with the funnel headline
+    expect(Object.values(r.leads.byDamageType).reduce((s, n) => s + n, 0)).toBe(1)
+    expect(r.leads.bySource).toEqual({ google_ads: 1 })
+  })
+  it('a later submission that CONVERTED becomes the canonical lead — never hidden behind the earlier unmatched one', async () => {
+    const provider = new FakeProvider()
+    const first = await submitQuoteRequest(req({ message: 'First try, never followed up' }), { utm_source: 'website', lp: 'car-vandalism-repair' }, { provider, requestKey: randomUUID() })
+    const second = await submitQuoteRequest(req({ message: 'Came back through the ad' }), ADS_CLICK, { provider, requestKey: randomUUID() })
+    await fulfil(second.leadId)
+    const r = await restorationReport(WEEK, { loadAds: ads(15000) })
+    expect(r.funnel.leads).toBe(1); expect(r.leads.duplicates).toBe(1)
+    expect(r.leads.rows.find((l) => l.leadId === first.leadId)?.duplicateOf).toBe(second.leadId)
+    expect(r.leads.rows.find((l) => l.leadId === second.leadId)?.duplicateOf).toBeNull()
+    expect(r.leads.matched).toBe(1); expect(r.leads.bySource).toEqual({ google_ads: 1 })
+    expect(r.funnel.completed).toBe(1); expect(r.funnel.invoiced).toBe(1)
   })
   it('a provider failure still saves the lead and the photo, reports emailed=failed, and the report flags it for phone follow-up', async () => {
     const provider = new FakeProvider(); provider.queue.push({ status: 'failed', error: 'postmark 500' })
     const r = await submitQuoteRequest(req(), ADS_CLICK, { provider, requestKey: randomUUID() })
     expect(r.emailed).toBe('failed'); expect(r.leadId).toBeTruthy()
     expect(await one('SELECT email_status, jsonb_array_length(photos) AS photos FROM quote_requests WHERE lead_id=$1', [r.leadId])).toEqual({ email_status: 'failed', photos: 1 })
-    const rep = await restorationReport(WEEK, { loadAds: ads(null), laborCostPct: async () => 0 })
+    const rep = await restorationReport(WEEK, { loadAds: ads(null) })
     expect(rep.leads.emailNotSent).toBe(1); expect(rep.funnel.leads).toBe(1)
   })
   it('markDuplicates matches on normalized phone OR email, never on name', () => {
@@ -154,17 +176,56 @@ describe('duplicate and failure handling', () => {
     ])
     expect(rows.map((r) => [r.leadId, r.duplicateOf])).toEqual([['A', null], ['B', 'A'], ['C', 'A'], ['D', null]])
   })
+  it('markDuplicates prefers the linked/progressed lead as canonical over the merely earlier one', () => {
+    const t0 = new Date('2026-11-02T10:00:00Z')
+    const rows = markDuplicates([
+      { leadId: 'A', phone: '979-555-0101', email: 'a@x.test', createdAt: t0, serviceOrderId: null, status: 'new' },
+      { leadId: 'B', phone: '(979) 555-0101', email: null, createdAt: new Date(t0.getTime() + 1), serviceOrderId: 'SO-1', status: 'won' },
+    ])
+    expect(rows.map((r) => [r.leadId, r.duplicateOf])).toEqual([['A', 'B'], ['B', null]])
+  })
+  it('REGRESSION (independent review): a bridging lead merges two existing groups transitively — one canonical, not two', () => {
+    const t0 = new Date('2026-11-02T10:00:00Z')
+    // A(p1,e1) and B(p2,e2) are separate groups until C(p1,e2) bridges them; C converted, so C is canonical.
+    const rows = markDuplicates([
+      { leadId: 'A', phone: '979-555-0101', email: 'a@x.test', createdAt: t0 },
+      { leadId: 'B', phone: '979-555-0202', email: 'b@x.test', createdAt: new Date(t0.getTime() + 1) },
+      { leadId: 'C', phone: '(979) 555-0101', email: 'B@X.TEST', createdAt: new Date(t0.getTime() + 2), serviceOrderId: 'SO-1', status: 'won', orderCompleted: true },
+    ])
+    expect(rows.map((r) => [r.leadId, r.duplicateOf])).toEqual([['A', 'C'], ['B', 'C'], ['C', null]])
+  })
+  it('a completed linked lead outranks an older CANCELLED linked lead — being linked is not enough', () => {
+    const t0 = new Date('2026-11-02T10:00:00Z')
+    const rows = markDuplicates([
+      { leadId: 'A', phone: '979-555-0101', email: null, createdAt: t0, serviceOrderId: 'SO-A', status: 'booked', orderCancelled: true },
+      { leadId: 'B', phone: '(979) 555-0101', email: null, createdAt: new Date(t0.getTime() + 1), serviceOrderId: 'SO-B', status: 'won', orderCompleted: true },
+    ])
+    expect(rows.map((r) => [r.leadId, r.duplicateOf])).toEqual([['A', 'B'], ['B', null]])
+  })
+  it('REGRESSION end-to-end: bridged contacts collapse to ONE unique lead and the completed one is canonical', async () => {
+    const provider = new FakeProvider()
+    const a = await submitQuoteRequest(req({ phone: '(979) 555-0101', email: 'bridge.a@example.invalid', message: 'first contact' }), {}, { provider, requestKey: randomUUID() })
+    const b = await submitQuoteRequest(req({ phone: '(979) 555-0202', email: 'bridge.b@example.invalid', message: 'second contact' }), {}, { provider, requestKey: randomUUID() })
+    const c = await submitQuoteRequest(req({ phone: '(979) 555-0101', email: 'bridge.b@example.invalid', message: 'third, bridging both' }), ADS_CLICK, { provider, requestKey: randomUUID() })
+    await fulfil(c.leadId)
+    const r = await restorationReport(WEEK, { loadAds: ads(null) })
+    expect(r.funnel.leads).toBe(1); expect(r.leads.duplicates).toBe(2); expect(r.leads.matched).toBe(1)
+    expect(r.leads.rows.find((l) => l.leadId === a.leadId)?.duplicateOf).toBe(c.leadId)
+    expect(r.leads.rows.find((l) => l.leadId === b.leadId)?.duplicateOf).toBe(c.leadId)
+    expect(r.leads.rows.find((l) => l.leadId === c.leadId)?.duplicateOf).toBeNull()
+    expect(r.funnel.completed).toBe(1); expect(r.funnel.invoiced).toBe(1)
+  })
 })
 
 describe('lead → estimate → completed job → invoice → report', () => {
-  it('reports the funnel, QB-anchored revenue, recorded costs, modeled labor, CAC and contribution correctly', async () => {
+  it('reports the funnel, QB-anchored revenue, recorded costs and SEPARATED paid unit costs; profitability stays unmeasured', async () => {
     const provider = new FakeProvider()
     const lead = await submitQuoteRequest(req(), ADS_CLICK, { provider, requestKey: randomUUID() })
     // an organic overspray lead that stays unqualified/unmatched
     await submitQuoteRequest(req({ service: 'overspray', phone: '(979) 555-0177', email: 'other.person@example.invalid', name: 'Other Person', message: 'Overspray on hood' }), { lp: 'car-overspray-removal' }, { provider, requestKey: randomUUID() })
     await fulfil(lead.leadId, { total: 120000, laborPrice: 80000, subletCost: 22000, partCost: 3000 })
 
-    const r = await restorationReport(WEEK, { loadAds: ads(15000), laborCostPct: async () => 35 })
+    const r = await restorationReport(WEEK, { loadAds: ads(15000) })
     expect(r.funnel).toEqual({ leads: 2, qualified: 1, estimates: 1, booked: 1, completed: 1, invoiced: 1, cancelled: 0 })
     expect(r.leads.matched).toBe(1); expect(r.leads.unmatched).toBe(1)
     expect(r.leads.byDamageType).toEqual({ vandalism: 1, overspray: 1 })
@@ -174,51 +235,96 @@ describe('lead → estimate → completed job → invoice → report', () => {
     expect(r.revenue.invoicedCents).toBe(120000); expect(r.revenue.quotedUninvoicedCents).toBe(0); expect(r.revenue.avgInvoicedTicketCents).toBe(120000)
     expect(r.revenue.byDamageType).toEqual({ vandalism: { invoicedCents: 120000, orders: 1 } })
     expect(r.revenue.bySource).toEqual({ google_ads: { invoicedCents: 120000, orders: 1 } })
-    expect(r.costs).toEqual({ partsCostCents: 3000, subletCostCents: 22000, laborPriceCents: 80000, laborCostPct: 35, laborCostCents: 28000, labelled: 'modeled' })
+    expect(r.costs).toEqual({ partsCostCents: 3000, subletCostCents: 22000, profitability: 'unmeasured' })
     expect(r.ads.spendCents).toBe(15000); expect(r.ads.clicks).toBe(40)
-    expect(r.unit.costPerLeadCents).toBe(7500)                       // $150 ÷ 2 unique leads
-    expect(r.unit.cacCents).toBe(15000)                              // $150 ÷ 1 completed job
-    expect(r.unit.contributionBeforeAdsCents).toBe(120000 - 3000 - 22000 - 28000)
-    expect(r.unit.contributionCents).toBe(120000 - 3000 - 22000 - 28000 - 15000)
-    expect(r.orders[0]).toMatchObject({ damageType: 'vandalism', source: 'google_ads', invoicedCents: 120000, leadId: lead.leadId })
+    expect(r.unit.paidLeads).toBe(1)                                 // only the Google Ads lead
+    expect(r.unit.costPerPaidLeadCents).toBe(15000)                  // $150 ÷ 1 paid lead (website lead excluded)
+    expect(r.unit.blendedCostPerCompletedJobCents).toBe(15000)       // $150 ÷ 1 completed job (all channels)
+    expect(r.unit.paidNewCustomersInvoiced).toBe(1)
+    expect(r.unit.paidCacCents).toBe(15000)                          // $150 ÷ 1 new invoiced paid customer
+    expect(r.orders[0]).toMatchObject({ damageType: 'vandalism', source: 'google_ads', invoicedCents: 120000, leadId: lead.leadId, newCustomer: true })
+    expect(r.caveats.join(' ')).toMatch(/UNMEASURED/)
+    // no profit/contribution or modeled-labor FIGURES exist in the numeric payload (the caveat text explains why)
+    expect(JSON.stringify({ unit: r.unit, costs: r.costs })).not.toMatch(/contribution|laborCost/i)
   })
-  it('a completed job WITHOUT a QuickBooks anchor is quoted, not revenue; unknown ad spend and unmodeled labor yield null CAC/contribution — never zero', async () => {
+  it('a completed job WITHOUT a QuickBooks anchor is quoted, not revenue; unknown ad spend yields null unit costs — never zero', async () => {
     const lead = await submitQuoteRequest(req(), ADS_CLICK, { provider: new FakeProvider(), requestKey: randomUUID() })
     await fulfil(lead.leadId, { invoice: false, total: 90000 })
-    const r = await restorationReport(WEEK, { loadAds: ads(null), laborCostPct: async () => 0 })
+    const r = await restorationReport(WEEK, { loadAds: ads(null) })
     expect(r.funnel.completed).toBe(1); expect(r.funnel.invoiced).toBe(0)
     expect(r.revenue.invoicedCents).toBe(0); expect(r.revenue.quotedUninvoicedCents).toBe(90000)
-    expect(r.ads.spendCents).toBeNull(); expect(r.unit.cacCents).toBeNull(); expect(r.unit.costPerLeadCents).toBeNull()
-    expect(r.costs.laborCostCents).toBeNull(); expect(r.costs.labelled).toBe('not_modeled'); expect(r.unit.contributionCents).toBeNull(); expect(r.unit.contributionBeforeAdsCents).toBeNull()
-    expect(r.caveats.join(' ')).toMatch(/not modeled/); expect(r.caveats.join(' ')).toMatch(/unavailable/)
+    expect(r.ads.spendCents).toBeNull()
+    expect(r.unit.costPerPaidLeadCents).toBeNull(); expect(r.unit.blendedCostPerCompletedJobCents).toBeNull(); expect(r.unit.paidCacCents).toBeNull()
+    // an uninvoiced job never enters the paid-CAC denominator even when the spend is known
+    const r2 = await restorationReport(WEEK, { loadAds: ads(15000) })
+    expect(r2.unit.paidNewCustomersInvoiced).toBe(0); expect(r2.unit.paidCacCents).toBeNull()
+    expect(r.caveats.join(' ')).toMatch(/unavailable/i)
+  })
+  it('REGRESSION: live ad data with ONLY a ceramic rollup (no restoration mapping) is unknown spend, not $0', async () => {
+    const lead = await submitQuoteRequest(req(), ADS_CLICK, { provider: new FakeProvider(), requestKey: randomUUID() })
+    await fulfil(lead.leadId)
+    const r = await restorationReport(WEEK, { loadAds: adsCeramicOnly })
+    expect(r.ads.meta.status).toBe('live')
+    expect(r.ads.spendCents).toBeNull()                              // was 0 before the fix
+    expect(r.ads.clicks).toBeNull(); expect(r.ads.conversions).toBeNull()
+    expect(r.unit.costPerPaidLeadCents).toBeNull(); expect(r.unit.blendedCostPerCompletedJobCents).toBeNull(); expect(r.unit.paidCacCents).toBeNull()
+    expect(r.caveats.join(' ')).toMatch(/unknown — not \$0/)
+  })
+  it('mixed channels: organic and unknown-source completed jobs count in blended cost but never in the paid denominators', async () => {
+    const provider = new FakeProvider()
+    const paid = await submitQuoteRequest(req(), ADS_CLICK, { provider, requestKey: randomUUID() })
+    const organic = await submitQuoteRequest(req({ phone: '(979) 555-0177', email: 'organic@example.invalid', name: 'Organic Person' }), { utm_source: 'website', lp: 'car-vandalism-repair' }, { provider, requestKey: randomUUID() })
+    await fulfil(paid.leadId, { total: 120000 })
+    await fulfil(organic.leadId, { total: 60000 })
+    // an unknown-source restoration job (no lead, classified from job text)
+    const orderId = randomUUID()
+    await pg.query("INSERT INTO service_orders (id, status, completed_at, services) VALUES ($1,'ready',now(),$2)", [orderId, JSON.stringify(['Overspray removal'])])
+    await pg.query("INSERT INTO job_estimates (service_order_id, total_cents, qb_invoice_id) VALUES ($1,30000,'QB-TEST-1002')", [orderId])
+
+    const r = await restorationReport(WEEK, { loadAds: ads(20000) })
+    expect(r.funnel.completed).toBe(3); expect(r.funnel.invoiced).toBe(3)
+    expect(r.revenue.bySource).toEqual({
+      google_ads: { invoicedCents: 120000, orders: 1 },
+      website: { invoicedCents: 60000, orders: 1 },
+      unknown: { invoicedCents: 30000, orders: 1 },
+    })
+    expect(r.unit.paidLeads).toBe(1)
+    expect(r.unit.costPerPaidLeadCents).toBe(20000)                  // $200 ÷ 1 paid lead
+    expect(r.unit.blendedCostPerCompletedJobCents).toBe(6667)        // $200 ÷ 3 completed jobs, labelled blended
+    expect(r.unit.paidNewCustomersInvoiced).toBe(1)                  // organic + unknown jobs excluded
+    expect(r.unit.paidCacCents).toBe(20000)
   })
   it('a cancelled job is never a completion and earns no revenue; a lost lead is not qualified', async () => {
     const a = await submitQuoteRequest(req(), ADS_CLICK, { provider: new FakeProvider(), requestKey: randomUUID() })
     await fulfil(a.leadId, { cancel: true })
     const b = await submitQuoteRequest(req({ phone: '(979) 555-0133', email: 'lost@example.invalid', service: 'water_damage' }), {}, { provider: new FakeProvider(), requestKey: randomUUID() })
     await updateLead(b.leadId, { status: 'lost' }, 'manager:test')
-    const r = await restorationReport(WEEK, { loadAds: ads(5000), laborCostPct: async () => 35 })
+    const r = await restorationReport(WEEK, { loadAds: ads(5000) })
     expect(r.funnel).toMatchObject({ leads: 2, qualified: 1, booked: 1, completed: 0, invoiced: 0, cancelled: 1 })
-    expect(r.revenue.invoicedCents).toBe(0); expect(r.unit.cacCents).toBeNull(); expect(r.orders).toEqual([])
+    expect(r.revenue.invoicedCents).toBe(0); expect(r.unit.blendedCostPerCompletedJobCents).toBeNull(); expect(r.unit.paidCacCents).toBeNull(); expect(r.orders).toEqual([])
   })
-  it('a repeat customer with two completed invoiced jobs counts two orders, once each, and is flagged as repeat', async () => {
+  it('a repeat customer counts every completed order once, but only the NEW-customer paid job enters paid CAC', async () => {
     const lead = await submitQuoteRequest(req(), ADS_CLICK, { provider: new FakeProvider(), requestKey: randomUUID() })
     const first = await fulfil(lead.leadId, { total: 50000 })
-    const customerId = (await one<{ customer_id: string }>('SELECT customer_id FROM service_orders WHERE id=$1', [first.orderId])).customer_id
-    // second job for the same customer, classified from job text (no second lead)
+    // make the first job unambiguously earlier, then add a second invoiced job for the SAME customer
+    await pg.query("UPDATE service_orders SET completed_at = now() - interval '1 minute' WHERE id=$1", [first.orderId])
     const orderId = randomUUID(); const estId = randomUUID()
-    await pg.query("INSERT INTO service_orders (id, customer_id, status, completed_at, services) VALUES ($1,$2,'ready',now(),$3)", [orderId, customerId, JSON.stringify(['Overspray removal'])])
+    await pg.query("INSERT INTO service_orders (id, customer_id, status, completed_at, services) VALUES ($1,$2,'ready',now(),$3)", [orderId, first.customerId, JSON.stringify(['Overspray removal'])])
     await pg.query("INSERT INTO job_estimates (id, service_order_id, total_cents, qb_invoice_id) VALUES ($1,$2,30000,'QB-TEST-1002')", [estId, orderId])
-    const r = await restorationReport(WEEK, { loadAds: ads(10000), laborCostPct: async () => 0 })
+    const r = await restorationReport(WEEK, { loadAds: ads(10000) })
     expect(r.funnel.completed).toBe(2); expect(r.revenue.invoicedCents).toBe(80000); expect(r.revenue.repeatCustomers).toBe(1)
     expect(r.revenue.byDamageType).toEqual({ vandalism: { invoicedCents: 50000, orders: 1 }, unclassified: { invoicedCents: 30000, orders: 1 } })
-    expect(r.unit.cacCents).toBe(5000)
+    const second = r.orders.find((o) => o.serviceOrderId === orderId)
+    expect(second?.newCustomer).toBe(false)                          // the repeat job is not an acquisition
+    expect(r.unit.blendedCostPerCompletedJobCents).toBe(5000)        // $100 ÷ 2 jobs (blended keeps both)
+    expect(r.unit.paidNewCustomersInvoiced).toBe(1)                  // one distinct new customer
+    expect(r.unit.paidCacCents).toBe(10000)                          // $100 ÷ 1 — repeat job excluded
   })
   it('an unrelated ceramic job completed in the window never enters the restoration report', async () => {
     const orderId = randomUUID()
     await pg.query("INSERT INTO service_orders (id, status, completed_at, services) VALUES ($1,'ready',now(),$2)", [orderId, JSON.stringify(['Ceramic coating'])])
     await pg.query("INSERT INTO job_estimates (service_order_id, total_cents, qb_invoice_id) VALUES ($1,200000,'QB-TEST-1003')", [orderId])
-    const r = await restorationReport(WEEK, { loadAds: ads(10000), laborCostPct: async () => 0 })
+    const r = await restorationReport(WEEK, { loadAds: ads(10000) })
     expect(r.funnel.completed).toBe(0); expect(r.revenue.invoicedCents).toBe(0); expect(r.orders).toEqual([])
   })
 })
