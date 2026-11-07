@@ -46,7 +46,7 @@ export function focusForWeek(weekNumber: number): CalendarWeek {
 
 /** Rough mix summary (for the Settings/Overview explainer). */
 export function rotationMix(): Record<ServiceCategory, number> {
-  const mix = { ceramic: 0, paint_correction: 0, interior: 0, general: 0, brand: 0, other: 0 } as Record<ServiceCategory, number>
+  const mix = { ceramic: 0, paint_correction: 0, interior: 0, restoration: 0, general: 0, brand: 0, other: 0 } as Record<ServiceCategory, number>
   for (const w of TWELVE_WEEK_ROTATION) mix[w.focus] += 1
   return mix
 }

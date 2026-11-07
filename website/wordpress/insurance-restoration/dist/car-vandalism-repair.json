@@ -1,0 +1,116 @@
+{
+  "slug": "car-vandalism-repair",
+  "url": "https://www.pittstopdetailandautosales.com/car-vandalism-repair/",
+  "title": "Car Vandalism & Break-In Cleanup | College Station, TX",
+  "metaDescription": "Keyed paint, spray paint, glass inside the car, soiled interiors. Pitt Stop restores vandalized vehicles in Bryan–College Station and documents your claim.",
+  "canonical": "https://www.pittstopdetailandautosales.com/car-vandalism-repair/",
+  "robots": "index, follow",
+  "h1": "Vandalism and Break-In Restoration",
+  "primaryCta": "https://book.pittstopdetailandautosales.com/quote?service=vandalism&utm_source=website&utm_medium=landing&utm_campaign=insurance_restoration&utm_content=car-vandalism-repair_hero&lp=car-vandalism-repair",
+  "internalLinks": [
+    "https://www.pittstopdetailandautosales.com/auto-glass-repair/",
+    "https://www.pittstopdetailandautosales.com/insurance-auto-repair/",
+    "https://www.pittstopdetailandautosales.com/car-water-damage/"
+  ],
+  "photosNeeded": [
+    {
+      "id": "vandal-keyed-before-after",
+      "caption": "Keyed door panel before and after paint correction",
+      "note": "Real customer vehicle, permission on file. Same angle, same light for both shots."
+    },
+    {
+      "id": "vandal-glass-cleanup",
+      "caption": "Shattered side glass removed from seat tracks and carpet",
+      "note": "Interior shot during cleanup."
+    }
+  ],
+  "schema": [
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Can keyed paint be fixed without repainting?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Often, if the scratch is only in the clear coat. We polish the area and blend it. If the key went through to primer or metal, the panel needs paint, which is body-shop work; we will tell you which case you have before any work starts."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Do I need a police report?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "For a vandalism or theft claim your insurer will usually want a report number. For the estimate itself we do not need it, so send photos first and file the report in parallel."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Will a vandalism claim raise my rates?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Vandalism is normally a comprehensive claim, which many insurers treat differently from an at-fault accident, but it varies by company and policy. Ask your agent. We can give you the estimate first so you can decide whether to claim."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can you get all the glass out of the car?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Tempered glass spreads into seat tracks, door cavities, vents and under the carpet, so we remove seats and trim where needed and vacuum, brush and blow every cavity out."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How long does it take?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "It depends on the damage. Light scratch polishing and glass cleanup is often a same-day or next-day job once scheduled; interior repairs take longer. We give you a time estimate with the written estimate."
+          }
+        }
+      ]
+    },
+    {
+      "@context": "https://schema.org",
+      "@type": "Service",
+      "name": "Vandalism and Break-In Restoration",
+      "serviceType": "Vandalism or break-in restoration",
+      "description": "Keyed paint, spray paint, glass inside the car, soiled interiors. Pitt Stop restores vandalized vehicles in Bryan–College Station and documents your claim.",
+      "url": "https://www.pittstopdetailandautosales.com/car-vandalism-repair/",
+      "provider": {
+        "@type": "AutoRepair",
+        "name": "Pitt Stop Detail & Auto Sales",
+        "telephone": "+19796966640",
+        "url": "https://www.pittstopdetailandautosales.com",
+        "address": {
+          "@type": "PostalAddress",
+          "streetAddress": "3112 Texas Ave S",
+          "addressLocality": "College Station",
+          "addressRegion": "TX",
+          "postalCode": "77845",
+          "addressCountry": "US"
+        },
+        "openingHours": [
+          "Mo-Fr 07:00-18:00",
+          "Sa 08:00-14:00"
+        ],
+        "areaServed": [
+          "College Station, TX",
+          "Bryan, TX"
+        ]
+      },
+      "areaServed": [
+        "College Station, TX",
+        "Bryan, TX"
+      ]
+    }
+  ],
+  "publishChecklist": [
+    "Create the page in wp-admin → Pages → Add New with this slug; paste dist/<slug>.wp.html into a Custom HTML block.",
+    "Rank Math: set the SEO title and meta description from this file; keep \"index, follow\"; confirm the canonical URL.",
+    "Add real shop photos for each photosNeeded id with the listed caption as alt text (no stock images).",
+    "Link the page from /detailing/ and the footer or services menu; the hub page links to the four service pages.",
+    "After publishing: request indexing in Search Console (access still to be granted) and add the URL to the Google Ads final-URL list for its campaign."
+  ]
+}

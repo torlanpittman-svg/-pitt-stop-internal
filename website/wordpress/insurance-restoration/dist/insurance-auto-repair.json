@@ -1,0 +1,109 @@
+{
+  "slug": "insurance-auto-repair",
+  "url": "https://www.pittstopdetailandautosales.com/insurance-auto-repair/",
+  "title": "Insurance Auto Restoration in College Station | Pitt Stop",
+  "metaDescription": "Vandalism, paint overspray, water damage and broken-glass cleanup in Bryan–College Station. Itemized written estimates you can submit to your insurer.",
+  "canonical": "https://www.pittstopdetailandautosales.com/insurance-auto-repair/",
+  "robots": "index, follow",
+  "h1": "Insurance-Related Auto Restoration, Written Up Properly",
+  "primaryCta": null,
+  "internalLinks": [
+    "https://www.pittstopdetailandautosales.com/car-vandalism-repair/",
+    "https://www.pittstopdetailandautosales.com/car-overspray-removal/",
+    "https://www.pittstopdetailandautosales.com/car-water-damage/",
+    "https://www.pittstopdetailandautosales.com/auto-glass-repair/"
+  ],
+  "photosNeeded": [
+    {
+      "id": "hub-hero",
+      "caption": "Our College Station shop with a vehicle on the restoration bay",
+      "note": "Wide exterior or bay shot of the real shop. No stock imagery."
+    },
+    {
+      "id": "hub-estimate",
+      "caption": "An itemized Pitt Stop estimate beside the photos it was built from",
+      "note": "Photograph a real (customer details redacted) estimate printout or screen."
+    }
+  ],
+  "schema": [
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Do I have to file an insurance claim to use you?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. Many customers pay out of pocket, especially when the repair is close to their deductible. You get the same written estimate either way, so you can decide after you see the number."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Will you talk to my adjuster?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. We will explain the estimate line by line and show the adjuster the damage in person or by photo. The coverage decision stays with your insurer."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How fast can you look at my vehicle?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Send photos through the estimate form and we will reply with next steps during business hours. If the damage needs an in-person look, we will tell you when to bring it by."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Do you repair body damage or replace glass?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "We are a detail and restoration shop. We handle paint correction, interior restoration, odor and cleanup. Dents, panel repair and glass replacement go to a body or glass shop, and we are happy to work alongside them."
+          }
+        }
+      ]
+    },
+    {
+      "@context": "https://schema.org",
+      "@type": "Service",
+      "name": "Insurance-Related Auto Restoration, Written Up Properly",
+      "serviceType": "Insurance-related auto restoration",
+      "description": "Vandalism, paint overspray, water damage and broken-glass cleanup in Bryan–College Station. Itemized written estimates you can submit to your insurer.",
+      "url": "https://www.pittstopdetailandautosales.com/insurance-auto-repair/",
+      "provider": {
+        "@type": "AutoRepair",
+        "name": "Pitt Stop Detail & Auto Sales",
+        "telephone": "+19796966640",
+        "url": "https://www.pittstopdetailandautosales.com",
+        "address": {
+          "@type": "PostalAddress",
+          "streetAddress": "3112 Texas Ave S",
+          "addressLocality": "College Station",
+          "addressRegion": "TX",
+          "postalCode": "77845",
+          "addressCountry": "US"
+        },
+        "openingHours": [
+          "Mo-Fr 07:00-18:00",
+          "Sa 08:00-14:00"
+        ],
+        "areaServed": [
+          "College Station, TX",
+          "Bryan, TX"
+        ]
+      },
+      "areaServed": [
+        "College Station, TX",
+        "Bryan, TX"
+      ]
+    }
+  ],
+  "publishChecklist": [
+    "Create the page in wp-admin → Pages → Add New with this slug; paste dist/<slug>.wp.html into a Custom HTML block.",
+    "Rank Math: set the SEO title and meta description from this file; keep \"index, follow\"; confirm the canonical URL.",
+    "Add real shop photos for each photosNeeded id with the listed caption as alt text (no stock images).",
+    "Link the page from /detailing/ and the footer or services menu; the hub page links to the four service pages.",
+    "After publishing: request indexing in Search Console (access still to be granted) and add the URL to the Google Ads final-URL list for its campaign."
+  ]
+}

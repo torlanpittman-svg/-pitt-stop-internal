@@ -1,0 +1,108 @@
+{
+  "slug": "auto-glass-repair",
+  "url": "https://www.pittstopdetailandautosales.com/auto-glass-repair/",
+  "title": "Broken Car Window Cleanup | College Station, TX | Pitt Stop",
+  "metaDescription": "Side or rear window smashed? Pitt Stop clears every piece of glass from the interior, repairs the damage and works alongside your glass shop in College Station.",
+  "canonical": "https://www.pittstopdetailandautosales.com/auto-glass-repair/",
+  "robots": "index, follow",
+  "h1": "Broken Side and Rear Glass: Cleanup, Interior Repair and Coordination",
+  "primaryCta": "https://book.pittstopdetailandautosales.com/quote?service=glass&utm_source=website&utm_medium=landing&utm_campaign=insurance_restoration&utm_content=auto-glass-repair_hero&lp=auto-glass-repair",
+  "internalLinks": [
+    "https://www.pittstopdetailandautosales.com/car-vandalism-repair/",
+    "https://www.pittstopdetailandautosales.com/insurance-auto-repair/",
+    "https://www.pittstopdetailandautosales.com/car-water-damage/"
+  ],
+  "photosNeeded": [
+    {
+      "id": "glass-cleanup-tracks",
+      "caption": "Glass fragments removed from seat tracks and the door cavity",
+      "note": "Real cleanup in progress."
+    },
+    {
+      "id": "glass-finished-interior",
+      "caption": "Interior restored after a break-in, before the new glass is installed",
+      "note": "Same vehicle, finished."
+    }
+  ],
+  "schema": [
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Do you replace car windows?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. Glass replacement is done by a glass shop. We remove the broken glass from the interior, repair the damage the break caused and coordinate with the installer you or your insurer choose."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Why not just vacuum the glass myself?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "You can get the big pieces, but tempered glass spreads into seat tracks, door panels, vents and under the carpet, and a household vacuum will not survive it. Fragments left behind come out of the vents for months and cut hands and upholstery."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Should the cleanup happen before or after the new glass?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Before is better, so the installer is not sealing new glass over a dirty channel and nothing gets trapped behind the new trim. We schedule around the glass appointment."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Will insurance pay for the cleanup?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "When the glass broke in a covered event such as a break-in, the related interior cleanup and repair is usually part of the same claim, but your insurer decides. Our itemized estimate explains each line so the adjuster can see what was needed."
+          }
+        }
+      ]
+    },
+    {
+      "@context": "https://schema.org",
+      "@type": "Service",
+      "name": "Broken Side and Rear Glass: Cleanup, Interior Repair and Coordination",
+      "serviceType": "Broken glass + interior cleanup",
+      "description": "Side or rear window smashed? Pitt Stop clears every piece of glass from the interior, repairs the damage and works alongside your glass shop in College Station.",
+      "url": "https://www.pittstopdetailandautosales.com/auto-glass-repair/",
+      "provider": {
+        "@type": "AutoRepair",
+        "name": "Pitt Stop Detail & Auto Sales",
+        "telephone": "+19796966640",
+        "url": "https://www.pittstopdetailandautosales.com",
+        "address": {
+          "@type": "PostalAddress",
+          "streetAddress": "3112 Texas Ave S",
+          "addressLocality": "College Station",
+          "addressRegion": "TX",
+          "postalCode": "77845",
+          "addressCountry": "US"
+        },
+        "openingHours": [
+          "Mo-Fr 07:00-18:00",
+          "Sa 08:00-14:00"
+        ],
+        "areaServed": [
+          "College Station, TX",
+          "Bryan, TX"
+        ]
+      },
+      "areaServed": [
+        "College Station, TX",
+        "Bryan, TX"
+      ]
+    }
+  ],
+  "publishChecklist": [
+    "Create the page in wp-admin → Pages → Add New with this slug; paste dist/<slug>.wp.html into a Custom HTML block.",
+    "Rank Math: set the SEO title and meta description from this file; keep \"index, follow\"; confirm the canonical URL.",
+    "Add real shop photos for each photosNeeded id with the listed caption as alt text (no stock images).",
+    "Link the page from /detailing/ and the footer or services menu; the hub page links to the four service pages.",
+    "After publishing: request indexing in Search Console (access still to be granted) and add the URL to the Google Ads final-URL list for its campaign."
+  ]
+}

@@ -269,6 +269,20 @@ export async function linkLeadOrderAction(fd: FormData): Promise<void> {
   } catch (e) { fail('/marketing/leads', e) }
 }
 
+// ── Insurance restoration report ─────────────────────────────────────────────
+
+/** Owner-set modeled labor-cost percent for the restoration contribution figure (0 = not modeled). */
+export async function updateRestorationLaborCostAction(fd: FormData): Promise<void> {
+  const actor = await actorName()
+  try {
+    const pct = nonNegativeInt(str(fd, 'laborCostPct'), 'labor cost percent')
+    if (pct > 100) throw new MarketingInputError('Labor cost percent must be between 0 and 100.')
+    await updateSetting(SETTINGS.restoration_labor_cost_pct.key, pct, actor)
+    revalidatePath('/marketing/restoration')
+    redirect('/marketing/restoration?msg=' + encodeURIComponent(pct === 0 ? 'Labor cost modeling turned off (contribution shows as unknown).' : `Labor cost modeled at ${pct}% of invoiced labor.`))
+  } catch (e) { fail('/marketing/restoration', e) }
+}
+
 // ── Manual sending (explicit, manager-confirmed, LIVE) ─────────────────────────
 
 /** Surface manual-send failures (provider blockers / unknown outcomes) as a readable flash. */

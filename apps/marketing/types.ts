@@ -5,7 +5,7 @@
  */
 
 // ── Premium-service taxonomy (priority order mirrors the business objective) ──
-export const SERVICE_CATEGORIES = ['ceramic', 'paint_correction', 'interior', 'general', 'brand', 'other'] as const
+export const SERVICE_CATEGORIES = ['ceramic', 'paint_correction', 'interior', 'restoration', 'general', 'brand', 'other'] as const
 export type ServiceCategory = (typeof SERVICE_CATEGORIES)[number]
 
 /** Human labels for a category. */
@@ -13,6 +13,8 @@ export const SERVICE_CATEGORY_LABELS: Record<ServiceCategory, string> = {
   ceramic: 'Ceramic Coating',
   paint_correction: 'Paint Correction',
   interior: 'Interior Detailing',
+  /** Insurance-related restoration: vandalism/break-in, overspray, water damage, glass + interior cleanup (2026-11-07). */
+  restoration: 'Insurance Restoration',
   general: 'General Detailing',
   brand: 'Pitt Stop / Brand',
   other: 'Other',

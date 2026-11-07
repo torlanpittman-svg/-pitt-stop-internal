@@ -30,10 +30,11 @@ describe('quote request parsing', () => {
       if (!r.ok) expect(r.errors.service).toBe('Choose a service.')
     }
   })
-  it('limits photos to 2 small JPEG/PNG/WebP images', () => {
+  it('limits photos to MAX_PHOTOS (4) small JPEG/PNG/WebP images', () => {
     const png = { name: 'a.png', contentType: 'image/png', contentBase64: 'iVBORw0KGgo=' }
     const ok = parseQuoteRequest({ ...good, photos: [png, png] }); expect(ok.ok).toBe(true)
-    const many = parseQuoteRequest({ ...good, photos: [png, png, png] }); expect(many.ok).toBe(false)
+    const four = parseQuoteRequest({ ...good, photos: [png, png, png, png] }); expect(four.ok).toBe(true)
+    const many = parseQuoteRequest({ ...good, photos: [png, png, png, png, png] }); expect(many.ok).toBe(false)
     const pdf = parseQuoteRequest({ ...good, photos: [{ ...png, contentType: 'application/pdf' }] }); expect(pdf.ok).toBe(false)
     const huge = parseQuoteRequest({ ...good, photos: [{ ...png, contentBase64: 'A'.repeat(1_700_000) }] }); expect(huge.ok).toBe(false)
   })
@@ -82,5 +83,51 @@ describe('booking host exposure', () => {
     expect(publicBookingRoute('/api/quote', 'POST')).toBe('allow')
     expect(publicBookingRoute('/api/quote', 'GET')).toBe('deny')
     expect(publicBookingRoute('/quote/anything', 'GET')).toBe('deny')
+  })
+})
+
+describe('insurance-restoration fields', () => {
+  const NOW = new Date('2026-11-07T18:00:00Z')
+  const rest = { ...good, service: 'overspray', claimStatus: 'filed', incidentDate: '2026-11-01' }
+  it('accepts a restoration damage type with a known claim status and a past incident date', () => {
+    const r = parseQuoteRequest(rest, NOW); if (!r.ok) throw new Error(JSON.stringify(r.errors))
+    expect(r.req.service).toBe('overspray'); expect(r.req.claimStatus).toBe('filed'); expect(r.req.incidentDate).toBe('2026-11-01')
+    for (const svc of ['vandalism', 'water_damage', 'glass']) expect(parseQuoteRequest({ ...rest, service: svc }, NOW).ok).toBe(true)
+  })
+  it('unknown claim status becomes "not answered" (null), never an error and never a made-up value', () => {
+    const r = parseQuoteRequest({ ...rest, claimStatus: 'covered_for_sure' }, NOW); if (!r.ok) throw new Error('parse')
+    expect(r.req.claimStatus).toBeNull()
+    const blank = parseQuoteRequest({ ...rest, claimStatus: '' }, NOW); if (!blank.ok) throw new Error('parse')
+    expect(blank.req.claimStatus).toBeNull()
+  })
+  it('rejects a future, impossible, malformed or ancient incident date; blank is fine', () => {
+    expect(parseQuoteRequest({ ...rest, incidentDate: '2026-11-08' }, NOW).ok).toBe(false)
+    expect(parseQuoteRequest({ ...rest, incidentDate: '2026-02-30' }, NOW).ok).toBe(false)
+    expect(parseQuoteRequest({ ...rest, incidentDate: '11/01/2026' }, NOW).ok).toBe(false)
+    expect(parseQuoteRequest({ ...rest, incidentDate: '2019-01-01' }, NOW).ok).toBe(false)
+    const blank = parseQuoteRequest({ ...rest, incidentDate: '' }, NOW); if (!blank.ok) throw new Error('parse')
+    expect(blank.req.incidentDate).toBe('')
+    const today = parseQuoteRequest({ ...rest, incidentDate: '2026-11-07' }, NOW); expect(today.ok).toBe(true)
+  })
+  it('claim status and incident date are DROPPED for detailing services (a stale answer cannot attach to a ceramic quote)', () => {
+    const r = parseQuoteRequest({ ...good, claimStatus: 'filed', incidentDate: '2026-11-01' }, NOW); if (!r.ok) throw new Error('parse')
+    expect(r.req.claimStatus).toBeNull(); expect(r.req.incidentDate).toBe('')
+    // and a bad date on a detailing service is not even an error — the field does not exist for it
+    expect(parseQuoteRequest({ ...good, incidentDate: 'garbage' }, NOW).ok).toBe(true)
+  })
+  it('the payload hash covers claim status and incident date, so a changed answer under a reused key conflicts', () => {
+    const a = parseQuoteRequest(rest, NOW); const b = parseQuoteRequest({ ...rest, claimStatus: 'approved' }, NOW); const c = parseQuoteRequest({ ...rest, incidentDate: '2026-10-31' }, NOW)
+    if (!a.ok || !b.ok || !c.ok) throw new Error('parse')
+    expect(quotePayloadHash(a.req)).not.toBe(quotePayloadHash(b.req))
+    expect(quotePayloadHash(a.req)).not.toBe(quotePayloadHash(c.req))
+  })
+  it('the shop email names the damage type, the customer’s claim answer and the no-promises reminder; subject says ESTIMATE', () => {
+    const r = parseQuoteRequest(rest, NOW); if (!r.ok) throw new Error('parse')
+    const text = quoteEmailText(r.req, { leadId: 'L1', source: 'google_ads', receivedAt: NOW })
+    expect(quoteSubject(r.req)).toMatch(/Paint overspray removal ESTIMATE request/)
+    expect(text).toContain('Claim filed, waiting on the adjuster'); expect(text).toContain('2026-11-01'); expect(text).toMatch(/Do not promise coverage/)
+    const plain = parseQuoteRequest(good, NOW); if (!plain.ok) throw new Error('parse')
+    expect(quoteEmailText(plain.req, { leadId: 'L1', source: 'website', receivedAt: NOW })).not.toMatch(/Insurance:/)
+    expect(quoteSubject(plain.req)).toMatch(/quote request/)
   })
 })

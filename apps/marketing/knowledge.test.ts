@@ -16,6 +16,20 @@ describe('service classifier', () => {
     expect(classifyServiceLabel('')).toBeNull()
     expect(classifyServiceLabel(null)).toBeNull()
   })
+  it('classifies insurance-restoration work, which beats correction/interior but not ceramic', () => {
+    expect(classifyServiceLabel('Overspray removal + polish')).toBe('restoration')
+    expect(classifyServiceLabel('Vandalism cleanup - keyed door')).toBe('restoration')
+    expect(classifyServiceLabel('Break-in glass cleanup interior')).toBe('restoration')
+    expect(classifyServiceLabel('Water damage extraction and shampoo')).toBe('restoration')
+    expect(classifyServiceLabel('Flood interior restoration')).toBe('restoration')
+    expect(classifyServiceLabel('Hail damage PDR')).toBe('restoration')
+    expect(classifyServiceLabel('Insurance claim detail')).toBe('restoration')
+    expect(primaryServiceCategory(['Ceramic coating after overspray removal'])).toBe('ceramic')
+    expect(classifyServices(['Interior shampoo', 'Overspray removal'])).toEqual(['restoration', 'interior'])
+    // plain detailing never drifts into restoration
+    expect(classifyServiceLabel('Interior shampoo + odor')).toBe('interior')
+    expect(classifyServiceLabel('Full paint correction')).toBe('paint_correction')
+  })
   it('ceramic wins over correction when both present', () => {
     expect(primaryServiceCategory(['ceramic coating after correction'])).toBe('ceramic')
   })

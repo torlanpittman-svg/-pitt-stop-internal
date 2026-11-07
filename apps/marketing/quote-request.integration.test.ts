@@ -1,5 +1,5 @@
 /**
- * PGlite integration test for quote-request idempotency: runs the REAL migrations (0046 + 0072 + 0075 —
+ * PGlite integration test for quote-request idempotency: runs the REAL migrations (0046 + 0072 + 0075 + 0076 —
  * deliberately NOT 0074, the held gift-card migration) and the real submit path against an in-memory
  * Postgres. Nothing here touches a Neon database or a real email provider.
  *
@@ -34,15 +34,19 @@ const PARENTS = `CREATE TABLE customers (
   source_values jsonb NOT NULL DEFAULT '{}', created_by_import_batch_id uuid,
   first_seen_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE service_orders (id uuid PRIMARY KEY, customer_id uuid, status text);`
+CREATE TABLE service_orders (id uuid PRIMARY KEY, customer_id uuid, status text);
+CREATE TABLE app_settings (key varchar(80) PRIMARY KEY, value jsonb NOT NULL, type varchar(12) NOT NULL, category varchar(40), label varchar(160),
+  description text, updated_by varchar(200), updated_at timestamptz NOT NULL DEFAULT now(), created_at timestamptz NOT NULL DEFAULT now());`
 
 beforeAll(async () => {
   await pg.exec(PARENTS)
   await pg.exec(readFileSync('drizzle/migrations/manual/0046_marketing.sql', 'utf8'))
   await pg.exec(readFileSync('drizzle/migrations/manual/0072_marketing_leads_referral.sql', 'utf8'))
   await pg.exec(readFileSync('drizzle/migrations/manual/0075_quote_requests.sql', 'utf8'))
-  // Idempotency: 0075 must be safe to re-run.
+  await pg.exec(readFileSync('drizzle/migrations/manual/0076_restoration_quote_requests.sql', 'utf8'))
+  // Idempotency: 0075 and 0076 must be safe to re-run.
   await pg.exec(readFileSync('drizzle/migrations/manual/0075_quote_requests.sql', 'utf8'))
+  await pg.exec(readFileSync('drizzle/migrations/manual/0076_restoration_quote_requests.sql', 'utf8'))
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
 })
 afterAll(() => pg.close())

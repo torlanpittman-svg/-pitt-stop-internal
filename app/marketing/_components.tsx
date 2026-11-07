@@ -29,6 +29,7 @@ const TABS: Array<{ href: string; label: string }> = [
   { href: '/marketing/content', label: 'Content' },
   { href: '/marketing/calendar', label: 'Calendar' },
   { href: '/marketing/leads', label: 'Leads' },
+  { href: '/marketing/restoration', label: 'Restoration' },
   { href: '/marketing/google-ads', label: 'Google Ads' },
   { href: '/marketing/attribution', label: 'Attribution' },
   { href: '/marketing/report', label: 'Weekly Report' },

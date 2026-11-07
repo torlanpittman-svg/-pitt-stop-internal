@@ -8,6 +8,7 @@
  * Append-only by policy: marketing_events and marketing_attribution are never updated or
  * deleted — add a correcting row. Everything else is additive and prod-safe.
  */
+import { sql } from 'drizzle-orm'
 import { pgTable, uuid, text, varchar, integer, boolean, jsonb, timestamp, date, index, uniqueIndex } from 'drizzle-orm/pg-core'
 
 export const marketingPreferences = pgTable('marketing_preferences', {
@@ -181,12 +182,23 @@ export const quoteRequests = pgTable('quote_requests', {
   emailError:    text('email_error'),
   emailAttempts: integer('email_attempts').notNull().default(0),
   photos:        jsonb('photos').$type<{ name: string; contentType: string; contentBase64: string }[]>().notNull(),
+  // ── 0076 (insurance restoration) — written once in the creating CTE, never updated ──
+  /** QuoteService key for restoration requests (vandalism | overspray | water_damage | glass); NULL for detailing services. */
+  damageType:    varchar('damage_type', { length: 24 }),
+  /** Customer-declared ClaimStatus (informational, never a coverage promise); NULL when not asked / not answered. */
+  claimStatus:   varchar('claim_status', { length: 16 }),
+  incidentDate:  date('incident_date'),
+  /** Landing-page slug (?lp=) or utm_content the request arrived from. */
+  landingPage:   varchar('landing_page', { length: 120 }),
+  /** Allow-listed click attribution (ATTRIBUTION_KEYS only) captured at submit — never customer PII. */
+  attribution:   jsonb('attribution').$type<Record<string, string>>().notNull().default({}),
   createdAt:     timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt:     timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex('quote_requests_key_uniq').on(t.requestKey),
   index('quote_requests_lead_idx').on(t.leadId),
   index('quote_requests_created_idx').on(t.createdAt),
+  index('quote_requests_damage_type_created_idx').on(t.damageType, t.createdAt).where(sql`damage_type IS NOT NULL`),
 ])
 
 export const marketingAttribution = pgTable('marketing_attribution', {

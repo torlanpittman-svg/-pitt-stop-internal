@@ -1,5 +1,6 @@
 /**
- * Public quote requests (ceramic coating / headliner / other) from /quote.
+ * Public quote / estimate requests from /quote: ceramic coating, headliner, other detailing AND (2026-11-07) the
+ * insurance-restoration damage types (vandalism / break-in, paint overspray, water damage, broken glass cleanup).
  *
  * One path, no new infrastructure:
  *   validate → ONE data-modifying-CTE statement creates the quote_requests claim (UNIQUE request_key),
@@ -34,8 +35,8 @@ import { isValidUsPhone, isValidEmail, formatUsPhone } from '@/apps/appointments
 import { transactionalEmailProvider, UNCERTAIN_NOTE, type TransactionalEmailProvider, type EmailAttachment, type DeliveryResult } from '@/apps/appointments/notify'
 import { normalizeReferralSource, referralSourceLabel } from '@/apps/quick-entry/referral-source'
 
-import { QUOTE_SERVICES, MAX_PHOTOS, MAX_PHOTO_BYTES, type QuoteService, type QuotePhoto, type QuoteRequest, type QuoteErrors } from './quote-shared'
-export { QUOTE_SERVICES, MAX_PHOTOS, MAX_PHOTO_BYTES, type QuoteService, type QuotePhoto, type QuoteRequest, type QuoteErrors } from './quote-shared'
+import { QUOTE_SERVICES, CLAIM_STATUSES, MAX_PHOTOS, MAX_PHOTO_BYTES, isRestorationService, type QuoteService, type QuotePhoto, type QuoteRequest, type QuoteErrors, type ClaimStatus } from './quote-shared'
+export { QUOTE_SERVICES, CLAIM_STATUSES, MAX_PHOTOS, MAX_PHOTO_BYTES, isRestorationService, type QuoteService, type QuotePhoto, type QuoteRequest, type QuoteErrors, type ClaimStatus } from './quote-shared'
 
 /** Where quote requests are delivered. Override with QUOTE_INBOX; the default is the monitored shop group. */
 export const DEFAULT_QUOTE_INBOX = 'service@pittstopbcs.com'
@@ -45,8 +46,28 @@ const PHOTO_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 
 const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 
+const CLAIM_STATUS_KEYS = new Set<string>(CLAIM_STATUSES.map((c) => c.key))
+/** Accepts only a known ClaimStatus key; anything else (including '') is "not answered". */
+export const normalizeClaimStatus = (v: unknown): ClaimStatus | null =>
+  typeof v === 'string' && CLAIM_STATUS_KEYS.has(v.trim()) ? (v.trim() as ClaimStatus) : null
+export const claimStatusLabel = (k: ClaimStatus): string => CLAIM_STATUSES.find((c) => c.key === k)?.label ?? k
+
+/** YYYY-MM-DD, a real calendar date, not in the future (by UTC day) and within the last 5 years; else '' . */
+export function normalizeIncidentDate(v: unknown, now: Date = new Date()): { value: string; error?: string } {
+  const raw = str(v, 10)
+  if (!raw) return { value: '' }
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw)
+  if (!m) return { value: '', error: 'Enter the date as YYYY-MM-DD.' }
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]))
+  if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3]) return { value: '', error: 'That is not a real date.' }
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  if (d.getTime() > today) return { value: '', error: 'The incident date cannot be in the future.' }
+  if (d.getTime() < today - 5 * 366 * 86_400_000) return { value: '', error: 'Enter a date within the last five years.' }
+  return { value: raw }
+}
+
 /** Normalises + validates an untrusted body. Returns the clean request or field errors — never both. */
-export function parseQuoteRequest(body: unknown): { ok: true; req: QuoteRequest } | { ok: false; errors: QuoteErrors } {
+export function parseQuoteRequest(body: unknown, now: Date = new Date()): { ok: true; req: QuoteRequest } | { ok: false; errors: QuoteErrors } {
   const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
   const errors: QuoteErrors = {}
   const service = str(b.service, 20) as QuoteService
@@ -67,6 +88,16 @@ export function parseQuoteRequest(body: unknown): { ok: true; req: QuoteRequest 
   const message = str(b.message, 1500)
   const referralSource = normalizeReferralSource(b.referralSource)
   const referralDetail = referralSource ? str(b.referralDetail, 120) : ''
+  // Restoration-only fields. For detailing services they are ignored entirely (never stored), so a stale
+  // claim status from a switched radio can't attach to a ceramic request.
+  const restoration = Object.hasOwn(QUOTE_SERVICES, service) && isRestorationService(service)
+  const claimStatus = restoration ? normalizeClaimStatus(b.claimStatus) : null
+  let incidentDate = ''
+  if (restoration) {
+    const d = normalizeIncidentDate(b.incidentDate, now)
+    if (d.error) errors.incidentDate = d.error
+    incidentDate = d.value
+  }
   const rawPhotos = Array.isArray(b.photos) ? b.photos : []
   if (rawPhotos.length > MAX_PHOTOS) errors.photos = `Up to ${MAX_PHOTOS} photos.`
   const photos: QuotePhoto[] = []
@@ -79,14 +110,15 @@ export function parseQuoteRequest(body: unknown): { ok: true; req: QuoteRequest 
     photos.push({ name: str(o.name, 80).replace(/[^\w.-]+/g, '_') || `photo-${photos.length + 1}.jpg`, contentType, contentBase64 })
   }
   if (Object.keys(errors).length) return { ok: false, errors }
-  return { ok: true, req: { service, name, phone: formatUsPhone(phone), email, vehicleYear, vehicleMake, vehicleModel, message, photos, referralSource, referralDetail } }
+  return { ok: true, req: { service, name, phone: formatUsPhone(phone), email, vehicleYear, vehicleMake, vehicleModel, message, photos, referralSource, referralDetail, claimStatus, incidentDate } }
 }
 
 export const vehicleLabel = (r: Pick<QuoteRequest, 'vehicleYear' | 'vehicleMake' | 'vehicleModel'>) => [r.vehicleYear, r.vehicleMake, r.vehicleModel].filter(Boolean).join(' ')
 
-/** "Ceramic coating quote request — 2020 Cadillac XT6 — Jane Doe" */
+/** "Ceramic coating quote request — 2020 Cadillac XT6 — Jane Doe" / "Paint overspray removal ESTIMATE request — …" */
 export function quoteSubject(r: QuoteRequest): string {
-  return `${QUOTE_SERVICES[r.service].label} quote request — ${vehicleLabel(r)} — ${r.name}`
+  const kind = isRestorationService(r.service) ? 'ESTIMATE request' : 'quote request'
+  return `${QUOTE_SERVICES[r.service].label} ${kind} — ${vehicleLabel(r)} — ${r.name}`
 }
 
 export function quoteEmailText(r: QuoteRequest, meta: { leadId: string; source: string; receivedAt: Date }): string {
@@ -98,6 +130,11 @@ export function quoteEmailText(r: QuoteRequest, meta: { leadId: string; source: 
     `Email:    ${r.email}   (reply to this email to answer the customer)`,
     `Vehicle:  ${vehicleLabel(r)}`,
     `Service:  ${QUOTE_SERVICES[r.service].label}`,
+    ...(isRestorationService(r.service) ? [
+      `Insurance: ${r.claimStatus ? claimStatusLabel(r.claimStatus) : '(not answered)'}   (customer's own answer — not verified, not a coverage decision)`,
+      `Incident:  ${r.incidentDate || '(date not given)'}`,
+      `Reminder:  write an itemized estimate the customer can hand to their insurer. Do not promise coverage, deductible help or direct billing.`,
+    ] : []),
     '',
     'Customer notes:',
     r.message || '(none)',
@@ -133,6 +170,7 @@ export function quotePayloadHash(req: QuoteRequest): string {
   return createHash('sha256').update(JSON.stringify([
     req.service, req.name, req.phone, req.email, req.vehicleYear, req.vehicleMake, req.vehicleModel,
     req.message, req.referralSource, req.referralDetail, req.photos.map((p) => [p.name, p.contentType, p.contentBase64]),
+    req.claimStatus, req.incidentDate,
   ])).digest('hex')
 }
 
@@ -161,6 +199,8 @@ export async function submitQuoteRequest(req: QuoteRequest, rawAttribution: unkn
   const now = deps.now ?? new Date()
   const attribution: BookingAttribution = cleanAttribution(rawAttribution)
   const source = classifySource(attribution)
+  const restoration = isRestorationService(req.service)
+  const landingPage = (attribution.lp ?? attribution.utm_content ?? '').slice(0, 120) || null
   // THE claim — ONE atomic statement (data-modifying CTEs): the quote_requests row, its marketing_leads
   // row and the append-only lead_created audit event commit or vanish together, so a crash or a failure
   // in any of the three leaves NOTHING behind (no orphaned lead, no lead-less claim — lead_id is NOT NULL).
@@ -170,12 +210,17 @@ export async function submitQuoteRequest(req: QuoteRequest, rawAttribution: unkn
   // note can name the claim row. Photos are persisted BEFORE any email attempt.
   const rowId = randomUUID()
   const leadId = randomUUID()
-  const notes = [`Quote request via /quote`, req.message ? `Customer notes: ${req.message}` : null,
+  const notes = [restoration ? `Estimate request via /quote (${QUOTE_SERVICES[req.service].label})` : `Quote request via /quote`,
+    restoration ? `Insurance (customer's answer): ${req.claimStatus ? claimStatusLabel(req.claimStatus) : 'not answered'}${req.incidentDate ? ` · incident ${req.incidentDate}` : ''}` : null,
+    landingPage ? `Landing page: ${landingPage}` : null,
+    req.message ? `Customer notes: ${req.message}` : null,
     req.photos.length ? `${req.photos.length} photo(s) saved with quote request ${rowId}` : null].filter(Boolean).join('\n')
   const res = await getDb().execute(sql`
     WITH claim AS (
-      INSERT INTO quote_requests (id, request_key, payload_hash, lead_id, photos)
-      VALUES (${rowId}::uuid, ${key}, ${hash}, ${leadId}::uuid, ${JSON.stringify(req.photos)}::jsonb)
+      INSERT INTO quote_requests (id, request_key, payload_hash, lead_id, photos, damage_type, claim_status, incident_date, landing_page, attribution)
+      VALUES (${rowId}::uuid, ${key}, ${hash}, ${leadId}::uuid, ${JSON.stringify(req.photos)}::jsonb,
+              ${restoration ? req.service : null}, ${restoration ? req.claimStatus : null}, ${restoration && req.incidentDate ? req.incidentDate : null}::date,
+              ${landingPage}, ${JSON.stringify(attribution)}::jsonb)
       ON CONFLICT (request_key) DO NOTHING
       RETURNING id
     ), lead AS (
@@ -186,7 +231,7 @@ export async function submitQuoteRequest(req: QuoteRequest, rawAttribution: unkn
       RETURNING id
     ), audit AS (
       INSERT INTO marketing_events (event_type, entity_type, entity_id, actor, meta)
-      SELECT 'lead_created', 'lead', lead.id, ${'website:quote'}, ${JSON.stringify({ source })}::jsonb
+      SELECT 'lead_created', 'lead', lead.id, ${'website:quote'}, ${JSON.stringify({ source, damageType: restoration ? req.service : null, landingPage })}::jsonb
       FROM lead
       RETURNING id
     )

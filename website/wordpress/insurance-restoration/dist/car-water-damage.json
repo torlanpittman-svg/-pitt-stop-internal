@@ -1,0 +1,116 @@
+{
+  "slug": "car-water-damage",
+  "url": "https://www.pittstopdetailandautosales.com/car-water-damage/",
+  "title": "Car Water Damage Restoration | College Station, TX",
+  "metaDescription": "Rain through a window, a leaking seal, a soaked floorboard. Pitt Stop extracts, dries and restores wet car interiors in Bryan–College Station, honestly.",
+  "canonical": "https://www.pittstopdetailandautosales.com/car-water-damage/",
+  "robots": "index, follow",
+  "h1": "Water Damage Restoration for Car Interiors",
+  "primaryCta": "https://book.pittstopdetailandautosales.com/quote?service=water_damage&utm_source=website&utm_medium=landing&utm_campaign=insurance_restoration&utm_content=car-water-damage_hero&lp=car-water-damage",
+  "internalLinks": [
+    "https://www.pittstopdetailandautosales.com/insurance-auto-repair/",
+    "https://www.pittstopdetailandautosales.com/car-vandalism-repair/",
+    "https://www.pittstopdetailandautosales.com/auto-glass-repair/"
+  ],
+  "photosNeeded": [
+    {
+      "id": "water-extraction",
+      "caption": "Hot-water extraction of a saturated floorboard",
+      "note": "Real job in progress, carpet lifted."
+    },
+    {
+      "id": "water-before-after",
+      "caption": "Water-stained carpet before and after restoration",
+      "note": "Same area, same angle."
+    }
+  ],
+  "schema": [
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Can a water-damaged car interior be saved?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Usually yes when the water came from rain, a leak or a spill and is dealt with quickly. Carpet, padding and seats can be extracted, dried and treated, or replaced if needed. A vehicle that was flooded above the seats or had water in the electronics is a different situation, and we will tell you if that is the case."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How quickly does mildew start?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "In a closed car in Texas heat, often within one to two days. The sooner the interior is extracted and dried, the less treatment it needs and the more likely the original carpet can be saved."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Do you fix the leak too?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "We find where the water came in and clear drains and simple seal issues as part of the job. Body seam or windshield-seal repairs may need a glass or body shop, and we will tell you if that is what we find."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Will insurance cover water damage to my car?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Storm and flood damage is typically a comprehensive claim, while damage from a window left open or a worn seal may be handled differently. Your insurer decides. We provide the written estimate and photos you need to ask the question."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Is ozone treatment safe for my car?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Used correctly and in the right situations it is an effective odor treatment. We decide whether it is appropriate for your vehicle and materials, and we never use it as a substitute for actually drying and cleaning the interior."
+          }
+        }
+      ]
+    },
+    {
+      "@context": "https://schema.org",
+      "@type": "Service",
+      "name": "Water Damage Restoration for Car Interiors",
+      "serviceType": "Water damage restoration",
+      "description": "Rain through a window, a leaking seal, a soaked floorboard. Pitt Stop extracts, dries and restores wet car interiors in Bryan–College Station, honestly.",
+      "url": "https://www.pittstopdetailandautosales.com/car-water-damage/",
+      "provider": {
+        "@type": "AutoRepair",
+        "name": "Pitt Stop Detail & Auto Sales",
+        "telephone": "+19796966640",
+        "url": "https://www.pittstopdetailandautosales.com",
+        "address": {
+          "@type": "PostalAddress",
+          "streetAddress": "3112 Texas Ave S",
+          "addressLocality": "College Station",
+          "addressRegion": "TX",
+          "postalCode": "77845",
+          "addressCountry": "US"
+        },
+        "openingHours": [
+          "Mo-Fr 07:00-18:00",
+          "Sa 08:00-14:00"
+        ],
+        "areaServed": [
+          "College Station, TX",
+          "Bryan, TX"
+        ]
+      },
+      "areaServed": [
+        "College Station, TX",
+        "Bryan, TX"
+      ]
+    }
+  ],
+  "publishChecklist": [
+    "Create the page in wp-admin → Pages → Add New with this slug; paste dist/<slug>.wp.html into a Custom HTML block.",
+    "Rank Math: set the SEO title and meta description from this file; keep \"index, follow\"; confirm the canonical URL.",
+    "Add real shop photos for each photosNeeded id with the listed caption as alt text (no stock images).",
+    "Link the page from /detailing/ and the footer or services menu; the hub page links to the four service pages.",
+    "After publishing: request indexing in Search Console (access still to be granted) and add the URL to the Google Ads final-URL list for its campaign."
+  ]
+}

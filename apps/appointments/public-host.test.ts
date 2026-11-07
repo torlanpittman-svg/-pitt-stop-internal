@@ -108,6 +108,16 @@ describe('booking attribution', () => {
     expect(reportChannelForSource('unknown')).toBe('other')
   })
 
+  it('a landing-page-only visit (?lp=, appended solely by the shop’s own pages) is a website source; lp never overrides a real channel', () => {
+    expect(classifySource({ lp: 'car-overspray-removal' })).toBe('website')
+    expect(attributionConfidence({ lp: 'car-overspray-removal' })).toBe('direct')
+    expect(classifySource({ lp: 'car-overspray-removal', gclid: 'x' })).toBe('google_ads')
+    expect(classifySource({ lp: 'car-overspray-removal', utm_source: 'facebook' })).toBe('facebook_organic')
+    expect(classifySource({ lp: 'car-overspray-removal', utm_medium: 'cpc' })).toBe('unknown') // a medium with no source is not a website visit
+    expect(cleanAttribution({ lp: 'car-overspray-removal<script>' })).toEqual({ lp: 'car-overspray-removalscript' })
+    expect(classifySource({})).toBe('unknown')
+  })
+
   it('keeps only known, short, printable parameters', () => {
     const a = cleanAttribution({ utm_source: 'google<script>', evil: 'x', gclid: 'a'.repeat(500), utm_medium: 7 })
     expect(a).toEqual({ utm_source: 'googlescript', gclid: 'a'.repeat(120) })

@@ -9,7 +9,8 @@
  */
 import type { AttributionSource } from '@/apps/marketing/types'
 
-export const ATTRIBUTION_KEYS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'gclid', 'fbclid', 'ps_cid', 'ref'] as const
+/** `lp` = the landing-page slug the shop's own pages append to their estimate links (e.g. lp=car-overspray-removal). */
+export const ATTRIBUTION_KEYS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'gclid', 'fbclid', 'ps_cid', 'ref', 'lp'] as const
 export type BookingAttribution = Partial<Record<(typeof ATTRIBUTION_KEYS)[number], string>>
 
 /** Keep only known keys, short, printable values. */
@@ -37,6 +38,8 @@ export function classifySource(a: BookingAttribution): AttributionSource {
   if (src === 'email' || med === 'email' || src === 'mailerlite') return 'email'
   if (src === 'referral' || med === 'referral') return 'referral'
   if (src === 'reactivation' || a.utm_campaign?.toLowerCase().includes('reactivation')) return 'reactivation'
+  // `lp` is appended ONLY by the shop's own landing pages: with no other channel signal it is a website visit.
+  if (a.lp && !src && !med) return 'website'
   return 'unknown'
 }
 

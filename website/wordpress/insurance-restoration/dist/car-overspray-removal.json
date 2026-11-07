@@ -1,0 +1,107 @@
+{
+  "slug": "car-overspray-removal",
+  "url": "https://www.pittstopdetailandautosales.com/car-overspray-removal/",
+  "title": "Car Paint Overspray Removal | Bryan–College Station, TX",
+  "metaDescription": "Overspray on your car from a job site or roofing crew? Pitt Stop lifts it off paint, glass and trim without repainting, and documents it for a claim.",
+  "canonical": "https://www.pittstopdetailandautosales.com/car-overspray-removal/",
+  "robots": "index, follow",
+  "h1": "Paint Overspray Removal Without Repainting",
+  "primaryCta": "https://book.pittstopdetailandautosales.com/quote?service=overspray&utm_source=website&utm_medium=landing&utm_campaign=insurance_restoration&utm_content=car-overspray-removal_hero&lp=car-overspray-removal",
+  "internalLinks": [
+    "https://www.pittstopdetailandautosales.com/insurance-auto-repair/",
+    "https://www.pittstopdetailandautosales.com/car-vandalism-repair/"
+  ],
+  "photosNeeded": [
+    {
+      "id": "overspray-before-after",
+      "caption": "Overspray speckling on a hood before and after removal",
+      "note": "Macro shot of the specks plus the same panel after. Real vehicle."
+    },
+    {
+      "id": "overspray-test-spot",
+      "caption": "Test spot during assessment",
+      "note": "Shows the method is matched to the coating."
+    }
+  ],
+  "schema": [
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Does overspray removal damage the paint?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Done correctly, no. Overspray sits on top of the clear coat and is lifted off with clay and solvents, then the area is polished. The risk comes from dry scrubbing or using the wrong product, which is why we test a small area first."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Who pays for overspray damage?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Often the contractor’s liability insurance, sometimes your own comprehensive coverage, and sometimes the customer when the amount is small. We provide the estimate and photos; the insurer or contractor decides what they will pay."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How soon should it be removed?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Sooner is easier. Overspray that has cured in the Texas sun for weeks bonds harder and takes more work to remove, which affects the estimate."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can you remove overspray from glass and trim too?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Glass, headlights, black trim, rubber seals and wheels each need their own method, and all of them are part of a full overspray removal."
+          }
+        }
+      ]
+    },
+    {
+      "@context": "https://schema.org",
+      "@type": "Service",
+      "name": "Paint Overspray Removal Without Repainting",
+      "serviceType": "Paint overspray removal",
+      "description": "Overspray on your car from a job site or roofing crew? Pitt Stop lifts it off paint, glass and trim without repainting, and documents it for a claim.",
+      "url": "https://www.pittstopdetailandautosales.com/car-overspray-removal/",
+      "provider": {
+        "@type": "AutoRepair",
+        "name": "Pitt Stop Detail & Auto Sales",
+        "telephone": "+19796966640",
+        "url": "https://www.pittstopdetailandautosales.com",
+        "address": {
+          "@type": "PostalAddress",
+          "streetAddress": "3112 Texas Ave S",
+          "addressLocality": "College Station",
+          "addressRegion": "TX",
+          "postalCode": "77845",
+          "addressCountry": "US"
+        },
+        "openingHours": [
+          "Mo-Fr 07:00-18:00",
+          "Sa 08:00-14:00"
+        ],
+        "areaServed": [
+          "College Station, TX",
+          "Bryan, TX"
+        ]
+      },
+      "areaServed": [
+        "College Station, TX",
+        "Bryan, TX"
+      ]
+    }
+  ],
+  "publishChecklist": [
+    "Create the page in wp-admin → Pages → Add New with this slug; paste dist/<slug>.wp.html into a Custom HTML block.",
+    "Rank Math: set the SEO title and meta description from this file; keep \"index, follow\"; confirm the canonical URL.",
+    "Add real shop photos for each photosNeeded id with the listed caption as alt text (no stock images).",
+    "Link the page from /detailing/ and the footer or services menu; the hub page links to the four service pages.",
+    "After publishing: request indexing in Search Console (access still to be granted) and add the URL to the Google Ads final-URL list for its campaign."
+  ]
+}

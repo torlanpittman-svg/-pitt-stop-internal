@@ -13,6 +13,14 @@ const RULES: Array<{ category: ServiceCategory; patterns: RegExp[] }> = [
     patterns: [/\bceramic\b/i, /\bcoating\b/i, /\bgraphene\b/i, /\bceramic\s*coat/i],
   },
   {
+    // Insurance-related restoration. Checked BEFORE paint_correction/interior so a job described as
+    // "overspray removal + polish" or "water extraction + shampoo" rolls up under restoration (the
+    // acquisition project tracks these as one service line). Ceramic still wins above it.
+    category: 'restoration',
+    patterns: [/\bover\s*spray/i, /\bvandal/i, /\bkeyed\b/i, /\bbreak[-\s]?in\b/i, /\bbroken\s+(glass|window)/i, /\bglass\s*(clean|shard|removal)/i,
+      /\bwater\s*damage/i, /\bflood/i, /\bwater\s*extraction\b/i, /\bwet\s*(carpet|seat|floor)/i, /\bmold\b/i, /\bmildew\b/i, /\bhail\b/i, /\binsurance\b/i, /\bclaim\b/i],
+  },
+  {
     category: 'paint_correction',
     patterns: [/\bpaint\s*correction\b/i, /\bcorrection\b/i, /\bpolish/i, /\bbuff/i, /\bswirl/i, /\boxidation\b/i, /\bcompound/i, /\bcut\s*and\s*polish\b/i, /\bwet\s*sand/i],
   },
@@ -48,7 +56,7 @@ export function classifyServices(labels: Array<string | null | undefined>): Serv
     if (c) found.add(c)
   }
   // Priority order for display/segmentation.
-  const order: ServiceCategory[] = ['ceramic', 'paint_correction', 'interior', 'general']
+  const order: ServiceCategory[] = ['ceramic', 'restoration', 'paint_correction', 'interior', 'general']
   return order.filter((c) => found.has(c))
 }
 
