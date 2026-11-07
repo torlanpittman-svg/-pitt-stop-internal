@@ -42,7 +42,7 @@ const CFG: BookingConfig = { ...DEFAULT_BOOKING_CONFIG, enabled: true, slotCapac
 
 beforeAll(async () => {
   await pg.exec(SCHEMA)
-  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql', '0072_marketing_leads_referral.sql']) await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
+  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql', '0077_appointments_referral_source.sql', '0072_marketing_leads_referral.sql']) await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
   await pg.query(`INSERT INTO app_settings (key, value, type) VALUES ('booking_config', $1::jsonb, 'json')`, [JSON.stringify(CFG)])
   // A live Complete Detail catalog item exists — check-in must still not bill it from the booking.
   await pg.query(`INSERT INTO service_catalog (slug, name, kind) VALUES ('complete_detail', 'Complete Detail', 'package')`)
@@ -73,7 +73,7 @@ const EVENING_BEFORE = zonedToUtc(MON, '17:00', 'America/Chicago')
 const book = async (over: Partial<BookingInput> = {}) => (await createAppointment({
   idempotencyKey: `ck-${randomUUID()}`, date: TUE, time: '08:00', serviceKeys: ['complete_detail', 'odor'],
   firstName: 'Jane', lastName: 'Driver', phone: '9795550444', email: 'jane.driver@example.com',
-  vehicleType: 'car', vehicleYear: '2019', vehicleMake: 'Ford', vehicleModel: 'F-150', notes: 'Dog hair in the back seat', ...over,
+  vehicleType: 'car', vehicleYear: '2019', vehicleMake: 'Ford', vehicleModel: 'F-150', notes: 'Dog hair in the back seat', referralSource: 'drive_by', ...over,
 }, { mode: 'public', source: 'website_booking', actor: null, now: NOW, cfg: CFG, vehicleFetch: fakeVpic({ Ford: ['F-150', 'Ranger'] }) })).appointment
 
 describe('check-in → existing Work Board intake', () => {
@@ -93,6 +93,8 @@ describe('check-in → existing Work Board intake', () => {
     expect(arg.jobNote).toBe(`Customer requested: Full Detail, Odor / Ozone (appointment ${a.reference}). Customer note: Dog hair in the back seat`)
     expect(arg.internalNote).toContain(`Appointment ${a.reference}`)
     expect(arg.internalNote).toContain('Dog hair')
+    // The customer's own "how did you hear about us?" reaches the Job's column (preserved through check-in).
+    expect(arg).toMatchObject({ referralSource: 'drive_by', referralDetail: null })
     const after = await getAppointment(a.id)
     expect(after).toMatchObject({ status: 'arrived', serviceOrderId: r.serviceOrderId })
     expect(await count('appointment_events', `appointment_id = '${a.id}' AND event_type = 'checked_in'`)).toBe(1)

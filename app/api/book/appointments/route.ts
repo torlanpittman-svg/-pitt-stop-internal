@@ -34,6 +34,7 @@ export async function POST(req: Request) {
       vehicleType: body.vehicleType, vehicleYear: body.vehicleYear, vehicleMake: body.vehicleMake, vehicleModel: body.vehicleModel,
       vehicleColor: body.vehicleColor, vehiclePlate: body.vehiclePlate, vehicleVin: body.vehicleVin,
       notes: body.notes, smsMarketingOptIn: body.smsMarketingOptIn === true, attribution: body.attribution ?? {},
+      referralSource: body.referralSource, referralDetail: body.referralDetail,
       draftKey: typeof body.draftKey === 'string' && body.draftKey ? body.draftKey : undefined,
     }, {
       mode: 'public', source: 'website_booking', actor: null, ipHash: hashIp(ip),

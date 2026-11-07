@@ -8,7 +8,7 @@
  * Never fakes a source: no parameters ⇒ 'unknown'.
  */
 import type { AttributionSource } from '@/apps/marketing/types'
-import { REFERRAL_SOURCES } from '@/apps/quick-entry/referral-source'
+import { normalizeReferralSource, referralSourceLabel } from '@/apps/quick-entry/referral-source'
 
 /** `lp` = the landing-page slug the shop's own pages append to their estimate links (e.g. lp=car-overspray-removal). */
 export const ATTRIBUTION_KEYS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'gclid', 'fbclid', 'ps_cid', 'ref', 'lp'] as const
@@ -177,6 +177,7 @@ export function customerSaidLabel(source: string | null | undefined, detail?: st
   const key = (source ?? '').trim()
   const extra = (detail ?? '').trim()
   if (!key && !extra) return null
-  const label = key ? (REFERRAL_SOURCES.find((r) => r.key === key.toLowerCase())?.label ?? readableTag(key)) : ''
+  const known = normalizeReferralSource(key)
+  const label = known ? referralSourceLabel(known) : key ? readableTag(key) : ''
   return [label, extra].filter(Boolean).join(' — ')
 }

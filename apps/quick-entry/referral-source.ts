@@ -14,9 +14,19 @@ export const REFERRAL_SOURCES = [
   { key: 'business',  label: 'Dealer or business referral' },
   { key: 'other',     label: 'Other' },
 ] as const
-export type ReferralSource = (typeof REFERRAL_SOURCES)[number]['key']
+/**
+ * Finer platform answers asked by the PUBLIC booking form (apps/appointments/referral.ts, migration 0077). Valid
+ * stored keys everywhere (normalize / label / report); the counter and quote pickers keep the single
+ * "Facebook / Instagram / TikTok" line above, so their screens are unchanged.
+ */
+export const REFERRAL_SOURCE_PLATFORMS = [
+  { key: 'facebook',  label: 'Facebook' },
+  { key: 'instagram', label: 'Instagram' },
+] as const
+const ALL_SOURCES: ReadonlyArray<{ key: string; label: string }> = [...REFERRAL_SOURCES, ...REFERRAL_SOURCE_PLATFORMS]
+export type ReferralSource = (typeof REFERRAL_SOURCES)[number]['key'] | (typeof REFERRAL_SOURCE_PLATFORMS)[number]['key']
 
-const KEYS = new Set<string>(REFERRAL_SOURCES.map((r) => r.key))
+const KEYS = new Set<string>(ALL_SOURCES.map((r) => r.key))
 
 /** Accepts only a known key; anything else (blank, unknown, non-string) → null, i.e. "not answered". */
 export function normalizeReferralSource(v: unknown): ReferralSource | null {
@@ -27,5 +37,5 @@ export function normalizeReferralSource(v: unknown): ReferralSource | null {
 
 export function referralSourceLabel(key: string | null | undefined): string {
   if (!key) return '—'
-  return REFERRAL_SOURCES.find((r) => r.key === key)?.label ?? key
+  return ALL_SOURCES.find((r) => r.key === key)?.label ?? key
 }

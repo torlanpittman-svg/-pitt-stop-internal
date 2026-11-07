@@ -34,6 +34,10 @@ export const appointments = pgTable('appointments', {
   internalNotes:     text('internal_notes'),
   source:            varchar('source', { length: 24 }).notNull().default('website_booking'),
   attribution:       jsonb('attribution').$type<Record<string, string>>().notNull().default({}),
+  // "How did you hear about us?" — the customer's OWN answer (0077; required online, optional for staff; null = not
+  // asked). Separate from `attribution` (what a link parameter proved) — see ./referral.ts.
+  referralSource:    varchar('referral_source', { length: 24 }),
+  referralDetail:    varchar('referral_detail', { length: 120 }),
   externalRef:       varchar('external_ref', { length: 120 }),
   customerId:        uuid('customer_id'),
   vehicleId:         uuid('vehicle_id'),

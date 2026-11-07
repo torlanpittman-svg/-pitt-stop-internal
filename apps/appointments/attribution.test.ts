@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { describeBookingSource, customerSaidLabel, classifySource, PLACEMENT_LABELS } from './attribution'
+import { referralSummary } from './referral'
 
 const GCLID = 'Cj0KCQiA' + 'x'.repeat(83) // 91 chars, the length stored on real bookings
 
@@ -125,6 +126,7 @@ describe('customer-reported source stays separate', () => {
     expect(customerSaidLabel(' Google ')).toBe('Google (search or Maps)')
     expect(customerSaidLabel('other', 'radio ad')).toBe('Other — radio ad')
     expect(customerSaidLabel('saw_sign')).toBe('Saw Sign') // unfamiliar key: readable, not dropped
+    expect(customerSaidLabel('instagram')).toBe('Instagram') // platform keys the booking form stores
   })
   it('not answered → null', () => {
     expect(customerSaidLabel(null)).toBeNull()
@@ -139,6 +141,24 @@ describe('customer-reported source stays separate', () => {
     // the tracked reading has no input for the customer's answer at all
     expect(describeBookingSource({ gclid: GCLID, referral_source: 'referral' }).trackedSource).toBe('Google Ads')
     expect(describeBookingSource({ referral_source: 'referral' }).trackedSource).toBe('Unknown / untracked')
+  })
+})
+
+describe('Customer said on the appointment detail: appointment answer first, linked Job as fallback', () => {
+  const said = (a: { referralSource: string | null; referralDetail: string | null }, job?: { referralSource: string | null; referralDetail: string | null } | null) =>
+    referralSummary(a) || customerSaidLabel(job?.referralSource, job?.referralDetail) || 'Not recorded'
+  it('uses the answer saved on the appointment', () => {
+    expect(said({ referralSource: 'referral', referralDetail: null }, { referralSource: 'google', referralDetail: null })).toBe('Friend or Family')
+    expect(said({ referralSource: 'other', referralDetail: 'church bulletin' })).toBe('Other — church bulletin')
+  })
+  it('older appointment with no answer falls back to the Job, then to Not recorded', () => {
+    expect(said({ referralSource: null, referralDetail: null }, { referralSource: 'drive_by', referralDetail: null })).toBe('Drove by / sign')
+    expect(said({ referralSource: null, referralDetail: null }, null)).toBe('Not recorded')
+    expect(said({ referralSource: null, referralDetail: null })).toBe('Not recorded')
+  })
+  it('owner example: tracked Google Ads + customer said friend/referral, both shown', () => {
+    expect(describeBookingSource({ gclid: GCLID }).trackedSource).toBe('Google Ads')
+    expect(said({ referralSource: 'referral', referralDetail: null })).toBe('Friend or Family')
   })
 })
 

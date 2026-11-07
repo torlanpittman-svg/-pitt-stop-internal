@@ -32,7 +32,7 @@ const CFG: BookingConfig = { ...DEFAULT_BOOKING_CONFIG, enabled: true, slotCapac
 
 beforeAll(async () => {
   await pg.exec(SCHEMA)
-  for (const f of ['0058_appointments.sql', '0060_booking_drafts.sql']) await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
+  for (const f of ['0058_appointments.sql', '0060_booking_drafts.sql', '0077_appointments_referral_source.sql']) await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
   await pg.query(`INSERT INTO app_settings (key, value, type) VALUES ('booking_config', $1::jsonb, 'json')`, [JSON.stringify(CFG)])
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
 })
@@ -49,7 +49,7 @@ const NOW = zonedToUtc(MON, '06:00', 'America/Chicago')
 const book = async (over: Partial<BookingInput> = {}) => (await createAppointment({
   idempotencyKey: `rv-${randomUUID()}`, date: TUE, time: '08:00', serviceKeys: ['complete_detail'],
   firstName: 'Jane', lastName: 'Driver', phone: '9795550444', email: 'real.customer@gmail.com',
-  vehicleType: 'car', vehicleYear: '2019', vehicleMake: 'Ford', vehicleModel: 'F-150', ...over,
+  vehicleType: 'car', vehicleYear: '2019', vehicleMake: 'Ford', vehicleModel: 'F-150', referralSource: 'google', ...over,
 }, { mode: 'public', source: 'website_booking', actor: null, now: NOW, cfg: CFG, vehicleFetch: fakeVpic({ Ford: ['F-150', 'Ranger'] }) })).appointment
 
 const box: EmailMessage[] = []

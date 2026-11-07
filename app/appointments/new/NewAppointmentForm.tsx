@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { createStaffAppointment } from '../actions'
 import SlotPicker from '../SlotPicker'
+import { BOOKING_REFERRAL_OPTIONS, BOOKING_REFERRAL_PLACEHOLDER, REFERRAL_DETAIL_MAX } from '@/apps/appointments/referral'
 
 const SOURCES = [
   ['phone', 'Phone call'], ['walk_in', 'Walk-in'], ['facebook', 'Facebook'], ['google_ads', 'Google Ads'],
@@ -20,6 +21,8 @@ export default function NewAppointmentForm({ services, today, isManager }: { ser
   const [chosen, setChosen] = useState<string[]>([])
   const [slot, setSlot] = useState<{ date: string; time: string | null; override: boolean }>({ date: today, time: null, override: false })
   const [f, setF] = useState({ firstName: '', lastName: '', phone: '', email: '', year: '', make: '', model: '', color: '', plate: '', vin: '', notes: '', internal: '', externalRef: '' })
+  // Optional on staff entries (the customer may not have been asked); the public form requires it.
+  const [referral, setReferral] = useState({ source: '', detail: '' })
   const [idemKey] = useState(() => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `s${Date.now()}${Math.random().toString(36).slice(2)}`))
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value })
 
@@ -35,6 +38,7 @@ export default function NewAppointmentForm({ services, today, isManager }: { ser
         vehicleVin: f.vin.trim().toUpperCase(), notes: f.notes, internalNotes: f.internal,
         externalRef: source === 'autoleap_import' && f.externalRef.trim() ? `autoleap:${f.externalRef.trim()}` : undefined,
         source, override: slot.override, attribution: {},
+        referralSource: referral.source, referralDetail: referral.source === 'other' ? referral.detail : '',
       })
       if (!r.ok) { setError(r.error); return }
       router.push(`/appointments/${r.id}`)
@@ -94,6 +98,16 @@ export default function NewAppointmentForm({ services, today, isManager }: { ser
       </section>
 
       <section className="space-y-3">
+        <label className="block text-sm text-gray-300">How did they hear about us? <span className="text-gray-500">(optional for phone entries)</span>
+          <select value={referral.source} onChange={(e) => setReferral({ source: e.target.value, detail: e.target.value === 'other' ? referral.detail : '' })} className={input}>
+            <option value="">{BOOKING_REFERRAL_PLACEHOLDER}</option>
+            {BOOKING_REFERRAL_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+          </select>
+        </label>
+        {referral.source === 'other' && (
+          <label className="block text-sm text-gray-300">Where did they hear about us?
+            <input value={referral.detail} maxLength={REFERRAL_DETAIL_MAX} onChange={(e) => setReferral({ ...referral, detail: e.target.value })} className={input} /></label>
+        )}
         <label className="block text-sm text-gray-300">Customer request / notes
           <textarea value={f.notes} onChange={set('notes')} rows={2} className="mt-1 w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-white" /></label>
         <label className="block text-sm text-gray-300">Staff-only note

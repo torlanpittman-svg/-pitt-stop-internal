@@ -41,7 +41,7 @@ CREATE TABLE app_settings (
 
 beforeAll(async () => {
   await pg.exec(PARENTS)
-  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql', '0072_marketing_leads_referral.sql']) {
+  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql', '0077_appointments_referral_source.sql', '0072_marketing_leads_referral.sql']) {
     await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
   }
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
@@ -72,7 +72,7 @@ const draft = (over: Partial<DraftInput> = {}): DraftInput => ({
 const book = (over: Partial<BookingInput> = {}) => createAppointment({
   idempotencyKey: `idem-${++seq}-${Math.random().toString(36).slice(2, 8)}`, date: TUE, time: '08:00', serviceKeys: ['complete_detail'],
   firstName: 'Dana', lastName: 'Lee', phone: '(979) 555-0111', email: 'dana.lee@example.com',
-  vehicleType: 'car', vehicleYear: '2020', vehicleMake: 'Honda', vehicleModel: 'Civic', ...over,
+  vehicleType: 'car', vehicleYear: '2020', vehicleMake: 'Honda', vehicleModel: 'Civic', referralSource: 'google', ...over,
 }, { mode: 'public', source: 'website_booking', actor: null, now: NOW, cfg: CFG, vehicleFetch })
 
 /** Age a draft so its follow-up is due. */

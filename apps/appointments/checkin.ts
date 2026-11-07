@@ -172,6 +172,10 @@ export async function checkInAppointment(id: string, actor: string, choice?: Veh
     jobNote: requestNoteForAppointment(claimed),
     createdBy: actor,
     internalNote: note,
+    // The customer's own "how did you hear about us?" travels to the Job's column (service_orders.referral_source),
+    // the same field Quick Entry fills at the counter — never into attribution.
+    referralSource: claimed.referralSource,
+    referralDetail: claimed.referralDetail,
     audit: { idMethod: vehicle.vehicleId ? 'saved_vehicle' : 'manual', plate: claimed.vehiclePlate ?? null },
   })
   await linkJob(claimed, job.serviceOrderId, actor, false, vehicle)

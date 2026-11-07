@@ -127,6 +127,25 @@ controlled test — everything else is recorded as skipped, not sent.
 
 New default services are added **disabled**; names/descriptions are editable per service in Booking settings.
 
+## "How did you hear about us?" (2026-11-07 — branch `feat/booking-hear-about-us`, NOT deployed; needs migration 0077)
+
+Required on the public booking form (step 2, under the contact fields): a dropdown that starts on "Select an option" with
+Google Search / Google Maps · Facebook · Instagram · Friend or Family · Returning Customer · Drove By / Saw Our Sign · Other,
+and "Other" demands a short text. The rule lives once, in `apps/appointments/referral.ts` (`validateBookingReferral`):
+the form runs it before "Continue to review", and `createAppointment` runs it again, so a hand-made POST cannot skip it.
+Staff phone entries (`/appointments/new`) have the same dropdown but may leave it blank.
+
+- **Stored** on `appointments.referral_source` / `referral_detail` (migration `0077_appointments_referral_source.sql`,
+  nullable — bookings made before this question simply have `NULL` and keep working: reschedule, cancel, check-in untouched).
+- **Shown** on the staff appointment detail as "Heard about us" ("Not answered" when absent) and on the review step.
+- **Preserved** at check-in: copied to the Job's `service_orders.referral_source` (the same column Quick Entry fills at the
+  counter) and to the marketing lead's `referral_source`, so the existing `/marketing/report` breakdown covers it.
+- **Separate from automatic attribution.** `appointments.attribution` (utm_* / gclid / fbclid / ref) and
+  `marketing_attribution` are untouched; the dropdown is never pre-filled from them and never overwrites them.
+- Keys are the shared retail vocabulary (`apps/quick-entry/referral-source.ts`), extended with `facebook` / `instagram`
+  (`REFERRAL_SOURCE_PLATFORMS`); the Quick Entry and quote pickers are unchanged.
+- Not carried on unfinished-booking drafts: a resumed draft asks again (it is required anyway).
+
 ## Rules (manager-editable at `/appointments/settings`, stored in `app_settings.booking_config`)
 
 | Setting | Default |
@@ -313,7 +332,7 @@ process dies mid-send stays `sending` (never re-sent → no duplicate email; sta
 tags into plain English — *Tracked source* (a `gclid` outranks the generic `utm_source=website` tag; a website tag alone is
 “original source unknown”, never organic; Facebook/Instagram tags are never called paid), *Booking entry point* (website
 button placements from `PLACEMENT_LABELS`, only the ones the website snippet emits) and a separate *Customer said* line
-(the Job's `referral_source`). Raw tags sit under a collapsed “Tracking details”. Display only: `classifySource()`, the
+(the appointment's own `referral_source`/`referral_detail`; the linked Job's only as a fallback for older bookings). Raw tags sit under a collapsed “Tracking details”. Display only: `classifySource()`, the
 ledger and stored data are unchanged.
 
 ## Cutover checklist

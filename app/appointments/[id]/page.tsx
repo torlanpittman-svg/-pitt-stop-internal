@@ -13,6 +13,7 @@ import { isMissedSend, isTestModeHold } from '@/apps/appointments/notify'
 import { isFuture } from '@/apps/appointments/public'
 import { savedVehiclesFor, bookedVehicleLabel } from '@/apps/appointments/checkin'
 import { describeBookingSource, customerSaidLabel } from '@/apps/appointments/attribution'
+import { referralSummary } from '@/apps/appointments/referral'
 import { STATUS_LABEL, STATUS_TONE, SOURCE_LABEL } from '../labels'
 import AppointmentActions from './AppointmentActions'
 import NotificationList from './NotificationList'
@@ -36,9 +37,10 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
   ])
   const vehicle = [a.vehicleYear, a.vehicleMake, a.vehicleModel].filter(Boolean).join(' ')
   // Two independent facts, never merged: what the booking link's tags show, and what the customer said.
-  // The answer lives on the Job (service_orders.referral_source), so it appears once the booking is checked in.
+  // The answer saved on the appointment wins (appointments.referral_source, migration 0077); bookings older than
+  // the question fall back to whatever was recorded on the linked Job (service_orders.referral_source).
   const tracked = describeBookingSource(a.attribution)
-  const customerSaid = customerSaidLabel(order?.referralSource, order?.referralDetail)
+  const customerSaid = referralSummary(a) || customerSaidLabel(order?.referralSource, order?.referralDetail)
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -63,6 +65,8 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
             ['Plate / VIN', [a.vehiclePlate, a.vehicleVin].filter(Boolean).join(' · ')],
             ['Phone', a.phone],
             ['Email', a.email ?? ''],
+            // The customer's OWN answer. Older bookings and staff entries may have none; the automatic click
+            // attribution (utm / gclid / fbclid) is the separate "Marketing source" section below.
             ['Customer note', a.customerNotes ?? ''],
             ['Staff notes', a.internalNotes ?? ''],
             ['Booked', `${fmt(a.createdAt)}${a.createdBy ? ` by ${a.createdBy}` : ' online'}`],
@@ -96,7 +100,7 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
             {([
               ['Tracked source', tracked.trackedSource],
               ['Booking entry point', tracked.entryPoint ?? ''],
-              ['Customer said', customerSaid ?? 'Not recorded'],
+              ['Customer said', customerSaid || 'Not recorded'],
             ] as const).filter(([, v]) => v).map(([k, v]) => (
               <div key={k} className="flex gap-3 px-4 py-2.5">
                 <dt className="w-28 shrink-0 text-gray-500">{k}</dt>

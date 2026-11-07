@@ -31,6 +31,7 @@ import {
 } from './policy'
 import { appointmentToken, hashToken, newReference, isTokenShape } from './tokens'
 import { cleanAttribution, classifySource, attributionConfidence, campaignIdFrom, type BookingAttribution } from './attribution'
+import { normalizeBookingReferral, validateBookingReferral, type BookingReferral } from './referral'
 import { validateContact } from './contact'
 import { validateVehicle } from './vehicles'
 
@@ -224,6 +225,10 @@ export const bookingInput = z.object({
   internalNotes: trimmed(2000).default(''),
   smsMarketingOptIn: z.boolean().default(false),
   attribution: z.record(z.string(), z.unknown()).default({}),
+  /** "How did you hear about us?" — the customer's own answer. REQUIRED for public bookings, optional for staff
+   *  entries (decided in createAppointment, where the mode is known); "other" always needs a short explanation. */
+  referralSource: z.string().trim().max(40).default(''),
+  referralDetail: trimmed(120).default(''),
   externalRef: z.string().trim().max(120).optional(),
   /** The public page's unfinished-booking key: the draft is marked booked in the same transaction. */
   draftKey: z.string().trim().min(8).max(80).regex(/^[\w-]+$/).optional(),
@@ -282,6 +287,11 @@ export async function createAppointment(raw: BookingInput, opts: CreateOptions):
   } else if (!input.phone && !input.email) {
     throw new BookingError('invalid', 'Enter a phone number or email for the customer.')
   }
+  // Self-reported source: required online (the form cannot skip it, and neither can a hand-made request); staff
+  // phone entries may leave it blank. Stored beside — never merged into — `attribution` (utm_* / gclid / fbclid).
+  const referral = normalizeBookingReferral({ source: input.referralSource, detail: input.referralDetail })
+  const referralError = Object.values(validateBookingReferral(referral, { required: opts.mode === 'public' }))[0]
+  if (referralError) throw new BookingError('invalid', referralError)
 
   const services = resolveServices(cfg, input.serviceKeys, { publicOnly: opts.mode === 'public' })
   if (!services.ok) throw new BookingError('invalid', services.error)
@@ -333,7 +343,7 @@ export async function createAppointment(raw: BookingInput, opts: CreateOptions):
       INSERT INTO appointments (id, reference, token_hash, idempotency_key, status, local_date, local_time, starts_at,
         service_keys, service_labels, units_detail, units_mechanic, first_name, last_name, phone, normalized_phone, email,
         vehicle_type, vehicle_year, vehicle_make, vehicle_model, vehicle_color, vehicle_plate, vehicle_vin, customer_notes, internal_notes,
-        source, attribution, external_ref, sms_marketing_opt_in, capacity_override, ip_hash, created_by)
+        source, attribution, external_ref, sms_marketing_opt_in, capacity_override, ip_hash, created_by, referral_source, referral_detail)
       SELECT ${id}::uuid, ${reference}, ${hashToken(token)}, ${input.idempotencyKey}, 'confirmed', ${input.date}::date, ${input.time},
         ${startsAt.toISOString()}::timestamptz, ${JSON.stringify(services.services.map((s) => s.key))}::jsonb, ${services.labels},
         ${services.need.detail}, ${services.need.mechanic}, ${input.firstName}, ${input.lastName}, ${input.phone},
@@ -341,7 +351,7 @@ export async function createAppointment(raw: BookingInput, opts: CreateOptions):
         ${input.vehicleType === 'trailer' ? 'Trailer' : input.vehicleMake || null}, ${input.vehicleModel || null},
         ${input.vehicleColor || null}, ${input.vehiclePlate.toUpperCase() || null}, ${input.vehicleVin || null}, ${input.notes || null},
         ${input.internalNotes || null}, ${opts.source}, ${JSON.stringify(attribution)}::jsonb, ${input.externalRef ?? null},
-        ${input.smsMarketingOptIn}, ${override}, ${opts.ipHash ?? null}, ${opts.actor}
+        ${input.smsMarketingOptIn}, ${override}, ${opts.ipHash ?? null}, ${opts.actor}, ${referral.source}, ${referral.detail || null}
       WHERE ${override ? sql`true` : capacitySql(cfg, input.date, input.time, services.need, null)}
       ON CONFLICT DO NOTHING
       RETURNING id
@@ -362,13 +372,13 @@ export async function createAppointment(raw: BookingInput, opts: CreateOptions):
     throw new BookingError('full', 'That time was just taken. Please pick another time.')
   }
 
-  await linkAfterBooking(id, input, opts, attribution).catch((err) => console.error('[appointments] post-booking link failed (booking kept):', err))
+  await linkAfterBooking(id, input, opts, attribution, referral).catch((err) => console.error('[appointments] post-booking link failed (booking kept):', err))
   const appointment = await getAppointment(id)
   return { appointment: appointment!, token, replayed: false }
 }
 
 /** Best-effort, post-commit: canonical customer, explicit SMS marketing consent, Marketing lead. */
-async function linkAfterBooking(id: string, input: z.infer<typeof bookingInput>, opts: CreateOptions, attribution: BookingAttribution): Promise<void> {
+async function linkAfterBooking(id: string, input: z.infer<typeof bookingInput>, opts: CreateOptions, attribution: BookingAttribution, referral: BookingReferral): Promise<void> {
   const name = `${input.firstName} ${input.lastName}`.trim()
   let customerId: string | null = null
   try {
@@ -399,6 +409,8 @@ async function linkAfterBooking(id: string, input: z.infer<typeof bookingInput>,
       name, phone: input.phone || null, email: input.email || null, vehicle, source,
       requestedService: input.serviceKeys[0]?.slice(0, 40) ?? null, campaignId: validCampaign ? campaignId : null,
       customerId, notes: `Appointment ${input.date} ${input.time} (${opts.source})`,
+      // The customer's own answer rides along on the lead's OWN columns; `source` above stays the click-derived one.
+      referralSource: referral.source, referralDetail: referral.detail || null,
     }, opts.actor)
     leadId = lead.id
     await updateLead(lead.id, { status: 'booked' }, opts.actor)

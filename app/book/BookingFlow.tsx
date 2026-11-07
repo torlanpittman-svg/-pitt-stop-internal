@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BookShell, telHref } from './BookShell'
 import Combobox from './Combobox'
 import { formatUsPhone, validateContact, type ContactErrors } from '@/apps/appointments/contact'
+import { BOOKING_REFERRAL_OPTIONS, BOOKING_REFERRAL_PLACEHOLDER, REFERRAL_DETAIL_MAX, validateBookingReferral, bookingReferralLabel, type ReferralAnswer } from '@/apps/appointments/referral'
 import { fireBookingConversion } from './conversion'
 
 interface Service { key: string; label: string; description: string }
@@ -105,6 +106,8 @@ export default function BookingFlow({ open, services, preselect, attribution, sh
   const { date, time } = when
   const [contact, setContact] = useState<Contact>(resume?.contact ?? { firstName: '', lastName: '', phone: '', email: '', notes: '' })
   const [touched, setTouched] = useState<Partial<Record<keyof Contact, boolean>>>({})
+  // Required — the customer's own answer, never pre-filled from the link's tracking parameters (`attribution`).
+  const [referral, setReferral] = useState<ReferralAnswer>({ source: '', detail: '' })
   const [followUp, setFollowUp] = useState(resume?.followUp ?? false)
   const [sms, setSms] = useState(false)
   const [website, setWebsite] = useState('') // honeypot
@@ -136,6 +139,7 @@ export default function BookingFlow({ open, services, preselect, attribution, sh
 
   const selectedLabels = useMemo(() => services.filter((s) => chosen.includes(s.key)).map((s) => s.label).join(', '), [services, chosen])
   const contactErrors: ContactErrors = useMemo(() => validateContact(contact), [contact])
+  const referralSummary = referral.source ? `${bookingReferralLabel(referral.source)}${referral.source === 'other' && referral.detail ? ` — ${referral.detail}` : ''}` : ''
   /** Editing a field clears its submit-time error, so the live check (shown once touched) takes over. */
   function editContact(k: keyof Contact, v: string) {
     setContact((c) => ({ ...c, [k]: v }))
@@ -230,10 +234,10 @@ export default function BookingFlow({ open, services, preselect, attribution, sh
   }
 
   async function continueToReview() {
-    const errs: Record<string, string> = { ...(contactErrors as Record<string, string>) }
+    const errs: Record<string, string> = { ...(contactErrors as Record<string, string>), ...validateBookingReferral(referral, { required: true }) }
     if (!date || !time) errs.time = 'Choose a drop-off time.'
     const ordered: Record<string, string> = {}
-    for (const k of ['time', 'firstName', 'lastName', 'phone', 'email']) if (errs[k]) ordered[k] = errs[k]
+    for (const k of ['time', 'firstName', 'lastName', 'phone', 'email', 'referral', 'referralDetail']) if (errs[k]) ordered[k] = errs[k]
     setErrors(ordered)
     setTouched({ firstName: true, lastName: true, phone: true, email: true })
     if (Object.keys(ordered).length) { setBanner('Please complete the highlighted fields.'); focusFirst(ordered); return }
@@ -271,6 +275,7 @@ export default function BookingFlow({ open, services, preselect, attribution, sh
           firstName: contact.firstName, lastName: contact.lastName, phone: contact.phone, email: contact.email.trim(),
           vehicleType: vehicle.type, vehicleYear: vehicle.year, vehicleMake: make, vehicleModel: model,
           notes: contact.notes, smsMarketingOptIn: sms, attribution, website,
+          referralSource: referral.source, referralDetail: referral.source === 'other' ? referral.detail : '',
         }),
       })
       const d = await r.json().catch(() => ({}))
@@ -486,6 +491,23 @@ export default function BookingFlow({ open, services, preselect, attribution, sh
               <Field id="f-email" label="Email" value={contact.email} type="email" inputMode="email" autoComplete="email" autoCapitalize="off" spellCheck={false} placeholder="name@example.com" enterKeyHint="next"
                 onChange={(v) => editContact('email', v)} onBlur={() => setTouched((t) => ({ ...t, email: true }))} error={fieldError('email')} />
             </div>
+            <div className="mt-4">
+              <label htmlFor="f-referral" className="block text-[0.95rem] font-medium text-[var(--ps-ink)]">How did you hear about us?</label>
+              <select id="f-referral" required value={referral.source}
+                onChange={(e) => { const source = e.target.value; setReferral((r) => ({ source, detail: source === 'other' ? r.detail : '' })); setErrors((er) => (er.referral || er.referralDetail ? { ...er, referral: '', referralDetail: '' } : er)) }}
+                aria-invalid={errors.referral ? true : undefined} aria-describedby={errors.referral ? 'f-referral-err' : undefined}
+                className={`ps-field mt-1.5 ${referral.source ? '' : 'text-[#8a929b]'}`}>
+                <option value="">{BOOKING_REFERRAL_PLACEHOLDER}</option>
+                {BOOKING_REFERRAL_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+              </select>
+              {errors.referral && <p id="f-referral-err" className="mt-1.5 text-sm font-medium text-[var(--ps-error)]">{errors.referral}</p>}
+              {referral.source === 'other' && (
+                <div className="mt-3">
+                  <Field id="f-referralDetail" label="Where did you hear about us?" value={referral.detail} maxLength={REFERRAL_DETAIL_MAX} autoComplete="off" enterKeyHint="next"
+                    onChange={(v) => { setReferral((r) => ({ ...r, detail: v })); setErrors((er) => (er.referralDetail ? { ...er, referralDetail: '' } : er)) }} error={errors.referralDetail} />
+                </div>
+              )}
+            </div>
             <label className="mt-4 block">
               <span className="text-[0.95rem] font-medium text-[var(--ps-ink)]">Anything we should know? <span className="font-normal text-[var(--ps-body)]">(optional)</span></span>
               <textarea id="f-notes" value={contact.notes} onChange={(e) => setContact((c) => ({ ...c, notes: e.target.value.slice(0, 2000) }))} rows={3}
@@ -530,8 +552,9 @@ export default function BookingFlow({ open, services, preselect, attribution, sh
             ['Drop-off', date && time ? `${dayParts(date).long} at ${timeLabel(time)}` : ''],
             ['Service', selectedLabels], ['Vehicle', vehicleText({ ...vehicle, make, model })],
             ['Name', `${contact.firstName} ${contact.lastName}`.trim()], ['Phone', contact.phone], ['Email', contact.email],
+            ['Heard about us', referralSummary],
             ...(contact.notes ? [['Notes', contact.notes] as [string, string]] : []),
-          ]} edits={{ 'Drop-off': () => goBack(1), Service: () => goBack(0), Vehicle: () => goBack(0), Name: () => goBack(1), Phone: () => goBack(1), Email: () => goBack(1), Notes: () => goBack(1) }} />
+          ]} edits={{ 'Drop-off': () => goBack(1), Service: () => goBack(0), Vehicle: () => goBack(0), Name: () => goBack(1), Phone: () => goBack(1), Email: () => goBack(1), 'Heard about us': () => goBack(1), Notes: () => goBack(1) }} />
           <div className="mt-5 rounded-xl border-l-4 border-[var(--ps-yellow)] bg-white px-4 py-3 text-[0.95rem] text-[var(--ps-ink)]">
             <strong>Before you come in.</strong> {shop.instructions}
           </div>

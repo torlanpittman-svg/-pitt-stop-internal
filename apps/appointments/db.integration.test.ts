@@ -38,7 +38,7 @@ CREATE TABLE app_settings (
 
 beforeAll(async () => {
   await pg.exec(PARENTS)
-  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql', '0072_marketing_leads_referral.sql']) {
+  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql', '0077_appointments_referral_source.sql', '0072_marketing_leads_referral.sql']) {
     await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
   }
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
@@ -65,7 +65,7 @@ const input = (over: Partial<BookingInput> = {}): BookingInput => ({
   idempotencyKey: `test-key-${++seq}-${Math.random().toString(36).slice(2, 8)}`,
   date: TUE, time: '08:00', serviceKeys: ['complete_detail'],
   firstName: 'Test', lastName: 'Customer', phone: '(979) 555-0101', email: 'test.customer@example.com',
-  vehicleType: 'car', vehicleYear: '2020', vehicleMake: 'Honda', vehicleModel: 'Civic', ...over,
+  vehicleType: 'car', vehicleYear: '2020', vehicleMake: 'Honda', vehicleModel: 'Civic', referralSource: 'google', ...over,
 })
 const pub = (over: Partial<Parameters<typeof createAppointment>[1]> = {}) =>
   ({ mode: 'public' as const, source: 'website_booking' as const, actor: null, now: NOW, cfg: CFG, vehicleFetch: fakeVpic(), ...over })
@@ -270,6 +270,40 @@ describe('attribution', () => {
     expect(await count('marketing_attribution', `source = 'website' AND confidence = 'direct' AND utm_source = 'website'`)).toBe(1)
     await createAppointment(input({ time: '09:00', email: 'g@example.com', phone: '9795550444', attribution: { utm_source: 'gbp' } }), pub())
     expect(await count('marketing_attribution', `source = 'google_organic' AND confidence = 'direct' AND utm_source = 'gbp'`)).toBe(1)
+  })
+})
+
+describe('how did you hear about us (self-reported, kept apart from attribution)', () => {
+  it('an online booking cannot be submitted without an answer — nothing is stored', async () => {
+    await expect(createAppointment(input({ referralSource: '' }), pub())).rejects.toMatchObject({ code: 'invalid', message: 'Tell us how you heard about us.' })
+    await expect(createAppointment(input({ referralSource: undefined }), pub())).rejects.toMatchObject({ code: 'invalid' })
+    await expect(createAppointment(input({ referralSource: 'tiktok' }), pub())).rejects.toMatchObject({ code: 'invalid' })
+    expect(await count('appointments')).toBe(0)
+    expect(await count('marketing_leads')).toBe(0)
+  })
+  it('"Other" needs a nonblank explanation; the text is trimmed and saved', async () => {
+    await expect(createAppointment(input({ referralSource: 'other', referralDetail: '   ' }), pub())).rejects.toMatchObject({ code: 'invalid', message: 'Please tell us where you heard about us.' })
+    const { appointment } = await createAppointment(input({ referralSource: 'other', referralDetail: '  Church bulletin  ' }), pub())
+    expect(appointment).toMatchObject({ referralSource: 'other', referralDetail: 'Church bulletin' })
+  })
+  it('a valid answer is saved with the booking and on its lead, and the captured attribution is untouched', async () => {
+    const { appointment } = await createAppointment(input({ referralSource: 'facebook', attribution: { utm_source: 'google', utm_medium: 'cpc', gclid: 'g-1' } }), pub())
+    expect(appointment.referralSource).toBe('facebook')
+    expect(appointment.referralDetail).toBeNull()
+    expect(appointment.attribution).toEqual({ utm_source: 'google', utm_medium: 'cpc', gclid: 'g-1' })
+    // Both live on the lead, each in its own column: the click says Google Ads, the customer said Facebook.
+    expect(await count('marketing_leads', `source = 'google_ads' AND referral_source = 'facebook'`)).toBe(1)
+    expect(await count('marketing_attribution', `source = 'google_ads' AND confidence = 'direct' AND click_id = 'g-1'`)).toBe(1)
+  })
+  it('staff phone entries may leave it blank (like every booking made before the question) and still work; "Other" still needs its text', async () => {
+    const staff = { mode: 'staff' as const, source: 'phone' as const, actor: 'Darryl', now: NOW, cfg: CFG }
+    const { appointment } = await createAppointment(input({ referralSource: '' }), staff)
+    expect(appointment.referralSource).toBeNull()
+    expect(appointment.referralDetail).toBeNull()
+    const moved = await rescheduleAppointment(appointment.id, { date: TUE, time: '10:00' }, { actor: 'Darryl', now: NOW, cfg: CFG })
+    expect(moved.localTime).toBe('10:00')
+    expect(moved.referralSource).toBeNull()
+    await expect(createAppointment(input({ time: '09:00', referralSource: 'other' }), staff)).rejects.toMatchObject({ code: 'invalid' })
   })
 })
 

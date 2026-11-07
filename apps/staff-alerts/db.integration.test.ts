@@ -50,7 +50,7 @@ CREATE TABLE app_settings (
 
 beforeAll(async () => {
   await pg.exec(PARENTS)
-  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql', '0068_staff_push_alerts.sql']) {
+  for (const f of ['0046_marketing.sql', '0047_marketing_sms_consent.sql', '0058_appointments.sql', '0060_booking_drafts.sql', '0077_appointments_referral_source.sql', '0068_staff_push_alerts.sql']) {
     await pg.exec(readFileSync(`drizzle/migrations/manual/${f}`, 'utf8'))
   }
   vi.mocked(getDb).mockReturnValue(drizzle(pg) as unknown as ReturnType<typeof getDb>)
@@ -82,7 +82,7 @@ let seq = 0
 const booking = (over: Partial<BookingInput> = {}): BookingInput => ({
   idempotencyKey: `book-${++seq}-aaaaaaaa`, date: TUE, time: '09:00', serviceKeys: ['complete_detail'],
   firstName: 'Alex', lastName: 'Rivera', phone: '(979) 555-0101', email: 'alex.rivera@example.com',
-  vehicleType: 'car', vehicleYear: '2020', vehicleMake: 'Honda', vehicleModel: 'Civic', ...over,
+  vehicleType: 'car', vehicleYear: '2020', vehicleMake: 'Honda', vehicleModel: 'Civic', referralSource: 'google', ...over,
 })
 /**
  * Books the way the real surfaces do: the public route records the alert right after the booking
