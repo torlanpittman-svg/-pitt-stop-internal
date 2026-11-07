@@ -5,15 +5,16 @@ Branch `feat/insurance-restoration`, worktree `/Users/torlanpittman/Projects/.ps
 API 2026-11-07). The main checkout (`cleanup/usability-pass`, 118 dirty files) was left untouched.
 
 Objective (owner brief, 2026-11-07): +$5,000/month completed insurance-related restoration revenue within 90 days of an
-approved launch; Day-90 targets 15 qualified leads · 8 estimates · 5 completed jobs · $1,000 avg · CAC < $200 · positive
-contribution after ads; proposed ad budget $600/month **subject to approval (not spending approval)**.
+approved launch; Day-90 targets 15 qualified leads · 8 estimates · 5 completed jobs · $1,000 avg · CAC < $200.
+The owner approved $600/month for the three new campaigns; all three were enabled on 2026-11-07. The original
+contribution target was removed at the owner’s direction because labor cost is not captured; profitability is unmeasured.
 
 Companion files in this folder: `BASELINE_2026-11-07.md` (production numbers), `KEYWORD_RESEARCH_2026-11-07.md`
 (Keyword Planner), `CAPABILITY_READINESS.md`, `GOOGLE_ADS_DRAFTS.md`, `GBP_AND_REVIEWS.md`, `APPROVAL_PACKAGE.md`.
 
 ---
 
-## 1. Context Readiness Report
+## 1. Initial Context Readiness Report (historical baseline; final release status below supersedes it)
 
 ### 1.1 Repositories, branches, environments
 | Item | Finding |
@@ -76,7 +77,19 @@ Companion files in this folder: `BASELINE_2026-11-07.md` (production numbers), `
 - **Prior attempt to learn from:** the paused **Hail Damage** Search campaign ($29.09/day, Maximize conversions) in the Ads account — its search terms/CPCs are the closest real-world signal for insurance-adjacent demand here; read before launch.
 - **Side effect of research:** one Keyword Planner *plan* (id 1444077024) now exists in the Ads account; harmless, deletable.
 
-## Build status (2026-11-07, after the correction pass — read APPROVAL_PACKAGE Revisions 2–3)
+## Release status (2026-11-07) — LAUNCHED; read `RELEASE_PROGRESS_2026-11-07.md` FIRST
+Production application source `0d35d6e29e379550733f791b89c4b246e6039b7c` is Vercel READY, migration 0076 is applied, and all five WordPress
+pages are published with labelled generated illustrations and the final tracking/mobile-bar correction.
+All five live pages preserve paid attribution; final suite = 253 files / 3,271 tests, 69 focused page tests,
+production build and source lint passed. GSC indexing was requested (not proof of indexing).
+Exactly ONE approved inquiry created one lead, sent one shop email and fired one GA4 event — closed, never repeat.
+All three new campaigns are **Enabled / Eligible (Learning)** at $19.70/day ($598.88 per 30.4-day month).
+Existing campaigns remain unchanged. Assets were Under review at last inspection; serving/revenue not yet proven.
+The campaign category map was saved before the successful source deployment. Remaining: shop-PIN sign-in to
+verify the live report/spend display, Google review/indexing, and ongoing performance review. No Vercel code is
+needed for the cancelled manual redeploy. See the release record for the honest mobile viewport limitation.
+
+## Build status (2026-11-07, after the correction pass — read APPROVAL_PACKAGE Revisions 2–3; HISTORICAL)
 All authorized nonproduction work is on branch `feat/insurance-restoration` (worktree
 `/Users/torlanpittman/Projects/.ps-worktrees/insurance-restoration`, cut from production `021f7c1`). The owner
 **approved the release and the $600/month ad ceiling**; Codex verifies readiness and executes deploy/publish/ads.
@@ -96,8 +109,10 @@ All authorized nonproduction work is on branch `feat/insurance-restoration` (wor
 - Verification: the 2026-11-07 morning full-suite numbers (251 files / 3,238 tests) predate the correction pass and are
   STALE for the changed files — Codex re-runs the affected suites and the full gate before release (commands in the
   handoff / APPROVAL_PACKAGE Revision 2).
-- **Not done, by rule:** no push/deploy, no migration applied anywhere but PGlite, no WordPress publish, no Ads
-  import/Apply or spend, no GBP edit, no GA4 key event, no customer email.
+- **(Superseded 2026-11-07 ~4:20 PM — see the Release status above):** at correction-pass time nothing had been
+  pushed/deployed/published/imported. Since then deploy, 0076, WP publish, Ads import (Paused) and the GA4/Ads
+  conversion ALL happened and must not be redone. Final state supersedes that snapshot: all three campaigns are now Enabled / Eligible (Learning). No GBP profile
+  edit and no customer email beyond the single authorized test inquiry were made.
 - **Doc-map note:** `docs/ARCHITECTURE_MAP.md` / `docs/DATA_FLOWS.md` do not exist on the production branch (they live on
   `cleanup/usability-pass` in the main checkout). When this branch merges, add a "Marketing → insurance restoration"
   entry there: files above, routes `/quote`, `/api/quote`, `/marketing/restoration`, table `quote_requests` (0076),

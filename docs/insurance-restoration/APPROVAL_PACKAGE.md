@@ -1,6 +1,14 @@
 # Approval package — Insurance Restoration Customer Acquisition (prepared 2026-11-07)
 
-Everything below exists only on branch `feat/insurance-restoration` in the worktree
+> **FINAL RELEASE STATUS (2026-11-07): read `RELEASE_PROGRESS_2026-11-07.md` first.** Application source
+> `0d35d6e` is Vercel READY; migration 0076 applied; five pages published and corrected for WordPress attribution
+> and mobile estimate links. All three new campaigns are **Enabled / Eligible (Learning)** at $19.70/day.
+> The production category map was saved before that deployment; live spend display awaits shop-PIN sign-in.
+> Exactly one approved test lead/email/GA4 event passed; never repeat. Full suite: 3,271 tests; build/lint passed.
+> Assets were Under review at last inspection; indexing requested, not proven. Earlier code prompt is cancelled.
+> Earlier revisions and test narratives below are retained as historical evidence, not current status or new gates.
+
+**Historical pre-release statement:** Everything below existed only on branch `feat/insurance-restoration` in the worktree
 `/Users/torlanpittman/Projects/.ps-worktrees/insurance-restoration` (cut from production commit `021f7c1`), as local
 files, or as drafts. **Nothing has been published, deployed, migrated, imported, enabled, spent or sent.** Each section ends
 with the exact approval it needs. The main checkout (`cleanup/usability-pass`, 118 dirty files) was not touched.
@@ -144,17 +152,17 @@ Google (needs a deployed page); WordPress rendering of the HTML inside the Avada
 ## 4. Exact production changes requested (each a separate yes/no)
 | # | Change | Reversible? | Approval needed |
 |---|---|---|---|
-| A | Apply migration `0076_restoration_quote_requests.sql` to production Neon (`ep-morning-base-adq5h6rq`) via the owner role — adds 5 nullable/defaulted columns + 1 partial index to `quote_requests` (Revision 2 removed the former settings seed) | additive; columns can stay unused; no data rewritten | **yes — approved 2026-11-07; Codex executes** |
-| B | Deploy branch `feat/insurance-restoration` (fast-forward onto `origin/main`; the push itself triggers Vercel production) | rollback = redeploy `021f7c1`; the form keeps working without 0076? **No** — the CTE writes the new columns, so A must precede B | **yes** (after A) |
-| C | Publish the five WordPress pages (Custom HTML block from `dist/<slug>.wp.html`, Rank Math title/description from `dist/<slug>.json`), after real photos are added | unpublish/trash restores; back up each new page draft | **yes**, per page |
-| D | Vercel Production env: add the new campaign ids to `GOOGLE_ADS_CAMPAIGN_CATEGORIES_JSON` as `restoration` (only after campaigns exist) | remove the keys | **yes** |
-| E | GA4: mark `quote_requested` as a key event after the first real event; import into Google Ads as primary conversion | un-star | **yes** |
-| F | Google Ads: import the 5 CSVs (campaigns stay Paused) | delete campaigns | **yes** |
-| G | Google Ads: **enable** the three campaigns = commit up to $19.70/day ≈ $599/month | pause | **yes — this is the spend decision** |
-| H | GBP: categories/services/description/photos per `GBP_AND_REVIEWS.md` | edit back | **yes** |
+| A | Apply migration `0076_restoration_quote_requests.sql` to production Neon (`ep-morning-base-adq5h6rq`) via the owner role — adds 5 nullable/defaulted columns + 1 partial index to `quote_requests` (Revision 2 removed the former settings seed) | additive; columns can stay unused; no data rewritten | **DONE 2026-11-07** (applied + verified, 21:37:50Z) |
+| B | Deploy branch `feat/insurance-restoration` (fast-forward onto `origin/main`; the push itself triggers Vercel production) | rollback = redeploy `021f7c1`; A must precede B (the CTE writes the 0076 columns) | **DONE 2026-11-07** — application source SHA `0d35d6e…`, Vercel READY |
+| C | Publish the five WordPress pages (Custom HTML block from `dist/<slug>.wp.html`, Rank Math title/description from `dist/<slug>.json`) — labelled generated illustrations approved in place of real photos | unpublish/trash restores; back up each new page draft | **DONE 2026-11-07** — ids 7630/7632/7634/7636/7638 published |
+| D | Vercel Production env: `GOOGLE_ADS_CAMPAIGN_CATEGORIES_JSON` with the three campaign ids → `restoration` | remove the keys | **SAVED before READY deployment 0d35d6e** — live spend display awaits shop-PIN sign-in; old code prompt cancelled |
+| E | GA4 `quote_requested` key event + Google Ads primary conversion | un-star | **DONE 2026-11-07** — conversion 7893957510, Primary, no value, not account default; one authorized test event |
+| F | Google Ads: import the 5 CSVs (campaigns stay Paused) | delete campaigns | **DONE 2026-11-07** — all five applied, zero-error previews; campaigns 24449757985 / 24443961749 / 24449757004 imported Paused, then enabled under G |
+| G | Google Ads: **enable** the three campaigns = commit up to $19.70/day ≈ $599/month | pause | **DONE 2026-11-07** — all three Enabled / Eligible (Learning); existing campaigns unchanged |
+| H | GBP: categories/services/description/photos per `GBP_AND_REVIEWS.md` | edit back | **open** — only the existing GBP location asset is used by the campaigns; no GBP profile edits made |
 
-Suggested order: A → B → (verify `/quote` and `/marketing/restoration` in production with a synthetic lead on the owner's
-instruction, then soft-cancel it) → C → E → F → D → G → H.
+Completed release: A/B/C/D/E/F/G. The single authorized live test is closed; do not send or cancel another inquiry.
+The internal report display awaits the owner’s shop-PIN sign-in. H remains an unexecuted draft.
 
 ## 5. Owner decisions — RESOLVED 2026-11-07 (see Revision 2 for how each was applied)
 1. **Glass fulfilment** — RESOLVED: third party through the shop's existing glass partner; pages say "we coordinate
@@ -168,10 +176,9 @@ instruction, then soft-cancel it) → C → E → F → D → G → H.
    completed Pitt Stop job." caption) so launch does not wait on real photos; real photos remain optional upgrades.
 5. **Budget** — APPROVED: release + up to $600/month for the new restoration ads. Codex verifies final readiness and
    executes; existing unrelated campaigns stay unchanged. The hail history caution stands ($9–$22 CPC, ~$253 per Google
-   conversion): the staged launch (vandalism + overspray first, ~$15/day, add water damage only if CPL < $60) is still
-   the recommended execution of the approved ceiling.
-6. **Search Console** — owner reports access was GRANTED (owner-reported, pending Codex verification before any
-   SEO reporting relies on it).
+   conversion). All three approved campaigns were enabled at $19.70/day; use the documented stop rules and review
+   measured performance before any new budget approval.
+6. **Search Console** — access VERIFIED; indexing requests accepted for all five pages (not proof of indexing).
 7. **Hub-page CTA** — stands as built (one CTA per damage type, approved with the release).
 
 ## 6. Costs
@@ -204,4 +211,4 @@ pause; GA4 = un-star.
   **Paid CAC** = spend ÷ distinct NEW customers with an invoiced, Google Ads–attributed completed job (repeat/organic/
   unknown-source excluded; "new" = no earlier completed order on the customer record). All three are same-window
   approximations, not click-cohort tracking, and are null whenever spend or the denominator is unknown/zero.
-- **SEO** = reportable once the owner-reported Search Console access is verified by Codex.
+- **SEO** = Search Console access is verified; indexing requests accepted. Actual indexing/ranking must be measured separately.
