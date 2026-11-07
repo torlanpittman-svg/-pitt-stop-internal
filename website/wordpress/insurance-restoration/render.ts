@@ -2,7 +2,8 @@
  * Renders a LandingPage (pages.ts) into:
  *   - wpBody(page, assets) — the COMPLETE body for a WordPress Custom HTML block: content, scoped styles
  *                        (every rule under `.ps-restore`, so nothing leaks into Avada and nothing depends
- *                        on theme classes), JSON-LD, and the attribution pass-through script. Images render
+ *                        on theme classes), JSON-LD, and the attribution pass-through / theme-booking-link
+ *                        script (ampersand-free: WordPress entity-encodes `&` inside script text). Images render
  *                        ONLY for assets really supplied in the manifest; generated illustrations always
  *                        carry the visible "Illustrative image — not a completed Pitt Stop job." caption;
  *   - previewHtml(page, assets) — a standalone page for owner review (adds preview chrome + labelled
@@ -65,7 +66,7 @@ export function illustrationFigure(illustrationId: string | null, assets: AssetM
   return `<figure class="${compact ? 'card-fig' : 'lead-fig'}"><img src="${esc(a.src)}" alt="${esc(a.alt ?? caption)}" loading="lazy">${cap}</figure>`
 }
 
-// ── Attribution pass-through (review fix 2026-11-07) ──────────────────────────────────────────────────
+// ── Attribution pass-through + theme booking retarget (review fix 2026-11-07, live fixes 2026-11-07) ──
 // The landing pages are static WordPress HTML, but their visitors can arrive from a Google Ads click
 // carrying gclid / utm_*. The CTAs ship with organic defaults (utm_source=website); without forwarding,
 // a paid click that navigates hub → service page → /quote would be relabelled as plain website traffic.
@@ -74,43 +75,118 @@ export function illustrationFigure(illustrationId: string | null, assets: AssetM
 // to the other restoration landing pages, so the chain survives cross-page navigation. No cookies, no
 // storage, no third-party transmission — it only edits the query string of links that already point at the
 // shop's own funnel/pages, with the same character filter cleanAttribution() applies server-side.
+//
+// Two constraints found on the LIVE pages after publication:
+//   1. WordPress entity-encodes literal ampersands inside script text (`&&` became `&#038;&#038;`), a
+//      SyntaxError that killed the whole script. The emitted script therefore contains NO literal `&`:
+//      boolean `&&` is written as nested ifs, and `&` inside embedded string literals is emitted as the
+//      JS unicode escape (backslash-u0026, see js()). attributionScript() throws at build time if one
+//      sneaks back in.
+//   2. The Avada theme injects its own booking links OUTSIDE `.ps-restore` (a fixed mobile bar + header
+//      buttons, all marked data-ps-book and pointing at the generic BOOK_HOST/book page). On these five
+//      pages those anchors are retargeted at the page's own quote CTA (the hub at its #types chooser) and
+//      relabelled, keeping the theme's bar and styling. Only data-ps-book anchors whose href is
+//      BOOK_HOST/book are touched — tel:, external and unrelated links never are — and a MutationObserver
+//      corrects theme markup inserted after this script runs.
 export const FORWARDED_ATTRIBUTION_KEYS = ATTRIBUTION_KEYS.filter((k) => k !== 'lp')
 
-export function attributionScript(): string {
-  const keys = JSON.stringify(FORWARDED_ATTRIBUTION_KEYS)
-  const landing = JSON.stringify(Object.fromEntries(PAGES.map((p) => [p.slug, 1])))
-  return `<script>
+/** JS literal for the inline script: like JSON.stringify, but every `&` becomes the unicode escape
+ *  (backslash-u0026) so the emitted script text never contains a literal ampersand for WordPress to
+ *  entity-encode. */
+const js = (v: unknown): string => JSON.stringify(v).replace(/&/g, '\\u0026')
+
+/** What the theme's data-ps-book booking anchors should become on this page. */
+export function themeBookTarget(page: LandingPage): { quote?: string; slug?: string; anchor?: string; label: string } {
+  return page.service
+    ? { quote: ctaUrl(page, 'theme'), slug: page.slug, label: 'Request Estimate' }
+    : { anchor: '#types', label: 'Choose Damage Type' }
+}
+
+export function attributionScript(page?: LandingPage): string {
+  const keys = js(FORWARDED_ATTRIBUTION_KEYS)
+  const landing = js(Object.fromEntries(PAGES.map((p) => [p.slug, 1])))
+  const book = page ? js(themeBookTarget(page)) : 'null'
+  const script = `<script>
 /* Pitt Stop attribution pass-through: forwards allow-listed ad-click parameters (gclid, utm_*, fbclid,
    ps_cid, ref) from this page's URL onto the estimate CTAs and the other restoration landing pages, so a
-   paid visit is not relabelled as organic website traffic. No cookies/storage, no third parties; it only
-   rewrites the query string of links that already point at the shop's own funnel or landing pages. */
+   paid visit is not relabelled as organic website traffic; also points the theme's own booking buttons
+   (data-ps-book, injected outside .ps-restore) at this page's quote funnel. No cookies/storage, no third
+   parties; it only rewrites links that already point at the shop's own funnel or landing pages.
+   This script must contain no literal ampersand: WordPress rewrites it to an HTML entity inside script
+   text, which is a SyntaxError. Boolean logic is nested ifs; embedded strings use the unicode escape. */
 function psRestoreClean(v){return String(v).replace(/[^\\w.\\-:/@ +%]/g,'').slice(0,120)}
 function psRestoreRewrite(href,incoming){
   'use strict';
-  var u;try{u=new URL(href,${JSON.stringify(SITE + '/')})}catch(e){return null}
+  var u;try{u=new URL(href,${js(SITE + '/')})}catch(e){return null}
   if(u.protocol!=='https:')return null;
   var KEYS=${keys},LANDING=${landing},changed=false,i,k;
-  var isQuote=u.origin===${JSON.stringify(BOOK_HOST)}&&u.pathname==='/quote';
-  var m=u.origin===${JSON.stringify(SITE)}?u.pathname.match(/^\\/([a-z0-9-]+)\\/?$/):null;
-  if(!isQuote&&!(m&&LANDING[m[1]]===1))return null;
-  for(i=0;i<KEYS.length;i++){k=KEYS[i];if(Object.prototype.hasOwnProperty.call(incoming,k)&&incoming[k]){u.searchParams.set(k,incoming[k]);changed=true}}
+  var ok=false;
+  if(u.origin===${js(BOOK_HOST)}){if(u.pathname==='/quote')ok=true}
+  if(!ok){if(u.origin===${js(SITE)}){var m=u.pathname.match(/^\\/([a-z0-9-]+)\\/?$/);if(m){if(LANDING[m[1]]===1)ok=true}}}
+  if(!ok)return null;
+  for(i=0;i<KEYS.length;i++){k=KEYS[i];if(Object.prototype.hasOwnProperty.call(incoming,k)){if(incoming[k]){u.searchParams.set(k,incoming[k]);changed=true}}}
   return changed?u.toString():null
 }
 (function(){
   if(typeof document==='undefined'||typeof window==='undefined')return;
-  function psRestoreApply(){
-    var KEYS=${keys},incoming={},found=false,i,v;
-    try{var sp=new URLSearchParams(window.location.search);for(i=0;i<KEYS.length;i++){v=sp.get(KEYS[i]);if(v){v=psRestoreClean(v);if(v){incoming[KEYS[i]]=v;found=true}}}}catch(e){return}
-    if(!found)return;
-    var links=document.querySelectorAll('.ps-restore a[href]');
-    for(i=0;i<links.length;i++){var next=psRestoreRewrite(links[i].getAttribute('href')||'',incoming);if(next)links[i].setAttribute('href',next)}
+  var KEYS=${keys},BOOK=${book},INC=null;
+  function psRestoreIncoming(){
+    if(INC)return INC;
+    var out={},i,v;
+    try{var sp=new URLSearchParams(window.location.search);for(i=0;i<KEYS.length;i++){v=sp.get(KEYS[i]);if(v){v=psRestoreClean(v);if(v)out[KEYS[i]]=v}}}catch(e){}
+    INC=out;return out
   }
+  function psRestoreApply(){
+    var incoming=psRestoreIncoming(),found=false,k;
+    for(k in incoming){found=true;break}
+    if(!found)return;
+    var links=document.querySelectorAll('.ps-restore a[href]'),i,next;
+    for(i=0;i<links.length;i++){next=psRestoreRewrite(links[i].getAttribute('href')||'',incoming);if(next)links[i].setAttribute('href',next)}
+  }
+  /* Retarget ONLY the theme's data-ps-book anchors that point at the booking host's generic /book page;
+     tel:, external and unrelated links are never touched. Processed anchors are marked so the observer
+     re-scan is idempotent (the relabel itself fires one childList mutation; the next scan is a no-op).
+     The data-ps-book attribute is removed from a retargeted anchor: the theme's sitewide delegated click
+     listener keys on it to emit the booking-click GA4 event, which must not fire for the quote funnel. */
+  function psRestoreBook(){
+    if(!BOOK)return;
+    var list,i,a,pos,u;
+    try{list=document.querySelectorAll('a[data-ps-book]')}catch(e){return}
+    for(i=0;i<list.length;i++){
+      a=list[i];
+      if(a.getAttribute('data-ps-restored'))continue;
+      pos=psRestoreClean(a.getAttribute('data-ps-book')||'');
+      if(!pos)continue;
+      try{u=new URL(a.getAttribute('href')||'',${js(SITE + '/')})}catch(e){continue}
+      if(u.origin!==${js(BOOK_HOST)})continue;
+      if(u.pathname!=='/book')continue;
+      a.setAttribute('data-ps-restored','1');
+      if(BOOK.anchor){a.setAttribute('href',BOOK.anchor)}
+      else{
+        var q;try{q=new URL(BOOK.quote)}catch(e){continue}
+        q.searchParams.set('utm_content',BOOK.slug+'_'+pos);
+        var next=q.toString();
+        var fwd=psRestoreRewrite(next,psRestoreIncoming());
+        a.setAttribute('href',fwd?fwd:next)
+      }
+      if(a.textContent!==BOOK.label)a.textContent=BOOK.label;
+      if(a.getAttribute('aria-label'))a.setAttribute('aria-label',BOOK.label);
+      a.removeAttribute('data-ps-book')
+    }
+  }
+  function psRestoreRun(){psRestoreApply();psRestoreBook()}
   /* Run only once the whole document is parsed: this inline script sits mid-page, and markup AFTER it
      (e.g. the preview's sticky CTA) must be rewritten too. */
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',psRestoreApply);
-  else psRestoreApply();
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',psRestoreRun);
+  else psRestoreRun();
+  if(BOOK){if(typeof MutationObserver!=='undefined'){
+    var rootEl=document.documentElement||document.body;
+    if(rootEl){try{new MutationObserver(psRestoreBook).observe(rootEl,{childList:true,subtree:true})}catch(e){}}
+  }}
 })();
 </script>`
+  if (script.includes('&')) throw new Error('attribution script contains a literal ampersand; WordPress entity-encodes script text and breaks execution')
+  return script
 }
 
 /** CTA to the ONE estimate funnel on the booking host, carrying website attribution + the landing-page slug. */
@@ -257,7 +333,7 @@ export function wpBody(page: LandingPage, assets: AssetManifest = {}): string {
     `</div>`,
     `<script type="application/ld+json">${JSON.stringify(faqJsonLd(page))}</script>`,
     `<script type="application/ld+json">${JSON.stringify(serviceJsonLd(page))}</script>`,
-    attributionScript(),
+    attributionScript(page),
   ].filter(Boolean).join('\n')
 }
 

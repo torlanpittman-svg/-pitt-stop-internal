@@ -7,6 +7,9 @@
  * CSS scoped under `.ps-restore` (no theme dependency, no global leaks), expose valid FAQ + Service
  * JSON-LD matching the visible text, and render images ONLY for supplied manifest assets — generated
  * illustrations always with the visible provenance caption, never on real-photo slots.
+ * Live fixes 2026-11-07: the emitted script must contain NO literal ampersand (WordPress entity-encodes
+ * script text, a SyntaxError that disabled attribution), and the theme's own data-ps-book booking anchors
+ * (mobile bar + header, outside .ps-restore) are retargeted at the page's quote CTA (hub → #types).
  */
 import { describe, it, expect } from 'vitest'
 import { PAGES, INSURER_DECIDES, CLAIM_PROCESS, SHOP, BOOK_HOST, SITE, ILLUSTRATIONS } from './pages'
@@ -237,43 +240,174 @@ describe('attribution pass-through script', () => {
   })
 
   // ── Actual execution against a fake DOM (not just the pure helpers): the inline script sits mid-page,
-  // so it must defer to DOMContentLoaded and rewrite markup that appears AFTER it (the preview sticky CTA).
-  interface FakeAnchor { href: string; getAttribute: (k: string) => string; setAttribute: (k: string, v: string) => void }
-  function execute(search: string, hrefs: string[], readyState: 'loading' | 'complete') {
-    const m = wpBody(vandal).match(/<script>\n\/\* Pitt Stop attribution pass-through([\s\S]*?)<\/script>/)
-    expect(m).toBeTruthy()
-    const anchors: FakeAnchor[] = hrefs.map((h) => ({ href: h, getAttribute() { return this.href }, setAttribute(_k: string, v: string) { this.href = v } }))
+  // so it must defer to DOMContentLoaded, rewrite markup that appears AFTER it (the preview sticky CTA),
+  // and retarget the theme's data-ps-book booking anchors that live OUTSIDE .ps-restore.
+  interface FakeAnchor { attrs: Record<string, string>; textContent: string; getAttribute: (k: string) => string | null; setAttribute: (k: string, v: string) => void; removeAttribute: (k: string) => void }
+  const anchor = (href: string, attrs: Record<string, string> = {}, text = ''): FakeAnchor => ({
+    attrs: { href, ...attrs },
+    textContent: text,
+    getAttribute(k) { return this.attrs[k] ?? null },
+    setAttribute(k, v) { this.attrs[k] = v },
+    removeAttribute(k) { delete this.attrs[k] },
+  })
+  function scriptSrc(page = vandal): string {
+    const m = wpBody(page).match(/<script>\n\/\* Pitt Stop attribution pass-through([\s\S]*?)<\/script>/)
+    expect(m, 'attribution script present in the WP body').toBeTruthy()
+    return `/*${m![1]}`
+  }
+  function execute(src: string, search: string, pageAnchors: FakeAnchor[], readyState: 'loading' | 'complete', themeAnchors: FakeAnchor[] = []) {
     const listeners: Record<string, Array<() => void>> = {}
+    const observerCbs: Array<() => void> = []
     const fakeDocument = {
       readyState,
+      documentElement: {}, // lets the MutationObserver attach
       addEventListener(ev: string, fn: () => void) { (listeners[ev] ??= []).push(fn) },
-      querySelectorAll(sel: string) { expect(sel).toBe('.ps-restore a[href]'); return anchors },
+      querySelectorAll(sel: string) {
+        if (sel === 'a[data-ps-book]') return themeAnchors.filter((a) => a.attrs['data-ps-book'] !== undefined)
+        expect(sel).toBe('.ps-restore a[href]')
+        return pageAnchors
+      },
     }
-    const fakeWindow = { location: { search } }
-    new Function('document', 'window', `/*${m![1]}`)(fakeDocument, fakeWindow)
-    return { anchors, fire: (ev: string) => (listeners[ev] ?? []).forEach((f) => f()) }
+    class FakeMutationObserver {
+      private cb: () => void
+      constructor(cb: () => void) { this.cb = cb }
+      observe(target: unknown, opts: Record<string, boolean>) {
+        expect(target).toBe(fakeDocument.documentElement)
+        expect(opts).toEqual({ childList: true, subtree: true }) // no attribute/characterData observation → no self-trigger on setAttribute
+        observerCbs.push(this.cb)
+      }
+    }
+    new Function('document', 'window', 'MutationObserver', src)(fakeDocument, { location: { search } }, FakeMutationObserver)
+    return { fire: (ev: string) => (listeners[ev] ?? []).forEach((f) => f()), mutate: () => observerCbs.forEach((f) => f()) }
   }
   it('while the document is still parsing it defers, then rewrites EVERY CTA including the late sticky one', () => {
-    const hero = ctaUrl(vandal, 'hero'); const sticky = ctaUrl(vandal, 'sticky')
-    const { anchors, fire } = execute('?gclid=G7&utm_source=google&utm_medium=cpc', [hero, sticky, `tel:${SHOP.tel}`], 'loading')
-    expect(anchors.map((a) => a.href)).toEqual([hero, sticky, `tel:${SHOP.tel}`]) // nothing touched pre-DOMContentLoaded
+    const hero = anchor(ctaUrl(vandal, 'hero')); const sticky = anchor(ctaUrl(vandal, 'sticky')); const tel = anchor(`tel:${SHOP.tel}`)
+    const { fire } = execute(scriptSrc(), '?gclid=G7&utm_source=google&utm_medium=cpc', [hero, sticky, tel], 'loading')
+    expect([hero, sticky, tel].map((a) => a.attrs.href)).toEqual([ctaUrl(vandal, 'hero'), ctaUrl(vandal, 'sticky'), `tel:${SHOP.tel}`]) // nothing touched pre-DOMContentLoaded
     fire('DOMContentLoaded')
-    for (const a of [anchors[0], anchors[1]]) {
-      const u = new URL(a.href)
+    for (const a of [hero, sticky]) {
+      const u = new URL(a.attrs.href)
       expect(u.searchParams.get('gclid')).toBe('G7'); expect(u.searchParams.get('utm_source')).toBe('google'); expect(u.searchParams.get('utm_medium')).toBe('cpc')
       expect(u.searchParams.get('service')).toBe('vandalism'); expect(u.searchParams.get('lp')).toBe(vandal.slug)
     }
-    expect(new URL(anchors[1].href).searchParams.get('utm_content')).toBe(`${vandal.slug}_sticky`) // the sticky CTA carries the click too
-    expect(anchors[2].href).toBe(`tel:${SHOP.tel}`)
+    expect(new URL(sticky.attrs.href).searchParams.get('utm_content')).toBe(`${vandal.slug}_sticky`) // the sticky CTA carries the click too
+    expect(tel.attrs.href).toBe(`tel:${SHOP.tel}`)
   })
   it('runs immediately on an already-complete document, and without incoming params it changes nothing', () => {
-    const hero = ctaUrl(vandal, 'hero')
-    const done = execute('?gclid=G7', [hero], 'complete')
-    expect(new URL(done.anchors[0].href).searchParams.get('gclid')).toBe('G7') // no listener needed
-    const organic = execute('', [hero], 'complete')
-    expect(organic.anchors[0].href).toBe(hero)
-    const hostile = execute('?gclid=%3Cscript%3E&utm_source=google', [hero], 'complete')
-    expect(new URL(hostile.anchors[0].href).searchParams.get('gclid')).toBe('script') // cleaned, not dropped raw
+    const done = anchor(ctaUrl(vandal, 'hero'))
+    execute(scriptSrc(), '?gclid=G7', [done], 'complete')
+    expect(new URL(done.attrs.href).searchParams.get('gclid')).toBe('G7') // no listener needed
+    const organic = anchor(ctaUrl(vandal, 'hero'))
+    execute(scriptSrc(), '', [organic], 'complete')
+    expect(organic.attrs.href).toBe(ctaUrl(vandal, 'hero'))
+    const hostile = anchor(ctaUrl(vandal, 'hero'))
+    execute(scriptSrc(), '?gclid=%3Cscript%3E&utm_source=google', [hostile], 'complete')
+    expect(new URL(hostile.attrs.href).searchParams.get('gclid')).toBe('script') // cleaned, not dropped raw
+  })
+
+  // ── Live bug 1 (2026-11-07): WordPress entity-encoded `&&` inside the script text (`&#038;&#038;`),
+  // a SyntaxError that disabled ALL attribution forwarding on the published pages.
+  describe('WordPress ampersand encoding', () => {
+    it('every page ships an attribution script with NO literal ampersand anywhere', () => {
+      for (const p of PAGES) {
+        const m = wpBody(p).match(/<script>\n\/\* Pitt Stop attribution pass-through[\s\S]*?<\/script>/)
+        expect(m, p.slug).toBeTruthy()
+        expect(m![0].includes('&'), `literal ampersand in the ${p.slug} script`).toBe(false)
+      }
+      expect(attributionScript().includes('&'), 'page-less export').toBe(false)
+    })
+    it('survives simulated WP entity-encoding: the transform is a no-op and tracking still forwards', () => {
+      const src = scriptSrc()
+      const wpEncoded = src.replace(/&/g, '&#038;') // what WordPress does to raw ampersands in script text
+      expect(wpEncoded).toBe(src) // nothing left for WordPress to mangle
+      const cta = anchor(ctaUrl(vandal, 'hero'))
+      execute(wpEncoded, '?gclid=G1&utm_source=google', [cta], 'complete')
+      const u = new URL(cta.attrs.href)
+      expect(u.searchParams.get('gclid')).toBe('G1')
+      expect(u.searchParams.get('utm_source')).toBe('google')
+      expect(u.searchParams.get('service')).toBe('vandalism')
+      expect(u.searchParams.get('lp')).toBe(vandal.slug)
+    })
+  })
+
+  // ── Live bug 2 (2026-11-07): Avada injects a fixed mobile booking bar + header booking links OUTSIDE
+  // .ps-restore, all pointing at the generic /book page. On these five pages they must point at the
+  // page's own quote CTA (hub → #types) without touching phone/external/unrelated links.
+  describe('theme booking links (data-ps-book, outside .ps-restore)', () => {
+    const themeBar = () => [
+      anchor('tel:+19796966640', {}, 'Call'),
+      anchor(`${BOOK_HOST}/book?utm_source=website&utm_content=mobile_bar`, { 'data-ps-book': 'mobile_bar' }, 'Book Appointment'),
+      anchor(`${BOOK_HOST}/book?utm_source=website&utm_content=sticky_header`, { 'data-ps-book': 'sticky_header', 'aria-label': 'Book an appointment' }, 'Book Appointment'),
+      anchor('https://evil.example/book', { 'data-ps-book': 'header' }, 'Book'),
+      anchor(`${BOOK_HOST}/quote?service=glass&lp=auto-glass-repair`, { 'data-ps-book': 'header' }, 'Book'),
+    ]
+    it('service page, organic: book-host /book anchors become this page’s quote CTA labelled Request Estimate; all else untouched', () => {
+      const bar = themeBar()
+      execute(scriptSrc(vandal), '', [], 'complete', bar)
+      for (const a of [bar[1], bar[2]]) {
+        const u = new URL(a.attrs.href)
+        expect(u.origin + u.pathname).toBe(`${BOOK_HOST}/quote`)
+        expect(u.searchParams.get('service')).toBe('vandalism')
+        expect(u.searchParams.get('lp')).toBe(vandal.slug)
+        expect(u.searchParams.get('utm_source')).toBe('website') // organic stays organic
+        expect(a.textContent).toBe('Request Estimate')
+      }
+      expect(new URL(bar[1].attrs.href).searchParams.get('utm_content')).toBe(`${vandal.slug}_mobile_bar`)
+      expect(new URL(bar[2].attrs.href).searchParams.get('utm_content')).toBe(`${vandal.slug}_sticky_header`)
+      expect(bar[2].attrs['aria-label']).toBe('Request Estimate')
+      // retargeted anchors no longer match the theme's delegated 'a[data-ps-book]' booking-click listener,
+      // so the quote funnel never emits the old booking GA4 conversion; untouched anchors keep the attribute
+      expect(bar[1].attrs['data-ps-book']).toBeUndefined()
+      expect(bar[2].attrs['data-ps-book']).toBeUndefined()
+      expect(bar[3].attrs['data-ps-book']).toBe('header')
+      expect(bar[4].attrs['data-ps-book']).toBe('header')
+      expect(bar[0].attrs.href).toBe('tel:+19796966640'); expect(bar[0].textContent).toBe('Call')          // phone link intact
+      expect(bar[3].attrs.href).toBe('https://evil.example/book'); expect(bar[3].textContent).toBe('Book') // wrong host → untouched
+      expect(bar[4].attrs.href).toBe(`${BOOK_HOST}/quote?service=glass&lp=auto-glass-repair`)              // /quote, not /book → untouched
+    })
+    it('paid click: gclid + UTMs are forwarded onto the retargeted CTA; lp/service/email can never leak in', () => {
+      const bar = themeBar()
+      execute(scriptSrc(vandal), '?gclid=G7&utm_source=google&utm_medium=cpc&lp=evil-page&service=glass&email=a%40b.com', [], 'complete', bar)
+      const u = new URL(bar[1].attrs.href)
+      expect(u.searchParams.get('gclid')).toBe('G7')
+      expect(u.searchParams.get('utm_source')).toBe('google')
+      expect(u.searchParams.get('utm_medium')).toBe('cpc')
+      expect(u.searchParams.get('lp')).toBe(vandal.slug)      // incoming lp never overrides the page's own
+      expect(u.searchParams.get('service')).toBe('vandalism') // nor the service
+      expect(u.searchParams.get('email')).toBeNull()          // non-allow-listed PII is never propagated
+    })
+    it('hub: retargeted to the #types chooser (an in-page anchor keeps the incoming query in the browser)', () => {
+      const bar = themeBar()
+      execute(scriptSrc(hub), '?gclid=G7', [], 'complete', bar)
+      expect(bar[1].attrs.href).toBe('#types')
+      expect(bar[1].textContent).toBe('Choose Damage Type')
+      expect(bar[1].attrs['data-ps-book']).toBeUndefined() // the old booking-click listener no longer matches
+      expect(bar[2].attrs.href).toBe('#types')
+      expect(bar[0].attrs.href).toBe('tel:+19796966640')
+    })
+    it('theme markup inserted AFTER the initial run is corrected by the observer, idempotently (no loops)', () => {
+      const bar: FakeAnchor[] = []
+      const { mutate } = execute(scriptSrc(vandal), '?gclid=G7', [], 'complete', bar)
+      const late = anchor(`${BOOK_HOST}/book?utm_source=website&utm_content=mobile_bar`, { 'data-ps-book': 'mobile_bar' }, 'Book Appointment')
+      bar.push(late)
+      mutate()
+      const first = late.attrs.href
+      expect(new URL(first).searchParams.get('gclid')).toBe('G7') // late markup still carries the click
+      expect(late.attrs['data-ps-restored']).toBe('1')
+      expect(late.attrs['data-ps-book']).toBeUndefined() // the old booking-click listener no longer matches
+      expect(late.textContent).toBe('Request Estimate')
+      mutate() // the relabel itself fires one childList mutation; the re-scan must change nothing
+      expect(late.attrs.href).toBe(first)
+    })
+    it('the page-less attributionScript() export has no retarget config and leaves theme anchors alone', () => {
+      const m = attributionScript().match(/<script>\n\/\* Pitt Stop attribution pass-through([\s\S]*?)<\/script>/)
+      expect(m).toBeTruthy()
+      const bar = themeBar()
+      execute(`/*${m![1]}`, '?gclid=G7', [], 'complete', bar)
+      expect(bar[1].attrs.href).toBe(`${BOOK_HOST}/book?utm_source=website&utm_content=mobile_bar`)
+      expect(bar[1].textContent).toBe('Book Appointment')
+      expect(bar[1].attrs['data-ps-book']).toBe('mobile_bar') // untouched → still a booking link for the theme listener
+    })
   })
 })
 
