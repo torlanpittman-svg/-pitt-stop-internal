@@ -11,7 +11,7 @@ import { getFullCatalog, listTechnicianInstructions, type FullCatalogItem, type 
 import { serviceLabels } from './job-lines'
 import { findOrCreateVehicle, getVehicleById, createServiceOrder } from '@/apps/workflow/db'
 import { findOrCreateIntakeCustomer } from '@/apps/directory/intake-customer'
-import { getOrCreateEstimate, promoteTextServices, recomputeEstimate, setExplicitPrice, setAgreedPrice, setInternalNote, toMatchMethod, type PromoteHint } from '@/apps/workflow/estimate-db'
+import { getOrCreateEstimate, promoteTextServices, recomputeEstimate, setExplicitPrice, setAgreedPrice, setInternalNote, toMatchMethod, saveIntakeServicePrices, retainIntakeReference, markIntakePricesSaved, type PromoteHint } from '@/apps/workflow/estimate-db'
 import { addEstimatePart, addTireWork, installationCatalog } from '@/apps/parts/estimate-parts'
 import { cleanDetail } from '@/apps/quickbooks/retail-format'
 import { searchServiceHistory, type HistoryEntry, type ServiceMatch } from './service-history'
@@ -86,6 +86,9 @@ export async function getQuickEntryCatalog(): Promise<QuickEntryCatalog> {
 export interface JobLineInput {
   catalogId?: string | null; kind: 'package' | 'addon' | 'custom'
   name: string; size?: string | null; condition?: string | null; priceCents: number
+  /** True when a price was actually typed for this line. Only matters at $0: an entered 0 is a free
+   *  service (saved as $0), a blank price is "not priced yet" (saved as no price). */
+  priceEntered?: boolean
   /** The employee's original typed wording (kept for traceability; never sent to QuickBooks). */
   entryText?: string | null
   /** Job-specific area/component ("passenger seat"), kept separate from the service identity. */
@@ -106,8 +109,12 @@ export function sanitizeJobLine(l: JobLineInput): JobLineInput {
   const tq = Number(l.tires?.quantity)
   const tires = l.tires && ['supply', 'install_customer', 'both'].includes(l.tires.mode) && Number.isInteger(tq) && tq >= 1 && tq <= 12
     ? { mode: l.tires.mode, quantity: tq } : null
+  const cents = Number(l.priceCents)
   return {
     ...l,
+    // A price is whole cents ≥ 0; anything else (missing, NaN, negative) is "no price", never a number.
+    priceCents: Number.isFinite(cents) && cents > 0 ? Math.round(cents) : 0,
+    priceEntered: l.priceEntered === true && Number.isFinite(cents) && cents >= 0,
     name: String(l.name ?? '').replace(/\s+/g, ' ').trim().slice(0, 160),
     entryText: entry || null,
     detail: cleanDetail(l.detail),
@@ -121,13 +128,17 @@ export function sanitizeJobLine(l: JobLineInput): JobLineInput {
 
 const tireNoun = (qty: number) => (qty === 1 ? 'Tire' : 'Tires')
 
+/** Did the person at check-in give this line a price? (> $0, or an explicitly typed $0.) */
+export const hasEnteredPrice = (l: Pick<JobLineInput, 'priceCents' | 'priceEntered'>): boolean =>
+  l.priceCents > 0 || (l.priceEntered === true && l.priceCents === 0)
+
 /** Work Board label(s) for one intake line — exactly the estimate row titles it will produce. */
 function labelsFor(l: JobLineInput, installName: string | null): string[] {
-  if (l.tires && installName) {
+  if (l.tires) {
     const noun = tireNoun(l.tires.quantity)
+    // Supplying tires only needs no installation service; its one row is the tire part itself.
     if (l.tires.mode === 'supply') return [noun]
-    if (l.tires.mode === 'both') return [noun, installName]
-    return [`Customer-supplied ${noun.toLowerCase()}`, installName]
+    if (installName) return [l.tires.mode === 'both' ? noun : `Customer-supplied ${noun.toLowerCase()}`, installName]
   }
   if (l.partSupply) return [l.name]
   return [l.detail && !l.name.toLowerCase().includes(l.detail.toLowerCase()) ? `${l.name} — ${l.detail}` : l.name]
@@ -154,8 +165,8 @@ export interface CreateJobInput {
   /** Manager/admin-entered authoritative pre-fee/pre-tax work price (cents). The route
    *  only sets this for a manager/admin actor; null/absent → itemized/$0 as today. */
   workPriceCents?: number | null
-  /** Employee-confirmed EXPECTED Job value at intake (pre-fee/pre-tax, cents) — the sum of the
-   *  per-service intake prices. Operational production value; NOT the authoritative invoice price. */
+  /** The total entered at intake (pre-fee/pre-tax, cents) — the sum of the per-service intake prices.
+   *  Kept as the intake record; the prices themselves are saved on the services (lines[].priceCents). */
   agreedPriceCents?: number | null
   /** Per-service intake audit: employee text + matched historical family/suggestion + confirmed price. */
   agreedServices?: Array<{ originalText: string; matchedFamily?: string | null; matchedDisplay?: string | null; suggestedCents?: number | null; sampleSize?: number | null; confirmedCents: number }>
@@ -253,13 +264,26 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
   try {
     const est = await getOrCreateEstimate(order.id, input.createdBy ?? null)
     const actor = input.createdBy ?? null
+    // A manager's flat Work Price is the whole price (explicit_pretax) — then, exactly as before, no
+    // per-line price is written. Otherwise every price entered beside a service is saved AS that
+    // service's price, so the invoice opens with it and nothing can replace it later.
+    const flat = !!(input.workPriceCents && input.workPriceCents > 0)
+    const enteredCents = lines.filter(hasEnteredPrice).reduce((s, l) => s + l.priceCents, 0)
+    let attachedCents = 0
+    const attached = new Set<JobLineInput>()
     // Confirmed parts and clarified tire work go through the ONE parts workflow first (special-order
     // part + installation-labor review; no price is invented — the manager prices them on the estimate).
     // Each is best-effort: on failure its label is promoted below as a plain service, so nothing is lost.
     for (const l of lines) {
       try {
         if (l.tires && usable(l)) await addTireWork(order.id, { mode: l.tires.mode, quantity: l.tires.quantity, entryText: l.entryText ?? l.name }, actor, null)
-        else if (l.partSupply) await addEstimatePart(order.id, { description: l.name, supply: l.partSupply, entryText: l.entryText ?? null }, actor)
+        else if (l.partSupply) {
+          // One shop-supplied part, one entered price → that is its customer price. (Tire work and a
+          // customer-supplied part have no single line an entered amount belongs to — see below.)
+          const sell = !flat && l.partSupply === 'shop' && hasEnteredPrice(l) ? l.priceCents : null
+          await addEstimatePart(order.id, { description: l.name, supply: l.partSupply, entryText: l.entryText ?? null, sellPriceCents: sell }, actor)
+          if (sell != null) { attachedCents += sell; attached.add(l) }
+        }
       } catch (err) {
         console.error('[quick-entry] part intake failed (kept as a service line):', err)
       }
@@ -283,8 +307,8 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
       // subtotal (explicit_pretax). No per-service line prices are fabricated.
       await setExplicitPrice(est.id, input.workPriceCents, input.createdBy ?? null)
     }
-    // Employee-confirmed EXPECTED value at intake (any actor). Operational production value only —
-    // does NOT set the authoritative invoice price / price_mode / fees / tax / QuickBooks.
+    // The intake record (any actor): total + per-service audit, never rewritten afterwards. It does not
+    // set price_mode or touch QuickBooks; the entered prices are saved on the services just below.
     if (input.agreedPriceCents && input.agreedPriceCents > 0) {
       await setAgreedPrice(est.id, input.agreedPriceCents, {
         services: input.agreedServices ?? [], enteredBy: input.createdBy ?? null, at: new Date().toISOString(),
@@ -293,7 +317,17 @@ export async function createQuickEntryJob(input: CreateJobInput): Promise<{ jobI
     if (input.internalNote && input.internalNote.trim()) {
       await setInternalNote(est.id, input.internalNote.trim())
     }
-    await recomputeEstimate(est.id)               // itemized $0, or explicit price + fees/tax
+    if (!flat && lines.some(hasEnteredPrice)) {
+      // Each remaining entered price → the price line of the service its label became (one insert).
+      const entries = lines.filter((l) => hasEnteredPrice(l) && !attached.has(l))
+        .map((l) => ({ title: usable(l) ? labelsFor(l, installName)[0] : l.name, cents: l.priceCents }))
+      attachedCents += (await saveIntakeServicePrices(est.id, entries)).savedCents
+      // An entered amount with no line of its own (tire work, a customer-supplied part) is never
+      // dropped: the full entered total stays on the estimate as the labeled agreed reference.
+      if (attachedCents !== enteredCents) await retainIntakeReference(est.id, enteredCents)
+      await markIntakePricesSaved(est.id)         // the intake record is now on the lines — never re-applied
+    }
+    await recomputeEstimate(est.id)               // entered prices (or the flat price) + fees/tax via the one engine
   } catch (err) {
     console.error('[quick-entry] unified estimate build failed (Job still created):', err)
   }

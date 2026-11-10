@@ -82,3 +82,42 @@ describe('estimate part-review actions — server-side permissions', () => {
     expect(await db.select().from(jobParts)).toHaveLength(0)
   })
 })
+
+describe('price edits — a missing or unloaded amount is refused, never saved as $0', () => {
+  const priceOf = async (serviceId: string) => {
+    const [svc] = await db.select().from(jobServices).where(eq(jobServices.id, serviceId))
+    const lines = await db.execute(`SELECT price_cents FROM job_line_items WHERE job_service_id = '${svc.id}' AND generated = false`)
+    return (lines.rows as { price_cents: number }[]).map((l) => l.price_cents)
+  }
+
+  it('set_service_price with no / null / blank / text / NaN / negative amount → 400 and the saved price stays', async () => {
+    const { orderId, serviceId } = await jobWithPartLine()
+    for (const cents of [undefined, null, '', '125', 'abc', Number.NaN, -5, {}]) {
+      const res = await call(orderId, { action: 'set_service_price', serviceId, cents })
+      expect(res.status).toBe(400)
+      expect((await res.json() as { ok: boolean }).ok).toBe(false)
+    }
+    expect((await call(orderId, { action: 'set_service_price', cents: 100 })).status).toBe(400)   // no line named
+    expect(await priceOf(serviceId)).toEqual([26500])
+  })
+
+  it('set_work_total and a priced add_service refuse a missing amount the same way', async () => {
+    const { orderId, serviceId } = await jobWithPartLine()
+    expect((await call(orderId, { action: 'set_work_total' })).status).toBe(400)
+    expect((await call(orderId, { action: 'set_work_total', cents: null })).status).toBe(400)
+    expect((await call(orderId, { action: 'add_service', title: 'Wax', custom: true, cents: 'abc' })).status).toBe(400)
+    expect(await priceOf(serviceId)).toEqual([26500])
+    expect(await db.select().from(jobServices).where(eq(jobServices.title, 'Wax'))).toHaveLength(0)
+  })
+
+  it('a real edit still saves — including an intentional $0 — and leaves other lines alone', async () => {
+    const { orderId, serviceId } = await jobWithPartLine()
+    const added = await (await call(orderId, { action: 'add_service', title: 'Hand wax', custom: true, cents: 4500 })).json() as { ok: boolean; view: { services: Array<{ id: string; title: string; priceCents: number | null }> } }
+    expect(added.ok).toBe(true)
+    const wax = added.view.services.find((s) => s.title === 'Hand wax')!
+    expect(wax.priceCents).toBe(4500)
+    const res = await (await call(orderId, { action: 'set_service_price', serviceId: wax.id, cents: 0 })).json() as typeof added
+    expect(res.view.services.map((s) => [s.title, s.priceCents])).toEqual([['Driver mirror assembly', 26500], ['Hand wax', 0]])
+    expect(await priceOf(serviceId)).toEqual([26500])
+  })
+})

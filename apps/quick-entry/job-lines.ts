@@ -2,6 +2,9 @@
 export interface JobLine {
   key: string; catalogId: string | null; kind: 'package' | 'addon' | 'custom'
   name: string; size?: string | null; condition?: string | null; priceCents: number
+  /** Exactly what was typed in this line's price box (kept so "12.50" and an intentional "0" can be
+   *  typed and told apart from a blank). Absent when the price was prefilled or never touched. */
+  priceText?: string
   /** What the employee actually typed (kept; never shown on the invoice). */
   entryText?: string | null
   /** Job-specific area/component ("passenger seat"), separate from the service identity. */
@@ -96,6 +99,30 @@ export function tierLabel(size?: string | null, condition?: string | null): stri
   const s = (size ?? '').replace(/_/g, ' ')
   const c = condition ?? ''
   return [s, c].filter(Boolean).join(' · ')
+}
+
+// ── The per-line price box (pure, so it is unit-tested without a browser) ─────────────────────────
+/** Typed text → whole cents (0 when blank or not a number). */
+export function priceTextToCents(text: string): number {
+  const n = parseFloat(String(text).replace(/[^0-9.]/g, ''))
+  return Number.isFinite(n) ? Math.round(n * 100) : 0
+}
+/** What the price box shows: exactly what was typed; otherwise the line's amount; blank when unpriced. */
+export function linePriceText(l: Pick<JobLine, 'priceCents' | 'priceText'>): string {
+  return l.priceText ?? (l.priceCents ? (l.priceCents / 100).toString() : '')
+}
+/** The line after typing in its price box. */
+export function withTypedPrice<T extends Pick<JobLine, 'priceCents' | 'priceText'>>(l: T, text: string): T {
+  return { ...l, priceText: text, priceCents: priceTextToCents(text) }
+}
+/** The line after its price was set by a tap (suggestion / catalog price), not typed. */
+export function withSetPrice<T extends Pick<JobLine, 'priceCents' | 'priceText'>>(l: T, cents: number): T {
+  return { ...l, priceText: undefined, priceCents: cents }
+}
+/** Was a price given for this line? More than $0, or a 0 that was actually typed (a free service). A
+ *  blank box is "not priced yet" and is never sent as $0. */
+export function linePriceEntered(l: Pick<JobLine, 'priceCents' | 'priceText'>): boolean {
+  return l.priceCents > 0 || (l.priceCents === 0 && /\d/.test(l.priceText ?? ''))
 }
 
 /** Selected service labels for the Work Board card: standard package names plus

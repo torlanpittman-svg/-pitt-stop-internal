@@ -33,6 +33,16 @@ async function guard(req: Request): Promise<{ ok: true; name: string | null; rol
   return { ok: true, name: actor.name, role: actor.role }
 }
 
+/**
+ * A money amount sent by the screen: a real number ≥ 0 → whole cents. Anything else — missing, null,
+ * '', NaN, text — is NOT $0. It is refused (null → 400), so a form value that never loaded or failed to
+ * parse can never overwrite a saved price with zero.
+ */
+function centsOf(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : null
+}
+const badAmount = () => NextResponse.json({ ok: false, error: 'That amount didn’t come through, so nothing was changed. Enter the price again.' }, { status: 400 })
+
 /** Optional "remember this wording" (manager-approved alternate name). Never fails the save itself. */
 async function maybeRememberAlias(body: Record<string, unknown>, actor: string | null): Promise<string | null> {
   if (body.rememberAlias !== true || typeof body.catalogId !== 'string' || !body.catalogId) return null
@@ -67,14 +77,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         return NextResponse.json({ ok: true, view: await prepareEstimateView(id, actor) })
       }
       case 'set_service_price': {
+        const cents = centsOf(body.cents)
+        if (cents == null || typeof body.serviceId !== 'string' || !body.serviceId) return badAmount()
         const eid = await estimateId()
-        await setServicePrice(eid, String(body.serviceId), Math.max(0, Math.round(Number(body.cents) || 0)), actor)
+        await setServicePrice(eid, body.serviceId, cents, actor)
         await flagQbSyncNeededIfInvoiced(id, 'a price changed')
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
       case 'set_work_total': {
+        const cents = centsOf(body.cents)
+        if (cents == null) return badAmount()
         const eid = await estimateId()
-        await setWorkTotal(eid, Math.max(0, Math.round(Number(body.cents) || 0)), actor)
+        await setWorkTotal(eid, cents, actor)
         await flagQbSyncNeededIfInvoiced(id, 'the Work Total changed')
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
@@ -102,13 +116,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         // A confirmed catalog choice (picker / shortcut / suggestion), an explicit custom service, or
         // (older clients) a bare title. A priced add itemizes; a name-only add on a flat Job stays flat.
         // Matching never sets a price: only an explicitly entered amount is saved.
+        const addCents = body.cents != null ? centsOf(body.cents) : undefined
+        if (addCents === null) return badAmount()
         const eid = await estimateId()
         const svc = await addService(eid, String(body.title ?? '').trim() || 'Service', {
           catalogId: typeof body.catalogId === 'string' && body.catalogId ? body.catalogId : null,
           custom: body.custom === true, detail: body.detail as string | null | undefined,
           matchMethod: toMatchMethod(body.matchMethod, 'manual'), entryText: typeof body.entryText === 'string' ? body.entryText : null, actor,
         })
-        if (body.cents != null) await setServicePrice(eid, svc.id, Math.max(0, Math.round(Number(body.cents) || 0)), actor)
+        if (addCents != null) await setServicePrice(eid, svc.id, addCents, actor)
         else await recomputeEstimate(eid)
         const aliasError = await maybeRememberAlias(body, actor)
         await flagQbSyncNeededIfInvoiced(id, 'a service was added')

@@ -49,6 +49,17 @@
   the authoritative estimate — no second calculation. Supports flat (`explicit_pretax`) and
   itemized pricing; `serviceBreakdown` for itemized. Exposes `qb` link state. This is THE
   invoice source of truth; reuse it, never fork it.
+- **Prices entered in Quick Entry are the services' prices (2026-11-10).** `createQuickEntryJob` saves each
+  price typed beside a service as that service's own price line (`saveIntakeServicePrices`), so the invoice
+  opens with them and fees/tax come from the one engine. A typed `0` is a free service (`priceEntered`); a
+  blank is unpriced. A manager's flat Work Price still wins and writes no lines. An entered amount with no
+  single line (tire work, customer-supplied part) is kept as the itemized "agreed reference".
+  `agreed_price_cents` / `agreed_meta` stay as the untouched intake record (`invoicePricesAt` marks it
+  applied). **Opening the invoice never changes saved pricing**: `prepareEstimateView` seeds catalog
+  suggestions only for a Job with NO entered price, and carries an older Job's intake prices onto its lines
+  once, all-or-nothing (`applySavedIntakePrices`, event `intake_prices_applied`). Price edits with a
+  missing/non-numeric amount are refused (400), never saved as $0.
+  Tests: `apps/quick-entry/quick-entry-price-persistence.test.ts`.
 - API: `GET /api/workflow/orders/[id]/invoice` (manager/admin) returns
   `{ draft, qbEnabled, qbSendEnabled }`. Overrides: `.../invoice/override`.
 

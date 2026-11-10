@@ -383,11 +383,132 @@ async function itemizeFromFlat(estimateId: string): Promise<void> {
   await setItemizedMode(estimateId)   // retain the flat amount as a reference (not complete yet)
 }
 
+// ── Prices entered at intake (Quick Entry) ─────────────────────────────────────────────────────────
+// A price typed next to a service at check-in IS that service's price: it is saved as the service's own
+// price line (the same single line the invoice edits), so the invoice opens with it and nothing has to
+// be re-derived later. agreed_price_cents / agreed_meta remain the untouched intake record.
+
+/** agreed_meta key stamped once the intake prices have been saved as price lines (or claimed for it). */
+const INTAKE_PRICES_MARK = 'invoicePricesAt'
+const titleKey = (t: string | null | undefined) => normalizeServiceKey(t ?? '')
+
+/**
+ * Save intake-entered prices onto the matching services (by the exact Work Board label each line
+ * produced). One atomic insert. A service that already has a price is never touched; two entries for
+ * the same label (it became ONE service) add up, so the entered total is kept. An entered $0 is saved
+ * as $0 — a free service, not "unpriced". Returns the cents that found a service; the rest (an entry
+ * with no service row, e.g. tire work or a customer-supplied part) is the caller's to keep visible.
+ */
+export async function saveIntakeServicePrices(estimateId: string, entries: ReadonlyArray<{ title: string; cents: number }>): Promise<{ savedCents: number; saved: number }> {
+  if (entries.length === 0) return { savedCents: 0, saved: 0 }
+  const services = (await listUserServices(estimateId)).filter((s) => s.kind !== 'part')
+  const byKey = new Map<string, JobServiceRow>()
+  for (const s of services) if (!byKey.has(titleKey(s.title))) byKey.set(titleKey(s.title), s)
+  const perService = new Map<string, { service: JobServiceRow; cents: number }>()
+  for (const e of entries) {
+    const service = byKey.get(titleKey(e.title))
+    if (!service || !Number.isFinite(e.cents) || e.cents < 0) continue
+    const cur = perService.get(service.id)
+    if (cur) cur.cents += Math.round(e.cents)
+    else perService.set(service.id, { service, cents: Math.round(e.cents) })
+  }
+  const rows: { service: JobServiceRow; cents: number }[] = []
+  for (const p of perService.values()) if (!(await getServicePriceLine(p.service.id))) rows.push(p)
+  if (rows.length === 0) return { savedCents: 0, saved: 0 }
+  await getDb().insert(jobLineItems).values(rows.map(({ service, cents }) => ({
+    jobServiceId: service.id, type: DETAIL_LINE.type, name: service.title, qty: String(DETAIL_LINE.qty), unit: DETAIL_LINE.unit,
+    costCents: 0, priceCents: cents, taxable: DETAIL_LINE.taxable, taxCategory: DETAIL_LINE.taxCategory,
+  })))
+  return { savedCents: rows.reduce((s, r) => s + r.cents, 0), saved: rows.length }
+}
+
+/**
+ * Keep the full intake total visible when part of it could not be saved on a line (tire work, a
+ * customer-supplied part): it becomes the labeled "agreed" reference of an itemized estimate — the
+ * existing mechanism that shows the difference and makes a manager accept the itemized total. It is
+ * never a flat price (price_mode stays itemized) and never changes a line.
+ */
+export async function retainIntakeReference(estimateId: string, cents: number): Promise<void> {
+  await getDb().update(jobEstimates).set({ explicitTotalCents: Math.max(0, Math.round(cents)), updatedAt: new Date() })
+    .where(and(eq(jobEstimates.id, estimateId), eq(jobEstimates.priceMode, 'itemized')))
+}
+
+/** Stamp the intake record as carried onto the price lines. Atomic compare-and-set on the one row, so
+ *  only ONE caller ever wins (true) — the saved intake prices can never be applied twice. */
+export async function markIntakePricesSaved(estimateId: string): Promise<boolean> {
+  const res = await getDb().execute(sql`
+    UPDATE job_estimates
+       SET agreed_meta = agreed_meta || jsonb_build_object(${INTAKE_PRICES_MARK}::text, to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
+           updated_at = now()
+     WHERE id = ${estimateId}::uuid AND jsonb_typeof(agreed_meta) = 'object' AND NOT jsonb_exists(agreed_meta, ${INTAKE_PRICES_MARK}::text)
+    RETURNING id`)
+  return (res.rows?.length ?? 0) > 0
+}
+
+/**
+ * A Job checked in BEFORE intake prices were saved as price lines has them only in its intake record
+ * (agreed_price_cents + agreed_meta.services). On page entry, carry them onto the services — strictly
+ * all-or-nothing, and only when nothing can be wrong about it:
+ *   • retail, itemized, no flat/agreed reference, no QuickBooks invoice, and NO price on any line yet;
+ *   • every recorded entry names exactly one service (its label or the typed wording), no service twice;
+ *   • the entries add up to the saved intake total.
+ * Then the Job's value is exactly what it already was; only where the prices live changes. Anything
+ * else is left alone for the manager — a price is never guessed, split or partly applied. Runs at most
+ * once per Job (markIntakePricesSaved) and records an audit event.
+ */
+async function applySavedIntakePrices(est: EstimateRow, orderId: string, actor: string | null): Promise<boolean> {
+  if (est.priceMode !== 'itemized' || est.explicitTotalCents != null || estimateHasQbInvoice(est)) return false
+  if (est.agreedPriceCents == null || est.agreedPriceCents <= 0) return false
+  const meta = est.agreedMeta as { services?: unknown; [k: string]: unknown } | null
+  if (!meta || typeof meta !== 'object' || INTAKE_PRICES_MARK in meta || !Array.isArray(meta.services) || meta.services.length === 0) return false
+  const entries = (meta.services as Array<{ originalText?: unknown; matchedDisplay?: unknown; confirmedCents?: unknown }>)
+    .map((e) => ({ keys: [titleKey(String(e?.originalText ?? '')), titleKey(String(e?.matchedDisplay ?? ''))].filter(Boolean), cents: Number(e?.confirmedCents) }))
+  if (entries.some((e) => e.keys.length === 0 || !Number.isInteger(e.cents) || e.cents <= 0)) return false
+  if (entries.reduce((s, e) => s + e.cents, 0) !== est.agreedPriceCents) return false
+
+  const [order] = await getDb().select({ source: serviceOrders.source, serviceType: serviceOrders.serviceType }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
+  if (!order || isDealerOrder(order)) return false
+  const all = await listUserServices(est.id)
+  for (const s of all) if (await getServicePriceLine(s.id)) return false   // any price already saved → never touch
+  const services = all.filter((s) => s.kind !== 'part')
+  // A service answers to its label, its label without the job-specific area, and the wording typed for it.
+  const serviceKeys = (s: JobServiceRow) => {
+    const keys = new Set([titleKey(s.title), titleKey(s.entryText)])
+    const tail = s.detail ? ` — ${s.detail}` : ''
+    if (tail && s.title.toLowerCase().endsWith(tail.toLowerCase())) keys.add(titleKey(s.title.slice(0, -tail.length)))
+    keys.delete('')
+    return keys
+  }
+  const keyed = services.map((s) => ({ s, keys: serviceKeys(s) }))
+  const used = new Set<string>()
+  const rows: { service: JobServiceRow; cents: number }[] = []
+  for (const e of entries) {
+    const hits = keyed.filter((k) => e.keys.some((x) => k.keys.has(x)))
+    if (hits.length !== 1 || used.has(hits[0].s.id)) return false
+    used.add(hits[0].s.id)
+    rows.push({ service: hits[0].s, cents: e.cents })
+  }
+  if (!(await markIntakePricesSaved(est.id))) return false   // someone else is doing (or did) it
+  await getDb().insert(jobLineItems).values(rows.map(({ service, cents }) => ({
+    jobServiceId: service.id, type: DETAIL_LINE.type, name: service.title, qty: String(DETAIL_LINE.qty), unit: DETAIL_LINE.unit,
+    costCents: 0, priceCents: cents, taxable: DETAIL_LINE.taxable, taxCategory: DETAIL_LINE.taxCategory,
+  })))
+  await logJobEvent(orderId, 'intake_prices_applied', actor, JSON.stringify({
+    reason: 'check-in prices saved onto the invoice lines (no amount changed)', totalCents: est.agreedPriceCents,
+    services: rows.map((r) => ({ title: r.service.title, cents: r.cents })),
+  }).slice(0, 2000))
+  return true
+}
+
 /** Seed suggested prices for a TRULY fresh Job (itemized, no flat total, zero saved service
- *  prices). Never overwrites a saved price; once the manager has priced anything, no re-seed. */
+ *  prices, and NO price entered at check-in). Never overwrites a saved price; once anyone has priced
+ *  anything, no re-seed. */
 export async function seedSuggestedPrices(estimateId: string): Promise<void> {
   const [est] = await getDb().select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
   if (!est || est.priceMode !== 'itemized' || est.explicitTotalCents != null) return
+  // Prices were entered at check-in: they are the Job's prices. Opening the invoice must never write
+  // catalog defaults beside (or instead of) them — that replaced the entered total just by looking.
+  if (est.agreedPriceCents != null) return
   // A part's own row (kind='part') is not a service the manager priced — it must neither count as "already
   // engaged" nor be seeded.
   const services = (await listUserServices(estimateId)).filter((s) => s.kind !== 'part')
@@ -454,12 +575,16 @@ export async function acceptItemizedTotal(estimateId: string, actor: string | nu
  *  flat Job (never on mere viewing). Recomputes fees/tax through the single engine. */
 export async function setServicePrice(estimateId: string, serviceId: string, cents: number, actor: string | null): Promise<void> {
   const [est] = await getDb().select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
+  void actor
+  // A price is a real amount ≥ 0. A missing/unparsed value is refused — it is never treated as $0.
+  if (!Number.isFinite(cents) || cents < 0) throw new Error('Enter the price as a dollar amount.')
+  // The service must be one of THIS estimate's own lines — an unknown/foreign id changes nothing.
+  const [svc] = await getDb().select().from(jobServices).where(and(eq(jobServices.id, serviceId), eq(jobServices.jobEstimateId, estimateId), ne(jobServices.source, 'system'))).limit(1)
+  if (!svc) throw new Error('That line is no longer on this invoice. Refresh and try again.')
   // Editing one price on a flat Job switches it to itemized WITHOUT fabricating the other
   // services' prices (they stay blank for the manager to enter) — never a catalog-weighted split.
   if (est?.priceMode === 'explicit_pretax' && est.explicitTotalCents != null) await itemizeFromFlat(estimateId)
-  void actor
-  const [svc] = await getDb().select().from(jobServices).where(eq(jobServices.id, serviceId)).limit(1)
-  if (svc) await upsertServicePrice(svc, cents)
+  await upsertServicePrice(svc, cents)
   await syncItemizationState(estimateId)   // itemized; drop the flat reference only once complete
   await recomputeEstimate(estimateId)
 }
@@ -605,11 +730,15 @@ export async function getEstimateView(orderId: string): Promise<EstimateView> {
 }
 
 /** Page entry: ensure the estimate exists, mirror the Job's services, seed suggestions for a
- *  truly fresh Job, recompute, and return the view. Idempotent; safe to call on every open. */
+ *  truly fresh Job, recompute, and return the view. Idempotent; safe to call on every open.
+ *  Opening NEVER changes a saved price or the Job's value: prices entered at check-in are already the
+ *  services' prices (an older Job's are carried over once, unchanged), and catalog suggestions are only
+ *  written for a Job that has no price of any kind. */
 export async function prepareEstimateView(orderId: string, actor: string | null): Promise<EstimateView> {
   const est = await getOrCreateEstimate(orderId, actor)
   await promoteTextServices(est.id, orderId)
   await syncEstimateServicesToJob(orderId)   // heals Jobs whose estimate-added services never reached the Job list
+  await applySavedIntakePrices(est, orderId, actor)
   await seedSuggestedPrices(est.id)
   await recomputeEstimate(est.id)
   return getEstimateView(orderId)

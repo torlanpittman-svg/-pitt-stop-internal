@@ -16,7 +16,7 @@ import { useCustomerLookup } from '@/app/components/useCustomerLookup'
 import RemovableServiceRow from '@/app/components/RemovableServiceRow'
 import { useIdentity } from '@/app/components/IdentityBar'
 import { useSharedInvoiceDiscovery, SharedInvoiceOfferSheet } from '@/app/components/SharedInvoice'
-import { type JobLine, type InterpEntry, linesFromEntries, chooseCandidate, keepAsTyped, choosePart, chooseTires, reopenChoice } from '@/apps/quick-entry/job-lines'
+import { type JobLine, type InterpEntry, linesFromEntries, chooseCandidate, keepAsTyped, choosePart, chooseTires, reopenChoice, linePriceText, withTypedPrice, withSetPrice, linePriceEntered } from '@/apps/quick-entry/job-lines'
 import { type CustomerMatch, type CustVehicle } from '@/apps/quick-entry/customers'
 import { draftKey as draftKeyFor, saveDraft, loadDraftEntry, clearDraft, draftAgeLabel } from '@/app/lib/draft'
 import { REFERRAL_SOURCES } from '@/apps/quick-entry/referral-source'
@@ -356,7 +356,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
       : [...xs, { key: `k${keySeq++}`, catalogId: p.id, kind: 'package', name: p.name, priceCents: p.defaultPriceCents ?? 0 }]) // select (prefill catalog price)
   const addOther = () => addLine({ catalogId: null, kind: 'custom', name: '', priceCents: 0 })
   const setLinePrice = (key: string, dollars: string) =>
-    setLines((xs) => xs.map((l) => (l.key === key ? { ...l, priceCents: dollarsToCents(dollars) } : l)))
+    setLines((xs) => xs.map((l) => (l.key === key ? withTypedPrice(l, dollars) : l)))
   const expectedTotalCents = lines.reduce((s, l) => s + (Number.isFinite(l.priceCents) ? l.priceCents : 0), 0)
 
   // Smart "Other": debounced historical search. Suggestion is a PROPOSAL — it prefills the price only
@@ -375,7 +375,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
   }, [])
   const applySuggestion = (key: string, s: ServiceMatch) => {
     if (s.suggestedPriceCents == null) return
-    setLines((xs) => xs.map((l) => (l.key === key ? { ...l, priceCents: s.suggestedPriceCents! } : l)))
+    setLines((xs) => xs.map((l) => (l.key === key ? withSetPrice(l, s.suggestedPriceCents!) : l)))
   }
 
   // Natural-language intake — the SAME shared interpretation the manager estimate uses (typos,
@@ -423,7 +423,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
       setLines((xs) => xs.map((x) => {
         if (x.key !== key || x.name.trim() !== text) return x          // edited again meanwhile → leave it
         const [next] = entry ? linesFromEntries([entry], [], () => key) : []
-        return next ? { ...next, priceCents: x.priceCents } : { ...x, entryText: text }
+        return next ? { ...next, priceCents: x.priceCents, priceText: x.priceText } : { ...x, entryText: text }
       }))
       setOtherMsg((m) => ({ ...m, [key]: d.ai === 'unavailable' || d.ai === 'failed' ? 'Smart suggestions are offline — kept as typed.' : '' }))
     } catch {
@@ -508,7 +508,8 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
           vehicleId: vehicleMode === 'existing' ? selectedVehicleId : null,  // reuse the exact saved vehicle (no duplicate)
           lines: lines
             .filter((l) => l.kind !== 'custom' || l.name.trim())  // drop empty "Other" lines
-            .map((l) => ({ catalogId: l.catalogId, kind: l.kind, name: l.name.trim(), size: null, condition: null, priceCents: l.priceCents || 0,
+            // priceEntered tells the server a typed $0 (free service, saved as $0) from a blank (not priced yet).
+            .map((l) => ({ catalogId: l.catalogId, kind: l.kind, name: l.name.trim(), size: null, condition: null, priceCents: l.priceCents || 0, priceEntered: linePriceEntered(l),
               entryText: l.entryText ?? null, detail: l.detail ?? null, matchMethod: l.matchMethod ?? null, partSupply: l.partSupply ?? null, tires: l.tires ?? null })),
           techInstructions: SHOW_TECH_INSTRUCTIONS ? [...tech] : [], createdBy: 'quick_entry',
           // Manager-entered AUTHORITATIVE invoice work price (server drops it for non-managers).
@@ -516,7 +517,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
           // Employee-confirmed EXPECTED value at intake (operational; ANY employee). Sum of the per-service
           // prices + per-service audit (original text + matched historical family + confirmed price).
           agreedPriceCents: expectedTotalCents || null,
-          agreedServices: lines.filter((l) => (l.kind !== 'custom' || l.name.trim()) && l.priceCents > 0).map((l) => {
+          agreedServices: lines.filter((l) => (l.kind !== 'custom' || l.name.trim()) && linePriceEntered(l)).map((l) => {
             const s = suggByKey[l.key]
             return { originalText: (l.entryText || l.name).trim(), matchedFamily: s?.familyKey ?? null, matchedDisplay: s?.display ?? null, suggestedCents: s?.suggestedPriceCents ?? null, sampleSize: s?.sampleSize ?? null, confirmedCents: l.priceCents }
           }),
@@ -812,7 +813,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
                           {/* Editable price */}
                           <div className="flex items-center rounded-lg bg-gray-800 border border-gray-700 px-2 w-24 shrink-0">
                             <span className="text-gray-500 text-sm">$</span>
-                            <input value={l.priceCents ? (l.priceCents / 100).toString() : ''} onChange={(e) => setLinePrice(l.key, e.target.value)}
+                            <input value={linePriceText(l)} onChange={(e) => setLinePrice(l.key, e.target.value)} aria-label={`Price for ${l.name.trim() || 'this service'}`}
                               inputMode="decimal" placeholder="0" className="w-full bg-transparent px-1 py-1.5 text-white text-base text-right focus:outline-none" />
                           </div>
                         </div>
@@ -932,7 +933,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
             {lines.map((l) => (
               <div key={l.key} className="px-4 py-2 text-sm flex items-center justify-between gap-2">
                 <span className="text-gray-200 min-w-0 truncate">{l.name.trim() || (l.kind === 'custom' ? 'Custom service' : '')}</span>
-                {l.priceCents > 0 && <span className="text-gray-400 tabular-nums shrink-0">${(l.priceCents / 100).toFixed(2)}</span>}
+                {linePriceEntered(l) && <span className="text-gray-400 tabular-nums shrink-0">${(l.priceCents / 100).toFixed(2)}</span>}
               </div>
             ))}
             {expectedTotalCents > 0 && (

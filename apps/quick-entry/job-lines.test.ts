@@ -85,3 +85,45 @@ describe('rushed-entry interpretation → reviewable Quick Entry lines', () => {
     expect(reopenChoice(l).pending?.candidates).toEqual([shampoo, detail])
   })
 })
+
+import { linePriceText, withTypedPrice, withSetPrice, linePriceEntered, priceTextToCents } from './job-lines'
+
+describe('Quick Entry price box — what is typed is what is kept', () => {
+  const line = { priceCents: 0 } as { priceCents: number; priceText?: string }
+  const type = (l: typeof line, keys: string) => [...keys].reduce((acc, _, i) => withTypedPrice(acc, keys.slice(0, i + 1)), l)
+
+  it('cents can be typed: the box keeps "12." while typing instead of swallowing the dot', () => {
+    const l = type(line, '12.50')
+    expect(linePriceText(l)).toBe('12.50')
+    expect(l.priceCents).toBe(1250)
+    expect(linePriceText(withTypedPrice(line, '12.'))).toBe('12.')
+  })
+
+  it('a typed 0 is an entered $0 (free service); a blank or untouched box is not a price', () => {
+    expect(linePriceEntered(withTypedPrice(line, '0'))).toBe(true)
+    expect(linePriceEntered(withTypedPrice(line, '0.00'))).toBe(true)
+    expect(linePriceText(withTypedPrice(line, '0'))).toBe('0')
+    expect(linePriceEntered(line)).toBe(false)
+    expect(linePriceEntered(withTypedPrice(line, ''))).toBe(false)
+    expect(linePriceEntered(withTypedPrice(withTypedPrice(line, '45'), ''))).toBe(false)   // typed then cleared → blank again
+    expect(linePriceEntered(withTypedPrice(line, '$'))).toBe(false)
+    expect(linePriceEntered(withTypedPrice(line, '.'))).toBe(false)
+  })
+
+  it('a prefilled / suggested price shows as the amount and counts as entered; typing over it wins', () => {
+    const pre = { priceCents: 15000 } as typeof line
+    expect(linePriceText(pre)).toBe('150')
+    expect(linePriceEntered(pre)).toBe(true)
+    const typed = withTypedPrice(pre, '120')
+    expect(typed.priceCents).toBe(12000)
+    const suggested = withSetPrice(typed, 9900)
+    expect(linePriceText(suggested)).toBe('99')
+    expect(suggested.priceText).toBeUndefined()
+  })
+
+  it('junk never becomes a number', () => {
+    expect(priceTextToCents('abc')).toBe(0)
+    expect(priceTextToCents('$1,250.5')).toBe(125050)
+    expect(priceTextToCents('')).toBe(0)
+  })
+})
