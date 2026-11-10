@@ -3,7 +3,8 @@ import { z } from 'zod'
 import { eq } from 'drizzle-orm'
 import { managerFromRequest } from '@/apps/checks/authz'
 import { withIntakeLock, moveIntakeToBoard, cancelIntakeEstimate } from '@/apps/estimates/db'
-import { intakeSummary, refreshIntake, sendIntakeEstimate } from '@/apps/estimates/quickbooks'
+import { intakeSummary, refreshIntake, sendIntakeEstimate, saveIntakeEstimateUnsent } from '@/apps/estimates/quickbooks'
+import { voidLinkedInvoiceForEstimate } from '@/apps/estimates/void-linked-invoice'
 import { saveCustomerNotes } from '@/apps/estimates/notes-db'
 import { saveSavedRecipients } from '@/apps/estimates/recipients-db'
 import { normalizeRecipients, recipientErrorMessage } from '@/apps/estimates/recipients'
@@ -19,6 +20,11 @@ const actionInput = z.discriminatedUnion('action', [
   // default to the saved contact email. Raw strings are bounded here; normalize/dedupe/validate + placeholder
   // + empty-list rejection happen in sendIntakeEstimate before any QuickBooks call.
   z.object({ action: z.literal('send'), revision: z.string().length(64), recipients: z.array(z.string().max(254)).max(50).optional() }),
+  // Create/update the linked QuickBooks estimate WITHOUT emailing anyone (the first half of Send).
+  z.object({ action: z.literal('save_to_quickbooks'), revision: z.string().length(64) }),
+  // Void the invoice left over from before this vehicle was moved to Estimates. The exact invoice number is
+  // required; sent/paid/shared/unprovable invoices are refused (see void-linked-invoice.ts).
+  z.object({ action: z.literal('void_linked_invoice'), invoiceNumber: z.string().trim().min(1).max(100) }),
   z.object({ action: z.literal('convert'), revision: z.string().length(64) }),
   // Customer-visible notes (claim number etc.). Raw string is loosely bounded here; the real 700-char
   // bound + normalization + control-char rejection happen in validateCustomerNotes before any write.
@@ -66,6 +72,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         if (body.action === 'convert' && state.full?.estimate.convertedAt) return NextResponse.json({ ok: true, converted: true })
         throw new Error('This estimate has already moved onto the Work Board.')
       }
+      if (body.action === 'void_linked_invoice') {
+        const r = await voidLinkedInvoiceForEstimate({ orderId: id, expectedInvoiceNumber: body.invoiceNumber, actor: actor.name })
+        if (!r.ok) return NextResponse.json({ error: r.error ?? 'The invoice was not changed.', code: r.code }, { status: 409 })
+        return NextResponse.json({ ...safeSummary(await intakeSummary(id)), voided: { action: r.qbAction, invoiceId: r.invoiceId ?? null, invoiceNumber: r.invoiceNumber ?? null, wasCents: r.wasCents ?? null, alreadyDone: r.alreadyDone ?? false } })
+      }
       if (body.action === 'contact') {
         await getDb().update(quickEntryJobs).set({ customerEmail: body.email || null, customerPhone: body.phone || null }).where(eq(quickEntryJobs.serviceOrderId, id))
       } else if (body.action === 'customer_name') {
@@ -76,6 +87,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         // never blindly overwrite an estimate someone else changed first (its revision would no longer match).
         if (state.revision !== body.revision) throw new Error('The estimate changed. Refresh and review it before continuing.')
         if (body.action === 'send') await sendIntakeEstimate(id, actor.name, body.revision, body.recipients)
+        else if (body.action === 'save_to_quickbooks') {
+          // No email. Saving never changes pricing, so return a fresh summary without the recompute.
+          const saved = await saveIntakeEstimateUnsent(id, actor.name, body.revision)
+          return NextResponse.json({ ...safeSummary(await intakeSummary(id)), saved })
+        }
         else if (body.action === 'notes') {
           if (!state.full) throw new Error('This estimate is not ready for notes yet.')
           const check = validateCustomerNotes(body.notes)

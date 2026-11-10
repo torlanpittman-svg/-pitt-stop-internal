@@ -35,7 +35,8 @@ vi.mock('./attachments', () => ({
   prepareEstimateAttachments: f.prepare,
   reconcileEstimateAttachments: f.reconcile,
 }))
-import { sendIntakeEstimate, intakeSummary, estimateBody, assertEstimateIdentity } from './quickbooks'
+import { sendIntakeEstimate, saveIntakeEstimateUnsent, intakeSummary, estimateBody, assertEstimateIdentity } from './quickbooks'
+import { logEvent } from '@/apps/workflow/db'
 
 const raw = () => ({ Id: 'qb-estimate', SyncToken: '1', ...estimateBody(f.payload, 'customer-id', f.contact.customerEmail), TotalAmt: 100, DocNumber: '1001' })
 beforeEach(() => {
@@ -164,6 +165,55 @@ describe('standalone QuickBooks estimates', () => {
     expect(body.Line[0].Amount).toBe(100)
     expect(body.CustomerMemo.value).toBe('2020 Honda Civic')
     expect(body.Line[0].SalesItemLineDetail.ItemRef.value).toBe('labor')
+  })
+})
+
+describe('standalone estimate — save to QuickBooks WITHOUT emailing', () => {
+  const save = async () => saveIntakeEstimateUnsent('order', 'Manager', (await intakeSummary('order')).revision)
+  const creates = () => f.api.mock.calls.filter(c => c[0].method === 'POST' && c[0].path === '/estimate' && !c[0].body.Id)
+  beforeEach(() => vi.mocked(logEvent).mockClear())
+
+  it('creates the linked Estimate (never an Invoice), emails nobody, and audits it as not emailed', async () => {
+    const r = await save()
+    expect(r).toMatchObject({ qbEstimateId: 'qb-estimate', qbEstimateNumber: '1001', totalCents: 10000, changed: 'created' })
+    expect(f.intake.qbEstimateId).toBe('qb-estimate')
+    expect(f.intake.qbHash).toEqual(expect.any(String))
+    expect(f.intake.sentAt ?? null).toBeNull()
+    expect(f.intake.sentHash ?? null).toBeNull()
+    expect(sendCalls()).toHaveLength(0)
+    expect(f.api.mock.calls.every(c => !c[0].path.includes('invoice'))).toBe(true)
+    expect(creates()).toHaveLength(1)
+    expect(creates()[0][0].query).toEqual({ requestid: 'order' })   // same idempotent create request Send uses
+    expect(vi.mocked(logEvent)).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'qb_estimate_saved', note: expect.stringContaining('not emailed') }))
+    expect(f.prepare).not.toHaveBeenCalled()
+  })
+
+  it('a repeat save of the unchanged quote writes nothing to QuickBooks and adds no audit row', async () => {
+    await save()
+    const writesAfterFirst = createOrUpdateBodies().length
+    const again = await save()
+    expect(again.changed).toBeNull()
+    expect(createOrUpdateBodies()).toHaveLength(writesAfterFirst)
+    expect(vi.mocked(logEvent)).toHaveBeenCalledTimes(1)
+    expect(sendCalls()).toHaveLength(0)
+  })
+
+  it('a later Send reuses the saved estimate — no second create — and emails it once', async () => {
+    await save()
+    await send()
+    expect(creates()).toHaveLength(1)
+    expect(sendCalls()).toHaveLength(1)
+    expect(f.intake.sentAt).toBeInstanceOf(Date)
+  })
+
+  it('applies the same guards as Send before any QuickBooks call: stale preview, unresolved review, missing email', async () => {
+    await expect(saveIntakeEstimateUnsent('order', 'Manager', 'stale')).rejects.toThrow('changed')
+    f.ready.mockRejectedValueOnce(new Error('Resolve before sending the estimate: 1 part needs labor review'))
+    await expect(save()).rejects.toThrow('labor review')
+    f.contact.customerEmail = ''
+    await expect(save()).rejects.toThrow('valid customer email')
+    expect(f.api).not.toHaveBeenCalled()
+    expect(vi.mocked(logEvent)).not.toHaveBeenCalled()
   })
 })
 

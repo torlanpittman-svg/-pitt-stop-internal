@@ -111,9 +111,11 @@ function resolveRecipients(recipientsInput: string[] | undefined, contactEmail: 
   return { list: norm.list, joined }
 }
 
-// Caller holds the shared intake lock. Preview revision is checked before any QB write/email.
-// `recipients` is this send's explicit address list; omit it to default to the saved customer email.
-export async function sendIntakeEstimate(id: string, actor: string, expectedRevision: string, recipients?: string[]) {
+// Caller holds the shared intake lock. Preview revision is checked before any QB write.
+// Shared by Send and by "save to QuickBooks without sending": validates the quote, then creates (once,
+// with the persisted request) or updates the ONE linked QuickBooks estimate so it matches the current
+// quote exactly, and records its hash. NEVER emails — the caller decides whether a send follows.
+async function syncIntakeEstimate(id: string, actor: string, expectedRevision: string, recipients?: string[]) {
   const db = getDb()
   let state = await intakeSummary(id)
   if (state.order.status !== 'estimate') throw new Error('This estimate has already moved onto the Work Board.')
@@ -153,6 +155,7 @@ export async function sendIntakeEstimate(id: string, actor: string, expectedRevi
   let intake = state.intake
   const hadEstimateBefore = Boolean(intake.qbEstimateId)
   let raw: QBEstimate
+  let wrote: 'created' | 'updated' | null = null
   if (!intake.qbEstimateId) {
     const savedBody = intake.createBody ?? body
     if (!intake.createBody) await db.update(estimateIntakes).set({ createBody: savedBody }).where(eq(estimateIntakes.orderId, id))
@@ -162,6 +165,7 @@ export async function sendIntakeEstimate(id: string, actor: string, expectedRevi
     if (!raw?.Id) throw new Error('QuickBooks did not return an estimate ID. Retry to recover this request.')
     await db.update(estimateIntakes).set({ qbEstimateId: raw.Id, qbEstimateNumber: raw.DocNumber ?? null }).where(eq(estimateIntakes.orderId, id))
     intake = { ...intake, qbEstimateId: raw.Id }
+    wrote = 'created'
   } else {
     raw = (await qbApiRequest<{ Estimate: QBEstimate }>({ path: `/estimate/${encodeURIComponent(intake.qbEstimateId)}` })).Estimate
   }
@@ -177,12 +181,36 @@ export async function sendIntakeEstimate(id: string, actor: string, expectedRevi
     })
     raw = response.Estimate
     assertEstimateIdentity(raw, intake.qbEstimateId!, estimateId, customer.qbCustomerId)
+    wrote = wrote ?? 'updated'
   }
   if (!matchesEstimateContent(raw, body)) throw new Error('QuickBooks estimate details do not match the current quote. Nothing was emailed.')
   if (Math.round((raw.TotalAmt ?? 0) * 100) !== payload.totalCents) throw new Error('QuickBooks total differs from this estimate. Nothing was emailed. Review the estimate in QuickBooks.')
   // Compare the recipient SET (ignoring spacing/case/order), so a confirmed send goes exactly where shown.
   if (!sameRecipientSet(raw.BillEmail?.Address, recipientList)) throw new Error('QuickBooks recipient differs from this estimate. Nothing was emailed.')
   await db.update(estimateIntakes).set({ qbHash: hash, qbEstimateNumber: raw.DocNumber ?? null }).where(eq(estimateIntakes.orderId, id))
+  return { state, raw, hash, sendTo, intake, hadEstimateBefore, wrote, totalCents: payload.totalCents }
+}
+
+/**
+ * Save the current quote to QuickBooks as an UNSENT estimate — create it (once) or bring the linked one up
+ * to date — WITHOUT emailing anyone. It is exactly the first half of Send (same validation, identity,
+ * idempotency and content checks), so a later Send reuses this estimate instead of creating another.
+ * Photos are attached at send time, not here. Caller holds the intake lock. Audited when QuickBooks changed.
+ */
+export async function saveIntakeEstimateUnsent(id: string, actor: string, expectedRevision: string) {
+  const { raw, wrote, totalCents, sendTo } = await syncIntakeEstimate(id, actor, expectedRevision)
+  if (wrote) {
+    await logEvent({ serviceOrderId: id, eventType: 'qb_estimate_saved', employeeName: actor,
+      note: `Estimate #${raw.DocNumber ?? raw.Id} (${raw.Id}) ${wrote} in QuickBooks · total $${(totalCents / 100).toFixed(2)} · not emailed` })
+  }
+  return { qbEstimateId: raw.Id, qbEstimateNumber: raw.DocNumber ?? null, totalCents, changed: wrote, emailStatus: raw.EmailStatus ?? 'NotSet', billEmail: sendTo }
+}
+
+// Caller holds the shared intake lock. Preview revision is checked before any QB write/email.
+// `recipients` is this send's explicit address list; omit it to default to the saved customer email.
+export async function sendIntakeEstimate(id: string, actor: string, expectedRevision: string, recipients?: string[]) {
+  const db = getDb()
+  const { state, raw, hash, sendTo, intake, hadEstimateBefore } = await syncIntakeEstimate(id, actor, expectedRevision, recipients)
   // Attachments: recheck the live manifest (a concurrent photo change aborts here), prepare email copies,
   // then reconcile + verify them against THIS validated estimate before any email leaves. `qbHash` stays
   // the BODY hash for the update logic above; the SEND identity folds in the prepared photo set so a
