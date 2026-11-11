@@ -12,6 +12,7 @@ import { formatDateLabel, formatTimeLabel } from '@/apps/appointments/policy'
 import { isMissedSend, isTestModeHold } from '@/apps/appointments/notify'
 import { isFuture } from '@/apps/appointments/public'
 import { savedVehiclesFor, bookedVehicleLabel } from '@/apps/appointments/checkin'
+import { describeBookingSource, customerSaidLabel } from '@/apps/appointments/attribution'
 import { STATUS_LABEL, STATUS_TONE, SOURCE_LABEL } from '../labels'
 import AppointmentActions from './AppointmentActions'
 import NotificationList from './NotificationList'
@@ -28,13 +29,16 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
   const canCheckIn = !a.serviceOrderId && (a.status === 'confirmed' || a.status === 'arrived')
   const [events, notices, mgr, order, saved] = await Promise.all([
     listEvents(id), listNotifications(id), authorizedManager(),
-    a.serviceOrderId ? getDb().select({ id: serviceOrders.id })
+    a.serviceOrderId ? getDb().select({ id: serviceOrders.id, referralSource: serviceOrders.referralSource, referralDetail: serviceOrders.referralDetail })
       .from(serviceOrders).where(eq(serviceOrders.id, a.serviceOrderId)).limit(1).then((r) => r[0] ?? null) : Promise.resolve(null),
     // The customer's saved vehicles (with VINs) — staff pick which one is here; check-in never guesses.
     canCheckIn ? savedVehiclesFor(a) : Promise.resolve([]),
   ])
   const vehicle = [a.vehicleYear, a.vehicleMake, a.vehicleModel].filter(Boolean).join(' ')
-  const attribution = Object.entries(a.attribution ?? {})
+  // Two independent facts, never merged: what the booking link's tags show, and what the customer said.
+  // The answer lives on the Job (service_orders.referral_source), so it appears once the booking is checked in.
+  const tracked = describeBookingSource(a.attribution)
+  const customerSaid = customerSaidLabel(order?.referralSource, order?.referralDetail)
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -86,12 +90,34 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
         />
 
 
-        {attribution.length > 0 && (
-          <section className="mt-6">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400">Marketing source</h2>
-            <p className="mt-2 break-words text-sm text-gray-300">{attribution.map(([k, v]) => `${k}=${v}`).join(' · ')}</p>
-          </section>
-        )}
+        <section className="mt-6">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400">Marketing source</h2>
+          <dl className="mt-2 divide-y divide-gray-800 rounded-xl border border-gray-800 bg-gray-900 text-sm">
+            {([
+              ['Tracked source', tracked.trackedSource],
+              ['Booking entry point', tracked.entryPoint ?? ''],
+              ['Customer said', customerSaid ?? 'Not recorded'],
+            ] as const).filter(([, v]) => v).map(([k, v]) => (
+              <div key={k} className="flex gap-3 px-4 py-2.5">
+                <dt className="w-28 shrink-0 text-gray-500">{k}</dt>
+                <dd className="min-w-0 break-words text-gray-200">{v}</dd>
+              </div>
+            ))}
+          </dl>
+          {tracked.details.length > 0 && (
+            <details className="mt-2 text-sm">
+              <summary className="cursor-pointer py-3 text-gray-400 hover:text-gray-200">Tracking details</summary>
+              <dl className="rounded-xl border border-gray-800 bg-gray-900 px-4 py-2 text-xs text-gray-400">
+                {tracked.details.map((d) => (
+                  <div key={d.key} className="flex gap-3 py-1">
+                    <dt className="w-28 shrink-0 text-gray-500">{d.key}</dt>
+                    <dd className="min-w-0 break-all font-mono">{d.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </details>
+          )}
+        </section>
 
         <section className="mt-6">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400">Customer email</h2>

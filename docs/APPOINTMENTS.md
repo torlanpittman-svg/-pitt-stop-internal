@@ -309,6 +309,13 @@ process dies mid-send stays `sending` (never re-sent → no duplicate email; sta
 **Attribution:** `utm_source=website` → source `website`, reported as **Website** (Marketing leads + revenue report);
 `utm_source=gbp` → `google_organic`. Raw UTM values are always stored on the booking and the attribution row.
 
+**Staff display (appointment detail → Marketing source).** `describeBookingSource()` in `attribution.ts` turns the stored
+tags into plain English — *Tracked source* (a `gclid` outranks the generic `utm_source=website` tag; a website tag alone is
+“original source unknown”, never organic; Facebook/Instagram tags are never called paid), *Booking entry point* (website
+button placements from `PLACEMENT_LABELS`, only the ones the website snippet emits) and a separate *Customer said* line
+(the Job's `referral_source`). Raw tags sit under a collapsed “Tracking details”. Display only: `classifySource()`, the
+ledger and stored data are unchanged.
+
 ## Cutover checklist
 
 | Item | Status |
