@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 
 const f = vi.hoisted(() => ({
-  intake: {} as Record<string, unknown>, full: {} as Record<string, unknown>,
+  intake: {} as Record<string, unknown>, full: {} as { estimate: Record<string, unknown>; services: Record<string, unknown>[] },
   contact: { customerName: 'Test Customer', customerEmail: 'customer@realshop.net', customerPhone: '5125550123' },
   api: vi.fn(), ready: vi.fn(), resolveCustomer: vi.fn(),
   // Vehicle drives the canonical CustomerMemo (buildCustomerMemo) the real send composes BEFORE the payload;
@@ -57,7 +57,7 @@ const send = async (recipients?: string[]) => sendIntakeEstimate('order', 'Manag
 // verification runs against what we actually sent — the real QB would reflect the saved address list.
 type ApiOpts = { method?: string; path: string; query?: Record<string, string>; body?: { BillEmail?: { Address?: string }; CustomerMemo?: { value?: string }; Id?: string } }
 const echoRecipients = () => {
-  let current = raw()
+  let current: Record<string, unknown> = raw()
   f.api.mockImplementation(async (opts: ApiOpts) => {
     if (opts.path.endsWith('/send')) return { Estimate: { ...current, EmailStatus: 'EmailSent' } }
     if (opts.method === 'POST' && opts.path === '/estimate') {
@@ -69,7 +69,7 @@ const echoRecipients = () => {
 // Like echoRecipients but reflects the posted CustomerMemo back, so memo verification (matchesEstimateContent)
 // runs against what we actually sent — the real QB stores and returns the memo it was given.
 const echoMemo = () => {
-  let current = raw()
+  let current: Record<string, unknown> = raw()
   f.api.mockImplementation(async (opts: ApiOpts) => {
     if (opts.path.endsWith('/send')) return { Estimate: { ...current, EmailStatus: 'EmailSent' } }
     if (opts.method === 'POST' && opts.path === '/estimate') {

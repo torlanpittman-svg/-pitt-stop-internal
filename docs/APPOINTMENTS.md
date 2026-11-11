@@ -137,7 +137,8 @@ Staff phone entries (`/appointments/new`) have the same dropdown but may leave i
 
 - **Stored** on `appointments.referral_source` / `referral_detail` (migration `0077_appointments_referral_source.sql`,
   nullable — bookings made before this question simply have `NULL` and keep working: reschedule, cancel, check-in untouched).
-- **Shown** on the staff appointment detail as "Heard about us" ("Not answered" when absent) and on the review step.
+- **Shown** on the staff appointment detail under Marketing source as "Customer said" ("Not recorded" when absent; older
+  bookings fall back to the linked Job's answer) and on the booking review step as "Heard about us".
 - **Preserved** at check-in: copied to the Job's `service_orders.referral_source` (the same column Quick Entry fills at the
   counter) and to the marketing lead's `referral_source`, so the existing `/marketing/report` breakdown covers it.
 - **Separate from automatic attribution.** `appointments.attribution` (utm_* / gclid / fbclid / ref) and
