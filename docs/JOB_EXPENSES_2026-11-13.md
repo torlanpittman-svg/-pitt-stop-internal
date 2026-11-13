@@ -140,7 +140,8 @@ and bill detail). Read-only; windows of 30/60/90 days. `apps/expenses/reconcile.
 | Expected bills with no payment seen (admin) | confirmed bills with no matching payment in their period |
 | Purchases with an incomplete split | partial, over-allocated, or allocated with no total |
 
-Every item carries one of: **timing** (e.g. bought after the last day the bank feed covers), **can't be checked from
+Every item carries one of: **timing** (e.g. bought after the last day the bank feed covers — not yet observable
+in the feed, which is different from confirmed unposted), **can't be checked from
 here** (cash, personal money, an unconnected source, an irregular bill), **to review**, **records disagree**
 (over-allocation). The header shows each source's freshness and coverage, including that QuickBooks expense
 records are not available.
@@ -198,7 +199,8 @@ Verified in production **before** the change (read-only, 2026-11-13):
   stored privately, `qb_sync_status = export_ready`, 6 audit entries.
 - Job `dd38262d-18a8-4195-8cb5-92cbf515d1f8` = SO-20261113-0001, Huong Do, 2026 Tesla Model Y,
   VIN 7SAYGDED2TA431723. No `job_parts` rows. One job photo (`tesla-invoice.jpg`).
-- No row in `fin_receipt_matches`. Bank feed covered through 2026-11-12, so no bank transaction for an 11/13
-  purchase existed yet (a timing difference, not a discrepancy).
+- No row in `fin_receipt_matches`. The bank feed covered transactions through 2026-11-12 only, so the bank side of
+  an 11/13 purchase was **not yet observable in the available feed**. That is not evidence it had not posted —
+  the feed simply could not show it either way.
 
 Post-release state is recorded in the release notes of the session that ships this.

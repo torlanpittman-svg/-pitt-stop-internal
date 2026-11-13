@@ -23,6 +23,7 @@ This directory contains Product Requirements Documents (PRDs), architecture note
 
 ## Platform Documentation
 
+- **Where code lives / how records connect:** [ARCHITECTURE_MAP.md](./ARCHITECTURE_MAP.md) (per-module files, routes, tables, and which money connections are working vs not connected) and [DATA_FLOWS.md](./DATA_FLOWS.md) (intake → invoice, purchase → receipt → job cost → bank, with what is verified).
 - **Expenses, job costs and reconciliation:** [JOB_EXPENSES_2026-11-13.md](./JOB_EXPENSES_2026-11-13.md) — the expense source of truth (one purchase = one receipt row), job/overhead allocations, duplicate + bank-matching rules, the reconcile view, what reporting does and does not include.
 
 - **Architecture Overview** — Planned
