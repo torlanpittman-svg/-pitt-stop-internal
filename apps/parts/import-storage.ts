@@ -5,6 +5,7 @@
  * client — retrieval is via an authenticated, manager-gated server route that streams the bytes. Never logs
  * bytes/tokens/URLs.
  */
+import { assertPreviewStorageAllowed } from '@/platform/preview-guard'
 import { createHash } from 'node:crypto'
 import { get, put } from '@vercel/blob'
 
@@ -13,6 +14,7 @@ const PATH = /^part-imports\/[a-f0-9-]{36}\/[a-f0-9]{64}\.(jpg|png|webp)$/
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024 // bounded retrieval budget (well above a compressed screenshot)
 
 function token(): string {
+  assertPreviewStorageAllowed() // a preview never touches a file store that may be production's
   // Reuse the existing PRIVATE store credential (never the public BLOB_READ_WRITE_TOKEN). A dedicated
   // PART_IMPORTS_* token may be set later; today it shares the private receipts store.
   const value = process.env.PART_IMPORTS_BLOB_READ_WRITE_TOKEN || process.env.RECEIPTS_BLOB_READ_WRITE_TOKEN

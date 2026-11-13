@@ -246,3 +246,56 @@ export async function retryExtractionAction(f: { id: string }): Promise<{ ok: bo
     return { ok: false, error: 'Could not re-read the image — enter the details manually.' }
   }
 }
+
+// ── "Check the reading" — re-read a stored receipt and COMPARE, saving nothing ─────────────────────────
+export interface ReadingCheck {
+  ok: boolean; error?: string
+  aiStatus?: 'extracted' | 'failed'; model?: string | null
+  read?: Record<string, string | number | null>      // what the reader sees in the stored document right now
+  saved?: Record<string, string | number | null>     // what is saved on the receipt
+  differences?: string[]                             // fields where the reading disagrees with what is saved
+  paymentSourceRead?: string | null                  // an approved source ONLY when a printed card ending identifies it
+}
+/**
+ * Manager-only diagnostic: run the reader on the receipt's stored original (photo, PDF or pasted text) and
+ * return what it sees next to what is saved. It WRITES NOTHING to the receipt — no status change, no field
+ * change, no audit entry, no new expense — so it is safe on a filed receipt. Rate-limited like a retry.
+ */
+export async function checkReadingAction(f: { id: string }): Promise<ReadingCheck> {
+  const actor = await receiptManager()
+  if (!actor) return { ok: false, error: 'Manager sign-in required.' }
+  const row = f.id ? await getReceipt(f.id) : null
+  if (!row) return { ok: false, error: 'Receipt not found.' }
+  if (row.storage !== 'blob_private' || !row.storageRef) return { ok: false, error: 'This receipt has no stored document to read.' }
+  const perActor = await consumeRateLimit(`extract:actor:${actor.key}`, RATE_LIMITS.extractActor.limit, RATE_LIMITS.extractActor.windowMs)
+  if (!perActor.ok) return { ok: false, error: `Too many reads — try again in ${perActor.retryAfterSec}s.` }
+  try {
+    const { getPrivateBlob } = await import('@/platform/blob')
+    const blob = await getPrivateBlob(row.storageRef)
+    if (!blob) return { ok: false, error: 'Could not load the stored document.' }
+    const type = row.contentType || 'image/jpeg'
+    const { isImageType } = await import('./upload-validation')
+    const { derivedForExtraction } = await import('./image-decode')
+    const input = isImageType(type) ? await derivedForExtraction(blob.bytes) : { bytes: blob.bytes, contentType: type }
+    const { extractExpense } = await import('./ai')
+    const ai = await extractExpense(input.bytes.toString('base64'), input.contentType)
+    const e = ai.extraction
+    const { matchPaymentSource } = await import('./payment')
+    const read = {
+      vendor: e.vendor, date: e.date, subtotalCents: e.subtotalCents, taxCents: e.taxCents, shippingCents: e.shippingCents, totalCents: e.totalCents,
+      invoiceNumber: e.receiptNumber, orderNumber: e.orderNumber, description: e.description, paymentMethod: e.paymentMethod, cardLast4: e.paymentLast4,
+    }
+    const saved = {
+      vendor: row.vendor, date: row.receiptDate, subtotalCents: row.subtotalCents, taxCents: row.taxCents, shippingCents: row.shippingCents, totalCents: row.totalCents,
+      invoiceNumber: row.invoiceNumber, orderNumber: row.orderNumber, description: row.description, paymentMethod: row.paymentMethod, cardLast4: row.paymentLast4,
+    }
+    const differences = (Object.keys(read) as (keyof typeof read)[]).filter((k) => k !== 'description' && read[k] != null && saved[k] != null && String(read[k]).toLowerCase() !== String(saved[k]).toLowerCase())
+    return {
+      ok: true, aiStatus: ai.status, model: ai.model, read, saved, differences,
+      paymentSourceRead: matchPaymentSource({ method: e.paymentMethod, brand: e.cardBrand, cardLast4: e.paymentLast4, accountEnding: e.accountEnding }),
+    }
+  } catch (err) {
+    logger.error('expenses:check-reading', 'failed', { code: errorCode(err) })
+    return { ok: false, error: 'Could not read the stored document.' }
+  }
+}

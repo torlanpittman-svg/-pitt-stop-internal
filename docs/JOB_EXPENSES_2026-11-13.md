@@ -114,7 +114,7 @@ merged or rejected automatically.
 | Job part costs | `job_parts.unit_cost_cents` | part forms / screenshot import | job screen only | receipts (new, optional) |
 | Vehicle costs | `vehicle_financial_events` | auto-sales scan / manual | cost-per-car, monthly auto-sales report | **nothing** — separate scan pipeline, own totals |
 | Bank / card | `fin_transactions` | Plaid, daily 09:00 UTC cron + "Sync now" | obligation discovery, receipt matching, Safe-to-Spend inputs | receipts via `fin_receipt_matches` (manual) |
-| QuickBooks | `fin_sync_runs.summary`, `fin_accounts`, `fin_ar_invoices` | read-only sync | CFO P&L / balances / A/R | **no expense records are read or written** (only Checks write a QB Purchase) |
+| QuickBooks | `fin_sync_runs.summary`, `fin_accounts`, `fin_ar_invoices`, `fin_qb_purchases` (0079) | read-only sync | CFO P&L / balances / A/R; expense entries for matching (§11) | expense entries are **read**, never written (only Checks write a QB Purchase) |
 | Recurring bills | `fin_obligations` | discovery (proposed) + owner confirm | Safe-to-Spend, bill calendar | no stored paid-by link |
 | Checks | `checks` (+ QB Purchase) | Write-a-Check | check history | not read by finance/receipts |
 
@@ -140,7 +140,8 @@ and bill detail). Read-only; windows of 30/60/90 days. `apps/expenses/reconcile.
 | Expected bills with no payment seen (admin) | confirmed bills with no matching payment in their period |
 | Purchases with an incomplete split | partial, over-allocated, or allocated with no total |
 
-Every item carries one of: **timing** (e.g. bought after the last day the bank feed covers), **can't be checked from
+Every item carries one of: **not yet observable** (e.g. bought after the last day the bank feed covers — the
+feed cannot say whether it has posted), **can't be checked from
 here** (cash, personal money, an unconnected source, an irregular bill), **to review**, **records disagree**
 (over-allocation). The header shows each source's freshness and coverage, including that QuickBooks expense
 records are not available.
@@ -198,7 +199,61 @@ Verified in production **before** the change (read-only, 2026-11-13):
   stored privately, `qb_sync_status = export_ready`, 6 audit entries.
 - Job `dd38262d-18a8-4195-8cb5-92cbf515d1f8` = SO-20261113-0001, Huong Do, 2026 Tesla Model Y,
   VIN 7SAYGDED2TA431723. No `job_parts` rows. One job photo (`tesla-invoice.jpg`).
-- No row in `fin_receipt_matches`. Bank feed covered through 2026-11-12, so no bank transaction for an 11/13
-  purchase existed yet (a timing difference, not a discrepancy).
+- No row in `fin_receipt_matches`. The bank feed covered transactions through 2026-11-12 only, so the bank side of
+  an 11/13 purchase was **not yet observable in the available feed**. That is not evidence it had not posted —
+  the feed simply could not show it either way.
 
-Post-release state is recorded in the release notes of the session that ships this.
+Post-release (2026-11-13): linked by allocation `2021b97e-d1ae-4996-a503-940d6d9ef133` (whole purchase). The job shows
+exactly $80.21; November receipt totals were $857.32 / 14 receipts before and after. No bank or QuickBooks match
+was made because neither record was observable.
+
+---
+
+## 11. Cross-source matching and "counted once" (migration 0079)
+
+Added after the first release. Full source: `apps/finance/{purchase-links,purchase-match,purchase-ledger,reconcile-links,qb-purchases}.ts`.
+
+**Persisted matches — `purchase_links`.** A person's decision that two records are the same purchase
+(`confirmed`) or are not (`dismissed`). Undo sets `cleared`; rows are never deleted; every decision is appended to
+`fin_events`. Nothing is auto-matched. A confirmed match is exclusive (partial unique indexes).
+
+| Match | Evidence used for the suggestion |
+|---|---|
+| Receipt ↔ bank payment (`fin_receipt_matches`, existing) | exact amount, ≤5 days, name |
+| Receipt ↔ QuickBooks entry | amount + date + payee, or the invoice/order number inside the QuickBooks memo |
+| Receipt ↔ inventory-vehicle cost line | same inventory vehicle + amount + ≤7 days |
+| Written check ↔ bank payment | check number in the bank description + amount (up to 60 days to clear) |
+| Written check ↔ receipt | amount + payee, receipt paid by check |
+| Bank payment ↔ QuickBooks entry | exact amount + ≤5 days + name (strong only) |
+| Expected bill ↔ actual payment | vendor name (or payroll/loan bank class) + amount inside the bill's range, within its period |
+
+A written check and the QuickBooks entry it created are the same record by id (`checks.qbo_txn_id`) — no match needed.
+Two equally good candidates are shown as "more than one candidate", never chosen.
+
+**QuickBooks is read, never written.** `fin_qb_purchases` mirrors Purchases and Bills from the last 120 days,
+filled by the existing daily QuickBooks sync from the production company only. This release adds no QuickBooks
+write of any kind. Entries QuickBooks stops returning are marked `missing_since`, not deleted.
+
+**Counted once.** `/admin/finance/reconcile` groups receipts, bank/card purchases, written checks, QuickBooks
+entries and inventory-vehicle cost lines by confirmed matches; each group is one purchase, valued at what left the
+bank (else QuickBooks, check, receipt, vehicle line). It also shows the naive sum, how much confirmed matches keep
+from double counting, and how many purchases are still single-source. **Unmatched duplicates still count twice
+there** — the page says so. It is a working figure, not the books.
+
+**Not purchases.** Credit-card payments, transfers, payroll, loan payments and owner draws are listed separately
+with their totals and never enter the purchase total. Loan principal and interest are not split.
+
+**Expected bills.** A confirmed payment marks the bill paid for that period. The forecast total and the confirmed
+paid total are shown side by side and never added. Safe-to-Spend is unchanged and does not read these links yet.
+
+**Job allocations** remain a separate layer: they never enter any of the totals above.
+
+**"Check the reading"** (manager, review card): re-reads the stored photo/PDF/text and shows read-vs-saved. Saves nothing.
+
+### Still limited
+- QuickBooks matching needs the mirror to be filled by a sync run in production; see the release notes for whether
+  that had happened at release time.
+- Matching is manual, one pair at a time. No bulk confirm.
+- Safe-to-Spend, the CFO headline and the auto-sales reports do not consume `purchase_links`.
+- The existing lists keep their own totals; only the counted-once view deduplicates.
+- Preview safety: `docs/PREVIEW_SAFETY.md`.

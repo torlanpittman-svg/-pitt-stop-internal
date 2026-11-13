@@ -320,3 +320,44 @@ export const finEvents = pgTable('fin_events', {
   source:    varchar('source', { length: 20 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })
+
+// ── Persisted cross-source matches (migration 0079). A PERSON'S decision that two records are the same
+// purchase (confirmed) or are not (dismissed). Undoing sets status 'cleared' — rows are never deleted.
+// Kinds + cardinality are documented in the migration. Receipt ↔ bank stays in finReceiptMatches.
+export const purchaseLinks = pgTable('purchase_links', {
+  id:          uuid('id').primaryKey().defaultRandom(),
+  kind:        varchar('kind', { length: 24 }).notNull(),
+  aType:       varchar('a_type', { length: 16 }).notNull(),
+  aId:         varchar('a_id', { length: 80 }).notNull(),
+  bType:       varchar('b_type', { length: 16 }).notNull(),
+  bId:         varchar('b_id', { length: 80 }).notNull(),
+  status:      varchar('status', { length: 12 }).notNull(),             // confirmed | dismissed | cleared
+  amountCents: integer('amount_cents'),
+  evidence:    jsonb('evidence'),
+  note:        text('note'),
+  decidedBy:   varchar('decided_by', { length: 200 }),
+  decidedAt:   timestamp('decided_at', { withTimezone: true }).notNull().defaultNow(),
+  clearedBy:   varchar('cleared_by', { length: 200 }),
+  clearedAt:   timestamp('cleared_at', { withTimezone: true }),
+}, (t) => [index('purchase_links_a_idx').on(t.aType, t.aId), index('purchase_links_b_idx').on(t.bType, t.bId)])
+
+// READ-ONLY mirror of QuickBooks expense entries (Purchase / Bill), filled by the daily QuickBooks sync from
+// the production company only. Never written back to QuickBooks. Migration 0079.
+export const finQbPurchases = pgTable('fin_qb_purchases', {
+  qbKey:        varchar('qb_key', { length: 80 }).primaryKey(),         // '<Purchase|Bill>:<Id>'
+  qbType:       varchar('qb_type', { length: 16 }).notNull(),
+  qbId:         varchar('qb_id', { length: 40 }).notNull(),
+  txnDate:      date('txn_date'),
+  totalCents:   integer('total_cents').notNull(),
+  paymentType:  varchar('payment_type', { length: 24 }),                // Check | CreditCard | Cash | (Bill: null)
+  accountName:  varchar('account_name', { length: 200 }),               // the paying bank / card account
+  payeeName:    varchar('payee_name', { length: 200 }),
+  docNumber:    varchar('doc_number', { length: 60 }),
+  privateNote:  text('private_note'),
+  lineSummary:  text('line_summary'),
+  expenseAccounts: text('expense_accounts'),
+  qbUpdatedAt:  timestamp('qb_updated_at', { withTimezone: true }),
+  firstSeenAt:  timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt:   timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  missingSince: timestamp('missing_since', { withTimezone: true }),     // no longer returned by QuickBooks (deleted/voided there)
+}, (t) => [index('fin_qb_purchases_date_idx').on(t.txnDate), index('fin_qb_purchases_total_idx').on(t.totalCents)])

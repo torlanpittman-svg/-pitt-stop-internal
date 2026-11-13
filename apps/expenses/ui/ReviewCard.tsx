@@ -16,7 +16,7 @@ import {
   attentionReasonLabel, canAcknowledgeOutstanding, displayAttentionReasons, outstandingKindLabel,
   centsToDollars, formatMoney,
 } from '@/apps/expenses/types'
-import { fileReceiptAction, rejectReceiptAction, reopenReceiptAction, retryExtractionAction } from '@/apps/expenses/actions'
+import { fileReceiptAction, rejectReceiptAction, reopenReceiptAction, retryExtractionAction, checkReadingAction, type ReadingCheck } from '@/apps/expenses/actions'
 import { linkReceiptAction, removeAllocationAction } from '@/apps/expenses/job-actions'
 import { amountsWarning, receiptDateWarning, todayBusinessDate } from '@/apps/expenses/checks'
 import { summarizeAllocations } from '@/apps/expenses/allocations'
@@ -59,6 +59,15 @@ export default function ReviewCard({ r, vehicles = [], allocations = [] }: { r: 
   // Assign this purchase (or part of it) to a customer job / overhead — a link, never a second expense.
   const [pickJob, setPickJob] = useState<PickedJob | null>(null)
   const [assignAmount, setAssignAmount] = useState('')
+  const [reading, setReading] = useState<ReadingCheck | null>(null)
+  const [readingBusy, setReadingBusy] = useState(false)
+  async function checkReading() {
+    if (readingBusy) return
+    setReadingBusy(true); setReading(null)
+    try { setReading(await checkReadingAction({ id: r.id })) } catch { setReading({ ok: false, error: 'Could not reach the server.' }) }
+    setReadingBusy(false)
+  }
+  const showVal = (k: string, v: string | number | null | undefined) => (v == null ? '—' : k.endsWith('Cents') ? formatMoney(v as number) : String(v))
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -271,6 +280,31 @@ export default function ReviewCard({ r, vehicles = [], allocations = [] }: { r: 
               <label className={lbl}>Manager note<br /><input value={memo} onChange={(e) => setMemo(e.target.value)} disabled={decided} className={box} /></label>
             </div>
           </details>
+
+          {/* Diagnostic: what does the reader see in the stored document right now? Saves nothing. */}
+          {r.imageUrl && (
+            <div className="rounded-xl border border-gray-800 bg-gray-900/60 px-3 py-3">
+              <button type="button" onClick={checkReading} disabled={readingBusy} className="text-indigo-300 text-sm underline min-h-11 disabled:opacity-50">{readingBusy ? 'Reading the stored document…' : 'Check the reading (saves nothing)'}</button>
+              <div aria-live="polite">
+                {reading && !reading.ok && <p role="alert" className="text-amber-300 text-xs mt-1">{reading.error}</p>}
+                {reading?.ok && reading.aiStatus !== 'extracted' && <p role="alert" className="text-amber-300 text-xs mt-1">The reader could not read this document. Nothing was changed.</p>}
+                {reading?.ok && reading.aiStatus === 'extracted' && reading.read && reading.saved && (
+                  <div className="mt-2">
+                    <table className="w-full text-xs">
+                      <thead><tr className="text-gray-500 text-left"><th className="font-normal py-1 pr-2">Field</th><th className="font-normal py-1 pr-2">Read now</th><th className="font-normal py-1">Saved</th></tr></thead>
+                      <tbody>
+                        {Object.keys(reading.read).map((k) => {
+                          const differs = reading.differences?.includes(k)
+                          return (<tr key={k} className={differs ? 'text-amber-200' : 'text-gray-300'}><td className="py-1 pr-2 text-gray-500">{k.replace(/Cents$/, '').replace(/([A-Z])/g, ' $1').toLowerCase()}</td><td className="py-1 pr-2 break-all">{showVal(k, reading.read?.[k])}</td><td className="py-1 break-all">{showVal(k, reading.saved?.[k])}{differs ? ' ≠' : ''}</td></tr>)
+                        })}
+                      </tbody>
+                    </table>
+                    <p className="text-gray-500 text-[11px] mt-2">{reading.differences?.length ? `The reading differs from what is saved in ${reading.differences.length} field${reading.differences.length === 1 ? '' : 's'}. The saved values were confirmed by a person and were not changed.` : 'The reading agrees with what is saved.'} Payment card identified from the document: {reading.paymentSourceRead ?? 'none (never guessed)'}.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {r.status === 'rejected' && r.rejectedReason && <p className="text-gray-400 text-xs">Rejected: {r.rejectedReason}</p>}
           {r.status === 'filed' && <p className="text-emerald-400/80 text-xs">Filed by {r.filedBy ?? 'shop'} · operational filing (not yet in QuickBooks)</p>}
