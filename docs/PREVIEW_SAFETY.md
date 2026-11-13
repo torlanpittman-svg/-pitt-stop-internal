@@ -21,20 +21,22 @@ blocked by `platform/prod-db-guard.ts`. Nothing in a build or deploy runs migrat
 `storageAccess`, reasons, commit). It never returns a URL, host, token or setting value. Use it to check any
 deployment.
 
-## Documentation-only changes do not build
+## Documentation-only branches do not build a preview
 
-`vercel.json` → `ignoreCommand: bash vercel-ignore-build.sh` (documentation = `docs/**` or any `*.md`):
+`vercel.json` → `ignoreCommand: bash vercel-ignore-build.sh` (documentation = `docs/**` or any `*.md`).
 
-1. **A branch that has deployed before** (always the case for `main`): Vercel supplies the commit of its last
-   successful deployment. The build is skipped only if every file changed since then is documentation. So a
-   docs-only commit on `main` does not redeploy production, and code is never skipped.
-2. **A branch's first deployment:** Vercel's build checkout cannot fetch other branches (observed 2026-11-13), so
-   there is nothing exact to compare with. It is skipped only when the branch is named `docs/…` **and** its newest
-   commit is documentation-only against a parent (after merging `main` into it, against the merged-in parent).
-   Every other branch name builds its first deployment.
+Vercel's build checkout holds only the newest commit — no history (observed 2026-11-13) — so changed files
+usually cannot be compared. The rules:
 
-Any doubt builds. **Convention this relies on:** put documentation-only work on a `docs/…` branch and never put
-code on one. A branch must contain this `vercel.json` (be based on this release or later) for the skip to apply.
+- **Production (`main`):** skipped only with proof (the last deployed commit is available and everything changed
+  since is documentation). Without proof it **always builds**. In practice a docs-only commit on `main` still
+  redeploys production with identical code; that is harmless and is the price of never skipping code.
+- **Preview:** exact comparison when history is available; otherwise skipped when the branch is named `docs/…`.
+  Every other branch builds.
+
+**Convention this relies on:** documentation-only work goes on a `docs/…` branch, and code never does. Code on a
+`docs/…` branch would simply get no preview (the safe direction). A branch must contain this `vercel.json` (be
+based on this release or later) for the skip to apply.
 
 ## State verified on 2026-11-13
 
