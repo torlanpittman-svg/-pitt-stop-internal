@@ -18,7 +18,7 @@ export const QB_PURCHASE_LOOKBACK_DAYS = 120
 export interface QbPurchaseRow {
   qbKey: string; qbType: 'Purchase' | 'Bill'; qbId: string
   txnDate: string | null; totalCents: number
-  paymentType: string | null; accountName: string | null; payeeName: string | null
+  paymentType: string | null; accountName: string | null; payeeName: string | null; payeeType: string | null
   docNumber: string | null; privateNote: string | null; lineSummary: string | null; expenseAccounts: string | null
   qbUpdatedAt: Date | null
 }
@@ -49,6 +49,7 @@ export function mapQbPurchase(raw: unknown, qbType: 'Purchase' | 'Bill'): QbPurc
     paymentType: qbType === 'Purchase' ? str(o.PaymentType, 24) : null,
     accountName: qbType === 'Purchase' ? str(obj(o.AccountRef).name, 200) : null,
     payeeName: str(obj(qbType === 'Purchase' ? o.EntityRef : o.VendorRef).name, 200),
+    payeeType: qbType === 'Purchase' ? str(obj(o.EntityRef).type, 16) : 'Vendor',
     docNumber: str(o.DocNumber, 60), privateNote: str(o.PrivateNote, 500),
     lineSummary: descs.length ? descs.join(' · ').slice(0, 500) : null,
     expenseAccounts: accts.length ? accts.join(' · ').slice(0, 300) : null,

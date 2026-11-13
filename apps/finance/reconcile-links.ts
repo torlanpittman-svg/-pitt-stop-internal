@@ -55,6 +55,7 @@ const CLASS_LABEL: Record<string, string> = {
   card_payment: 'Credit-card payments (the purchases were already counted on the card)',
   transfer: 'Transfers between accounts', payroll: 'Payroll', debt_payment: 'Loan / floor-plan payments (principal and interest are not split here)',
   owner_draw: 'Owner draws / distributions',
+  people_checks: 'Checks written to employees or the owner (payroll, draws or reimbursements — review any that were really a purchase)',
 }
 const SUGGESTION_LIMIT = 40
 
@@ -81,6 +82,13 @@ export async function getOwnerReconciliation(opts: { today: string; days?: numbe
   const qb = qbAll.filter((q) => !q.missingSince)
   const reversed = new Set(eventsAll.map((e) => e.reversesEventId).filter(Boolean) as string[])
   const events = eventsAll.filter((e) => !e.reversesEventId && !reversed.has(e.id) && costRelevance(e.economicCategory as EconomicCategory) === 'cost_add')
+  // A check (or QuickBooks entry) paid to an EMPLOYEE, or categorised as the owner's personal money, is payroll,
+  // a draw or a reimbursement — a cash movement, not a vendor purchase. It is listed apart, never counted as one.
+  const isPeopleCheck = (c: (typeof checksAll)[number]) => c.payeeQboEntityType === 'Employee' || c.category === 'owner_personal'
+  const peopleQbKeys = new Set([
+    ...checksAll.filter((c) => isPeopleCheck(c) && c.qboTxnId).map((c) => `Purchase:${c.qboTxnId}`),
+    ...qbAll.filter((q) => q.payeeType === 'Employee').map((q) => q.qbKey),
+  ])
   const bankThrough = txnsAll.length ? txnsAll.reduce((m, t) => (t.txnDate > m ? t.txnDate : m), '0000-00-00') : null
 
   // ---- record views ----
@@ -123,11 +131,12 @@ export async function getOwnerReconciliation(opts: { today: string; days?: numbe
   const winChecks = checksAll.filter((c) => inWindow(c.checkDate))
   // A check the app wrote already IS a QuickBooks entry (qbo_txn_id) — that identity needs no suggestion.
   const checkQbKeys = new Set(checksAll.map((c) => (c.qboTxnId ? `Purchase:${c.qboTxnId}` : '')).filter(Boolean))
-  suggest('receipt_qb', winReceipts, qb, side.receipt, side.qb, view.receipt, view.qb)
+  const qbPurchasesOnly = qb.filter((q) => !peopleQbKeys.has(q.qbKey))
+  suggest('receipt_qb', winReceipts, qbPurchasesOnly, side.receipt, side.qb, view.receipt, view.qb)
   suggest('receipt_vehicle_event', winReceipts.filter((r) => r.inventoryVehicleId), events, side.receipt, side.event, view.receipt, view.event, { pair: (r, e) => r.inventoryVehicleId === e.inventoryVehicleId, maxDays: 7 })
   suggest('check_txn', winChecks, txns.filter((t) => t.txnClass === 'check' || t.txnClass === 'payroll' || /check/i.test(t.name ?? '')), side.check, side.txn, view.check, view.txn, { maxDays: 60 })
   suggest('check_receipt', winChecks, receipts.filter((r) => r.paymentMethod === 'check'), side.check, side.receipt, view.check, view.receipt, { maxDays: 14 })
-  suggest('txn_qb', txns.filter((t) => inWindow(t.txnDate) && t.isExpense && isPurchaseTxnClass(t.txnClass)), qb.filter((q) => q.qbType === 'Purchase' && !checkQbKeys.has(q.qbKey)), side.txn, side.qb, view.txn, view.qb, { strongOnly: true })
+  suggest('txn_qb', txns.filter((t) => inWindow(t.txnDate) && t.isExpense && isPurchaseTxnClass(t.txnClass)), qbPurchasesOnly.filter((q) => q.qbType === 'Purchase' && !checkQbKeys.has(q.qbKey)), side.txn, side.qb, view.txn, view.qb, { strongOnly: true })
 
   // ---- expected bills ↔ actual payments (persisted) ----
   const txnById = new Map(txnsAll.map((t) => [t.id, t]))
@@ -176,8 +185,8 @@ export async function getOwnerReconciliation(opts: { today: string; days?: numbe
   const nodes: PurchaseNode[] = [
     ...winReceipts.filter((r) => r.totalCents != null).map((r) => ({ key: nodeKey('receipt', r.id), source: 'receipt' as const, id: r.id, amountCents: r.totalCents as number, date: r.receiptDate, label: r.vendor ?? 'Receipt' })),
     ...txns.filter((t) => inWindow(t.txnDate) && t.isExpense && isPurchaseTxnClass(t.txnClass)).map((t) => ({ key: nodeKey('bank_txn', t.id), source: 'bank_txn' as const, id: t.id, amountCents: t.amountCents, date: t.txnDate, label: t.merchantName || t.name || 'Bank payment' })),
-    ...winChecks.filter((c) => c.qbStatus === 'recorded').map((c) => ({ key: nodeKey('check', c.id), source: 'check' as const, id: c.id, amountCents: c.amountCents, date: c.checkDate, label: `Check #${c.checkNumber} ${c.payeeName}` })),
-    ...qb.filter((q) => inWindow(q.txnDate)).map((q) => ({ key: nodeKey('qb_purchase', q.qbKey), source: 'qb_purchase' as const, id: q.qbKey, amountCents: q.totalCents, date: q.txnDate, label: q.payeeName ?? 'QuickBooks entry' })),
+    ...winChecks.filter((c) => c.qbStatus === 'recorded' && !isPeopleCheck(c)).map((c) => ({ key: nodeKey('check', c.id), source: 'check' as const, id: c.id, amountCents: c.amountCents, date: c.checkDate, label: `Check #${c.checkNumber} ${c.payeeName}` })),
+    ...qb.filter((q) => inWindow(q.txnDate) && !peopleQbKeys.has(q.qbKey)).map((q) => ({ key: nodeKey('qb_purchase', q.qbKey), source: 'qb_purchase' as const, id: q.qbKey, amountCents: q.totalCents, date: q.txnDate, label: q.payeeName ?? 'QuickBooks entry' })),
     ...events.filter((e) => inWindow(e.eventDate)).map((e) => ({ key: nodeKey('vehicle_event', e.id), source: 'vehicle_event' as const, id: e.id, amountCents: e.amountCents, date: e.eventDate, label: e.vendor ?? e.economicCategory })),
   ]
   const src = { receipt: 'receipt', qb_purchase: 'qb_purchase', vehicle_event: 'vehicle_event', check: 'check', bank_txn: 'bank_txn' } as const
@@ -196,6 +205,14 @@ export async function getOwnerReconciliation(opts: { today: string; days?: numbe
     const m = moves.get(k) ?? { txnClass: k, label: CLASS_LABEL[k] ?? k, count: 0, cents: 0 }
     m.count++; m.cents += t.amountCents; moves.set(k, m)
   }
+
+  // …plus people-checks: counted from the check itself, or from a QuickBooks employee entry no app check created.
+  const appCheckKeys = new Set(checksAll.filter((c) => c.qboTxnId).map((c) => `Purchase:${c.qboTxnId}`))
+  const people = [
+    ...winChecks.filter(isPeopleCheck).map((c) => c.amountCents),
+    ...qb.filter((q) => inWindow(q.txnDate) && q.payeeType === 'Employee' && !appCheckKeys.has(q.qbKey)).map((q) => q.totalCents),
+  ]
+  if (people.length) moves.set('people_checks', { txnClass: 'people_checks', label: CLASS_LABEL.people_checks, count: people.length, cents: people.reduce((s, c) => s + c, 0) })
 
   const qbSummary = (lastQbo[0]?.summary as { qbPurchases?: { ok?: boolean; skipped?: string; purchases?: number; bills?: number } } | null)?.qbPurchases
   const coverage: SourceCoverage[] = [

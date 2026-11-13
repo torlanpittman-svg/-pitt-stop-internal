@@ -242,6 +242,10 @@ there** — the page says so. It is a working figure, not the books.
 
 **Not purchases.** Credit-card payments, transfers, payroll, loan payments and owner draws are listed separately
 with their totals and never enter the purchase total. Loan principal and interest are not split.
+Checks written to an employee or categorised as the owner's personal money — and QuickBooks entries paid to an
+employee (`fin_qb_purchases.payee_type`, migration 0080) — are payroll, draws or reimbursements: they are listed
+in the same block and never counted as purchases. A genuine reimbursement for a purchase should be captured as
+a receipt.
 
 **Expected bills.** A confirmed payment marks the bill paid for that period. The forecast total and the confirmed
 paid total are shown side by side and never added. Safe-to-Spend is unchanged and does not read these links yet.

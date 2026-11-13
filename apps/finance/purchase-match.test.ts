@@ -68,7 +68,10 @@ describe('mapQbPurchase — the real QuickBooks shape, read-only', () => {
   const raw = { AccountRef: { value: '31', name: 'Pitt Stop Detail *2649' }, PaymentType: 'Check', EntityRef: { value: '652', name: 'PDR', type: 'Vendor' }, TotalAmt: 75, Id: '24657', DocNumber: '10390', TxnDate: '2026-11-12', PrivateNote: 'BMW X7', MetaData: { LastUpdatedTime: '2026-11-12T08:49:19-08:00' },
     Line: [{ Id: '1', Description: 'BMW X7', Amount: 75, DetailType: 'AccountBasedExpenseLineDetail', AccountBasedExpenseLineDetail: { AccountRef: { value: '16', name: 'Cost of Goods Sold:Job Supplies' } } }] }
   it('maps a check purchase', () => {
-    expect(mapQbPurchase(raw, 'Purchase')).toMatchObject({ qbKey: 'Purchase:24657', totalCents: 7500, txnDate: '2026-11-12', paymentType: 'Check', accountName: 'Pitt Stop Detail *2649', payeeName: 'PDR', docNumber: '10390', privateNote: 'BMW X7', lineSummary: 'BMW X7', expenseAccounts: 'Cost of Goods Sold:Job Supplies' })
+    expect(mapQbPurchase(raw, 'Purchase')).toMatchObject({ qbKey: 'Purchase:24657', totalCents: 7500, txnDate: '2026-11-12', paymentType: 'Check', accountName: 'Pitt Stop Detail *2649', payeeName: 'PDR', payeeType: 'Vendor', docNumber: '10390', privateNote: 'BMW X7', lineSummary: 'BMW X7', expenseAccounts: 'Cost of Goods Sold:Job Supplies' })
+  })
+  it('keeps the payee type so an employee payment is never mistaken for a purchase', () => {
+    expect(mapQbPurchase({ Id: '24669', TotalAmt: 1006.12, PaymentType: 'Check', EntityRef: { name: 'An Employee', type: 'Employee' }, TxnDate: '2026-11-13', PrivateNote: 'Payroll' }, 'Purchase')).toMatchObject({ payeeType: 'Employee', totalCents: 100612 })
   })
   it('maps a bill (vendor, no paying account) and rejects junk', () => {
     expect(mapQbPurchase({ Id: '7', TotalAmt: '120.50', VendorRef: { name: 'Atmos Energy' }, TxnDate: '2026-11-01' }, 'Bill')).toMatchObject({ qbKey: 'Bill:7', totalCents: 12050, payeeName: 'Atmos Energy', accountName: null, paymentType: null })
