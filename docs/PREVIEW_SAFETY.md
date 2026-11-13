@@ -23,11 +23,18 @@ deployment.
 
 ## Documentation-only changes do not build
 
-`vercel.json` → `ignoreCommand: bash vercel-ignore-build.sh`. The script skips a deployment only when every
-file changed since the last successful deployment of that branch is `docs/**` or `*.md`. For a branch's first
-deployment it compares against where the branch left `main`. Any doubt (no base, fetch failure, no diff) →
-build. So a docs-only branch creates no preview, and a docs-only commit on `main` does not redeploy production.
-A branch must contain this `vercel.json` (i.e. be based on a commit at or after this release) for the skip to apply.
+`vercel.json` → `ignoreCommand: bash vercel-ignore-build.sh` (documentation = `docs/**` or any `*.md`):
+
+1. **A branch that has deployed before** (always the case for `main`): Vercel supplies the commit of its last
+   successful deployment. The build is skipped only if every file changed since then is documentation. So a
+   docs-only commit on `main` does not redeploy production, and code is never skipped.
+2. **A branch's first deployment:** Vercel's build checkout cannot fetch other branches (observed 2026-11-13), so
+   there is nothing exact to compare with. It is skipped only when the branch is named `docs/…` **and** its newest
+   commit is documentation-only against a parent (after merging `main` into it, against the merged-in parent).
+   Every other branch name builds its first deployment.
+
+Any doubt builds. **Convention this relies on:** put documentation-only work on a `docs/…` branch and never put
+code on one. A branch must contain this `vercel.json` (be based on this release or later) for the skip to apply.
 
 ## State verified on 2026-11-13
 
