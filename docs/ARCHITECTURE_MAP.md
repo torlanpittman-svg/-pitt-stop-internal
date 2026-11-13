@@ -3,7 +3,7 @@
 > First stop for "where does X live?". Per-module: primary files, key functions, API routes, DB
 > tables, tests, cross-module links. Read only the section you need.
 >
-> **Scope:** describes the production branch (`origin/main`) as of commit `271ca84`, 2026-11-13. Every file
+> **Scope:** describes the production branch (`origin/main`) as of commit `d87b702`, 2026-11-13. Every file
 > path and function name below was checked against that commit, and feature-flag states were read from the
 > production `app_settings` table the same day. Flags drift — re-check them before relying on a "live" or
 > "off" statement. Work that exists only on local or unreleased branches is deliberately not described here.
@@ -53,7 +53,7 @@
 ## Finance / CFO (read-only money view)
 - **Files:** `apps/finance/{schema.ts, db.ts, cfo.ts, safe-to-spend.ts, transactions.ts, obligations-discovery.ts, qbo-sync.ts, ar.ts, receipts-cfo.ts, txn-class.ts, sync-health.ts}`; reconciliation: `apps/finance/{purchase-links.ts, purchase-match.ts, purchase-ledger.ts, reconcile-links.ts, qb-purchases.ts}`
 - **Routes:** `app/admin/finance/` (CFO page, ADMIN_PASSWORD), `app/admin/finance/reconcile` (review queues), `app/api/cron/finance-sync` (daily 09:00 UTC, see `vercel.json`)
-- **Tables:** `fin_transactions`, `fin_accounts`, `fin_plaid_items`, `fin_plaid_accounts`, `fin_balance_snapshots`, `fin_obligations`, `fin_expected_inflows`, `fin_ar_invoices`, `fin_debts`, `fin_receipt_matches`, `fin_sync_runs`, `fin_events`, `purchase_links` and `fin_qb_purchases` (migration 0079). Note: `apps/finance/schema.ts` is **not** re-exported by `drizzle/schema.ts`.
+- **Tables:** `fin_transactions`, `fin_accounts`, `fin_plaid_items`, `fin_plaid_accounts`, `fin_balance_snapshots`, `fin_obligations`, `fin_expected_inflows`, `fin_ar_invoices`, `fin_debts`, `fin_receipt_matches`, `fin_sync_runs`, `fin_events`, `purchase_links` and `fin_qb_purchases` (migrations 0079–0080). Note: `apps/finance/schema.ts` is **not** re-exported by `drizzle/schema.ts`.
 - **Links:** read-only over QuickBooks + bank data; never feeds pricing/invoicing. Never decrypt Plaid tokens locally.
 - **What is actually connected (traced in code 2026-11-13):**
 
@@ -88,11 +88,11 @@
 - **Roles:** `employees.role` ∈ `employee | manager | admin`. Managers are individual PINs (env `PIN_*`). `/admin` is password-only (ADMIN_PASSWORD).
 
 ## Database & migrations
-- **Files:** `platform/db.ts` (`getDb` — wraps `guardNeonClient`), `platform/prod-db-guard.ts` (fail-closed write guard: blocks local prod writes unless `DATABASE_ENV=development` or `ALLOW_PROD_DB_WRITES=1`; inert on Vercel), `drizzle/schema.ts` (re-export aggregator), `drizzle/migrations/manual/NNNN_*.sql` (numbered, latest 0078)
+- **Files:** `platform/db.ts` (`getDb` — wraps `guardNeonClient`), `platform/prod-db-guard.ts` (fail-closed write guard: blocks local prod writes unless `DATABASE_ENV=development` or `ALLOW_PROD_DB_WRITES=1`; inert on Vercel), `drizzle/schema.ts` (re-export aggregator), `drizzle/migrations/manual/NNNN_*.sql` (numbered, latest 0080)
 - **Tools:** `scripts/db-target.ts` (verify effective branch — prod `ep-morning-base-adq5h6rq` vs dev). `scripts/` is excluded from Vercel builds (`.vercelignore`)
 - **Roles:** the app connects only through `APP_DATABASE_URL` as `pitt_stop_app` (DML, no DDL). Migrations are applied by hand as the owner role; nothing in the build or deploy runs them (`docs/DB_CREDENTIAL_ROTATION_COMPLETED_2026-11-03.md`).
 - **Safety:** TWO Neon branches exist; always verify target before writes. Migrations applied deliberately.
-- **Previews fail closed:** `platform/preview-guard.ts` refuses database access on a Vercel preview unless the database is positively non-production, and file storage unless an isolated store is declared. `GET /api/health` reports the environment with no setting values. Documentation-only changes skip the Vercel build (`vercel-ignore-build.sh`). See `docs/PREVIEW_SAFETY.md`.
+- **Previews fail closed:** `platform/preview-guard.ts` refuses database access on a Vercel preview unless the database is positively non-production, and file storage unless an isolated store is declared. `GET /api/health` reports the environment with no setting values. Previews of `docs/…` branches are skipped (`vercel-ignore-build.sh`); production always builds unless a docs-only change can be proven. See `docs/PREVIEW_SAFETY.md`.
 
 ## Other modules (brief)
 - **Estimates / Estimator:** `apps/estimates/`, `apps/estimator/` → `app/estimates/`, `app/estimator/`

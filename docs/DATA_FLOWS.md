@@ -3,7 +3,7 @@
 > How the core records connect, plus the safeguards that keep money/identity correct. Pairs with
 > `ARCHITECTURE_MAP.md` (where code lives). No source code here — read the cited files for detail.
 >
-> **Scope:** the production branch (`origin/main`) as of `271ca84`, 2026-11-13. Each flow is marked with what
+> **Scope:** the production branch (`origin/main`) as of `d87b702`, 2026-11-13. Each flow is marked with what
 > has been verified and what has not. "Verified in code" means the cited files exist and do this on that
 > commit; it does not mean the flow was exercised against live QuickBooks or a live bank feed.
 
@@ -87,7 +87,8 @@ One purchase is one `business_receipts` row; everything else points at it. Full 
 - Business totals (receipt coverage, CFO) sum receipts only — allocations never change them.
 - **Counted once:** `/admin/finance/reconcile` merges records that a person has confirmed are one purchase. Anything
   not yet matched still appears separately, so that figure is an upper bound until matching is done. Card payments,
-  transfers, payroll, loan payments and owner draws are listed apart and never counted as purchases.
+  transfers, payroll, loan payments, owner draws and checks written to employees or the owner are listed apart
+  and never counted as purchases.
 - **Reading the bank feed:** the feed only shows transactions up to its last synced date. A purchase dated after
   that date is **not yet observable** — the feed cannot say whether it has posted. Treat it as unknown, not as
   "unposted", until the feed covers the date.
