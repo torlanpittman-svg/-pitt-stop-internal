@@ -35,8 +35,9 @@ A branch must contain this `vercel.json` (i.e. be based on a commit at or after 
   the Neon-managed `DATABASE_URL`/`PG*`/`POSTGRES_*` family, `BLOB_READ_WRITE_TOKEN`, `BLOB_STORE_ID` and
   `RECEIPTS_BLOB_READ_WRITE_TOKEN` are all set for **preview**. QuickBooks, Plaid, Postmark, OpenAI and
   `CRON_SECRET` are production-only. Crons run only on production.
-- Whether the preview database value is the production endpoint is reported by the preview's own
-  `/api/health` (`databaseTarget`) — see the release notes for the observed value.
+- **Observed:** the preview built from this change (`6fdefa1`) reported `databaseTarget: production`,
+  `databaseAccess: blocked`, `storageAccess: blocked`, and a data route returned the `PreviewBlockedError`. So the
+  preview database setting **is** the production database, and the guard refuses it.
 - Previews are behind Vercel Authentication (`all_except_custom_domains`).
 
 ## To give previews working, isolated data (needs an owner decision — not done)
@@ -54,7 +55,8 @@ database and storage variables from the Preview target entirely is a further har
 
 ## Existing preview deployments
 
-Previews built **before** this release do not contain the guard. Those built before the 2026-11-03 credential
-rotation hold a database credential that no longer works; later ones can still reach production data as the app
-role, behind Vercel Authentication and the app's own PIN/password gates. Deleting old preview deployments in
+Previews built **before** this release do not contain the guard. The two that were still `READY` on 2026-11-13
+(built 2026-10-19 and 2026-10-30, before the 2026-11-03 credential rotation) were tested: their database queries
+fail, because the credential they were built with no longer works. No pre-guard preview built after the rotation
+exists. Deleting old preview deployments in
 Vercel removes that exposure; it is the owner's call and is listed in the release notes.

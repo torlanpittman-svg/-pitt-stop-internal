@@ -190,15 +190,15 @@ Order matters: the code names the new columns in its INSERTs, so **apply 0078 be
 Rollback: redeploy the previous commit. The new table and columns are inert to old code; nothing needs to be
 dropped. Allocations can be soft-removed.
 
-## 10. Acceptance record — Tesla seat cushion, Huong Do
+## 10. Acceptance record — the Tesla seat-cushion purchase
 
 Verified in production **before** the change (read-only, 2026-11-13):
 
 - Receipt `5b5d606c-04f7-4d16-a6e9-77f2b626627b`: `filed`, Tesla Inc., 2026-11-13 (corrected from a scanned
   2020-11-13), subtotal $71.00, tax $0.00, total **$80.21**, card ••0320 on AMB *2649, business funding, JPEG
   stored privately, `qb_sync_status = export_ready`, 6 audit entries.
-- Job `dd38262d-18a8-4195-8cb5-92cbf515d1f8` = SO-20261113-0001, Huong Do, 2026 Tesla Model Y,
-  VIN 7SAYGDED2TA431723. No `job_parts` rows. One job photo (`tesla-invoice.jpg`).
+- Job `dd38262d-18a8-4195-8cb5-92cbf515d1f8` = SO-20261113-0001 (customer, vehicle and VIN confirmed against the
+  request; not repeated here — this repository is publicly readable). No `job_parts` rows. One job photo.
 - No row in `fin_receipt_matches`. The bank feed covered transactions through 2026-11-12 only, so the bank side of
   an 11/13 purchase was **not yet observable in the available feed**. That is not evidence it had not posted —
   the feed simply could not show it either way.
