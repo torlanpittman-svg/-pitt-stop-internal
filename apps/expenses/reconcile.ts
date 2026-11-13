@@ -19,6 +19,7 @@ import { getDb } from '@/platform/db'
 import { finObligations, finReceiptMatches, finSyncRuns, finTransactions } from '@/apps/finance/schema'
 import { getSyncHealth } from '@/apps/finance/sync-health'
 import { expectsReceipt, isPurchaseTxnClass } from '@/apps/finance/txn-class'
+import { liveLinks } from '@/apps/finance/purchase-links'
 import { rankCandidates } from '@/apps/finance/receipts-cfo'
 import { vehicleFinancialEvents } from '@/apps/auto-sales/schema'
 import { jobParts } from '@/apps/parts/schema'
@@ -35,7 +36,7 @@ const dayGap = (a: string, b: string) => Math.round((toUtc(a) - toUtc(b)) / DAY_
 
 export type ReviewKind = 'timing' | 'source_unavailable' | 'to_review' | 'discrepancy'
 export const REVIEW_KIND_LABEL: Record<ReviewKind, string> = {
-  timing: 'Timing — may simply not be there yet',
+  timing: 'Not yet observable — the source does not reach this date',
   source_unavailable: 'Can’t be checked from here',
   to_review: 'To review',
   discrepancy: 'Records disagree',
@@ -81,7 +82,7 @@ export function classifyUnmatchedReceipt(r: UnmatchedReceiptFacts, bankThrough: 
   if (!bankThrough) return { kind: 'source_unavailable', why: 'No bank transactions are loaded.' }
   if (!r.receiptDate) return { kind: 'to_review', why: 'The receipt has no date, so it cannot be lined up with the bank.' }
   if (dayGap(r.receiptDate, bankThrough) >= -3) {
-    return { kind: 'timing', why: `The bank feed only runs through ${bankThrough}; a purchase on ${r.receiptDate} may not have posted yet.` }
+    return { kind: 'timing', why: `Not yet observable: the bank feed only shows transactions through ${bankThrough}, so it cannot say whether a ${r.receiptDate} purchase has posted.` }
   }
   return { kind: 'to_review', why: isCreditSettledRef(r.accountRef) ? 'Expected on the card statement by now — match it on the CFO page.' : 'Expected in the bank by now — match it on the CFO page.' }
 }
@@ -166,6 +167,10 @@ export async function getReconciliation(opts: { today: string; days?: number; in
     getSyncHealth().catch(() => null),
     db.select({ at: finSyncRuns.finishedAt }).from(finSyncRuns).where(and(eq(finSyncRuns.source, 'qbo'), eq(finSyncRuns.status, 'ok'))).orderBy(desc(finSyncRuns.startedAt)).limit(1),
   ])
+  // Decisions a person already made (purchase_links): a pair that was confirmed OR dismissed is not raised again.
+  const links = await liveLinks().catch(() => [])
+  const decidedPair = new Set(links.map((l) => `${l.kind}|${l.aId}|${l.bId}`))
+  const explainedTxn = new Set(links.filter((l) => l.status === 'confirmed' && (l.kind === 'check_txn' || l.kind === 'bill_payment')).map((l) => l.bId))
   const matchByReceipt = new Map(matches.map((m) => [m.receiptId, m]))
   const matchedTxnIds = new Set(matches.filter((m) => m.status === 'confirmed' && m.txnId).map((m) => m.txnId as string))
   const bankThrough = txns.length ? txns.reduce((mx, t) => (t.txnDate > mx ? t.txnDate : mx), '0000-00-00') : null
@@ -180,14 +185,26 @@ export async function getReconciliation(opts: { today: string; days?: number; in
   const bills: QueueItem[] = []
   const billByTxn = new Map<string, string>()   // bank payment → the expected bill it IS
   for (const ob of obligations) {
-    const m = matchObligation(ob, purchaseTxns, today)
-    if (m.state === 'seen') { billByTxn.set(m.txn.id, ob.vendor); continue }
+    // A payment a person CONFIRMED as this bill (persisted) settles it without re-guessing.
+    const confirmedPay = links.filter((l) => l.kind === 'bill_payment' && l.status === 'confirmed' && l.aId === ob.id)
+      .map((l) => purchaseTxns.find((t) => t.id === l.bId)).filter((t): t is (typeof purchaseTxns)[number] => !!t)
+    for (const t of confirmedPay) billByTxn.set(t.id, ob.vendor)
+    const period = PERIOD_DAYS[(ob.frequency ?? '').toLowerCase()]
+    if (period && confirmedPay.some((t) => dayGap(today, t.txnDate) <= period + 5)) continue
+    const m = matchObligation(ob, purchaseTxns.filter((t) => !decidedPair.has(`bill_payment|${ob.id}|${t.id}`)), today)
+    if (m.state === 'seen') {
+      billByTxn.set(m.txn.id, ob.vendor)
+      bills.push({ id: ob.id, title: ob.vendor, detail: `${ob.frequency} · expected bill`, amountCents: ob.amountCents ?? ob.avgAmountCents, date: m.txn.txnDate, kind: 'to_review', why: `A ${money(m.txn.amountCents)} payment on ${m.txn.txnDate} looks like this bill. Confirm it above so the match is saved.`, href: '/admin/finance/reconcile' })
+      continue
+    }
     const expected = ob.amountCents ?? ob.avgAmountCents
     if (m.state === 'cannot_check') bills.push({ id: ob.id, title: ob.vendor, detail: `${ob.frequency ?? 'no frequency'} · expected bill`, amountCents: expected, date: ob.nextDue, kind: 'source_unavailable', why: m.reason, href: '/admin/finance' })
     else bills.push({
       id: ob.id, title: ob.vendor, detail: `${ob.frequency} · expected bill`, amountCents: expected, date: ob.nextDue,
       kind: bankThrough && dayGap(today, bankThrough) > 3 ? 'timing' : 'to_review',
-      why: `No matching payment in the last ${m.lookbackDays} days of bank activity (matched by vendor name${expected != null ? ' and amount' : ''}). It may be paid from another account, renamed by the bank, or genuinely unpaid.`,
+      why: bankThrough && dayGap(today, bankThrough) > 3
+        ? `Not yet observable: the bank feed only shows transactions through ${bankThrough}.`
+        : `No matching payment in the last ${m.lookbackDays} days of bank activity (matched by vendor name${expected != null ? ' and amount' : ''}). It may be paid from another account, renamed by the bank, or genuinely unpaid.`,
       href: '/admin/finance',
     })
   }
@@ -195,7 +212,7 @@ export async function getReconciliation(opts: { today: string; days?: number; in
   // 1) Bank/card purchases with no receipt (admin detail).
   const windowTxns = txns.filter((t) => t.txnDate >= windowStart)
   const noReceipt: QueueItem[] = windowTxns
-    .filter((t) => t.isExpense && expectsReceipt(t.txnClass) && !t.pending && !matchedTxnIds.has(t.id))
+    .filter((t) => t.isExpense && expectsReceipt(t.txnClass) && !t.pending && !matchedTxnIds.has(t.id) && !explainedTxn.has(t.id))
     .sort((a, b) => b.txnDate.localeCompare(a.txnDate))
     .map((t) => ({
       id: t.id, title: t.merchantName || t.name || 'Bank transaction', detail: `bank class: ${t.txnClass ?? 'unclassified'}`,
@@ -256,11 +273,11 @@ export async function getReconciliation(opts: { today: string; days?: number; in
     for (const r of vehicleReceipts) {
       const hit = events.find((e) => e.inventoryVehicleId === r.inventoryVehicleId && e.status !== 'void' && e.amountCents === r.totalCents
         && (!r.receiptDate || !e.eventDate || Math.abs(dayGap(r.receiptDate, e.eventDate)) <= 3))
-      if (hit) dups.push({
+      if (hit && !decidedPair.has(`receipt_vehicle_event|${r.id}|${hit.id}`)) dups.push({
         id: `${r.id}:veh:${hit.id}`, title: `${receiptTitle(r)} ${money(r.totalCents)}`, detail: `Also entered on the vehicle’s own ledger (${hit.vendor ?? 'same amount'}, ${hit.eventDate ?? 'no date'})`,
         amountCents: r.totalCents, date: r.receiptDate, kind: 'to_review',
-        why: 'The same amount is on this car in Auto Sales and in Receipts. They are separate lists with separate totals — it is one purchase, shown in both.',
-        href: '/expenses/review?status=filed',
+        why: 'The same amount is on this car in Auto Sales and in Receipts. If it is one purchase, the owner confirms the match on the finance reconcile page so it is counted once.',
+        href: opts.includeBank ? '/admin/finance/reconcile' : '/expenses/review?status=filed',
       })
     }
   }
@@ -294,10 +311,10 @@ export async function getReconciliation(opts: { today: string; days?: number; in
   const restricted = (q: Queue): Queue => (opts.includeBank ? q : { ...q, restricted: true, count: 0, totalCents: null, byKind: {}, items: [] })
   const queues: Queue[] = [
     restricted(queue('txn_no_receipt', 'Bank and card purchases with no receipt', 'Money that left an account as a purchase or check, with no receipt matched to it. Card payments, transfers, payroll, loan payments and owner draws are left out — they are cash movements, not purchases.', noReceipt)),
-    queue('receipt_no_txn', 'Receipts not matched to a bank or card payment', 'Filed receipts that no bank or card transaction has been matched to yet. Matching is done by a person on the CFO page; it links the two, it never adds an expense.', unmatched),
+    queue('receipt_no_txn', 'Receipts not matched to a bank or card payment', 'Filed receipts that no bank or card transaction has been matched to yet. Matching is done by a person on the CFO page; it links the two, it never adds an expense. “Not yet observable” means the bank feed does not reach that date — it is not a statement that the purchase has not posted.', unmatched),
     queue('no_job', 'Likely job purchases with no job', 'Receipts that look like they were bought for one customer’s car but are not attached to a job.', noJob),
     queue('duplicates', 'Potential duplicates', 'Records that may describe the same purchase. Nothing is merged automatically.', dups, false),
-    restricted(queue('bill_no_payment', 'Expected bills with no payment seen', 'Confirmed recurring bills are forecasts. This lists the ones with no matching bank payment inside their own period. When a payment is found it IS that bill — the forecast and the payment are never added together.', bills)),
+    restricted(queue('bill_no_payment', 'Expected bills not yet matched to a payment', 'Confirmed recurring bills are forecasts. This lists the ones with no CONFIRMED payment inside their own period — including ones where a likely payment is waiting for you to confirm. A confirmed payment IS that bill: the forecast and the payment are never added together.', bills)),
     queue('split', 'Purchases with an incomplete split', 'A purchase split across jobs or overhead must add up to the receipt total.', incomplete),
   ]
 
@@ -310,8 +327,8 @@ export async function getReconciliation(opts: { today: string; days?: number; in
     },
     { key: 'receipts', label: 'Receipts', state: 'ok', detail: `${complete.length} filed in the last ${days} days · ${receipts.length - complete.length} still need review. Only purchases someone captured are here — it is not a full ledger.` },
     {
-      key: 'qb', label: 'QuickBooks expense records', state: 'unavailable',
-      detail: `Not connected for expenses: receipts are never posted to QuickBooks and QuickBooks purchases/bills are not read, so nothing here is matched to a QuickBooks record. ${exportReady.length} filed receipt${exportReady.length === 1 ? ' is' : 's are'} “export ready” only.${lastQbo[0]?.at ? ` (QuickBooks totals — P&L, balances, open invoices — last synced ${new Date(lastQbo[0].at).toISOString().slice(0, 10)}.)` : ''}`,
+      key: 'qb', label: 'QuickBooks expense records', state: 'partial',
+      detail: `Read-only: QuickBooks purchases and bills are read by the daily sync and can be matched to receipts, checks and bank payments on the owner’s finance reconcile page. Receipts are never posted to QuickBooks — ${exportReady.length} filed receipt${exportReady.length === 1 ? ' is' : 's are'} “export ready” only.${lastQbo[0]?.at ? ` Last QuickBooks sync ${new Date(lastQbo[0].at).toISOString().slice(0, 10)}.` : ''}`,
     },
     { key: 'vehicle', label: 'Sales-inventory vehicle ledger', state: 'partial', detail: 'A separate per-car list with its own totals. Not linked to Receipts or the bank; overlaps are flagged under Potential duplicates.' },
     { key: 'bills', label: 'Expected recurring bills', state: opts.includeBank ? 'partial' : 'unavailable', detail: opts.includeBank ? `${obligations.length} confirmed. Checked against bank payments by vendor name and amount — a best-effort match, not a stored link.` : 'Visible to the owner/admin.' },

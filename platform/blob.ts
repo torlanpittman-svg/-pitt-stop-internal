@@ -1,4 +1,5 @@
 import { put, del, get } from '@vercel/blob'
+import { assertPreviewStorageAllowed } from './preview-guard'
 import { createHash } from 'node:crypto'
 import { logger } from '@/platform/logger'
 import { sanitizeFilename } from '@/platform/image'
@@ -19,6 +20,7 @@ export async function uploadPhoto(
   data: Buffer | Blob | ArrayBuffer,
   contentType: string
 ): Promise<string> {
+  assertPreviewStorageAllowed()
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
     throw new Error(
       'BLOB_READ_WRITE_TOKEN is not configured.\n' +
@@ -34,6 +36,7 @@ export async function uploadPhoto(
 }
 
 export async function deletePhoto(url: string): Promise<void> {
+  assertPreviewStorageAllowed()
   await del(url)
   logger.info(MODULE, 'delete.success', { url })
 }
@@ -42,6 +45,7 @@ export async function deletePhoto(url: string): Promise<void> {
 // BLOB_READ_WRITE_TOKEN (which backs the public Auto-Sales receipt store). This isolates private receipts
 // to a private store and guarantees we never silently fall back to public storage.
 function receiptsBlobToken(): string {
+  assertPreviewStorageAllowed() // a preview never touches a file store that may be production's
   const t = process.env.RECEIPTS_BLOB_READ_WRITE_TOKEN
   if (!t) throw new Error('RECEIPTS_BLOB_READ_WRITE_TOKEN is not configured (private receipt store).')
   return t

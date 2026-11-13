@@ -3,7 +3,7 @@
 > First stop for "where does X live?". Per-module: primary files, key functions, API routes, DB
 > tables, tests, cross-module links. Read only the section you need.
 >
-> **Scope:** describes the production branch (`origin/main`) as of commit `c66a9dc`, 2026-11-13. Every file
+> **Scope:** describes the production branch (`origin/main`) as of commit `271ca84`, 2026-11-13. Every file
 > path and function name below was checked against that commit, and feature-flag states were read from the
 > production `app_settings` table the same day. Flags drift — re-check them before relying on a "live" or
 > "off" statement. Work that exists only on local or unreleased branches is deliberately not described here.
@@ -51,9 +51,9 @@
 - **Links:** reads Invoice Draft (workflow); writes directory cache (`customers.quickbooks_customer_id`). **Retail & dealer QB are isolated.** Prod QB only works in the deployed app (tokens AES-GCM encrypted; sandbox-only locally).
 
 ## Finance / CFO (read-only money view)
-- **Files:** `apps/finance/{schema.ts, db.ts, cfo.ts, safe-to-spend.ts, transactions.ts, obligations-discovery.ts, qbo-sync.ts, ar.ts, receipts-cfo.ts, txn-class.ts, sync-health.ts}`
+- **Files:** `apps/finance/{schema.ts, db.ts, cfo.ts, safe-to-spend.ts, transactions.ts, obligations-discovery.ts, qbo-sync.ts, ar.ts, receipts-cfo.ts, txn-class.ts, sync-health.ts}`; reconciliation: `apps/finance/{purchase-links.ts, purchase-match.ts, purchase-ledger.ts, reconcile-links.ts, qb-purchases.ts}`
 - **Routes:** `app/admin/finance/` (CFO page, ADMIN_PASSWORD), `app/admin/finance/reconcile` (review queues), `app/api/cron/finance-sync` (daily 09:00 UTC, see `vercel.json`)
-- **Tables:** `fin_transactions`, `fin_accounts`, `fin_plaid_items`, `fin_plaid_accounts`, `fin_balance_snapshots`, `fin_obligations`, `fin_expected_inflows`, `fin_ar_invoices`, `fin_debts`, `fin_receipt_matches`, `fin_sync_runs`, `fin_events`. Note: `apps/finance/schema.ts` is **not** re-exported by `drizzle/schema.ts`.
+- **Tables:** `fin_transactions`, `fin_accounts`, `fin_plaid_items`, `fin_plaid_accounts`, `fin_balance_snapshots`, `fin_obligations`, `fin_expected_inflows`, `fin_ar_invoices`, `fin_debts`, `fin_receipt_matches`, `fin_sync_runs`, `fin_events`, `purchase_links` and `fin_qb_purchases` (migration 0079). Note: `apps/finance/schema.ts` is **not** re-exported by `drizzle/schema.ts`.
 - **Links:** read-only over QuickBooks + bank data; never feeds pricing/invoicing. Never decrypt Plaid tokens locally.
 - **What is actually connected (traced in code 2026-11-13):**
 
@@ -61,13 +61,15 @@
   |---|---|
   | Plaid → `fin_transactions` / balances (cron + "Sync now") | **Working** — production rows present, last sync run `ok` on 2026-11-13 |
   | QuickBooks → P&L / balance sheet / A/R totals, accounts, open invoices | **Working, read-only** (`qbo-sync.ts`, `ar.ts`) |
-  | Receipt ↔ bank transaction (`fin_receipt_matches`) | **Manual only** — a person confirms on the CFO page; 0 confirmed rows in production on 2026-11-13 |
+  | Receipt ↔ bank transaction (`fin_receipt_matches`) | **Manual, persisted** — a person confirms on the CFO page; 0 confirmed rows in production on 2026-11-13 |
+  | Receipt ↔ QuickBooks entry, receipt ↔ vehicle cost line, check ↔ bank payment, check ↔ receipt, bank payment ↔ QuickBooks entry (`purchase_links`) | **Manual, persisted** — suggested on `/admin/finance/reconcile`, saved only when a person confirms; undo keeps history; audited in `fin_events`. 0 rows in production at release |
+  | Purchases "counted once" across receipts, bank, checks, QuickBooks, vehicle ledger | **Working as a view** on `/admin/finance/reconcile` — merges only confirmed matches (+ a check and the QuickBooks entry it created). Unmatched duplicates still count twice and the page says so. No other report consumes it |
   | Receipt ↔ customer job (`expense_allocations`) | **Working** (see Expenses below) |
-  | Expected bill (`fin_obligations`) ↔ the payment that paid it | **No stored link.** The reconcile view matches by vendor name + amount on read (best-effort) |
-  | QuickBooks expense records (Purchase / Bill) | **Not connected** — never read; receipts are never posted (`business_receipts.qb_*` reserved). Only Write-a-Check creates a QuickBooks Purchase |
+  | Expected bill (`fin_obligations`) ↔ the payment that paid it | **Manual, persisted** (`purchase_links` kind `bill_payment`); suggested by vendor name + amount. Forecast and paid totals are shown side by side, never added. **Safe-to-Spend does not read it** |
+  | QuickBooks expense records (Purchase / Bill) | **Read-only mirror** (`fin_qb_purchases`, last 120 days, filled by the daily QuickBooks sync from the production company). **Empty until the first sync after release** — verify rows exist before relying on it. Receipts are never posted; only Write-a-Check creates a QuickBooks Purchase |
   | Sales-inventory vehicle ledger ↔ bank (`vehicle_financial_events.fin_transaction_id`) | **Not wired** — column exists, nothing writes it |
-  | Sales-inventory vehicle ledger ↔ `business_receipts` | **Not linked** — separate scan pipeline and totals; overlaps are only flagged |
-  | `checks` ↔ finance / receipts | **Not linked** — finance and receipts never read `checks` |
+  | Sales-inventory vehicle ledger ↔ `business_receipts` | **Manual, persisted** match for the same purchase; each list keeps its own totals — only the counted-once view deduplicates |
+  | `checks` ↔ bank / receipts / QuickBooks | Check ↔ its own QuickBooks entry: **by id** (`qbo_txn_id`). Check ↔ bank payment and check ↔ receipt: **manual, persisted** |
 
 ## Auto Sales (used-car inventory + per-vehicle ledger)
 - **Files:** `apps/auto-sales/{schema.ts, calc.ts, report.ts, db.ts}`
@@ -90,6 +92,7 @@
 - **Tools:** `scripts/db-target.ts` (verify effective branch — prod `ep-morning-base-adq5h6rq` vs dev). `scripts/` is excluded from Vercel builds (`.vercelignore`)
 - **Roles:** the app connects only through `APP_DATABASE_URL` as `pitt_stop_app` (DML, no DDL). Migrations are applied by hand as the owner role; nothing in the build or deploy runs them (`docs/DB_CREDENTIAL_ROTATION_COMPLETED_2026-11-03.md`).
 - **Safety:** TWO Neon branches exist; always verify target before writes. Migrations applied deliberately.
+- **Previews fail closed:** `platform/preview-guard.ts` refuses database access on a Vercel preview unless the database is positively non-production, and file storage unless an isolated store is declared. `GET /api/health` reports the environment with no setting values. Documentation-only changes skip the Vercel build (`vercel-ignore-build.sh`). See `docs/PREVIEW_SAFETY.md`.
 
 ## Other modules (brief)
 - **Estimates / Estimator:** `apps/estimates/`, `apps/estimator/` → `app/estimates/`, `app/estimator/`
@@ -107,7 +110,7 @@
   - **Reconcile view:** `reconcile.ts` + `ui/ReconcileView.tsx` → `/expenses/reconcile` (manager) and `/admin/finance/reconcile` (owner; adds bank + expected-bill queues). Read-only.
   - Bank match stays in `apps/finance/receipts-cfo.ts` (`fin_receipt_matches`, human-confirmed); `apps/finance/txn-class.ts` keeps card payments / transfers / payroll / loan payments out of receipt matching.
   - Tests: `apps/expenses/*.test.ts` (incl. `job-expenses.integration.test.ts`). Full write-up: `docs/JOB_EXPENSES_2026-11-13.md`.
-  - **Not verified:** PDF and pasted-text reading by the model has not been exercised (upload, storage and viewing were); a failed read falls back to typing the facts.
+  - **Reading verified live 2026-11-13** with fictional PDF, photo and pasted-text documents (vendor, date, subtotal, shipping, tax, total, invoice/order number all correct; an unknown card was not guessed). Managers can re-check any stored receipt with “Check the reading” (`checkReadingAction`), which saves nothing.
 - **Settings / flags:** `apps/settings/` → `app_settings` table (flag *values* drift — verify live)
 
 ## Change notes (historical — each is on `origin/main`)

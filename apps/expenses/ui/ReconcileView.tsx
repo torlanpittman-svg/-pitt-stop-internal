@@ -16,8 +16,9 @@ const KIND_TONE: Record<ReviewKind, string> = {
 const SOURCE_TONE: Record<SourceStatus['state'], string> = { ok: 'text-emerald-300', stale: 'text-amber-300', partial: 'text-sky-300', unavailable: 'text-gray-400' }
 const SOURCE_WORD: Record<SourceStatus['state'], string> = { ok: 'Current', stale: 'Out of date', partial: 'Partial', unavailable: 'Not available' }
 
-export default function ReconcileView({ data, basePath, backHref, backLabel, ownerHref }: {
+export default function ReconcileView({ data, basePath, backHref, backLabel, ownerHref, children }: {
   data: Reconciliation; basePath: string; backHref: string; backLabel: string
+  children?: React.ReactNode   // owner-only sections rendered above the queues
   ownerHref?: string   // where the owner sees the bank + bill detail (shown only when this view is restricted)
 }) {
   const days = data.days
@@ -47,6 +48,8 @@ export default function ReconcileView({ data, basePath, backHref, backLabel, own
           ))}
         </ul>
       </section>
+
+      {children}
 
       <div className="space-y-4">
         {data.queues.map((q) => <QueueCard key={q.key} q={q} ownerHref={ownerHref} />)}

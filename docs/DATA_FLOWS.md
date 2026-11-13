@@ -3,7 +3,7 @@
 > How the core records connect, plus the safeguards that keep money/identity correct. Pairs with
 > `ARCHITECTURE_MAP.md` (where code lives). No source code here — read the cited files for detail.
 >
-> **Scope:** the production branch (`origin/main`) as of `c66a9dc`, 2026-11-13. Each flow is marked with what
+> **Scope:** the production branch (`origin/main`) as of `271ca84`, 2026-11-13. Each flow is marked with what
 > has been verified and what has not. "Verified in code" means the cited files exist and do this on that
 > commit; it does not mean the flow was exercised against live QuickBooks or a live bank feed.
 
@@ -30,9 +30,9 @@
   (left for manual review), plus owner-approved **exceptions**. `applyReconciliation` writes only the
   link/create/approved buckets. Idempotent: linked orders drop out; re-runs create nothing.
 - **Approved exceptions** (`APPROVED_EXCEPTIONS`, by exact order #) override the general rules for ONLY
-  those orders — general identity rules are never weakened. The three resolved cases: Bryan Brown
-  (link to existing record by approved phone), Martha Cepeda (owner-approved name-only record), Caliber
-  Collision (business account; advisor kept on the order only).
+  those orders — general identity rules are never weakened. Three cases were resolved this way: a link to an
+  existing record by an approved phone, an owner-approved name-only record, and a business account whose
+  advisor is kept on the order only.
 - The one-off runner script used for the 2026-10-08 reconciliation is not on the production branch; the
   logic and its tests (`apps/directory/reconcile.ts`, `reconcile.test.ts`) are.
 
@@ -47,7 +47,7 @@
 - **UNVERIFIED end-to-end against live QuickBooks** — logic + schema are unit-verified; a real
   third-party job must be invoiced in the deployed app to confirm.
 
-## Business customer contacts (e.g. Caliber Collision)
+## Business customer contacts
 - Business = one `customers` row (`customer_type='business'`). Different employees/advisors bring
   vehicles; the advisor's name/email are stored **per work order** (`job_contact_name` /
   `invoice_recipient_email`), not on the company. The company's own email is never overwritten.
@@ -73,16 +73,21 @@ One purchase is one `business_receipts` row; everything else points at it. Full 
 
 | Step | How it connects | State |
 |---|---|---|
-| Purchase → receipt | Captured once (photo / PDF / pasted text) as a `business_receipts` row. That row is the expense. | **Verified** in production for photos. PDF and pasted-text upload, storage and viewing are covered by tests and a local walkthrough; reading them with the model is **not verified**. |
+| Purchase → receipt | Captured once (photo / PDF / pasted text) as a `business_receipts` row. That row is the expense. | **Verified live** 2026-11-13 for photo, PDF and pasted text, including the reading (fictional test documents, never filed, then rejected). |
 | Receipt → customer job | Job screen → Expenses → "Add expense / receipt" files the receipt and adds an `expense_allocations` row for the whole purchase. Managers can link an already-filed receipt, split across jobs/overhead (never above the receipt total), move or remove (soft; audited on the receipt's `audit_log`). | **Verified** — tests, plus one production link (Tesla receipt → SO-20261113-0001, exactly $80.21, business totals unchanged). The signed-in production screens were not walked. |
 | Receipt → sales-inventory vehicle | `business_receipts.inventory_vehicle_id` (unchanged). | Verified in code. Does **not** create an entry in the vehicle's own ledger (`vehicle_financial_events`); the two lists are separate. |
 | Receipt → bank / card transaction | `fin_receipt_matches`: one receipt ↔ one transaction, confirmed by a person on the CFO page. Card payments, transfers, payroll, loan payments, owner draws and pending transactions cannot be matched. | Verified in code and tests. **No match has been confirmed in production yet** (0 rows on 2026-11-13). |
-| Receipt → QuickBooks | None. `qb_sync_status` stays `export_ready`. | **Not connected.** Nothing is posted; QuickBooks purchases and bills are not read. |
-| Expected bill → actual payment | `fin_obligations` are forecasts. The reconcile view pairs a bill with a bank payment by vendor name + amount each time it loads. | **Best-effort, not stored.** Safe-to-Spend does not use it. |
+| Receipt → QuickBooks | Nothing is posted (`qb_sync_status` stays `export_ready`). QuickBooks Purchases/Bills are **read** into `fin_qb_purchases`; a person can confirm receipt ↔ QuickBooks entry (`purchase_links`). | **Read-only. Mirror empty until the first sync after release**; no QuickBooks match has been confirmed. |
+| Written check → bank / receipt | Check ↔ its QuickBooks entry by id; check ↔ bank payment and check ↔ receipt confirmed by a person. | Verified in tests and a local walkthrough; none confirmed in production. |
+| Receipt → vehicle ledger line | Same purchase in both lists is confirmed by a person; counted once only in the counted-once view. | Verified in tests; none confirmed in production. |
+| Expected bill → actual payment | `fin_obligations` are forecasts. A payment is suggested by vendor name + amount; a person confirms it (`purchase_links`, kind `bill_payment`) and it is saved. | **Manual, persisted.** Forecast and actual are never added. Safe-to-Spend does not use it. |
 
 - Job total = allocations of filed/approved receipts. Part-line costs with no receipt tied to them are shown
   separately and never added (same purchase). No customer price, part line or invoice line is created.
 - Business totals (receipt coverage, CFO) sum receipts only — allocations never change them.
+- **Counted once:** `/admin/finance/reconcile` merges records that a person has confirmed are one purchase. Anything
+  not yet matched still appears separately, so that figure is an upper bound until matching is done. Card payments,
+  transfers, payroll, loan payments and owner draws are listed apart and never counted as purchases.
 - **Reading the bank feed:** the feed only shows transactions up to its last synced date. A purchase dated after
   that date is **not yet observable** — the feed cannot say whether it has posted. Treat it as unknown, not as
   "unposted", until the feed covers the date.

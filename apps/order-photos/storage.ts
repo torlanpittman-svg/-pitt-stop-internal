@@ -1,9 +1,11 @@
+import { assertPreviewStorageAllowed } from '@/platform/preview-guard'
 import { createHash } from 'node:crypto'
 import { get, put } from '@vercel/blob'
 import { MAX_PHOTO_BYTES } from './types'
 
 const PATH = /^order-photos\/[a-f0-9-]{36}\/[a-f0-9]{64}\.(jpg|png|webp)$/
 function token() {
+  assertPreviewStorageAllowed() // a preview never touches a file store that may be production's
   // Private only. The existing private store can be reused under a separate namespace.
   const value = process.env.ORDER_PHOTOS_BLOB_READ_WRITE_TOKEN || process.env.RECEIPTS_BLOB_READ_WRITE_TOKEN
   if (!value) throw new Error('Private photo storage is not configured.')

@@ -146,6 +146,14 @@ export async function syncFromQbo(actor: string | null): Promise<{ ok: boolean; 
     } catch (e) {
       summary.arDetail = { ok: false, skipped: (e instanceof Error ? e.message : String(e)).slice(0, 200) }
     }
+    // READ-ONLY mirror of QuickBooks expense entries (Purchase + Bill) so receipts, checks and bank payments
+    // can be matched to what the books already contain. Never writes to QuickBooks; never fails this sync.
+    try {
+      const { persistQbPurchases } = await import('./qb-purchases')
+      summary.qbPurchases = await persistQbPurchases(now)
+    } catch (e) {
+      summary.qbPurchases = { ok: false, skipped: (e instanceof Error ? e.message : String(e)).slice(0, 200) }
+    }
     summary.employeesCount = (empRes.Employee ?? []).length
     summary.employees = (empRes.Employee ?? []).map((e: any) => e.DisplayName)
     summary.payrollLiabilities = payrollLiab

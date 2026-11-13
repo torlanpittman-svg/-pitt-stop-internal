@@ -39,7 +39,7 @@ async function receipt(over: Record<string, unknown> = {}, file: Record<string, 
   }
   return id
 }
-async function job(orderNumber = 'SO-20261113-0001', customer = 'Huong Do', vin = '7SAYGDED2TA431723', ymm: [string, string, string] = ['2026', 'Tesla', 'Model Y']) {
+async function job(orderNumber = 'SO-20261113-0001', customer = 'Pat Sample', vin = '5YJTESTVIN0000001', ymm: [string, string, string] = ['2026', 'Tesla', 'Model Y']) {
   const v = await client.query<{ id: string }>(`INSERT INTO vehicles(year,make,model,vin) VALUES($2,$3,$4,$1) RETURNING id`, [vin, ...ymm])
   const o = await client.query<{ id: string }>(`INSERT INTO service_orders(order_number,vehicle_id,customer_name) VALUES($1,$2,$3) RETURNING id`, [orderNumber, v.rows[0].id, customer])
   return o.rows[0].id
@@ -63,7 +63,7 @@ beforeAll(async () => {
 beforeEach(async () => { await client.exec(`TRUNCATE expense_allocations, business_receipts, job_parts, job_line_items, service_orders, inventory_vehicles, vehicles, fin_receipt_matches CASCADE;`) })
 afterAll(async () => { await client.close() })
 
-describe('acceptance — the existing Tesla receipt linked to the Huong Do job', () => {
+describe('acceptance — the existing Tesla receipt linked to the Pat Sample job', () => {
   it('links the EXISTING $80.21 receipt: exactly $80.21 on the job, no new expense, history preserved', async () => {
     const orderId = await job()
     const receiptId = await receipt({ subtotalCents: 7100, taxCents: 0 })
@@ -264,19 +264,19 @@ describe('finding jobs and already-filed receipts', () => {
   it('searches jobs by customer name, vehicle, VIN and job number', async () => {
     const id = await job()
     await job('SO-20261101-0009', 'Kelvin Smith', '1FTFW1234567ABCDE', ['2019', 'Ford', 'F-150'])
-    for (const q of ['huong', 'tesla model y', '431723', 'SO-20261113', 'do 2026']) {
+    for (const q of ['sample', 'tesla model y', '000001', 'SO-20261113', 'pat 2026']) {
       const hits = await searchJobs(q)
       expect(hits.map((j) => j.id), q).toEqual([id])
     }
     expect(await searchJobs('zzzz')).toEqual([])
     expect(await searchJobs('h')).toEqual([])        // too short to search
-    expect((await getJobRef(id))).toMatchObject({ orderNumber: 'SO-20261113-0001', customerName: 'Huong Do', vehicle: '2026 Tesla Model Y', vin: '7SAYGDED2TA431723' })
+    expect((await getJobRef(id))).toMatchObject({ orderNumber: 'SO-20261113-0001', customerName: 'Pat Sample', vehicle: '2026 Tesla Model Y', vin: '5YJTESTVIN0000001' })
     expect(searchTokens('  50%_off  tesla ')).toEqual(['50off', 'tesla'])   // LIKE wildcards stripped
   })
   it('cancelled jobs are not offered', async () => {
     const id = await job()
     await client.query(`UPDATE service_orders SET status='cancelled' WHERE id=$1`, [id])
-    expect(await searchJobs('huong')).toEqual([])
+    expect(await searchJobs('sample')).toEqual([])
   })
   it('lists filed receipts that still have something to assign; a fully assigned one drops out', async () => {
     const orderId = await job()
