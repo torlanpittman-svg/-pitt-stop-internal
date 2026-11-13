@@ -1,5 +1,8 @@
 # Business Receipts — deployment & migration runbook
 
+> **2026-11-13:** job expenses, PDF / pasted-text intake, the reconcile view and migration **0078** are documented in
+> [JOB_EXPENSES_2026-11-13.md](./JOB_EXPENSES_2026-11-13.md) (apply 0078 **before** deploying that code).
+
 Additive, reversible-safe rollout for the general business-receipt capture module
 (`apps/expenses`, routes under `/expenses` + `/api/expenses`). **No production step is executed by
 code review or CI — an operator runs these deliberately.**

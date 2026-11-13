@@ -18,6 +18,8 @@ export interface ReviewCardData {
   id: string; status: string; imageUrl: string | null; aiStatus: string
   entity: string; category: string; vendor: string | null; receiptDate: string | null
   subtotalCents: number | null; taxCents: number | null; totalCents: number | null
+  shippingCents: number | null; invoiceNumber: string | null; orderNumber: string | null; description: string | null
+  contentType: string | null
   paymentMethod: string | null; accountRef: string | null; paymentLast4: string | null; memo: string | null
   funding: string; filingNote: string | null; attentionReasons: string[]
   clarifiedAt: string | null; clarifiedBy: string | null
@@ -41,6 +43,8 @@ export function toReviewCard(r: Row): ReviewCardData {
     id: r.id, status: r.status, imageUrl: hasImage ? receiptImagePath(r.id) : null, aiStatus: r.aiStatus,
     entity: r.entity, category: r.category, vendor: r.vendor, receiptDate: r.receiptDate,
     subtotalCents: r.subtotalCents, taxCents: r.taxCents, totalCents: r.totalCents,
+    shippingCents: r.shippingCents ?? null, invoiceNumber: r.invoiceNumber ?? null, orderNumber: r.orderNumber ?? null, description: r.description ?? null,
+    contentType: r.contentType,
     paymentMethod: r.paymentMethod, accountRef: r.accountRef, paymentLast4: r.paymentLast4, memo: r.memo,
     funding: r.funding, filingNote: r.filingNote, attentionReasons,
     clarifiedAt: r.clarifiedAt instanceof Date ? r.clarifiedAt.toISOString() : (r.clarifiedAt ? String(r.clarifiedAt) : null),
@@ -50,8 +54,20 @@ export function toReviewCard(r: Row): ReviewCardData {
   }
 }
 
+/** The extra read-back facts stored on a row (components of the total + document identifiers) — returned to
+ *  the capture screen for review. Shipping and tax are INSIDE total_cents; they are never added on top. */
+export function storedExtras(row: Pick<Row, 'subtotalCents' | 'taxCents' | 'shippingCents' | 'invoiceNumber' | 'orderNumber' | 'description'>) {
+  return {
+    subtotalCents: row.subtotalCents ?? null, taxCents: row.taxCents ?? null, shippingCents: row.shippingCents ?? null,
+    invoiceNumber: row.invoiceNumber ?? null, orderNumber: row.orderNumber ?? null, description: row.description ?? null,
+  }
+}
+
 // ── Gated retrieval decision ─────────────────────────────────────────────────────
-const SAFE_INLINE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
+// Raster photos, a vendor's PDF invoice, and pasted plain text render inline. Everything else downloads.
+// (PDF and text are only ever stored after their own validation — magic bytes / control-char stripping —
+// and are served with nosniff, so neither can be re-interpreted as HTML.)
+const SAFE_INLINE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'application/pdf', 'text/plain'])
 export type RetrievalActor = { role: string | null | undefined } | null
 export type RetrievalDecision =
   | { ok: false; status: 401 | 403 | 404 }
@@ -73,7 +89,7 @@ export function decideRetrieval(actor: RetrievalActor, row: Row | null): Retriev
   return {
     ok: true,
     pathname: row.storageRef,
-    contentType: safe ? (row.contentType as string) : 'application/octet-stream',
+    contentType: safe ? (row.contentType === 'text/plain' ? 'text/plain; charset=utf-8' : (row.contentType as string)) : 'application/octet-stream',
     disposition: safe ? 'inline' : 'attachment',
   }
 }

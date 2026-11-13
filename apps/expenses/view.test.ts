@@ -74,3 +74,21 @@ describe('decideRetrieval — gated image authorization (IDOR-safe)', () => {
     expect(d).toEqual({ ok: true, pathname: 'business-receipts/deadbeef.jpg', contentType: 'application/octet-stream', disposition: 'attachment' })
   })
 })
+
+describe('decideRetrieval — a PDF invoice and pasted text are viewable (manager-only, same gate)', () => {
+  it('serves a stored PDF inline as application/pdf', () => {
+    expect(decideRetrieval({ role: 'manager' }, row({ contentType: 'application/pdf', storageRef: 'business-receipts/abc.pdf' })))
+      .toEqual({ ok: true, pathname: 'business-receipts/abc.pdf', contentType: 'application/pdf', disposition: 'inline' })
+  })
+  it('serves pasted text as UTF-8 plain text (never HTML)', () => {
+    expect(decideRetrieval({ role: 'admin' }, row({ contentType: 'text/plain', storageRef: 'business-receipts/abc.txt' })))
+      .toMatchObject({ ok: true, contentType: 'text/plain; charset=utf-8', disposition: 'inline' })
+  })
+  it('an employee still cannot open either', () => {
+    expect(decideRetrieval({ role: 'employee' }, row({ contentType: 'application/pdf' }))).toEqual({ ok: false, status: 403 })
+  })
+  it('HTML / SVG are still never served inline', () => {
+    expect(decideRetrieval({ role: 'manager' }, row({ contentType: 'text/html' }))).toMatchObject({ contentType: 'application/octet-stream', disposition: 'attachment' })
+    expect(decideRetrieval({ role: 'manager' }, row({ contentType: 'image/svg+xml' }))).toMatchObject({ disposition: 'attachment' })
+  })
+})

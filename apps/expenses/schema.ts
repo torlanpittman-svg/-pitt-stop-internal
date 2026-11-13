@@ -16,9 +16,11 @@
  *
  * Applied via drizzle/migrations/manual/0038_business_receipts.sql (additive; new table only).
  */
-import { pgTable, uuid, text, varchar, integer, date, timestamp, jsonb, index, uniqueIndex, primaryKey } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, varchar, integer, date, timestamp, jsonb, index, uniqueIndex, primaryKey, check } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { inventoryVehicles } from '@/apps/auto-sales/schema'
+import { serviceOrders } from '@/apps/workflow/schema'
+import { jobParts } from '@/apps/parts/schema'
 
 export const businessReceipts = pgTable(
   'business_receipts',
@@ -37,7 +39,15 @@ export const businessReceipts = pgTable(
     receiptDate:   date('receipt_date'),                       // business date on the receipt (no tz drift)
     subtotalCents: integer('subtotal_cents'),
     taxCents:      integer('tax_cents'),
+    // Shipping/freight printed on the document. A COMPONENT of total_cents (like tax) — informational, never
+    // added on top of the total. Migration 0078.
+    shippingCents: integer('shipping_cents'),
     totalCents:    integer('total_cents'),
+    // The vendor's own document identifiers (duplicate evidence + what a bank/QuickBooks match is checked
+    // against) and a short description of what was bought. Migration 0078.
+    invoiceNumber: varchar('invoice_number', { length: 80 }),
+    orderNumber:   varchar('order_number', { length: 80 }),
+    description:   text('description'),
     paymentMethod: varchar('payment_method', { length: 20 }),  // cash|card|check|ach|other|unknown (INSTRUMENT)
     paymentLast4:  varchar('payment_last4', { length: 4 }),
     accountRef:    varchar('account_ref', { length: 40 }),     // which bank/card (allowlist ref)
@@ -131,6 +141,7 @@ export const businessReceipts = pgTable(
     index('business_receipts_vehicle_idx').on(t.inventoryVehicleId),
     index('business_receipts_funding_idx').on(t.funding),
     index('business_receipts_uploader_key_idx').on(t.uploadedByKey),
+    index('business_receipts_invoice_number_idx').on(t.invoiceNumber).where(sql`invoice_number IS NOT NULL`),
     // DB-enforced upload idempotency: one active (non-rejected) row per content hash → concurrent
     // identical uploads collapse to one receipt (no duplicate expense). Migration 0039.
     uniqueIndex('business_receipts_hash_active_uniq').on(t.imageHash).where(sql`status <> 'rejected'`),
@@ -139,6 +150,45 @@ export const businessReceipts = pgTable(
     // bytes (and hash) differ. Migration 0045.
     uniqueIndex('business_receipts_capture_active_uniq').on(t.captureId).where(sql`capture_id is not null and status <> 'rejected'`),
   ]
+)
+
+/**
+ * Allocation of ONE purchase (a business_receipts row) to a customer job or to overhead. A POINTER to the
+ * purchase, never a second expense — business totals sum business_receipts and never read this table.
+ * amount_cents NULL = the whole purchase (follows the receipt total); a number = an explicit split amount.
+ * Rows are never deleted: a correction/reassignment marks the row 'removed' (replaced_by → its successor)
+ * and the receipt's append-only audit_log records who/when/why. Migration 0078.
+ */
+export const expenseAllocations = pgTable(
+  'expense_allocations',
+  {
+    id:             uuid('id').primaryKey().defaultRandom(),
+    receiptId:      uuid('receipt_id').notNull().references(() => businessReceipts.id),
+    target:         varchar('target', { length: 16 }).notNull(),            // job | overhead
+    serviceOrderId: uuid('service_order_id').references(() => serviceOrders.id),
+    jobPartId:      uuid('job_part_id').references(() => jobParts.id, { onDelete: 'set null' }),
+    amountCents:    integer('amount_cents'),                                // NULL = whole purchase
+    note:           text('note'),
+    status:         varchar('status', { length: 12 }).notNull().default('active'), // active | removed
+    createdBy:      varchar('created_by', { length: 200 }),
+    createdByKey:   varchar('created_by_key', { length: 60 }),
+    createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    removedBy:      varchar('removed_by', { length: 200 }),
+    removedAt:      timestamp('removed_at', { withTimezone: true }),
+    removedReason:  text('removed_reason'),
+    replacedBy:     uuid('replaced_by'),
+  },
+  (t) => [
+    index('expense_allocations_receipt_idx').on(t.receiptId),
+    index('expense_allocations_order_idx').on(t.serviceOrderId).where(sql`service_order_id IS NOT NULL`),
+    uniqueIndex('expense_allocations_job_active_uniq').on(t.receiptId, t.serviceOrderId).where(sql`status = 'active' AND target = 'job'`),
+    uniqueIndex('expense_allocations_overhead_active_uniq').on(t.receiptId).where(sql`status = 'active' AND target = 'overhead'`),
+    uniqueIndex('expense_allocations_whole_active_uniq').on(t.receiptId).where(sql`status = 'active' AND amount_cents IS NULL`),
+    check('expense_allocations_target_chk', sql`target IN ('job', 'overhead')`),
+    check('expense_allocations_job_chk', sql`(target = 'job') = (service_order_id IS NOT NULL)`),
+    check('expense_allocations_amount_chk', sql`amount_cents IS NULL OR amount_cents > 0`),
+    check('expense_allocations_status_chk', sql`status IN ('active', 'removed')`),
+  ],
 )
 
 // Durable, server-enforced rate limiting (cross-instance). ATOMIC fixed-window COUNTER: one row per

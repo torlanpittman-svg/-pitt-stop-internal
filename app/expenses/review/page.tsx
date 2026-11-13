@@ -15,6 +15,7 @@ import { toReviewCard } from '@/apps/expenses/view'
 import { currentReportMonth } from '@/apps/auto-sales/report-db'
 import { EXPENSE_CATEGORIES, BUSINESS_ENTITIES, formatMoney, isReceiptStatus, isBusinessMonth, type ReceiptStatus } from '@/apps/expenses/types'
 import ReviewCard from '@/apps/expenses/ui/ReviewCard'
+import { allocationViewsFor } from '@/apps/expenses/job-expenses'
 
 export const dynamic = 'force-dynamic'
 
@@ -37,6 +38,8 @@ export default async function ReviewQueuePage({ searchParams }: { searchParams: 
     : listReceipts([view])
   const [rows, counts, report, vehicles] = await Promise.all([rowsPromise, queueCounts(), monthlyExpenseReport(month), listInventoryVehiclesForPicker()])
 
+  const allocations = await allocationViewsFor(rows.map((r) => r.id))
+
   const TABS: { key: ReceiptStatus | 'open' | 'outstanding'; label: string; n?: number }[] = [
     { key: 'open', label: 'Needs attention', n: counts.backlog + counts.processing + counts.processing_failed },
     { key: 'outstanding', label: 'Outstanding', n: counts.outstanding },
@@ -50,7 +53,7 @@ export default async function ReviewQueuePage({ searchParams }: { searchParams: 
     <main className="min-h-screen bg-gray-950 text-gray-200 max-w-3xl mx-auto px-4 py-6">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-bold text-white">Receipts</h1>
-        <Link href="/expenses" className="text-gray-500 text-sm">Capture</Link>
+        <span className="flex gap-4"><Link href="/expenses/reconcile" className="text-indigo-300 text-sm py-2">Reconcile</Link><Link href="/expenses" className="text-gray-500 text-sm py-2">Capture</Link></span>
       </div>
 
       {/* Monthly receipt-COVERAGE summary — internal, NOT QuickBooks, NOT a bank reconciliation */}
@@ -114,7 +117,7 @@ export default async function ReviewQueuePage({ searchParams }: { searchParams: 
 
       {rows.length === 0
         ? <p className="text-gray-500 text-sm text-center py-12">Nothing here.</p>
-        : <div className="space-y-4">{rows.map((r) => <ReviewCard key={r.id} r={toReviewCard(r)} vehicles={vehicles} />)}</div>}
+        : <div className="space-y-4">{rows.map((r) => <ReviewCard key={r.id} r={toReviewCard(r)} vehicles={vehicles} allocations={allocations.get(r.id) ?? []} />)}</div>}
     </main>
   )
 }

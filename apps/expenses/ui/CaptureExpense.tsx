@@ -19,6 +19,8 @@ import {
   attentionReasonLabel, centsToDollars,
 } from '@/apps/expenses/types'
 import { fileReceiptAction } from '@/apps/expenses/actions'
+import { amountsWarning, receiptDateWarning, todayBusinessDate } from '@/apps/expenses/checks'
+import JobPicker, { type PickedJob } from './JobPicker'
 import {
   OTHER_PAYMENT_MAX_LENGTH, OTHER_PAYMENT_FUNDINGS, OTHER_PAYMENT_METHODS, RECEIPT_PAYMENT_CHOICES,
   resolveReceiptPayment, autoSelectPayment,
@@ -36,7 +38,13 @@ const RESUME_TTL_MS = 2 * 60 * 60_000
 type Step = 'q1' | 'q2' | 'q2more' | 'q3' | 'confirm' | 'saving'
 type SaveState = 'uploading' | 'saved' | 'duplicate' | 'error'   // is the ORIGINAL durably stored?
 type ReadState = 'idle' | 'reading' | 'read' | 'failed'          // did the AI read succeed?
-interface Proposal { vendor: string | null; date: string | null; totalCents: number | null; categoryKey?: string; paymentChoice?: string | null }
+interface Proposal {
+  vendor: string | null; date: string | null; totalCents: number | null; categoryKey?: string; paymentChoice?: string | null
+  subtotalCents?: number | null; taxCents?: number | null; shippingCents?: number | null
+  invoiceNumber?: string | null; orderNumber?: string | null; description?: string | null
+}
+type EvidenceKind = 'photo' | 'pdf' | 'text'
+const money = (c: number) => `$${(c / 100).toFixed(2)}`
 interface Saved { receiptId: string; fileToken?: string }
 
 const entityLabel = (k: string) => BUSINESS_ENTITIES.find((b) => b.key === k)?.label ?? k
@@ -49,11 +57,13 @@ function Bubble({ children, onClick, selected = false, variant = 'default' }: { 
   return <button type="button" aria-pressed={selected} onClick={onClick} className={`${base} ${tone}`}>{children}</button>
 }
 
-function StepShell({ title, children, onBack, previewUrl, badge }: { title: string; children: React.ReactNode; onBack?: () => void; previewUrl: string | null; badge: React.ReactNode }) {
+function StepShell({ title, children, onBack, previewUrl, badge, kind = 'photo', jobLabel = null }: { title: string; children: React.ReactNode; onBack?: () => void; previewUrl: string | null; badge: React.ReactNode; kind?: EvidenceKind; jobLabel?: string | null }) {
   return (
     <section className="rounded-2xl bg-gray-900 border border-gray-800 p-4" role="group" aria-label={title}>
+      {jobLabel && <p className="mb-3 rounded-lg bg-indigo-950/30 border border-indigo-900/50 px-3 py-2 text-xs text-indigo-200 break-words"><span className="text-indigo-400">For job:</span> {jobLabel}</p>}
       <div className="flex items-start gap-3 mb-3">
-        {previewUrl && <img src={previewUrl} alt="receipt preview" className="w-14 h-14 rounded-lg object-cover bg-black/40 border border-gray-800" />}
+        {kind === 'photo' && previewUrl && <img src={previewUrl} alt="receipt preview" className="w-14 h-14 rounded-lg object-cover bg-black/40 border border-gray-800" />}
+        {kind !== 'photo' && <div aria-hidden="true" className="w-14 h-14 rounded-lg bg-black/40 border border-gray-800 grid place-items-center text-[11px] font-bold tracking-wide text-gray-300">{kind === 'pdf' ? 'PDF' : 'TEXT'}</div>}
         <div className="flex-1">
           <h2 className="text-white font-bold text-lg leading-tight">{title}</h2>
           <p className="text-xs mt-0.5" aria-live="polite">{badge}</p>
@@ -65,14 +75,25 @@ function StepShell({ title, children, onBack, previewUrl, badge }: { title: stri
   )
 }
 
-export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOption[] }) {
+export default function CaptureExpense({ vehicles = [], job: startJob = null }: { vehicles?: VehicleOption[]; job?: PickedJob | null }) {
   const camRef = useRef<HTMLInputElement>(null)
   const upRef = useRef<HTMLInputElement>(null)
   const captureId = useRef<string>('')
 
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [kind, setKind] = useState<EvidenceKind>('photo')
   const [started, setStarted] = useState(false)
-  const [step, setStep] = useState<Step>('q1')
+  // Started from a customer job → the business is Detail & Service, so skip straight to "what did you buy?".
+  const firstStep: Step = startJob ? 'q2' : 'q1'
+  const [step, setStep] = useState<Step>(firstStep)
+  const [pasteOpen, setPasteOpen] = useState(false)
+  const [pasteText, setPasteText] = useState('')
+  // The customer job this purchase was for (preselected when capture starts from a job).
+  const [job, setJob] = useState<PickedJob | null>(startJob)
+  // What the reader found beyond vendor/date/total — shown for review, stored server-side by the read itself.
+  const [readExtras, setReadExtras] = useState<Pick<Proposal, 'subtotalCents' | 'taxCents' | 'shippingCents' | 'invoiceNumber' | 'orderNumber' | 'description'>>({})
+  const [dateConfirmed, setDateConfirmed] = useState(false)
+  const [description, setDescription] = useState('')
   const [pickErr, setPickErr] = useState<string | null>(null)
 
   const [saveState, setSaveState] = useState<SaveState>('uploading')
@@ -83,7 +104,7 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
   const [dupChoice, setDupChoice] = useState<'' | 'different' | 'same'>('')
 
   // Answers
-  const [entity, setEntity] = useState('')
+  const [entity, setEntity] = useState(startJob ? 'detail' : '')
   const [categoryMode, setCategoryMode] = useState<'single' | 'mixed' | 'unsure'>('single')
   const [categoryKey, setCategoryKey] = useState('')
   const [paymentChoice, setPaymentChoice] = useState('')
@@ -103,7 +124,7 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
   const [note, setNote] = useState('')
 
   const [saveErr, setSaveErr] = useState<string | null>(null)
-  const [result, setResult] = useState<{ status: string; reasons: string[] } | null>(null)
+  const [result, setResult] = useState<{ status: string; reasons: string[]; jobLinked?: boolean; jobLinkError?: string } | null>(null)
   const [resume, setResume] = useState<{ captureId: string; receiptId: string; fileToken?: string } | null>(null)
 
   // On mount (client only), offer to resume an in-progress capture whose photo is already saved. Deliberately
@@ -127,9 +148,10 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
 
   function resetAll() {
     if (previewUrl) URL.revokeObjectURL(previewUrl); setPreviewUrl(null)
-    setStarted(false); setStep('q1'); setPickErr(null)
+    setStarted(false); setStep(firstStep); setPickErr(null); setKind('photo'); setPasteOpen(false); setPasteText('')
+    setJob(startJob); setReadExtras({}); setDateConfirmed(false); setDescription('')
     setSaveState('uploading'); setReadState('idle'); setSaved(null); setPossibleDup(false); setDupChoice('')
-    setEntity(''); setCategoryMode('single'); setCategoryKey(''); setPaymentChoice(''); setOtherPayment(''); setOtherFunding(''); setOtherPaymentMethod(''); paymentTouched.current = false; setPaymentAuto(false)
+    setEntity(startJob ? 'detail' : ''); setCategoryMode('single'); setCategoryKey(''); setPaymentChoice(''); setOtherPayment(''); setOtherFunding(''); setOtherPaymentMethod(''); paymentTouched.current = false; setPaymentAuto(false)
     setVendor(''); setDate(''); setTotal(''); vendorT.current = false; dateT.current = false; totalT.current = false
     setShowExtras(false); setVehicleId(''); setNote(''); setSaveErr(null); setResult(null)
     captureId.current = ""; setReadAttempts(0)
@@ -142,6 +164,7 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
     if (!p) return
     if (p.vendor && !vendorT.current) setVendor((v) => v || p.vendor || '')
     if (p.date && !dateT.current) setDate((d) => d || p.date || '')
+    setReadExtras({ subtotalCents: p.subtotalCents, taxCents: p.taxCents, shippingCents: p.shippingCents, invoiceNumber: p.invoiceNumber, orderNumber: p.orderNumber, description: p.description })
     if (p.totalCents != null && !totalT.current) setTotal((t) => t || centsToDollars(p.totalCents))
     if (p.categoryKey && p.categoryKey !== 'uncategorized' && categoryMode === 'single' && !categoryKey) setCategoryKey(p.categoryKey)
     // Auto-select the matching payment bubble the receipt identified — never over a choice the employee made
@@ -169,11 +192,12 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
     } catch { setReadState('failed') }
   }
 
-  async function doUpload(f: File) {
+  async function doUpload(payload: { file: File } | { text: string }) {
     setSaveState('uploading'); setReadState('idle')
     let photoSaved = false
     try {
-      const fd = new FormData(); fd.set('receipt', f); fd.set('captureId', captureId.current)
+      const fd = new FormData(); fd.set('captureId', captureId.current)
+      if ('file' in payload) fd.set('receipt', payload.file); else fd.set('text', payload.text)
       const res = await fetch('/api/expenses/receipt', { method: 'POST', headers: { accept: 'application/x-ndjson' }, body: fd })
       if (res.ok && res.headers.get('content-type')?.includes('application/x-ndjson') && res.body) {
         type Event = { type: 'saved' | 'read'; ok: boolean; receiptId: string; fileToken?: string; aiStatus?: string; proposal?: Proposal; possibleDuplicate?: unknown }
@@ -196,7 +220,7 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
         return
       }
       const j = await res.json().catch(() => ({}))
-      if (!res.ok || !j.ok) { setSaveState('error'); setSaveErr(j.error || 'Could not save the photo — try again.'); return }
+      if (!res.ok || !j.ok) { setSaveState('error'); setSaveErr(j.error || 'Could not save the receipt — try again.'); return }
       if (j.alreadyCaptured || (j.duplicate && !j.receiptId)) { setSaveState('duplicate'); return }
       const s: Saved = { receiptId: j.receiptId, fileToken: j.fileToken }
       setSaved(s); setSaveState('saved'); persistResume(s)
@@ -210,19 +234,30 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
 
   function pick(f: File | null) {
     if (!f) return
-    if (f.size > MAX_ORIGINAL_BYTES) { setPickErr('This photo is too large. Retake it at a lower resolution (under 4 MB).'); return }
-    setPickErr(null)
-    setPreviewUrl((u) => { if (u) URL.revokeObjectURL(u); return URL.createObjectURL(f) })
+    const isPdf = f.type === 'application/pdf' || /\.pdf$/i.test(f.name)
+    if (f.size > MAX_ORIGINAL_BYTES) { setPickErr(isPdf ? 'This PDF is too large (over 4 MB). Save just the invoice page and try again.' : 'This photo is too large. Retake it at a lower resolution (under 4 MB).'); return }
+    setPickErr(null); setKind(isPdf ? 'pdf' : 'photo')
+    setPreviewUrl((u) => { if (u) URL.revokeObjectURL(u); return isPdf ? null : URL.createObjectURL(f) })
     captureId.current = uuid(); setReadAttempts(0)
-    doUpload(f)
-    setStarted(true); setStep('q1')
+    doUpload({ file: f })
+    setStarted(true); setStep(firstStep)
+  }
+  /** Pasted email / order-confirmation text → saved verbatim as the evidence, then read like a photo. */
+  function pickText() {
+    const text = pasteText.trim()
+    if (text.length < 20) { setPickErr('Paste the whole receipt email or order confirmation first.'); return }
+    if (text.length > 20_000) { setPickErr('That is too long — paste just the receipt part of the email.'); return }
+    setPickErr(null); setKind('text'); setPreviewUrl((u) => { if (u) URL.revokeObjectURL(u); return null })
+    captureId.current = uuid(); setReadAttempts(0)
+    doUpload({ text })
+    setStarted(true); setStep(firstStep)
   }
 
   async function doResume() {
     if (!resume) return
     captureId.current = resume.captureId
     setSaved({ receiptId: resume.receiptId, fileToken: resume.fileToken })
-    setSaveState('saved'); setResume(null); setStarted(true); setStep('q1')
+    setSaveState('saved'); setResume(null); setStarted(true); setStep(firstStep)
     setReadAttempts(0)
     runExtract(resume.receiptId, resume.fileToken)  // fetch the (already-finished or re-run) read
   }
@@ -232,7 +267,8 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
     const payment = resolveReceiptPayment(paymentChoice, otherPayment, { funding: otherFunding, paymentMethod: otherPaymentMethod })
     if (!payment.ok) { setSaveErr(payment.error); setStep('q3'); return }
     if (possibleDup && !dupChoice) { setSaveErr('Tell us if this is the same purchase or a different one.'); return }
-    if (!saved?.receiptId) { setSaveErr(saveState === 'duplicate' ? 'This receipt was already captured.' : 'The photo hasn’t saved yet — one moment.'); return }
+    if (!saved?.receiptId) { setSaveErr(saveState === 'duplicate' ? 'This receipt was already captured.' : 'The receipt hasn’t saved yet — one moment.'); return }
+    if (receiptDateWarning(date, todayBusinessDate()) && !dateConfirmed) { setSaveErr('Check the date above — fix it, or confirm it is right.'); return }
     setSaveErr(null); setStep('saving')
     const res = await fileReceiptAction({
       id: saved.receiptId, token: saved.fileToken,
@@ -240,11 +276,13 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
       otherFunding: otherFunding || undefined, otherPaymentMethod: otherPaymentMethod || undefined,
       vendor, receiptDate: date, total,
       filingNote: note || undefined, inventoryVehicleId: vehicleId || undefined,
+      serviceOrderId: job?.id, dateConfirmed: dateConfirmed || undefined,
+      description: description.trim() || undefined,
       duplicate: possibleDup && dupChoice === 'same',   // flag as a duplicate → manager resolves, CFO won't count it
     })
     if (!res.ok) { setSaveErr(res.error || 'Could not save — try again.'); setStep('confirm'); return }
     clearResume()
-    setResult({ status: res.status ?? 'needs_review', reasons: res.reasons ?? [] })
+    setResult({ status: res.status ?? 'needs_review', reasons: res.reasons ?? [], jobLinked: res.jobLinked, jobLinkError: res.jobLinkError })
   }
 
   // ── IDLE ──
@@ -252,7 +290,8 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
     return (
       <section className="rounded-2xl bg-gray-900 border border-gray-800 p-4">
         <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => pick(e.target.files?.[0] ?? null)} />
-        <input ref={upRef} type="file" accept="image/*" className="hidden" onChange={(e) => pick(e.target.files?.[0] ?? null)} />
+        <input ref={upRef} type="file" accept="image/*,application/pdf,.pdf" className="hidden" onChange={(e) => pick(e.target.files?.[0] ?? null)} />
+        {job && <p className="mb-3 rounded-lg bg-indigo-950/30 border border-indigo-900/50 px-3 py-2 text-sm text-indigo-200 break-words"><span className="text-indigo-400">For job:</span> {job.label}</p>}
         {resume && (
           <div className="mb-3 rounded-xl border border-indigo-900/60 bg-indigo-950/20 p-3">
             <p className="text-indigo-200 text-sm font-semibold">You have a receipt in progress.</p>
@@ -265,8 +304,19 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
         )}
         <div className="space-y-3">
           <button type="button" onClick={() => camRef.current?.click()} className="w-full bg-indigo-600 active:bg-indigo-700 text-white text-lg font-bold py-5 rounded-2xl">📷 Snap a Receipt</button>
-          <button type="button" onClick={() => upRef.current?.click()} className="w-full border border-gray-700 text-gray-200 text-base font-semibold py-3 rounded-2xl">Upload a Photo</button>
-          {pickErr && <p className="text-amber-400 text-sm">{pickErr}</p>}
+          <button type="button" onClick={() => upRef.current?.click()} className="w-full border border-gray-700 text-gray-200 text-base font-semibold py-3 rounded-2xl">Upload a Photo or PDF</button>
+          {!pasteOpen ? (
+            <button type="button" onClick={() => setPasteOpen(true)} className="w-full text-indigo-300 text-sm py-3">Paste receipt text from an email</button>
+          ) : (
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500">Receipt or order-confirmation text
+                <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} rows={6} placeholder="Paste the email here…"
+                  className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />
+              </label>
+              <button type="button" onClick={pickText} disabled={pasteText.trim().length < 20} className="w-full bg-indigo-600 text-white font-bold py-3 rounded-2xl disabled:opacity-50">Read this text</button>
+            </div>
+          )}
+          {pickErr && <p role="alert" className="text-amber-400 text-sm">{pickErr}</p>}
         </div>
       </section>
     )
@@ -290,21 +340,25 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
             <p className="text-gray-500 text-sm">Nothing more to do — a manager will finish filing it.</p>
           </>
         )}
-        <button type="button" onClick={resetAll} className="w-full bg-indigo-600 active:bg-indigo-700 text-white text-base font-bold py-4 rounded-2xl mt-2">Capture Another</button>
+        {job && result.jobLinked && <p className="text-indigo-200 text-sm break-words">Attached to {job.label}. The customer’s invoice was not changed.</p>}
+        {job && result.jobLinked === false && <p role="alert" className="text-amber-300 text-sm">The receipt is saved, but it could not be attached to the job{result.jobLinkError ? ` (${result.jobLinkError})` : ''}. A manager can attach it from the job’s Expenses section.</p>}
+        {startJob && <a href={`/orders/${startJob.id}`} className="block w-full bg-indigo-600 active:bg-indigo-700 text-white text-base font-bold py-4 rounded-2xl mt-2">Back to the job</a>}
+        <button type="button" onClick={resetAll} className={startJob ? 'w-full border border-gray-700 text-gray-200 text-base font-semibold py-3 rounded-2xl' : 'w-full bg-indigo-600 active:bg-indigo-700 text-white text-base font-bold py-4 rounded-2xl mt-2'}>Capture Another</button>
       </section>
     )
   }
 
   // ── Honest status badge: SAVED vs READ are separate; never claim "read" on failure, no invented % ──
+  const noun = kind === 'pdf' ? 'PDF' : kind === 'text' ? 'text' : 'photo'
   const badge =
-    saveState === 'uploading' ? <span className="text-gray-500">saving photo…</span>
-    : saveState === 'error' ? <span className="text-red-400">not saved — retake</span>
+    saveState === 'uploading' ? <span className="text-gray-500">saving {noun}…</span>
+    : saveState === 'error' ? <span className="text-red-400">not saved — try again</span>
     : saveState === 'duplicate' ? <span className="text-amber-300">already captured</span>
-    : readState === 'reading' ? <span className="text-emerald-400">photo saved ✓ · reading…</span>
-    : readState === 'read' ? <span className="text-emerald-400">photo saved ✓ · read ✓</span>
-    : readState === 'failed' ? <span className="text-amber-300">photo saved ✓ · couldn’t read</span>
-    : <span className="text-emerald-400">photo saved ✓</span>
-  const shell = { previewUrl, badge }
+    : readState === 'reading' ? <span className="text-emerald-400">{noun} saved ✓ · reading…</span>
+    : readState === 'read' ? <span className="text-emerald-400">{noun} saved ✓ · read ✓</span>
+    : readState === 'failed' ? <span className="text-amber-300">{noun} saved ✓ · couldn’t read</span>
+    : <span className="text-emerald-400">{noun} saved ✓</span>
+  const shell = { previewUrl, badge, kind, jobLabel: job?.label ?? null }
 
   if (step === 'q1') {
     return (
@@ -321,7 +375,7 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
   if (step === 'q2') {
     const chooseSingle = (key: string) => { setCategoryMode('single'); setCategoryKey(key); setStep('q3') }
     return (
-      <StepShell title="What did you buy?" onBack={() => setStep('q1')} {...shell}>
+      <StepShell title="What did you buy?" onBack={startJob ? resetAll : () => setStep('q1')} {...shell}>
         <div className="space-y-3">
           {CAPTURE_PRIMARY_CATEGORIES.map((c) => (
             <Bubble key={c.key} selected={categoryMode === 'single' && categoryKey === c.key} onClick={() => chooseSingle(c.key)}>{c.label}</Bubble>
@@ -408,6 +462,16 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
     : paymentChoice === 'unpaid' ? 'Not paid yet' : RECEIPT_PAYMENT_CHOICES.find((c) => c.key === paymentChoice)?.label ?? '—'
   const missing = (v: string) => v.trim() === ''
   const set = <T,>(setter: (v: T) => void, touched: React.MutableRefObject<boolean>) => (v: T) => { touched.current = true; setter(v) }
+  const dateWarn = receiptDateWarning(date, todayBusinessDate())
+  const totalCentsTyped = total.trim() === '' ? null : Math.round(parseFloat(total.replace(/[^0-9.]/g, '') || '0') * 100)
+  const sumWarn = amountsWarning({ ...readExtras, totalCents: totalCentsTyped })
+  const readLine = [
+    readExtras.subtotalCents != null ? `subtotal ${money(readExtras.subtotalCents)}` : null,
+    readExtras.shippingCents != null ? `shipping ${money(readExtras.shippingCents)}` : null,
+    readExtras.taxCents != null ? `tax ${money(readExtras.taxCents)}` : null,
+    readExtras.invoiceNumber ? `invoice ${readExtras.invoiceNumber}` : null,
+    readExtras.orderNumber ? `order ${readExtras.orderNumber}` : null,
+  ].filter(Boolean).join(' · ')
   return (
     <StepShell title="Check the details" onBack={saving ? undefined : () => setStep('q3')} {...shell}>
       <div className="space-y-3">
@@ -417,10 +481,10 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
           <span className="text-gray-300">{fundText}</span>
         </div>
 
-        {readState === 'reading' && <p className="text-gray-500 text-sm">Reading the photo… you can fill these in now if you like.</p>}
+        {readState === 'reading' && <p className="text-gray-500 text-sm">Reading the {noun}… you can fill these in now if you like.</p>}
         {readState === 'failed' && (
           <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-sm">
-            <p className="text-amber-300">Your photo is saved, but we couldn’t read it automatically.</p>
+            <p className="text-amber-300">Your {noun} is saved, but we couldn’t read it automatically.</p>
             <button type="button" onClick={() => saved && runExtract(saved.receiptId, saved.fileToken)} disabled={readAttempts >= MAX_READ_ATTEMPTS}
               className="text-indigo-300 underline mt-1 disabled:opacity-40 disabled:no-underline">{readAttempts >= MAX_READ_ATTEMPTS ? 'Enter the details below' : 'Try reading again'}</button>
           </div>
@@ -444,18 +508,38 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
         </label>
         <div className="grid grid-cols-2 gap-3">
           <label className="block text-xs text-gray-500">Date {missing(date) && <span className="text-amber-400">· needed</span>}
-            <input type="date" value={date} onChange={(e) => set(setDate, dateT)(e.target.value)} disabled={saving} className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />
+            <input type="date" value={date} onChange={(e) => { setDateConfirmed(false); set(setDate, dateT)(e.target.value) }} disabled={saving} className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />
           </label>
           <label className="block text-xs text-gray-500">Total {missing(total) && <span className="text-amber-400">· needed</span>}
             <input value={total} onChange={(e) => set(setTotal, totalT)(e.target.value)} disabled={saving} inputMode="decimal" placeholder="0.00" className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />
           </label>
         </div>
 
+        {dateWarn && !dateConfirmed && (
+          <div role="alert" className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 space-y-2">
+            <p className="text-amber-300 text-sm">{dateWarn.message}</p>
+            <div className="flex gap-2">
+              {dateWarn.suggestion && <button type="button" disabled={saving} onClick={() => { dateT.current = true; setDate(dateWarn.suggestion as string); setSaveErr(null) }} className="flex-1 py-3 rounded-xl text-sm font-semibold bg-indigo-600 text-white">Use {dateWarn.suggestion}</button>}
+              <button type="button" disabled={saving} onClick={() => { setDateConfirmed(true); setSaveErr(null) }} className="flex-1 py-3 rounded-xl text-sm font-semibold border border-gray-700 text-gray-200">The date is right</button>
+            </div>
+          </div>
+        )}
+        {readLine && <p className="text-gray-500 text-xs break-words">Read from the receipt: {readLine}. Shipping and tax are already inside the total.</p>}
+        {sumWarn && <p role="alert" className="text-amber-300 text-sm">{sumWarn}</p>}
+
         {!showExtras ? (
-          <button type="button" onClick={() => setShowExtras(true)} className="text-indigo-300 text-sm">+ Add a vehicle or note (optional)</button>
+          <button type="button" onClick={() => setShowExtras(true)} className="text-indigo-300 text-sm py-2">{job ? '+ Add a description or note (optional)' : '+ Add a customer job, vehicle or note (optional)'}</button>
         ) : (
           <div className="space-y-3 rounded-xl border border-gray-800 bg-gray-900/60 p-3">
-            <label className="block text-xs text-gray-500">Vehicle (optional — only if this was for a specific inventory vehicle)
+            {!startJob && (
+              <div className="text-xs text-gray-500">Customer job (optional — if this was bought for a customer’s car)
+                <div className="mt-1"><JobPicker value={job} onChange={setJob} disabled={saving} /></div>
+              </div>
+            )}
+            <label className="block text-xs text-gray-500">What was it? (optional)
+              <input value={description} onChange={(e) => setDescription(e.target.value)} disabled={saving} maxLength={300} placeholder={readExtras.description || 'e.g. seat cushion foam'} className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />
+            </label>
+            <label className={job ? 'hidden' : 'block text-xs text-gray-500'}>Sales-inventory vehicle (optional — only for a car we are selling)
               <select value={vehicleId} onChange={(e) => setVehicleId(e.target.value)} disabled={saving} className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white">
                 <option value="">Not for a specific vehicle</option>
                 {vehicles.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
@@ -468,13 +552,14 @@ export default function CaptureExpense({ vehicles = [] }: { vehicles?: VehicleOp
         )}
 
         {saveState === 'duplicate' && <p className="text-amber-300 text-sm rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2">This receipt was already captured — no need to send it again.</p>}
-        {saveState === 'error' && <p className="text-red-400 text-sm">The photo didn’t save. Go back and retake it.</p>}
+        {saveState === 'error' && <p className="text-red-400 text-sm">The {noun} didn’t save. Go back and try again.</p>}
         {saveErr && <p className="text-red-400 text-sm">{saveErr}</p>}
 
         <button type="button" onClick={save} disabled={saving || saveState === 'duplicate' || saveState === 'error'}
           className="w-full bg-green-600 active:bg-green-700 text-white text-lg font-bold py-4 rounded-2xl disabled:opacity-50">
-          {saving ? 'Saving…' : 'Save receipt'}
+          {saving ? 'Saving…' : job ? 'Save expense to this job' : 'Save receipt'}
         </button>
+        {job && <p className="text-gray-500 text-xs text-center">Saves our cost only. No customer price is needed and the customer’s invoice is not changed.</p>}
         <p className="text-gray-600 text-xs text-center">You’re filing this yourself. If anything’s missing we’ll flag it for a manager.</p>
       </div>
     </StepShell>

@@ -18,7 +18,8 @@ import { NextResponse } from 'next/server'
 import { createHash } from 'node:crypto'
 import { uploadPrivatePhoto } from '@/platform/blob'
 import { createPendingReceipt, findReceiptByCaptureId, findActiveReceiptByHash, storedPathnameForHash, consumeRateLimit, RATE_LIMITS, type ReceiptRow } from '@/apps/expenses/db'
-import { validateReceiptUpload, extForMime, MAX_UPLOAD_BYTES, MAX_DECLARED_OVERHEAD } from '@/apps/expenses/upload-validation'
+import { validateReceiptFile, validatePastedText, extForStoredType, isImageType, MAX_UPLOAD_BYTES, MAX_DECLARED_OVERHEAD, type ExpenseStoredType } from '@/apps/expenses/upload-validation'
+import { storedExtras } from '@/apps/expenses/view'
 import { decodeImageMeta, validateDecodedMeta } from '@/apps/expenses/image-decode'
 import { receiptUploaderFromRequest, type Uploader } from '@/apps/expenses/authz'
 import { signCaptureToken } from '@/apps/expenses/capture-token'
@@ -47,7 +48,7 @@ function resumePayload(row: ReceiptRow) {
     ok: true as const, receiptId: row.id, fileToken: signCaptureToken(row.id), duplicate: true, resumed: true,
     aiStatus: row.aiStatus,
     proposal: row.aiStatus === 'extracted'
-      ? { vendor: row.vendor, date: row.receiptDate, totalCents: row.totalCents, categoryKey: row.category, paymentChoice: matchPaymentSource({ method: row.paymentMethod, brand: null, cardLast4: row.paymentLast4 }), present: present ?? {} }
+      ? { vendor: row.vendor, date: row.receiptDate, totalCents: row.totalCents, categoryKey: row.category, paymentChoice: matchPaymentSource({ method: row.paymentMethod, brand: null, cardLast4: row.paymentLast4 }), present: present ?? {}, ...storedExtras(row) }
       : null,
   }
 }
@@ -80,15 +81,29 @@ export async function POST(req: Request) {
       }
     }
 
-    // 4) Validate: magic bytes (authoritative type) + size, then a real image DECODE (metadata only — fast).
+    // 4) Validate. Three kinds of original evidence are accepted:
+    //      - a PHOTO  (magic bytes + a real image DECODE — metadata only, fast)
+    //      - a PDF    (magic bytes "%PDF-"; stored as-is, e.g. a vendor's emailed invoice)
+    //      - pasted TEXT (bounded, control characters stripped; e.g. an order-confirmation email)
     const image = (form.get('receipt') || form.get('image')) as File | null
-    if (!image) return NextResponse.json({ ok: false, error: 'No image provided' }, { status: 400 })
-    const bytes = Buffer.from(await image.arrayBuffer())
-    const v = validateReceiptUpload(image.type, bytes.length, bytes.subarray(0, 16))
-    if (!v.ok) return NextResponse.json({ ok: false, error: v.error }, { status: v.status })
-    const decoded = validateDecodedMeta(await decodeImageMeta(bytes))
-    if (!decoded.ok) return NextResponse.json({ ok: false, error: decoded.error }, { status: 415 })
-    const contentType = v.mime
+    const pasted = form.get('text')
+    let bytes: Buffer, contentType: ExpenseStoredType, filename: string
+    if (image && typeof image !== 'string') {
+      bytes = Buffer.from(await image.arrayBuffer())
+      const v = validateReceiptFile(image.type, bytes.length, bytes.subarray(0, 16))
+      if (!v.ok) return NextResponse.json({ ok: false, error: v.error }, { status: v.status })
+      if (isImageType(v.mime)) {
+        const decoded = validateDecodedMeta(await decodeImageMeta(bytes))
+        if (!decoded.ok) return NextResponse.json({ ok: false, error: decoded.error }, { status: 415 })
+      }
+      contentType = v.mime; filename = image.name
+    } else if (pasted != null) {
+      const t = validatePastedText(pasted)
+      if (!t.ok) return NextResponse.json({ ok: false, error: t.error }, { status: t.status })
+      bytes = Buffer.from(t.text, 'utf8'); contentType = 'text/plain'; filename = 'pasted-receipt.txt'
+    } else {
+      return NextResponse.json({ ok: false, error: 'No receipt provided' }, { status: 400 })
+    }
     const imageHash = createHash('sha256').update(bytes).digest('hex') // hash of the ORIGINAL bytes
 
     // 4b) IDENTICAL-BYTES duplicate from a DIFFERENT capture → already captured (no second purchase, no token).
@@ -100,7 +115,7 @@ export async function POST(req: Request) {
     let storageRef = await storedPathnameForHash(imageHash).catch(() => null)
     if (!storageRef) {
       try {
-        storageRef = await uploadPrivatePhoto(`business-receipts/${imageHash}.${extForMime(contentType)}`, bytes, contentType)
+        storageRef = await uploadPrivatePhoto(`business-receipts/${imageHash}.${extForStoredType(contentType)}`, bytes, contentType)
       } catch (err) {
         logger.error(APP, 'storage_failed', { code: errorCode(err) })
         return NextResponse.json({ ok: false, error: 'Could not save the photo — check your connection and try again.' }, { status: 502 })
@@ -109,7 +124,7 @@ export async function POST(req: Request) {
 
     // 6) Create the recoverable PENDING row (no AI yet). DB-idempotent on capture_id + hash.
     const { id: receiptId, duplicate } = await createPendingReceipt({
-      storageRef, filename: image.name, contentType, imageHash, byteSize: bytes.length, captureId,
+      storageRef, filename, contentType, imageHash, byteSize: bytes.length, captureId,
       uploadedBy: uploader.name, uploadedByKey: uploader.actor?.key ?? null,
     })
     if (duplicate) {

@@ -55,8 +55,10 @@ beforeAll(async () => {
   await client.exec(`
     CREATE TABLE vehicles(id uuid primary key default gen_random_uuid(), year text, make text, model text, vin text, created_at timestamptz default now());
     CREATE TABLE inventory_vehicles(id uuid primary key default gen_random_uuid(), vehicle_id uuid references vehicles(id), stock_number text, created_at timestamptz default now());
+    CREATE TABLE service_orders(id uuid primary key default gen_random_uuid(), order_number varchar(20) not null unique, vehicle_id uuid references vehicles(id), status varchar(24) not null default 'arrived', customer_name varchar(200), created_at timestamptz default now());
+    CREATE TABLE job_parts(id uuid primary key default gen_random_uuid(), service_order_id uuid not null references service_orders(id), description text not null, quantity numeric(10,2) not null default 1, unit_cost_cents integer, sell_price_cents integer, supply varchar(12) not null default 'shop', status varchar(24) not null default 'needed');
     -- Minimal fin_transactions (only the columns the CFO receipt service references).
-    CREATE TABLE fin_transactions(id uuid primary key default gen_random_uuid(), amount_cents integer not null, direction varchar(8) not null, txn_date date not null, name text, merchant_name text, removed boolean not null default false);
+    CREATE TABLE fin_transactions(id uuid primary key default gen_random_uuid(), amount_cents integer not null, direction varchar(8) not null, txn_date date not null, name text, merchant_name text, removed boolean not null default false, txn_class varchar(24), pending boolean not null default false);
     -- Minimal fin_events (audit sink for reconciliation decisions).
     CREATE TABLE fin_events(id uuid primary key default gen_random_uuid(), actor varchar(200), action varchar(60) not null, entity varchar(40), entity_id varchar(64), before jsonb, after jsonb, source varchar(20), created_at timestamptz default now());
   `)
@@ -66,6 +68,7 @@ beforeAll(async () => {
   await applyMigration(client, '0042_business_receipts_filing.sql')
   await applyMigration(client, '0044_business_receipts_clarified.sql')
   await applyMigration(client, '0045_business_receipts_capture_id.sql')
+  await applyMigration(client, '0078_expense_allocations.sql')
   await applyMigration(client, '0043_fin_receipt_matches.sql')
   await applyMigration(client, '0043_fin_receipt_matches.sql') // idempotent re-apply
   h.db = drizzle(client, { schema })
@@ -236,5 +239,31 @@ describe('CFO accuracy — rejected receipts are never valid coverage', () => {
     const recon = await getReceiptReconciliation(MONTH)
     expect(recon.confirmed).toHaveLength(0)
     expect(recon.unreconciled).toHaveLength(0)
+  })
+})
+
+describe('a card purchase and the later card payment are never both counted', () => {
+  it('a card PAYMENT / transfer of the same amount is not offered as a match and cannot be confirmed', async () => {
+    const { id } = await fileClean('CP1')
+    await client.query(`INSERT INTO fin_transactions(id,amount_cents,direction,txn_date,name,txn_class) VALUES('22222222-2222-2222-2222-222222222222',4599,'out',$1,'O’Reilly AMEX EPAYMENT','card_payment')`, [`${MONTH}-16`])
+    await client.query(`INSERT INTO fin_transactions(id,amount_cents,direction,txn_date,name,txn_class) VALUES('33333333-3333-3333-3333-333333333333',4599,'out',$1,'Transfer to checking O’Reilly','transfer')`, [`${MONTH}-16`])
+    const recon = await getReceiptReconciliation(MONTH)
+    expect(recon.unreconciled[0].suggestions).toHaveLength(0)
+    const res = await confirmReceiptMatch(id, '22222222-2222-2222-2222-222222222222', 'admin')
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('cash movement')
+    expect((await getReceiptCoverage(MONTH)).reconciledCents).toBe(0)
+  })
+  it('a still-PENDING bank transaction is not offered and cannot be confirmed', async () => {
+    const { id } = await fileClean('PN1')
+    await client.query(`INSERT INTO fin_transactions(id,amount_cents,direction,txn_date,name,txn_class,pending) VALUES('44444444-4444-4444-4444-444444444444',4599,'out',$1,'O’Reilly','expense',true)`, [`${MONTH}-16`])
+    expect((await getReceiptReconciliation(MONTH)).unreconciled[0].suggestions).toHaveLength(0)
+    expect((await confirmReceiptMatch(id, '44444444-4444-4444-4444-444444444444', 'admin')).ok).toBe(false)
+  })
+  it('the purchase itself (class expense, posted) still matches exactly as before', async () => {
+    const { id } = await fileClean('OK1')
+    await client.query(`INSERT INTO fin_transactions(id,amount_cents,direction,txn_date,name,txn_class) VALUES('55555555-5555-5555-5555-555555555555',4599,'out',$1,'O’Reilly','expense')`, [`${MONTH}-16`])
+    expect((await getReceiptReconciliation(MONTH)).unreconciled[0].suggestions[0].strength).toBe('strong')
+    expect((await confirmReceiptMatch(id, '55555555-5555-5555-5555-555555555555', 'admin')).ok).toBe(true)
   })
 })

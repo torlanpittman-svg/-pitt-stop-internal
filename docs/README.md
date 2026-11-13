@@ -23,6 +23,8 @@ This directory contains Product Requirements Documents (PRDs), architecture note
 
 ## Platform Documentation
 
+- **Expenses, job costs and reconciliation:** [JOB_EXPENSES_2026-11-13.md](./JOB_EXPENSES_2026-11-13.md) — the expense source of truth (one purchase = one receipt row), job/overhead allocations, duplicate + bank-matching rules, the reconcile view, what reporting does and does not include.
+
 - **Architecture Overview** — Planned
 - **Database Schema Reference** — Planned
 - **API Conventions** — Planned

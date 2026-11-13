@@ -125,6 +125,7 @@ export const ATTENTION_REASONS = [
   { key: 'personal_reimbursement', label: 'Paid with personal money — reimbursement review' },
   { key: 'unpaid',                 label: 'Not paid yet — payment review' },
   { key: 'duplicate',              label: 'Possible duplicate' },
+  { key: 'questionable_date',      label: 'Receipt date looks wrong — check the year' },
   { key: 'unreadable',             label: 'Photo could not be read automatically' },
 ] as const
 export type AttentionReason = (typeof ATTENTION_REASONS)[number]['key']
@@ -325,6 +326,7 @@ export interface FilingAnswers {
   receiptDate: string | null | undefined // YYYY-MM-DD
   totalCents: number | null | undefined
   duplicate?: boolean                    // an unresolved possible-duplicate flag
+  questionableDate?: boolean             // the date looks misread/old/future and nobody confirmed it
 }
 export interface FilingOutcome {
   status: Extract<ReceiptStatus, 'filed' | 'needs_review'>
@@ -370,6 +372,8 @@ export function decideFiling(a: FilingAnswers): FilingOutcome {
   if (!vendorOk || !dateOk || !totalOk) reasons.add('missing_info')
 
   if (a.duplicate) reasons.add('duplicate')
+  // A date that looks misread (e.g. a scanned 2026 read as 2020) is flagged unless a person confirmed it.
+  if (a.questionableDate && dateOk) reasons.add('questionable_date')
 
   const list = ATTENTION_REASONS.map((r) => r.key).filter((k) => reasons.has(k)) // stable order
   return { status: list.length === 0 ? 'filed' : 'needs_review', category, reasons: list, paymentMethod }
@@ -377,6 +381,7 @@ export function decideFiling(a: FilingAnswers): FilingOutcome {
 
 // ── Append-only audit entry. Stored as a JSONB array on the row; NEVER rewritten, only appended. ──
 export type AuditAction = 'uploaded' | 'extracted' | 'extraction_failed' | 'reviewed' | 'filed' | 'flagged' | 'clarified' | 'approved' | 'rejected' | 'reopened' | 'retried'
+  | 'allocated' | 'allocation_removed' | 'allocation_changed'
 export interface AuditEntry {
   action: AuditAction
   actor: string | null

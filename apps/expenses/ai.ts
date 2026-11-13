@@ -14,7 +14,7 @@
 import OpenAI from 'openai'
 import { parseCents, categoryForLabel, type ExpenseCategory } from './types'
 
-export const RECEIPT_PROMPT_VERSION = 'exp_v2'
+export const RECEIPT_PROMPT_VERSION = 'exp_v3'
 // Bounded so a slow/hung provider call can never make capture "feel lost": the original is already saved,
 // and a timed-out read surfaces as a recoverable failure the employee can retry or bypass with manual entry.
 const EXTRACT_TIMEOUT_MS = 35_000
@@ -26,6 +26,7 @@ export interface ExpenseExtraction {
   date: string | null            // YYYY-MM-DD
   subtotalCents: number | null
   taxCents: number | null
+  shippingCents: number | null   // shipping / freight / delivery — a PART of the total, never added on top
   totalCents: number | null
   categoryLabel: string | null   // free-text model label (mapped to a coarse key downstream)
   categoryKey: ExpenseCategory   // normalized coarse category SUGGESTION ('uncategorized' when unknown)
@@ -34,32 +35,35 @@ export interface ExpenseExtraction {
   cardBrand: string | null       // visa|mastercard|discover|amex — ONLY when explicitly printed (payment-source match)
   paymentLast4: string | null    // the PAYMENT CARD's last 4 only (never an order#/date/terminal/auth/check#)
   accountEnding: string | null   // the PAYING BANK ACCOUNT's last 4, ONLY if explicitly printed as an account (never a check#)
-  receiptNumber: string | null
+  receiptNumber: string | null    // this document's receipt / invoice number
+  orderNumber: string | null      // the vendor's ORDER / PO / confirmation number, when printed separately
   /** Which fields the model actually produced (a coarse per-field confidence/presence signal). */
   present: Record<'vendor' | 'date' | 'subtotal' | 'tax' | 'total' | 'category' | 'paymentMethod', boolean>
 }
 export interface ExpenseExtractResult { status: 'extracted' | 'failed'; model: string | null; raw: unknown; extraction: ExpenseExtraction }
 
 export const EMPTY_EXTRACTION: ExpenseExtraction = {
-  vendor: null, date: null, subtotalCents: null, taxCents: null, totalCents: null,
-  categoryLabel: null, categoryKey: 'uncategorized', description: null, paymentMethod: null, cardBrand: null, paymentLast4: null, accountEnding: null, receiptNumber: null,
+  vendor: null, date: null, subtotalCents: null, taxCents: null, shippingCents: null, totalCents: null,
+  categoryLabel: null, categoryKey: 'uncategorized', description: null, paymentMethod: null, cardBrand: null, paymentLast4: null, accountEnding: null, receiptNumber: null, orderNumber: null,
   present: { vendor: false, date: false, subtotal: false, tax: false, total: false, category: false, paymentMethod: false },
 }
 
-const PROMPT = `You are reading a photo of a BUSINESS EXPENSE RECEIPT or INVOICE for an auto detailing shop and used-car dealership. Extract ONLY what is clearly legible; use null when unsure — do NOT guess. Return a STRICT JSON object with exactly these keys:
+const PROMPT = `You are reading a BUSINESS EXPENSE RECEIPT or INVOICE (a photo, a PDF, or pasted email text) for an auto detailing shop and used-car dealership. Extract ONLY what is clearly legible; use null when unsure — do NOT guess. Return a STRICT JSON object with exactly these keys:
 {
   "vendor": string|null,            // merchant / store name
-  "date": "YYYY-MM-DD"|null,        // transaction date
-  "subtotal": number|null,          // pre-tax subtotal in dollars (absolute)
-  "tax": number|null,               // tax in dollars (absolute)
-  "total": number|null,             // grand total in dollars, ABSOLUTE value
+  "date": "YYYY-MM-DD"|null,        // transaction / invoice date. Read ALL FOUR digits of the year exactly as printed; if the year is not clearly legible return null rather than guessing
+  "subtotal": number|null,          // pre-tax, pre-shipping subtotal in dollars (absolute)
+  "tax": number|null,               // tax in dollars (absolute); 0 if the document explicitly shows $0.00 tax
+  "shipping": number|null,          // shipping / freight / delivery charge in dollars, ONLY if printed as its own line
+  "total": number|null,             // grand total in dollars INCLUDING tax and shipping, ABSOLUTE value
   "category": string|null,          // a short expense category, e.g. "Parts", "Fuel", "Shop supplies", "Office", "Utilities"
   "description": string|null,       // 2-6 words naming the main items bought, e.g. "microfiber towels, wax" — helps pick a category
   "paymentMethod": "cash"|"card"|"check"|"ach"|"other"|"multiple"|null,  // how it was paid; "multiple" if more than one tender is shown
   "cardBrand": "visa"|"mastercard"|"discover"|"amex"|null,  // the card network, ONLY if explicitly printed
   "paymentLast4": string|null,      // last 4 of the PAYMENT CARD number ONLY, if visible — never an order#, date, terminal ID, auth code, or check number
   "accountEnding": string|null,     // last 4 of the PAYING BANK ACCOUNT, ONLY if the receipt explicitly prints it as a bank account (e.g. "ACCT ...2649"); a CHECK NUMBER is NOT an account ending — leave null
-  "receiptNumber": string|null      // this document's receipt/invoice number if visible
+  "receiptNumber": string|null,     // this document's receipt/invoice number if visible
+  "orderNumber": string|null        // the vendor's order / PO / confirmation number, ONLY if printed separately from the invoice number
 }
 Dollars as numbers (not strings, no $). Never invent a vendor, amount, tax, date, category, brand, card ending, or payment method. If a value is not clearly on the receipt, return null for it.`
 
@@ -87,6 +91,7 @@ export function parseReceiptJson(j: unknown): ExpenseExtraction {
     date: cleanDate(o.date),
     subtotalCents: parseCents(o.subtotal),
     taxCents: parseCents(o.tax),
+    shippingCents: parseCents(o.shipping),
     totalCents: parseCents(o.total),
     categoryLabel,
     categoryKey,
@@ -96,6 +101,7 @@ export function parseReceiptJson(j: unknown): ExpenseExtraction {
     paymentLast4: typeof o.paymentLast4 === 'string' ? (o.paymentLast4.match(/\d{4}/)?.[0] ?? null) : null,
     accountEnding: typeof o.accountEnding === 'string' ? (o.accountEnding.match(/\d{4}/)?.[0] ?? null) : null,
     receiptNumber: cleanStr(o.receiptNumber, 60),
+    orderNumber: cleanStr(o.orderNumber, 60),
     present: {
       vendor: has(o.vendor), date: has(o.date), subtotal: has(o.subtotal), tax: has(o.tax),
       total: has(o.total), category: has(o.category) || has(o.description), paymentMethod: has(o.paymentMethod),
@@ -113,6 +119,13 @@ export function parseReceiptJson(j: unknown): ExpenseExtraction {
  *   - a bounded timeout without automatic retries so a hung provider call cannot make capture hang; the original is
  *     already saved before this runs, so a timeout is recoverable through explicit retry, never lost work.
  */
+/** The model input part for the stored evidence: a photo (vision), a PDF (file input), or pasted text. */
+export function evidencePart(base64: string, mimeType: string): Record<string, unknown> {
+  if (mimeType === 'application/pdf') return { type: 'file', file: { filename: 'receipt.pdf', file_data: `data:application/pdf;base64,${base64}` } }
+  if (mimeType.startsWith('text/plain')) return { type: 'text', text: `RECEIPT TEXT (pasted) >>>\n${Buffer.from(base64, 'base64').toString('utf8')}\n<<< END OF RECEIPT TEXT` }
+  return { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}`, detail: 'high' } }
+}
+
 export async function extractExpense(imageBase64: string, mimeType: string): Promise<ExpenseExtractResult> {
   if (!process.env.OPENAI_API_KEY) return { status: 'failed', model: null, raw: { error: 'OPENAI_API_KEY not set' }, extraction: EMPTY_EXTRACTION }
   try {
@@ -121,7 +134,7 @@ export async function extractExpense(imageBase64: string, mimeType: string): Pro
       model: EXTRACT_MODEL, max_tokens: 1200, temperature: 0,
       response_format: { type: 'json_object' },
       messages: [{ role: 'user', content: [
-        { type: 'image_url', image_url: { url: `data:${mimeType};base64,${imageBase64}`, detail: 'high' } },
+        evidencePart(imageBase64, mimeType),
         { type: 'text', text: PROMPT },
       ] as never }],
     })

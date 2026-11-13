@@ -24,6 +24,7 @@ import { isCompleteStatus, isBusinessDate, inBusinessMonth } from '@/apps/expens
 import { monthlyExpenseReport } from '@/apps/expenses/db'
 import { currentReportMonth } from '@/apps/auto-sales/report-db'
 import { finTransactions, finReceiptMatches, finEvents } from './schema'
+import { isPurchaseTxnClass } from './txn-class'
 
 // ── Pure candidate scoring (unit-tested; no DB) ───────────────────────────────────────────────────────
 export interface ScoreReceipt { totalCents: number | null; receiptDate: string | null; vendor: string | null }
@@ -224,6 +225,7 @@ export async function getReceiptReconciliation(month: string = currentReportMont
   const outTxns = await db.select({
     id: finTransactions.id, amountCents: finTransactions.amountCents, txnDate: finTransactions.txnDate,
     name: finTransactions.name, merchantName: finTransactions.merchantName,
+    txnClass: finTransactions.txnClass, pending: finTransactions.pending,
   }).from(finTransactions).where(and(
     eq(finTransactions.direction, 'out'), eq(finTransactions.removed, false),
     gte(finTransactions.txnDate, winStart), lte(finTransactions.txnDate, winEnd),
@@ -232,7 +234,10 @@ export async function getReceiptReconciliation(month: string = currentReportMont
     (await db.select({ txnId: finReceiptMatches.txnId }).from(finReceiptMatches)
       .where(eq(finReceiptMatches.status, 'confirmed'))).map((r) => r.txnId).filter(Boolean) as string[],
   )
-  const available = outTxns.filter((t) => !confirmedTxnIds.has(t.id))
+  // A receipt stands behind a PURCHASE. Card payments, transfers, payroll, loan payments and owner draws are
+  // cash movements (matching a receipt to one is how a card purchase and its later card payment would both be
+  // counted), and a pending transaction can still be replaced by the bank — neither is offered as a candidate.
+  const available = outTxns.filter((t) => !confirmedTxnIds.has(t.id) && !t.pending && isPurchaseTxnClass(t.txnClass))
   const txnById = new Map(outTxns.map((t) => [t.id, t]))
   const txnLabel = (t: { merchantName: string | null; name: string | null; amountCents?: number }) => (t.merchantName || t.name || 'Bank transaction')
 
@@ -285,8 +290,11 @@ export async function confirmReceiptMatch(receiptId: string, txnId: string, acto
   const [txn] = await db.select({
     id: finTransactions.id, amountCents: finTransactions.amountCents, txnDate: finTransactions.txnDate,
     name: finTransactions.name, merchantName: finTransactions.merchantName,
+    txnClass: finTransactions.txnClass, pending: finTransactions.pending,
   }).from(finTransactions).where(and(eq(finTransactions.id, txnId), eq(finTransactions.direction, 'out'), eq(finTransactions.removed, false))).limit(1)
   if (!txn) return { ok: false, error: 'That bank transaction is not available to match.' }
+  if (!isPurchaseTxnClass(txn.txnClass)) return { ok: false, error: 'That transaction is a card payment, transfer, payroll or loan payment — a cash movement, not the purchase itself.' }
+  if (txn.pending) return { ok: false, error: 'That transaction is still pending at the bank — match it once it posts.' }
   // A transaction may back at most one receipt (no double count): reject if already confirmed elsewhere.
   const clash = await db.select({ receiptId: finReceiptMatches.receiptId }).from(finReceiptMatches)
     .where(and(eq(finReceiptMatches.txnId, txnId), eq(finReceiptMatches.status, 'confirmed'), ne(finReceiptMatches.receiptId, receiptId))).limit(1)

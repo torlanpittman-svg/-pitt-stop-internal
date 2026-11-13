@@ -17,6 +17,11 @@ import {
   centsToDollars, formatMoney,
 } from '@/apps/expenses/types'
 import { fileReceiptAction, rejectReceiptAction, reopenReceiptAction, retryExtractionAction } from '@/apps/expenses/actions'
+import { linkReceiptAction, removeAllocationAction } from '@/apps/expenses/job-actions'
+import { amountsWarning, receiptDateWarning, todayBusinessDate } from '@/apps/expenses/checks'
+import { summarizeAllocations } from '@/apps/expenses/allocations'
+import type { ReceiptAllocationView } from '@/apps/expenses/job-expenses'
+import JobPicker, { type PickedJob } from './JobPicker'
 import type { ReviewCardData } from '@/apps/expenses/view'
 import {
   OTHER_PAYMENT_MAX_LENGTH, OTHER_PAYMENT_FUNDINGS, OTHER_PAYMENT_METHODS, RECEIPT_PAYMENT_CHOICES,
@@ -28,7 +33,7 @@ export interface VehicleOption { id: string; label: string }
 const box = 'bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-base text-white w-full'
 const lbl = 'text-xs text-gray-500'
 
-export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; vehicles?: VehicleOption[] }) {
+export default function ReviewCard({ r, vehicles = [], allocations = [] }: { r: ReviewCardData; vehicles?: VehicleOption[]; allocations?: ReceiptAllocationView[] }) {
   const router = useRouter()
   const [entity, setEntity] = useState(r.entity)
   const [category, setCategory] = useState(r.category)
@@ -47,6 +52,13 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
   const [otherPaymentMethod, setOtherPaymentMethod] = useState(storedOther && r.funding === 'business' ? (r.paymentMethod ?? '') : '')
   const [inventoryVehicleId, setInventoryVehicleId] = useState(r.inventoryVehicleId ?? '')
   const [memo, setMemo] = useState(r.memo ?? '')
+  const [shipping, setShipping] = useState(centsToDollars(r.shippingCents))
+  const [invoiceNumber, setInvoiceNumber] = useState(r.invoiceNumber ?? '')
+  const [orderNumber, setOrderNumber] = useState(r.orderNumber ?? '')
+  const [description, setDescription] = useState(r.description ?? '')
+  // Assign this purchase (or part of it) to a customer job / overhead — a link, never a second expense.
+  const [pickJob, setPickJob] = useState<PickedJob | null>(null)
+  const [assignAmount, setAssignAmount] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -77,7 +89,19 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
     paymentChoice: paymentChoice || undefined, otherPayment,
     otherFunding: otherFunding || undefined, otherPaymentMethod: otherPaymentMethod || undefined,
     vendor, receiptDate, subtotal, tax, total, memo, inventoryVehicleId,
+    shipping, invoiceNumber, orderNumber, description,
+    // The manager is looking at the date (any warning is shown right under it) — their filing confirms it.
+    dateConfirmed: true,
   })
+  const cents = (v: string) => (v.trim() === '' ? null : Math.round(parseFloat(v.replace(/[^0-9.]/g, '') || '0') * 100))
+  const dateWarn = receiptDateWarning(receiptDate, todayBusinessDate())
+  const sumWarn = amountsWarning({ subtotalCents: cents(subtotal), taxCents: cents(tax), shippingCents: cents(shipping), totalCents: cents(total) })
+  const purchase = summarizeAllocations(r.totalCents, allocations)
+  const assign = (target: 'job' | 'overhead') => run(async () => {
+    const res = await linkReceiptAction({ receiptId: r.id, target, serviceOrderId: pickJob?.id, amount: assignAmount })
+    if (res.ok) { setPickJob(null); setAssignAmount('') }
+    return res
+  }, target === 'job' ? 'Attached to the job.' : 'Marked as overhead.')
   // Manager files via the SAME operational path as the employee (categoryMode 'single' with the chosen key).
   const fileNow = () => run(() => fileReceiptAction(formFields()), 'Filed.')
   // Manager ACKNOWLEDGES a still-outstanding exception (reimbursement/unpaid/allocation): reviewed, leaves
@@ -98,9 +122,11 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
       <div className="grid md:grid-cols-2">
         {/* Original evidence */}
         <div className="bg-black/40 p-3 flex flex-col">
-          {r.imageUrl
-            ? <a href={r.imageUrl} target="_blank" rel="noreferrer"><img src={r.imageUrl} alt="receipt" className="w-full rounded-xl max-h-[28rem] object-contain" /></a>
-            : <div className="flex-1 grid place-items-center text-gray-600 text-sm min-h-40">No stored image</div>}
+          {!r.imageUrl
+            ? <div className="flex-1 grid place-items-center text-gray-600 text-sm min-h-40">No stored receipt</div>
+            : r.contentType === 'application/pdf' || r.contentType === 'text/plain'
+              ? <a href={r.imageUrl} target="_blank" rel="noreferrer" className="flex-1 grid place-items-center min-h-40 rounded-xl border border-gray-800 text-indigo-300 text-sm underline">{r.contentType === 'application/pdf' ? 'Open the PDF invoice' : 'Open the pasted receipt text'}</a>
+              : <a href={r.imageUrl} target="_blank" rel="noreferrer"><img src={r.imageUrl} alt="receipt" className="w-full rounded-xl max-h-[28rem] object-contain" /></a>}
           <div className="mt-2 text-xs text-gray-500">
             Uploaded by {r.uploadedBy ?? 'shop'} · {r.createdAt.slice(0, 10)}
             {r.aiStatus !== 'extracted' && <span className="text-amber-400"> · AI could not read it</span>}
@@ -146,7 +172,18 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
             <label className={lbl}>Total{suggested('total')}<br /><input value={total} onChange={(e) => setTotal(e.target.value)} disabled={decided} inputMode="decimal" placeholder="0.00" className={box} /></label>
             <label className={lbl}>Subtotal{suggested('subtotal')}<br /><input value={subtotal} onChange={(e) => setSubtotal(e.target.value)} disabled={decided} inputMode="decimal" placeholder="" className={box} /></label>
             <label className={lbl}>Tax{suggested('tax')}<br /><input value={tax} onChange={(e) => setTax(e.target.value)} disabled={decided} inputMode="decimal" placeholder="" className={box} /></label>
+            <label className={lbl}>Shipping (inside the total)<br /><input value={shipping} onChange={(e) => setShipping(e.target.value)} disabled={decided} inputMode="decimal" placeholder="" className={box} /></label>
+            <label className={lbl}>Invoice #<br /><input value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} disabled={decided} maxLength={80} className={box} /></label>
+            <label className={lbl}>Order #<br /><input value={orderNumber} onChange={(e) => setOrderNumber(e.target.value)} disabled={decided} maxLength={80} className={box} /></label>
+            <label className={lbl}>What was bought<br /><input value={description} onChange={(e) => setDescription(e.target.value)} disabled={decided} maxLength={300} className={box} /></label>
           </div>
+          {dateWarn && (
+            <div role="alert" className="rounded-xl border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
+              {dateWarn.message}
+              {dateWarn.suggestion && !decided && <button type="button" onClick={() => setReceiptDate(dateWarn.suggestion as string)} className="ml-2 underline text-indigo-300">Use {dateWarn.suggestion}</button>}
+            </div>
+          )}
+          {sumWarn && <p role="alert" className="text-amber-300 text-xs">{sumWarn}</p>}
 
           <label className={lbl}>Paid with<br />
             <select value={paymentChoice} onChange={(e) => {
@@ -189,8 +226,41 @@ export default function ReviewCard({ r, vehicles = [] }: { r: ReviewCardData; ve
               </select></label>
           </div>}
 
+          {/* Which job / overhead this purchase was for. A link to THIS receipt — it never adds an expense. */}
+          {r.status !== 'rejected' && (
+            <div className="rounded-xl border border-gray-800 bg-gray-900/60 px-3 py-3 space-y-2">
+              <p className="text-gray-400 text-sm">Customer job</p>
+              {allocations.length === 0 && <p className="text-gray-500 text-xs">Not assigned to a job. That is normal for a general shop expense.</p>}
+              {allocations.map((a) => (
+                <div key={a.id} className="flex items-start gap-2 text-sm">
+                  <span className="flex-1 min-w-0 break-words text-gray-200">
+                    {a.target === 'job'
+                      ? (a.serviceOrderId ? <a href={`/orders/${a.serviceOrderId}`} className="underline text-indigo-300">{a.jobLabel ?? 'Job'}</a> : 'Job')
+                      : 'Overhead (no job)'}
+                    <span className="text-gray-400"> · {a.amountCents == null ? 'whole purchase' : formatMoney(a.amountCents)}</span>
+                  </span>
+                  <button type="button" disabled={busy} onClick={() => { const reason = window.prompt('Why is this being removed from the job?'); if (reason !== null) run(() => removeAllocationAction({ allocationId: a.id, fromOrderId: a.serviceOrderId ?? undefined, reason }), 'Removed from the job.') }}
+                    className="shrink-0 text-gray-400 text-xs underline py-1 disabled:opacity-50">Remove</button>
+                </div>
+              ))}
+              {purchase.state === 'partial' && <p className="text-amber-300 text-xs">{formatMoney(purchase.unallocatedCents)} of {formatMoney(purchase.totalCents)} is not assigned yet.</p>}
+              {purchase.state === 'over' && <p role="alert" className="text-red-300 text-xs">Assigned {formatMoney(purchase.overCents)} more than the purchase total — fix the amounts.</p>}
+              {purchase.state !== 'full' && !purchase.whole && (
+                <div className="space-y-2 pt-1">
+                  <JobPicker value={pickJob} onChange={setPickJob} disabled={busy} />
+                  <label className={lbl}>Amount for this job (blank = {allocations.length === 0 ? 'the whole purchase' : 'enter the split amount'})<br />
+                    <input value={assignAmount} onChange={(e) => setAssignAmount(e.target.value)} inputMode="decimal" placeholder={allocations.length === 0 ? 'Whole purchase' : centsToDollars(purchase.unallocatedCents)} className={box} /></label>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => assign('job')} disabled={busy || !pickJob} className="flex-1 bg-indigo-600 text-white text-sm font-semibold py-3 rounded-xl disabled:opacity-50">Attach to job</button>
+                    {allocations.length > 0 && <button type="button" onClick={() => assign('overhead')} disabled={busy || !assignAmount.trim()} className="flex-1 border border-gray-700 text-gray-200 text-sm font-semibold py-3 rounded-xl disabled:opacity-50">Rest is overhead</button>}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <details className="rounded-xl border border-gray-800 bg-gray-900/60">
-            <summary className="px-3 py-2 text-gray-400 text-sm cursor-pointer list-none">Vehicle &amp; note ▾</summary>
+            <summary className="px-3 py-2 text-gray-400 text-sm cursor-pointer list-none">Sales-inventory vehicle &amp; note ▾</summary>
             <div className="px-3 pb-3 grid grid-cols-1 gap-3">
               <label className={lbl}>Vehicle (optional — for an inventory-vehicle expense)<br />
                 <select value={inventoryVehicleId} onChange={(e) => setInventoryVehicleId(e.target.value)} disabled={decided} className={box}>

@@ -11,6 +11,7 @@ import { useVinDecode, type VinDecodeResult } from '@/app/hooks/useVinDecode'
 import { isDealerOrder, orderSourceKind } from '@/apps/workflow/fees'
 import type { MovePreview } from '@/apps/estimates/move-to-estimates'
 import PartsSection from './PartsSection'
+import JobExpenses from './JobExpenses'
 import PartImportPanel from './PartImportPanel'
 import JobItemsPanel from './JobItemsPanel'
 import { countJobParts } from '@/apps/parts/status'
@@ -1473,6 +1474,10 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
           )}
         </>
       )}
+
+      {/* Expenses — what we spent on this car (receipt-backed; never touches the customer invoice). Every role
+          can add a receipt from here; amounts, linking and corrections are manager-only (enforced server-side). */}
+      {!isDealerOrder(order) && <div className="px-6 mb-6"><JobExpenses orderId={order.id} manager={isManager} cancelled={order.status === 'cancelled'} /></div>}
 
       {isManager && <div className="px-6 mb-6"><OrderPhotos orderId={order.id} /></div>}
 

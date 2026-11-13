@@ -438,6 +438,7 @@ export default async function FinancePage() {
               </div>
             </div>
           )}
+          <p className="text-[11px] mb-3"><a href="/admin/finance/reconcile" className="text-indigo-300 underline">Open the reconcile queues</a> <span className="text-gray-600">— bank purchases with no receipt, receipts with no bank payment, job purchases with no job, possible duplicates, expected bills with no payment, incomplete splits.</span></p>
           {(receiptCoverage.needsReviewCount > 0 || receiptCoverage.processingFailedCount > 0) && (
             <p className="text-amber-300/80 text-[11px] mb-3">{receiptCoverage.needsReviewCount} receipt{receiptCoverage.needsReviewCount === 1 ? '' : 's'} still need attention{receiptCoverage.processingFailedCount ? ` · ${receiptCoverage.processingFailedCount} unreadable` : ''} — resolved in the Receipts tool, not here.</p>
           )}

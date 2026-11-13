@@ -57,3 +57,51 @@ describe('validateReceiptUpload', () => {
     expect(extForMime('image/webp')).toBe('webp')
   })
 })
+
+// ── Business receipts also accept a PDF invoice and pasted email text (migration 0078 release) ──
+import { validateReceiptFile, validatePastedText, extForStoredType, isPdfHead, isImageType, MAX_PASTED_TEXT } from './upload-validation'
+
+describe('validateReceiptFile — photos AND PDF invoices (business receipts only)', () => {
+  it('accepts a real PDF by its %PDF- signature', () => {
+    expect(isPdfHead(PDF)).toBe(true)
+    expect(validateReceiptFile('application/pdf', 60_000, PDF)).toEqual({ ok: true, mime: 'application/pdf' })
+    expect(validateReceiptFile('', 60_000, PDF)).toEqual({ ok: true, mime: 'application/pdf' }) // phones often send no type
+  })
+  it('still accepts photos exactly as before', () => {
+    expect(validateReceiptFile('image/jpeg', 5000, JPEG)).toEqual({ ok: true, mime: 'image/jpeg' })
+    expect(validateReceiptFile('image/jpg', 5000, JPEG)).toEqual({ ok: true, mime: 'image/jpeg' })
+  })
+  it('rejects a file that only CLAIMS to be a PDF, and a PDF declared as an image', () => {
+    expect(validateReceiptFile('application/pdf', 5000, HTML)).toMatchObject({ ok: false, status: 415 })
+    expect(validateReceiptFile('application/pdf', 5000, JPEG)).toMatchObject({ ok: false, status: 415 })
+    expect(validateReceiptFile('image/jpeg', 5000, PDF)).toMatchObject({ ok: false, status: 415 })
+  })
+  it('rejects SVG / HTML and an oversized or empty PDF', () => {
+    expect(validateReceiptFile('image/svg+xml', 5000, SVG)).toMatchObject({ ok: false, status: 415 })
+    expect(validateReceiptFile('text/html', 5000, HTML)).toMatchObject({ ok: false, status: 415 })
+    expect(validateReceiptFile('application/pdf', MAX_UPLOAD_BYTES + 1, PDF)).toMatchObject({ ok: false, status: 413 })
+    expect(validateReceiptFile('application/pdf', 0, PDF)).toMatchObject({ ok: false, status: 400 })
+  })
+  it('the SHARED photo validator (parts screenshot import) still refuses PDFs', () => {
+    expect(validateReceiptUpload('application/pdf', 5000, PDF)).toMatchObject({ ok: false, status: 415 })
+  })
+  it('storage extensions cover every stored type', () => {
+    expect(extForStoredType('application/pdf')).toBe('pdf')
+    expect(extForStoredType('text/plain')).toBe('txt')
+    expect(extForStoredType('image/png')).toBe('png')
+    expect(isImageType('application/pdf')).toBe(false)
+    expect(isImageType('image/webp')).toBe(true)
+  })
+})
+
+describe('validatePastedText — pasted email receipts', () => {
+  it('accepts a real receipt email, normalizing line endings and stripping control characters', () => {
+    const v = validatePastedText('  Tesla order GPO-3Y3WMP6N16\r\nTotal: $80.21\u0000\u0007  ')
+    expect(v).toEqual({ ok: true, text: 'Tesla order GPO-3Y3WMP6N16\nTotal: $80.21' })
+  })
+  it('rejects too-short, too-long and non-string input', () => {
+    expect(validatePastedText('hi')).toMatchObject({ ok: false, status: 400 })
+    expect(validatePastedText('x'.repeat(MAX_PASTED_TEXT + 1))).toMatchObject({ ok: false, status: 413 })
+    expect(validatePastedText(null)).toMatchObject({ ok: false, status: 400 })
+  })
+})

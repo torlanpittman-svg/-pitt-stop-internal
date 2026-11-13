@@ -47,9 +47,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       status: 200,
       headers: {
         'Content-Type': decision.contentType,
-        'Content-Disposition': `${decision.disposition}; filename="receipt-${id}"`,
+        'Content-Disposition': `${decision.disposition}; filename="receipt-${id}${decision.contentType === 'application/pdf' ? '.pdf' : decision.contentType.startsWith('text/plain') ? '.txt' : ''}"`,
         'X-Content-Type-Options': 'nosniff',
-        'Content-Security-Policy': "default-src 'none'; sandbox",
+        // `sandbox` stops the browser's built-in PDF viewer from loading, so a PDF gets the same lock-down
+        // minus that one directive (a PDF is not HTML; nosniff keeps it from being re-interpreted as such).
+        'Content-Security-Policy': decision.contentType === 'application/pdf' ? "default-src 'none'; object-src 'self'; style-src 'unsafe-inline'" : "default-src 'none'; sandbox",
         'Cache-Control': 'private, no-store',
       },
     })

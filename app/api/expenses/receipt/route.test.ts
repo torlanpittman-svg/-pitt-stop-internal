@@ -202,3 +202,48 @@ it('finishes the saved read safely if the client disconnects after acknowledgeme
   await new Promise((resolve) => setTimeout(resolve, 0))
   expect(asMock(extractSavedReceipt)).toHaveBeenCalledOnce()
 })
+
+describe('receipt upload — PDF invoices and pasted text', () => {
+  // ── PDF invoices and pasted email text (the Tesla case: no more converting a PDF to an image) ──
+  it('accepts a PDF invoice: stored as-is under a .pdf key, no image decode, saved as application/pdf', async () => {
+    const pdf = Buffer.from('%PDF-1.7\n1 0 obj<<>>endobj\n%%EOF')
+    const fd = new FormData()
+    fd.set('receipt', new File([new Uint8Array(pdf)], 'tesla-invoice.pdf', { type: 'application/pdf' }))
+    const res = await POST(new Request('http://x/api/expenses/receipt', { method: 'POST', body: fd }))
+    expect(res.status).toBe(200)
+    expect((await res.json()).receiptId).toBe('rec-1')
+    expect(asMock(decodeImageMeta)).not.toHaveBeenCalled()
+    const [key, bytes, type] = asMock(uploadPrivatePhoto).mock.calls[0]
+    expect(key).toBe(`business-receipts/${createHash('sha256').update(pdf).digest('hex')}.pdf`)
+    expect(Buffer.from(bytes).equals(pdf)).toBe(true)      // the ORIGINAL bytes, never re-encoded
+    expect(type).toBe('application/pdf')
+    expect(asMock(db.createPendingReceipt).mock.calls[0][0]).toMatchObject({ contentType: 'application/pdf', filename: 'tesla-invoice.pdf' })
+  })
+
+  it('rejects HTML dressed up as a PDF with 415', async () => {
+    const fd = new FormData()
+    fd.set('receipt', new File([new Uint8Array(HTML)], 'x.pdf', { type: 'application/pdf' }))
+    const res = await POST(new Request('http://x/api/expenses/receipt', { method: 'POST', body: fd }))
+    expect(res.status).toBe(415)
+    expect(asMock(uploadPrivatePhoto)).not.toHaveBeenCalled()
+  })
+
+  it('accepts pasted receipt text: stored verbatim as text/plain evidence', async () => {
+    const fd = new FormData()
+    fd.set('text', 'Tesla Inc. order GPO-3Y3WMP6N16\nInvoice 3000H0000513594\nTotal $80.21')
+    const res = await POST(new Request('http://x/api/expenses/receipt', { method: 'POST', body: fd }))
+    expect(res.status).toBe(200)
+    const [key, bytes, type] = asMock(uploadPrivatePhoto).mock.calls[0]
+    expect(key).toMatch(/^business-receipts\/[0-9a-f]{64}\.txt$/)
+    expect(Buffer.from(bytes).toString('utf8')).toContain('Total $80.21')
+    expect(type).toBe('text/plain')
+    expect(asMock(db.createPendingReceipt).mock.calls[0][0]).toMatchObject({ contentType: 'text/plain' })
+  })
+
+  it('rejects empty / too-short pasted text with 400 and stores nothing', async () => {
+    const fd = new FormData(); fd.set('text', 'hi')
+    const res = await POST(new Request('http://x/api/expenses/receipt', { method: 'POST', body: fd }))
+    expect(res.status).toBe(400)
+    expect(asMock(uploadPrivatePhoto)).not.toHaveBeenCalled()
+  })
+})

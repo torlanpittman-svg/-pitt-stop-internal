@@ -16,6 +16,8 @@ import {
 } from './types'
 import { errorCode } from './errors'
 import { resolveReceiptPayment } from './payment'
+import { receiptDateWarning, todayBusinessDate } from './checks'
+import { allocateReceipt, isUuid } from './job-expenses'
 import { logger } from '@/platform/logger'
 
 const revalidate = () => { revalidatePath('/expenses/review'); revalidatePath('/expenses') }
@@ -32,6 +34,7 @@ export interface ReviewForm {
   id: string
   entity?: string; category?: string; vendor?: string; receiptDate?: string
   subtotal?: string; tax?: string; total?: string
+  shipping?: string; invoiceNumber?: string; orderNumber?: string; description?: string
   paymentMethod?: string; accountRef?: string; paymentLast4?: string; memo?: string; inventoryVehicleId?: string
 }
 
@@ -46,6 +49,10 @@ function reviewFieldsFrom(f: ReviewForm): ReviewFields {
   if (f.subtotal !== undefined) fields.subtotalCents = f.subtotal.trim() === '' ? null : parseCents(f.subtotal)
   if (f.tax !== undefined) fields.taxCents = f.tax.trim() === '' ? null : parseCents(f.tax)
   if (f.total !== undefined) fields.totalCents = f.total.trim() === '' ? null : parseCents(f.total)
+  if (f.shipping !== undefined) fields.shippingCents = f.shipping.trim() === '' ? null : parseCents(f.shipping)
+  if (f.invoiceNumber !== undefined) fields.invoiceNumber = f.invoiceNumber.trim().slice(0, 80) || null
+  if (f.orderNumber !== undefined) fields.orderNumber = f.orderNumber.trim().slice(0, 80) || null
+  if (f.description !== undefined) fields.description = f.description.trim().slice(0, 300) || null
   if (f.paymentMethod !== undefined) fields.paymentMethod = (isPaymentMethod(f.paymentMethod) ? f.paymentMethod : null) as PaymentMethod | null
   if (f.accountRef !== undefined) fields.accountRef = f.accountRef.trim() || null
   if (f.paymentLast4 !== undefined) fields.paymentLast4 = (f.paymentLast4.match(/\d{4}/)?.[0]) ?? null
@@ -83,11 +90,21 @@ export interface FileForm {
   entity?: string; category?: string; categoryMode?: string; funding?: string; paymentMethod?: string
   vendor?: string; receiptDate?: string; subtotal?: string; tax?: string; total?: string
   memo?: string; filingNote?: string; inventoryVehicleId?: string; duplicate?: boolean
+  shipping?: string; invoiceNumber?: string; orderNumber?: string; description?: string
+  // The customer job this purchase was for (capture started from a job, or picked on the confirm step). On a
+  // successful save the WHOLE purchase is pointed at that job — a link to this same receipt, never a second
+  // expense, and never a change to the customer's invoice.
+  serviceOrderId?: string
+  // The person looked at a date flagged as questionable (old / future / year possibly misread) and confirmed it.
+  dateConfirmed?: boolean
   // Manager-only: acknowledge a still-OUTSTANDING exception (reimbursement/unpaid/mixed) as reviewed so it
   // leaves the backlog WITHOUT falsifying funding/category. Ignored for non-managers.
   acknowledge?: boolean
 }
-export interface FileResult { ok: boolean; error?: string; conflict?: boolean; alreadyFiled?: boolean; status?: 'filed' | 'needs_review'; reasons?: string[]; clarified?: boolean }
+export interface FileResult {
+  ok: boolean; error?: string; conflict?: boolean; alreadyFiled?: boolean; status?: 'filed' | 'needs_review'; reasons?: string[]; clarified?: boolean
+  jobLinked?: boolean; jobLinkError?: string   // set only when a serviceOrderId was supplied
+}
 
 export async function fileReceiptAction(f: FileForm): Promise<FileResult> {
   const uploader = await receiptUploader()
@@ -128,15 +145,32 @@ export async function fileReceiptAction(f: FileForm): Promise<FileResult> {
   }
   if (f.subtotal !== undefined) input.subtotalCents = f.subtotal.trim() === '' ? null : parseCents(f.subtotal)
   if (f.tax !== undefined) input.taxCents = f.tax.trim() === '' ? null : parseCents(f.tax)
+  if (f.shipping !== undefined) input.shippingCents = f.shipping.trim() === '' ? null : parseCents(f.shipping)
+  if (f.invoiceNumber !== undefined) input.invoiceNumber = f.invoiceNumber.trim().slice(0, 80) || null
+  if (f.orderNumber !== undefined) input.orderNumber = f.orderNumber.trim().slice(0, 80) || null
+  if (f.description !== undefined) input.description = f.description.trim().slice(0, 300) || null
   if (f.memo !== undefined) input.memo = f.memo.trim() || null
   if (f.filingNote !== undefined) input.filingNote = f.filingNote.trim() || null
+  if (f.serviceOrderId !== undefined && f.serviceOrderId !== '' && !isUuid(f.serviceOrderId)) return { ok: false, error: 'That job could not be found.' }
   if (f.inventoryVehicleId !== undefined) {
     input.inventoryVehicleId = f.inventoryVehicleId.trim() || null
     if (input.inventoryVehicleId && !(await inventoryVehicleExists(input.inventoryVehicleId))) {
       return { ok: false, error: 'That vehicle no longer exists — pick a current inventory vehicle or leave it off.' }
     }
   }
-  const r = await fileReceipt(f.id, input, { name: uploader.name, key: uploader.actor?.key ?? null }, { duplicate: f.duplicate, acknowledge })
+  // A date that looks misread/old/future stays flagged unless the person explicitly confirmed it.
+  const questionableDate = f.dateConfirmed !== true && receiptDateWarning(input.receiptDate, todayBusinessDate()) !== null
+  const who = { name: uploader.name, key: uploader.actor?.key ?? null }
+  const r: FileResult = await fileReceipt(f.id, input, who, { duplicate: f.duplicate, acknowledge, questionableDate })
+  if (r.ok && f.serviceOrderId) {
+    // Point the whole purchase at the job. Idempotent per (receipt, job); a failure here never un-saves the
+    // receipt — it is reported so the link can be made from the job instead.
+    const link = await allocateReceipt({ receiptId: f.id, target: 'job', serviceOrderId: f.serviceOrderId, amountCents: null }, who)
+      .catch(() => ({ ok: false as const, error: 'Could not attach the job.' }))
+    r.jobLinked = link.ok
+    if (!link.ok) r.jobLinkError = link.error
+    if (link.ok) revalidatePath(`/orders/${f.serviceOrderId}`)
+  }
   if (r.ok) revalidate()
   return r
 }
@@ -202,6 +236,7 @@ export async function retryExtractionAction(f: { id: string }): Promise<{ ok: bo
       aiStatus: ai.status, aiModel: ai.model, aiRaw: ai.raw, aiExtracted: e, confidence: e.present,
       vendor: e.vendor, receiptDate: e.date, subtotalCents: e.subtotalCents, taxCents: e.taxCents,
       totalCents: e.totalCents, category: e.categoryKey, paymentMethod: e.paymentMethod, paymentLast4: e.paymentLast4,
+      shippingCents: e.shippingCents, invoiceNumber: e.receiptNumber, orderNumber: e.orderNumber, description: e.description,
     }, actor.name)
     if (r.ok) revalidate()
     return r.ok ? r : { ok: false, error: r.error ?? 'Could not update — refresh and try again.' }

@@ -75,3 +75,35 @@ describe('parseReceiptJson — proposal normalization (never invents, never $0)'
     expect(e2.categoryKey).toBe('uncategorized')
   })
 })
+
+// ── PDF / pasted text input + the extra fields (prompt exp_v3) ──
+import { evidencePart, parseReceiptJson as parseV3 } from './ai'
+
+describe('parseReceiptJson — shipping, order number (Tesla invoice shape)', () => {
+  it('keeps shipping as its own component and the order number apart from the invoice number', () => {
+    const e = parseV3({ vendor: 'Tesla Inc.', date: '2026-11-13', subtotal: 71, tax: 0, shipping: 9.21, total: 80.21, receiptNumber: '3000H0000513594', orderNumber: 'GPO-3Y3WMP6N16', description: 'seat cushion foam', paymentMethod: 'card' })
+    expect(e).toMatchObject({ subtotalCents: 7100, taxCents: 0, shippingCents: 921, totalCents: 8021, receiptNumber: '3000H0000513594', orderNumber: 'GPO-3Y3WMP6N16' })
+    expect(e.subtotalCents! + e.taxCents! + e.shippingCents!).toBe(e.totalCents) // shipping + tax are INSIDE the total, once
+  })
+  it('never invents shipping, an order number or a payment card', () => {
+    const e = parseV3({ vendor: 'NAPA', total: 12.5, paymentMethod: 'card' })
+    expect(e.shippingCents).toBeNull()
+    expect(e.orderNumber).toBeNull()
+    expect(e.paymentLast4).toBeNull()
+    expect(e.cardBrand).toBeNull()
+  })
+})
+
+describe('evidencePart — the model input for each kind of stored evidence', () => {
+  it('a photo goes to vision', () => {
+    expect(evidencePart('QUJD', 'image/jpeg')).toMatchObject({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,QUJD' } })
+  })
+  it('a PDF is sent as a file input (never as an image)', () => {
+    expect(evidencePart('QUJD', 'application/pdf')).toEqual({ type: 'file', file: { filename: 'receipt.pdf', file_data: 'data:application/pdf;base64,QUJD' } })
+  })
+  it('pasted text is sent as text', () => {
+    const p = evidencePart(Buffer.from('Total: $80.21').toString('base64'), 'text/plain') as { type: string; text: string }
+    expect(p.type).toBe('text')
+    expect(p.text).toContain('Total: $80.21')
+  })
+})

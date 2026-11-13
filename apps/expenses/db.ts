@@ -27,6 +27,11 @@ export type ReceiptRow = typeof businessReceipts.$inferSelect
 function appendAudit(entry: AuditEntry) {
   return sql`${businessReceipts.auditLog} || ${JSON.stringify([entry])}::jsonb`
 }
+/** Append ONE audit entry to a receipt's append-only trail without touching any other field (used by the
+ *  job/overhead allocation layer, so every link / reassignment is recorded on the purchase itself). */
+export async function appendReceiptAudit(id: string, entry: AuditEntry): Promise<void> {
+  await getDb().update(businessReceipts).set({ auditLog: appendAudit(entry) }).where(eq(businessReceipts.id, id))
+}
 
 // ── Create (on upload) ────────────────────────────────────────────────────────
 export interface CreateReceiptInput {
@@ -166,13 +171,22 @@ export interface DuplicateCandidate { id: string; vendor: string | null; receipt
  */
 export async function possibleDuplicateFor(id: string): Promise<DuplicateCandidate | null> {
   const r = await getReceipt(id)
-  if (!r || !r.vendor || !r.receiptDate || r.totalCents == null || r.totalCents <= 0) return null
+  if (!r) return null
+  // Evidence, any ONE of (equal totals alone are never enough):
+  //   - same vendor + same business date + same non-zero total
+  //   - same vendor + same invoice number            (migration 0078)
+  //   - same order number                            (migration 0078)
+  const evidence = []
+  if (r.vendor && r.receiptDate && r.totalCents != null && r.totalCents > 0) {
+    evidence.push(and(eq(businessReceipts.receiptDate, r.receiptDate), eq(businessReceipts.totalCents, r.totalCents), sql`lower(${businessReceipts.vendor}) = lower(${r.vendor})`))
+  }
+  if (r.vendor && r.invoiceNumber) evidence.push(and(sql`lower(${businessReceipts.invoiceNumber}) = lower(${r.invoiceNumber})`, sql`lower(${businessReceipts.vendor}) = lower(${r.vendor})`))
+  if (r.orderNumber) evidence.push(sql`lower(${businessReceipts.orderNumber}) = lower(${r.orderNumber})`)
+  if (evidence.length === 0) return null
   const conds = [
     ne(businessReceipts.id, r.id),
     ne(businessReceipts.status, 'rejected'),
-    eq(businessReceipts.receiptDate, r.receiptDate),
-    eq(businessReceipts.totalCents, r.totalCents),
-    sql`lower(${businessReceipts.vendor}) = lower(${r.vendor})`,
+    or(...evidence)!,
     r.uploadedByKey ? eq(businessReceipts.uploadedByKey, r.uploadedByKey) : isNull(businessReceipts.uploadedByKey),
   ]
   // Different capture_id — a retry of the SAME capture is not a duplicate purchase (already collapsed).
@@ -247,6 +261,7 @@ export async function queueCounts(): Promise<QueueCounts> {
 export interface ReviewFields {
   entity?: BusinessEntity; category?: ExpenseCategory; vendor?: string | null; receiptDate?: string | null
   subtotalCents?: number | null; taxCents?: number | null; totalCents?: number | null
+  shippingCents?: number | null; invoiceNumber?: string | null; orderNumber?: string | null; description?: string | null
   paymentMethod?: PaymentMethod | null; accountRef?: string | null; paymentLast4?: string | null
   memo?: string | null; inventoryVehicleId?: string | null
 }
@@ -260,6 +275,10 @@ function sanitizeReview(f: ReviewFields): Record<string, unknown> {
   if (f.subtotalCents !== undefined) set.subtotalCents = f.subtotalCents
   if (f.taxCents !== undefined) set.taxCents = f.taxCents
   if (f.totalCents !== undefined) set.totalCents = f.totalCents
+  if (f.shippingCents !== undefined) set.shippingCents = f.shippingCents
+  if (f.invoiceNumber !== undefined) set.invoiceNumber = f.invoiceNumber || null
+  if (f.orderNumber !== undefined) set.orderNumber = f.orderNumber || null
+  if (f.description !== undefined) set.description = f.description || null
   if (f.paymentMethod !== undefined) set.paymentMethod = f.paymentMethod && isPaymentMethod(f.paymentMethod) ? f.paymentMethod : null
   if (f.accountRef !== undefined) set.accountRef = f.accountRef || null
   if (f.paymentLast4 !== undefined) set.paymentLast4 = f.paymentLast4 || null
@@ -339,6 +358,10 @@ export interface FileReceiptInput {
   totalCents: number | null
   subtotalCents?: number | null       // optional (manager card supplies these; capture flow does not)
   taxCents?: number | null
+  shippingCents?: number | null       // a COMPONENT of the total (never added on top); undefined = unchanged
+  invoiceNumber?: string | null
+  orderNumber?: string | null
+  description?: string | null
   memo?: string | null                // undefined = leave unchanged
   filingNote?: string | null
   inventoryVehicleId?: string | null  // undefined = unchanged; '' handled by the caller → null
@@ -360,7 +383,7 @@ export interface FilingActor { name: string | null; key: string | null }
  * overwrite it. Filing is NOT approval: filed_by/at record the ACTUAL person; approved_by is untouched.
  * Idempotent: a double-submit that finds the row already 'filed' is a no-op success.
  */
-export async function fileReceipt(id: string, input: FileReceiptInput, actor: FilingActor, opts?: { duplicate?: boolean; acknowledge?: boolean }): Promise<FileReceiptResult> {
+export async function fileReceipt(id: string, input: FileReceiptInput, actor: FilingActor, opts?: { duplicate?: boolean; acknowledge?: boolean; questionableDate?: boolean }): Promise<FileReceiptResult> {
   const db = getDb()
   const before = await getReceipt(id)
   if (!before) return { ok: false, error: 'Receipt not found.' }
@@ -371,6 +394,7 @@ export async function fileReceipt(id: string, input: FileReceiptInput, actor: Fi
   const decision = decideFiling({
     entity: input.entity, category: input.category, funding: input.funding, paymentMethod: input.paymentMethod,
     vendor: input.vendor, receiptDate: input.receiptDate, totalCents: input.totalCents, duplicate: opts?.duplicate,
+    questionableDate: opts?.questionableDate,
   })
   // A manager may ACKNOWLEDGE an exception (leave the backlog) only when every remaining reason is a real-
   // world OUTSTANDING item (reimbursement / unpaid / mixed allocation) — never to hide missing info. This
@@ -391,6 +415,10 @@ export async function fileReceipt(id: string, input: FileReceiptInput, actor: Fi
   }
   if (input.subtotalCents !== undefined) set.subtotalCents = input.subtotalCents
   if (input.taxCents !== undefined) set.taxCents = input.taxCents
+  if (input.shippingCents !== undefined) set.shippingCents = input.shippingCents
+  if (input.invoiceNumber !== undefined) set.invoiceNumber = input.invoiceNumber || null
+  if (input.orderNumber !== undefined) set.orderNumber = input.orderNumber || null
+  if (input.description !== undefined) set.description = input.description || null
   if (input.memo !== undefined) set.memo = input.memo || null
   if (input.filingNote !== undefined) set.filingNote = input.filingNote || null
   if (input.accountRef !== undefined) set.accountRef = input.accountRef
@@ -511,6 +539,7 @@ export interface RetryExtractionUpdate {
   aiStatus: 'extracted' | 'failed'; aiModel: string | null; aiRaw: unknown; aiExtracted: unknown; confidence: unknown
   vendor?: string | null; receiptDate?: string | null; subtotalCents?: number | null; taxCents?: number | null
   totalCents?: number | null; category?: ExpenseCategory; paymentMethod?: string | null; paymentLast4?: string | null
+  shippingCents?: number | null; invoiceNumber?: string | null; orderNumber?: string | null; description?: string | null
 }
 /**
  * Apply a re-extraction result to a receipt WE HOLD THE PROCESSING LOCK ON. Guarded WHERE status =
@@ -539,6 +568,10 @@ export async function applyRetryExtraction(id: string, token: string, u: RetryEx
   if (before.category === 'uncategorized' && u.category && u.category !== 'uncategorized') set.category = u.category
   if (!before.paymentMethod && u.paymentMethod && isPaymentMethod(u.paymentMethod)) set.paymentMethod = u.paymentMethod
   if (!before.paymentLast4 && u.paymentLast4) set.paymentLast4 = u.paymentLast4
+  if (before.shippingCents == null && u.shippingCents != null) set.shippingCents = u.shippingCents
+  if (!before.invoiceNumber && u.invoiceNumber) set.invoiceNumber = u.invoiceNumber
+  if (!before.orderNumber && u.orderNumber) set.orderNumber = u.orderNumber
+  if (!before.description && u.description) set.description = u.description
   const done = await db.update(businessReceipts)
     .set({ ...set, auditLog: appendAudit(auditEntry('retried', actor, undefined, u.aiStatus)) })
     .where(and(eq(businessReceipts.id, id), eq(businessReceipts.status, 'processing'), eq(businessReceipts.processingToken, token)))

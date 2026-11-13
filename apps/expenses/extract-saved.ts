@@ -5,6 +5,8 @@ import { canFileReceipt, type Uploader } from '@/apps/expenses/authz'
 import { extractExpense } from '@/apps/expenses/ai'
 import { matchPaymentSource } from '@/apps/expenses/payment'
 import { errorCode } from '@/apps/expenses/errors'
+import { isImageType } from '@/apps/expenses/upload-validation'
+import { storedExtras } from '@/apps/expenses/view'
 import { logger } from '@/platform/logger'
 
 const APP = 'expenses:receipt:extract'
@@ -22,7 +24,7 @@ export async function extractSavedReceipt(id: string, uploader: Uploader, captur
   if (row.aiStatus === 'extracted') {
     const present = (row.confidence && typeof row.confidence === 'object' ? row.confidence : {}) as Record<string, boolean>
     const paymentChoice = matchPaymentSource({ method: row.paymentMethod, brand: null, cardLast4: row.paymentLast4 })
-    return NextResponse.json({ ok: true, aiStatus: 'extracted', proposal: { vendor: row.vendor, date: row.receiptDate, totalCents: row.totalCents, categoryKey: row.category, paymentChoice, present }, possibleDuplicate: await dupHint(id) })
+    return NextResponse.json({ ok: true, aiStatus: 'extracted', proposal: { vendor: row.vendor, date: row.receiptDate, totalCents: row.totalCents, categoryKey: row.category, paymentChoice, present, ...storedExtras(row) }, possibleDuplicate: await dupHint(id) })
   }
 
   // Bounded rate limits (per actor AND per receipt) so repeated triggers can't burn unbounded AI cost.
@@ -42,7 +44,9 @@ export async function extractSavedReceipt(id: string, uploader: Uploader, captur
     const blob = uploadedImage ?? await getPrivateBlob(claimed.storageRef!)
     if (!blob) { await releaseRetryClaim(id, token); return NextResponse.json({ ok: false, aiStatus: 'failed', error: 'Could not load the stored image.' }, { status: 502 }) }
     const { derivedForExtraction } = await import('@/apps/expenses/image-decode')
-    const derived = await derivedForExtraction(blob.bytes)
+    // Only a photo is downscaled for the model; a PDF / pasted text is read as stored.
+    const storedType = uploadedImage?.contentType ?? claimed.contentType ?? 'image/jpeg'
+    const derived = isImageType(storedType) ? await derivedForExtraction(blob.bytes) : { bytes: blob.bytes, contentType: storedType }
     const imageMs = Date.now() - imageStarted
     const aiStarted = Date.now()
     const ai = await extractExpense(derived.bytes.toString('base64'), derived.contentType)
@@ -52,6 +56,7 @@ export async function extractSavedReceipt(id: string, uploader: Uploader, captur
       aiStatus: ai.status, aiModel: ai.model, aiRaw: ai.raw, aiExtracted: e, confidence: e.present,
       vendor: e.vendor, receiptDate: e.date, subtotalCents: e.subtotalCents, taxCents: e.taxCents,
       totalCents: e.totalCents, category: e.categoryKey, paymentMethod: e.paymentMethod, paymentLast4: e.paymentLast4,
+      shippingCents: e.shippingCents, invoiceNumber: e.receiptNumber, orderNumber: e.orderNumber, description: e.description,
     }, uploader.name)
     if (!r.ok) return NextResponse.json({ ok: false, aiStatus: ai.status, error: r.error ?? 'This read is no longer current.', stale: r.stale }, { status: 409 })
     logger.info(APP, 'read', { aiStatus: ai.status, source: uploadedImage ? 'upload' : 'storage', imageMs, aiMs, totalMs: Date.now() - started })
@@ -61,7 +66,11 @@ export async function extractSavedReceipt(id: string, uploader: Uploader, captur
     // Only surface a possible duplicate once we actually have vendor/date/total to compare on.
     return NextResponse.json({
       ok: true, aiStatus: ai.status,
-      proposal: { vendor: e.vendor, date: e.date, totalCents: e.totalCents, categoryKey: e.categoryKey, paymentChoice, present: e.present },
+      proposal: {
+        vendor: e.vendor, date: e.date, totalCents: e.totalCents, categoryKey: e.categoryKey, paymentChoice, present: e.present,
+        subtotalCents: e.subtotalCents, taxCents: e.taxCents, shippingCents: e.shippingCents,
+        invoiceNumber: e.receiptNumber, orderNumber: e.orderNumber, description: e.description,
+      },
       possibleDuplicate: ai.status === 'extracted' ? await dupHint(id) : null,
     })
   } catch (err) {
