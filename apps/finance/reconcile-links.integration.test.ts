@@ -171,6 +171,16 @@ describe('one purchase counts once across every connected source', () => {
     expect(o.cashMovements.map((m) => m.txnClass).sort()).toEqual(['card_payment', 'debt_payment', 'owner_draw', 'payroll', 'transfer'])
     expect(o.cashMovements.reduce((s, m) => s + m.cents, 0)).toBe(577245)
   })
+  it('a payroll check and its QuickBooks entry are listed apart, never counted as a purchase', async () => {
+    await db.insert(base.checks).values({ checkNumber: 10392, bankKey: 'operating', bankQboAccountId: '31', payeeName: 'An Employee', payeeQboEntityType: 'Employee', amountCents: 100612, memo: 'Payroll', category: 'shop_general', expenseQboAccountId: '51', actorKey: 'torlan', actorName: 'Torlan', checkDate: '2026-11-13', qbStatus: 'recorded', qboTxnId: '24669', idempotencyKey: 'k3' } as never)
+    await qbPurchase('24669', 100612, '2026-11-13', 'An Employee', { paymentType: 'Check', docNumber: '10392', payeeType: 'Employee', privateNote: 'Payroll' })
+    await qbPurchase('24670', 52500, '2026-11-12', 'Another Employee', { paymentType: 'Check', payeeType: 'Employee' })   // entered directly in QuickBooks
+    await txn('SHELL OIL', 4411, '2026-11-12')
+    const o = await owner()
+    expect(o.ledger.countedOnceCents).toBe(4411)
+    expect(o.cashMovements.find((m) => m.txnClass === 'people_checks')).toMatchObject({ count: 2, cents: 153112 })
+    expect(o.suggestions.filter((s) => s.b.id.startsWith('Purchase:2466') || s.b.id === 'Purchase:24670')).toHaveLength(0)
+  })
   it('a job allocation is separate from expense recognition: it changes no purchase total', async () => {
     const [v] = await db.insert(base.vehicles).values({ year: '2026', make: 'Tesla', model: 'Model Y', vin: '5YJTESTVIN0000001' }).returning()
     const [o] = await db.insert(base.serviceOrders).values({ orderNumber: 'SO-20261113-0001', vehicleId: v.id, customerName: 'Pat Sample' }).returning()

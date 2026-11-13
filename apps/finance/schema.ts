@@ -352,6 +352,7 @@ export const finQbPurchases = pgTable('fin_qb_purchases', {
   paymentType:  varchar('payment_type', { length: 24 }),                // Check | CreditCard | Cash | (Bill: null)
   accountName:  varchar('account_name', { length: 200 }),               // the paying bank / card account
   payeeName:    varchar('payee_name', { length: 200 }),
+  payeeType:    varchar('payee_type', { length: 16 }),                  // Vendor | Employee | … (0080)
   docNumber:    varchar('doc_number', { length: 60 }),
   privateNote:  text('private_note'),
   lineSummary:  text('line_summary'),
