@@ -49,9 +49,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         'Content-Type': decision.contentType,
         'Content-Disposition': `${decision.disposition}; filename="receipt-${id}${decision.contentType === 'application/pdf' ? '.pdf' : decision.contentType.startsWith('text/plain') ? '.txt' : ''}"`,
         'X-Content-Type-Options': 'nosniff',
-        // `sandbox` stops the browser's built-in PDF viewer from loading, so a PDF gets the same lock-down
-        // minus that one directive (a PDF is not HTML; nosniff keeps it from being re-interpreted as such).
-        'Content-Security-Policy': decision.contentType === 'application/pdf' ? "default-src 'none'; object-src 'self'; style-src 'unsafe-inline'" : "default-src 'none'; sandbox",
+        // A PDF is rendered by the browser's built-in viewer, which a CSP `sandbox` (and, in some browsers, a
+        // `default-src 'none'`) blocks — so a PDF is served without a CSP. It is not HTML: the type is fixed to
+        // application/pdf from the stored, signature-validated bytes and `nosniff` stops any re-interpretation.
+        ...(decision.contentType === 'application/pdf' ? {} : { 'Content-Security-Policy': "default-src 'none'; sandbox" }),
         'Cache-Control': 'private, no-store',
       },
     })
