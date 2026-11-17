@@ -3,7 +3,7 @@
  * only writes are to fin_* tables (manual payroll / obligation / document metadata), each
  * audited in fin_events. Every money figure returned carries source + as-of + confidence.
  */
-import { and, desc, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { finAccounts, finBalanceSnapshots, finDebts, finPayroll, finObligations, finDocuments, finSyncRuns, finEvents, finPlaidItems, finPlaidAccounts } from './schema'
 import { money, isStale, type MoneyValue } from './sources'
@@ -204,13 +204,20 @@ async function upsertPlaidAccounts(itemRowId: string, balances: PlaidAccountBala
   }
 }
 
+/** Plaid Items the scheduled sync works on: healthy ones and ones that failed last time (retried). */
+export const RETRYABLE_ITEM_STATUSES = ['active', 'error'] as const
+
 /** Re-pull read-only balances for every connected Item; refresh discovered accounts and write a
  *  fresh LIVE snapshot for any account whose mapping the admin has verified. */
-export async function refreshPlaidBalances(actor: string | null): Promise<{ items: number; accounts: number }> {
+export async function refreshPlaidBalances(actor: string | null): Promise<{ items: number; accounts: number; errors: string[] }> {
   const db = getDb()
   const { decrypt } = await import('@/apps/quickbooks/crypto')
-  const items = await db.select().from(finPlaidItems).where(eq(finPlaidItems.status, 'active'))
+  // An Item that failed last time is RETRIED on every run. Selecting only 'active' here meant one transient
+  // bank outage ("institution not responding") disconnected that bank for good, with its last balance still
+  // shown. Only a deliberately 'disconnected' Item is skipped.
+  const items = await db.select().from(finPlaidItems).where(inArray(finPlaidItems.status, [...RETRYABLE_ITEM_STATUSES]))
   let accts = 0
+  const errors: string[] = []
   for (const it of items) {
     try {
       const balances = await getAccountBalances(decrypt(it.accessTokenEnc))
@@ -227,11 +234,13 @@ export async function refreshPlaidBalances(actor: string | null): Promise<{ item
       }
       await db.update(finPlaidItems).set({ status: 'active', lastError: null, updatedAt: new Date() }).where(eq(finPlaidItems.id, it.id))
     } catch (e) {
-      await db.update(finPlaidItems).set({ status: 'error', lastError: (e instanceof Error ? e.message : String(e)).slice(0, 400), updatedAt: new Date() }).where(eq(finPlaidItems.id, it.id))
+      const msg = (e instanceof Error ? e.message : String(e)).slice(0, 400)
+      errors.push(`${it.institutionName ?? 'Bank'}: ${msg}`)
+      await db.update(finPlaidItems).set({ status: 'error', lastError: msg, updatedAt: new Date() }).where(eq(finPlaidItems.id, it.id))
     }
   }
-  await db.insert(finEvents).values({ actor, action: 'plaid_refresh', entity: 'fin_plaid_items', source: 'plaid', after: { items: items.length, accounts: accts } as any })
-  return { items: items.length, accounts: accts }
+  await db.insert(finEvents).values({ actor, action: 'plaid_refresh', entity: 'fin_plaid_items', source: 'plaid', after: { items: items.length, accounts: accts, errors } as any })
+  return { items: items.length, accounts: accts, errors }
 }
 
 export async function getPlaidConnections() {

@@ -201,6 +201,28 @@ export async function weeklyProduction(anchor: string, tz: string = shopTimezone
   return { weekStartMon: mon, weekEndSat: sat, tz, days, weekTotalCents: weekTotal, byKind, count: jobs.length, jobs }
 }
 
+export interface ProductionSummary {
+  from: string; to: string; count: number
+  pricedCount: number; unpricedCount: number          // an unpriced Job has no value yet — it is never treated as $0
+  valueCents: number                                   // Σ canonical work value of the PRICED Jobs (pre-fee / pre-tax)
+  byKind: Record<ProductionKind, { count: number; pricedCount: number; valueCents: number }>
+}
+/** PURE: roll a set of production Jobs up into counts + work value. Averages must divide by `pricedCount`. */
+export function summarizeProduction(jobs: Pick<ProductionJob, 'source' | 'priceCents'>[], from: string, to: string): ProductionSummary {
+  const kind = () => ({ count: 0, pricedCount: 0, valueCents: 0 })
+  const out: ProductionSummary = { from, to, count: jobs.length, pricedCount: 0, unpricedCount: 0, valueCents: 0, byKind: { retail: kind(), dealer: kind(), unknown: kind() } }
+  for (const j of jobs) {
+    const k = out.byKind[j.source]; k.count++
+    if (j.priceCents != null && j.priceCents > 0) { out.pricedCount++; out.valueCents += j.priceCents; k.pricedCount++; k.valueCents += j.priceCents }
+    else out.unpricedCount++
+  }
+  return out
+}
+/** Production for any shop-calendar range (inclusive) — the SAME rows the daily and weekly views read. */
+export async function productionSummary(from: string, to: string, tz: string = shopTimezone()): Promise<ProductionSummary> {
+  return summarizeProduction(await productionRows(from, to, tz), from, to)
+}
+
 /** Current 'YYYY-MM-DD' in the shop timezone. */
 export function shopToday(tz: string = shopTimezone()): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date())

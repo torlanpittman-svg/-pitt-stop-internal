@@ -4,7 +4,7 @@
  * owner Confirms / Edits / Ignores. Re-runs update a stream in place (discovery_key) and never
  * override an owner's confirmed/ignored decision. No QuickBooks writes; no money movement.
  */
-import { and, eq, desc } from 'drizzle-orm'
+import { and, eq, desc, isNull } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { finAccounts, finTransactions, finObligations, finEvents } from './schema'
 
@@ -17,6 +17,38 @@ const cadence = (medGapDays: number): { freq: string; periodDays: number } => {
   if (medGapDays <= 45) return { freq: 'monthly', periodDays: 30 }
   if (medGapDays <= 100) return { freq: 'quarterly', periodDays: 91 }
   return { freq: 'irregular', periodDays: Math.round(medGapDays) }
+}
+
+/** PURE: which fields a discovery re-run may overwrite. Only a still-'proposed' row is rewritten whole. */
+export function discoveryUpdate<C extends object, O extends object>(status: string, full: C, observedOnly: O): C | O {
+  return status === 'proposed' ? full : observedOnly
+}
+
+/** PURE: of several unkeyed copies of one stream, keep the one carrying an owner decision (so an "ignore"
+ *  sticks and is not re-proposed); otherwise the newest (input is newest-first). */
+export function pickRowToAdopt<T extends { status: string }>(rows: T[]): T | undefined {
+  const rank = (s: string) => (s === 'confirmed' ? 0 : s === 'paused' ? 1 : s === 'ignored' ? 2 : 3)
+  return rows.slice().sort((a, b) => rank(a.status) - rank(b.status))[0]
+}
+
+/**
+ * PURE: the proposals worth showing. Collapses the duplicate copies an earlier bug wrote (same vendor, amount
+ * and frequency → newest kept) and drops a proposal whose vendor the owner already confirmed, paused or ignored.
+ * Read-only: nothing is deleted. `hidden` is how many rows were folded away.
+ */
+export function visibleProposals<T extends { status: string; vendor: string; amountCents: number | null; frequency: string | null; asOf: Date | null }>(all: T[]): { proposed: T[]; hidden: number } {
+  const key = (v: string) => v.trim().toLowerCase()
+  const decided = new Set(all.filter((o) => o.status !== 'proposed').map((o) => key(o.vendor)))
+  const raw = all.filter((o) => o.status === 'proposed')
+  const best = new Map<string, T>()
+  for (const o of raw) {
+    if (decided.has(key(o.vendor))) continue
+    const k = `${key(o.vendor)}|${o.amountCents ?? ''}|${o.frequency ?? ''}`
+    const cur = best.get(k)
+    if (!cur || (o.asOf?.getTime() ?? 0) > (cur.asOf?.getTime() ?? 0)) best.set(k, o)
+  }
+  const proposed = [...best.values()]
+  return { proposed, hidden: raw.length - proposed.length }
 }
 
 export interface DiscoveryResult { proposed: number; updated: number; streams: number }
@@ -71,15 +103,26 @@ export async function discoverObligations(actor: string | null): Promise<Discove
     const discoveryKey = `op:${key}`.slice(0, 140)
     const evidence = { key, occurrences: ts.length, medianGapDays: medGap, freq, avg, amountMin, amountMax, modalDow, lastSeen, classes: [...classes], sample: sorted.slice(-3).map((t) => ({ date: t.txnDate, amt: t.amountCents, name: (t.merchantName || t.name || '').slice(0, 40) })) }
 
-    const [existing] = await db.select().from(finObligations).where(eq(finObligations.discoveryKey, discoveryKey)).limit(1)
+    // One row per stream. The key was never written on insert, so every run failed to find yesterday's row and
+    // inserted another copy (≈95 copies of each vendor by 2026-11). Rows created before the fix have no key, so
+    // an unkeyed discovery row for the same vendor is adopted instead of duplicated again.
+    let existing: typeof finObligations.$inferSelect | undefined = (await db.select().from(finObligations).where(eq(finObligations.discoveryKey, discoveryKey)).limit(1))[0]
+    if (!existing) {
+      const unkeyed = await db.select().from(finObligations)
+        .where(and(isNull(finObligations.discoveryKey), eq(finObligations.source, 'discovery'), eq(finObligations.vendor, String(vendor).slice(0, 200))))
+        .orderBy(desc(finObligations.asOf))
+      existing = pickRowToAdopt(unkeyed)
+    }
+    const observed = { avgAmountCents: avg, amountMinCents: amountMin, amountMaxCents: amountMax, occurrences: ts.length, lastSeen, evidence: evidence as any, asOf: new Date(), discoveryKey }
     const common = {
-      vendor: String(vendor).slice(0, 200), category, amountCents: avg, amountMinCents: amountMin, amountMaxCents: amountMax,
-      frequency: freq, nextDue, essential: critical, avgAmountCents: avg, occurrences: ts.length, lastSeen, dayOfWeek: modalDow, critical, priority,
-      evidence: evidence as any, source: 'discovery', confidence: 'estimated', asOf: new Date(),
+      ...observed, vendor: String(vendor).slice(0, 200), category, amountCents: avg,
+      frequency: freq, nextDue, essential: critical, dayOfWeek: modalDow, critical, priority,
+      source: 'discovery', confidence: 'estimated',
     }
     if (existing) {
-      // Preserve the owner's decision (confirmed/paused/ignored); only refresh evidence/figures.
-      await db.update(finObligations).set(common).where(eq(finObligations.id, existing.id))
+      // A decision the owner made (confirmed / paused / ignored) keeps ITS amount, schedule, category and
+      // priority; only what the bank shows (evidence, average, last seen) is refreshed. A proposal is refreshed whole.
+      await db.update(finObligations).set(discoveryUpdate(existing.status, common, observed)).where(eq(finObligations.id, existing.id))
       updated++
     } else {
       await db.insert(finObligations).values({ ...common, status: 'proposed', enteredBy: 'discovery' })
@@ -98,9 +141,10 @@ export async function setObligationStatus(id: string, status: 'confirmed' | 'pau
 
 export async function getObligationsByStatus() {
   const all = await getDb().select().from(finObligations).orderBy(desc(finObligations.critical), desc(finObligations.avgAmountCents))
+  const { proposed, hidden } = visibleProposals(all)
   return {
     confirmed: all.filter((o) => o.status === 'confirmed'),
-    proposed: all.filter((o) => o.status === 'proposed'),
+    proposed, hiddenDuplicateProposals: hidden,
     ignored: all.filter((o) => o.status === 'ignored' || o.status === 'paused'),
   }
 }

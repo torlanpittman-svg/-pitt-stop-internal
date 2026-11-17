@@ -10,7 +10,7 @@
  * Safe-to-Spend uses the bank's own available balance, so these labels feed analysis / recurring
  * discovery / payroll inference, not the cash figure itself.
  */
-import { and, desc, eq, gte, sql } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { decrypt } from '@/apps/quickbooks/crypto'
 import { finPlaidItems, finPlaidAccounts, finTransactions, finEvents } from './schema'
@@ -112,7 +112,8 @@ export interface IngestResult { items: number; accountsCovered: number; added: n
  *  status is 'active' are ingested — ignored/closed accounts (e.g. AMB ····0169/····4183) are skipped. */
 export async function ingestTransactions(actor: string | null): Promise<IngestResult> {
   const db = getDb()
-  const items = await db.select().from(finPlaidItems).where(eq(finPlaidItems.status, 'active'))
+  // Includes Items that failed last time — they are retried, never silently dropped (see refreshPlaidBalances).
+  const items = await db.select().from(finPlaidItems).where(inArray(finPlaidItems.status, ['active', 'error']))
   const res: IngestResult = { items: items.length, accountsCovered: 0, added: 0, modified: 0, removed: 0, skippedIgnored: 0, errors: [] }
 
   for (const it of items) {

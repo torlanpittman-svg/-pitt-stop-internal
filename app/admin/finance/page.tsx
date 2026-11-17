@@ -17,7 +17,7 @@ import { computeSafeToSpend, forecastWithInflows, getObligationCalendar } from '
 import { getExpectedInflows, getPipelineContext, addManualInflow, dismissInflow, deriveExpectedInflows } from '@/apps/finance/expected-inflows'
 import { getInflowForecast } from '@/apps/finance/inflow-forecast'
 import { getArSnapshot } from '@/apps/finance/ar'
-import { getCfoHeadline, getNextDanger, getRecommendations, getReserveStatus, getDebtSummary, getCashRunway, getMoneyFlow, getCfoConfidence, getNeedsVerification, type Health } from '@/apps/finance/cfo'
+import { getCfoHeadline, getNextDanger, getReserveStatus, getDebtSummary, getCashRunway, getMoneyFlow, getNeedsVerification, type Health } from '@/apps/finance/cfo'
 import { getConfidenceScorecard, type Tier } from '@/apps/finance/confidence'
 import { getReservePolicy } from '@/apps/settings/db'
 import { getSyncHealth, type FreshnessStatus } from '@/apps/finance/sync-health'
@@ -25,6 +25,9 @@ import { freshnessLabel } from '@/apps/finance/sources'
 import { getReceiptCoverage, getReceiptReconciliation, confirmReceiptMatch, dismissReceiptMatch, clearReceiptMatch } from '@/apps/finance/receipts-cfo'
 import { BUSINESS_ENTITIES, EXPENSE_CATEGORIES } from '@/apps/expenses/types'
 import PlaidLinkButton from './PlaidLinkButton'
+import OpenOnHash from './OpenOnHash'
+import { getDashboard, buildAttention } from '@/apps/finance/dashboard'
+import { currentReportMonth } from '@/apps/auto-sales/report-db'
 
 export const dynamic = 'force-dynamic'
 
@@ -71,6 +74,19 @@ async function confirmMatchAction(fd: FormData) { 'use server'; const receiptId 
 async function dismissMatchAction(fd: FormData) { 'use server'; const receiptId = String(fd.get('receiptId') ?? ''); if (receiptId) await dismissReceiptMatch(receiptId, 'admin'); revalidatePath('/admin/finance') }
 async function clearMatchAction(fd: FormData) { 'use server'; const receiptId = String(fd.get('receiptId') ?? ''); if (receiptId) await clearReceiptMatch(receiptId, 'admin'); revalidatePath('/admin/finance') }
 async function documentAction(fd: FormData) { 'use server'; const type = String(fd.get('type') ?? '').trim(); const filename = String(fd.get('filename') ?? '').trim(); if (type && filename) { await addDocumentMeta({ type, blobUrl: 'pending-secure-storage-phase2', filename, periodEnd: /^\d{4}-\d{2}-\d{2}$/.test(String(fd.get('asOf') ?? '')) ? String(fd.get('asOf')) : undefined, asOf: /^\d{4}-\d{2}-\d{2}$/.test(String(fd.get('asOf') ?? '')) ? String(fd.get('asOf')) : undefined, notes: String(fd.get('notes') ?? '') || undefined }, 'admin') } revalidatePath('/admin/finance') }
+
+const day = (d: string | null | undefined) => (d && /^\d{4}-\d{2}-\d{2}/.test(d) ? new Date(d.slice(0, 10) + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : '—')
+const monthName = (m: string) => new Date(m + '-15T12:00:00Z').toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' })
+const TAG: Record<string, string> = { bank: 'border-emerald-900/60 text-emerald-300', scheduled: 'border-gray-700 text-gray-400', rule: 'border-gray-700 text-gray-400', 'our records': 'border-gray-700 text-gray-400', estimate: 'border-amber-900/60 text-amber-300' }
+/** One line of a calculation: what it is, where it comes from (the tag), and the amount. */
+function Row({ label, hint, tag, value, tone }: { label: string; hint?: string; tag: string; value: string; tone?: 'in' | 'out' }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="text-gray-300">{label} <span className={`text-[10px] px-1.5 py-0.5 rounded-full border whitespace-nowrap ${TAG[tag] ?? TAG.rule}`}>{tag}</span>{hint && <span className="block text-gray-600 text-[11px]">{hint}</span>}</span>
+      <span className={`tabular-nums whitespace-nowrap shrink-0 ${tone === 'in' ? 'text-emerald-300' : tone === 'out' ? 'text-red-300' : 'text-white'}`}>{value}</span>
+    </div>
+  )
+}
 
 const input = 'bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white'
 const card = 'rounded-2xl bg-gray-900 border border-gray-800 p-5'
@@ -186,8 +202,8 @@ function BillCalendar({ events, days = 30 }: { events: CalEvt[]; days?: number }
 }
 
 export default async function FinancePage() {
-  const [enabled, headline, reserve, danger, recs, debt, runway, flow, scorecard, needsVerify, s2s, forecast, calendar, expectedInflows, pipeline, operating, autoSales, reserves] = await Promise.all([
-    financeEnabled(), getCfoHeadline(), getReserveStatus(), getNextDanger(), getRecommendations(), getDebtSummary(), getCashRunway(30), getMoneyFlow(), getConfidenceScorecard(), getNeedsVerification(),
+  const [enabled, headline, reserve, danger, debt, runway, flow, scorecard, needsVerify, s2s, forecast, calendar, expectedInflows, pipeline, operating, autoSales, reserves] = await Promise.all([
+    financeEnabled(), getCfoHeadline(), getReserveStatus(), getNextDanger(), getDebtSummary(), getCashRunway(30), getMoneyFlow(), getConfidenceScorecard(), getNeedsVerification(),
     computeSafeToSpend(30), forecastWithInflows(30), getObligationCalendar(30), getExpectedInflows(30), getPipelineContext(), getOperatingCash(), getAutoSalesLiquidity(), getReservePolicy(),
   ])
   // Runway lows at 7/14/30-day horizons — the REAL operational liquidity read (lowest projected
@@ -204,7 +220,20 @@ export default async function FinancePage() {
   const [accounts, allAccounts, debtsRaw, payroll, documents, run, gaps, connections, recentTx, txSummary, oblByStatus, syncHealth] = await Promise.all([
     getAccounts(), getAccounts({ includeInactive: true }), getDebts(), getLatestPayroll(), getDocuments(), getLatestSyncRun(), getDataGaps(), getPlaidConnections(), getRecentTransactions(30), getClassificationSummary(120), getObligationsByStatus(), getSyncHealth(),
   ])
-  const plaid = plaidDiagnostics()
+  // The five-question summary. If it cannot be built the page says so — it never falls back to zeros.
+  const dash = await getDashboard({ s2s, health: syncHealth, month: currentReportMonth() }).catch(() => null)
+  const attention = dash ? buildAttention({
+    health: syncHealth, verdict: dash.verdict, projectedLowCents: runway.lowCents == null ? null : runway.lowCents - dash.outstanding.totalCents, projectedLowDate: runway.lowDate, quiet: dash.quiet, outstanding: dash.outstanding,
+    thisMonth: dash.profit.thisMonth, lastMonth: dash.profit.lastMonth, quickBooksCardThrough: dash.profit.quickBooksThrough.cardAndAch, today: dash.today,
+    receiptsNeedingReview: receiptCoverage?.needsReviewCount ?? 0,
+  }) : []
+  const free = Math.max(0, dash?.safeAfterChecksCents ?? 0)
+  const committed30 = s2s.criticalCents + s2s.contractualCents + s2s.reservesCents
+  const lowAfterChecks = runway.lowCents == null ? null : runway.lowCents - (dash?.outstanding.totalCents ?? 0)
+  const dips = (lowAfterChecks ?? 0) < 0
+  const perCarLeft = dash?.perCar?.avgValueCents != null && dash.perCar.directCostPerCarCents != null ? dash.perCar.avgValueCents - dash.perCar.directCostPerCarCents : null
+  const qbBehind = !!dash && (!dash.profit.quickBooksThrough.cardAndAch || (Date.parse(dash.today) - Date.parse(dash.profit.quickBooksThrough.cardAndAch)) / 86400_000 > 21)
+  const autoSource = syncHealth.sources.find((x) => /5600/.test(x.label))
   const s = (run?.summary ?? {}) as any
   const cash = accounts.filter((a) => a.kind === 'bank' && !a.clearingSuspect)
   const cards = accounts.filter((a) => a.kind === 'credit_card')
@@ -220,17 +249,14 @@ export default async function FinancePage() {
 
   return (
     <main className="min-h-screen bg-gray-950 text-gray-200 px-8 py-8 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between mb-1">
+      <OpenOnHash />
+      <div className="flex items-center justify-between mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">Operating CFO <span className="text-gray-500 font-semibold text-lg">· American Momentum *2649</span></h1>
-          <p className="text-gray-600 text-xs mt-0.5">This dashboard answers ONE question: how much can I safely spend from *2649? Auto-sales *5600 is shown separately and never added to operating cash.</p>
+          <h1 className="text-2xl font-bold text-white">Where the business stands</h1>
+          <p className="text-gray-600 text-xs mt-0.5">Five questions, answered from the bank, QuickBooks and the shop’s own records. Owner-only · read-only — nothing here moves money or changes QuickBooks{!enabled && ' · finance_enabled OFF (preview)'}.</p>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-gray-600 text-xs">*2649 {operating ? freshnessLabel(operating.asOf) : 'not connected'}</span>
-          <form action={refreshPlaidAction}><button className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300">Refresh cash</button></form>
-        </div>
+        <form action={refreshPlaidAction}><button className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300">Refresh cash</button></form>
       </div>
-      <p className="text-gray-600 text-xs mb-5">Live *2649 bank cash (Plaid, read-only) · CFO decision view · admin-only · no money movement{!enabled && ' · finance_enabled OFF (preview)'}</p>
 
       {/* ═══ Data freshness — a stale bank balance must never look current ═══ */}
       {(() => {
@@ -240,7 +266,8 @@ export default async function FinancePage() {
           failed:  { ring: 'border-red-800/70',     bg: 'bg-red-950/30',     dot: 'bg-red-400',     label: 'SYNC FAILED' },
           unknown: { ring: 'border-gray-700',       bg: 'bg-gray-900',       dot: 'bg-gray-500',    label: 'NO SYNC' },
         }
-        const f = FRESH[syncHealth.status]
+        const partlyStale = syncHealth.status === 'stale' && syncHealth.sources.some((x) => x.operating && x.state === 'ok')
+        const f = partlyStale ? { ...FRESH.stale, label: 'PARTLY OUT OF DATE' } : FRESH[syncHealth.status]
         return (
           <section className={`rounded-xl border ${f.ring} ${f.bg} px-4 py-2.5 mb-4 flex items-center justify-between gap-4`}>
             <div className="flex items-center gap-2.5">
@@ -253,67 +280,152 @@ export default async function FinancePage() {
         )
       })()}
 
-      {/* ═══ A. CFO ANSWER ═══ */}
-      <section className={`rounded-2xl border ${hl.ring} ${hl.bg} p-6 mb-4`}>
-        <div className="flex items-start justify-between gap-6">
-          <div>
-            <p className={kicker}>Today</p>
-            <div className="flex items-baseline gap-3 mt-1">
-              <span className={`text-3xl font-black tracking-tight ${hl.c}`}>{hl.word}</span>
-              <span className="text-gray-500 text-sm">financial status</span>
-            </div>
-            <p className="text-gray-200 text-[15px] leading-relaxed mt-3 max-w-3xl">{headline.statement}</p>
+      {/* ═══ THE FIVE QUESTIONS ═══ */}
+      {!dash ? (
+        <section className="rounded-2xl border border-red-800/60 bg-red-950/30 p-5 mb-4">
+          <p className="text-red-200 font-semibold">The summary could not be built from the data just now.</p>
+          <p className="text-gray-400 text-sm mt-1">Nothing is shown rather than showing zeros. The detail sections below still work; reload the page, and if this stays, run “Sync now”.</p>
+        </section>
+      ) : (<>
+        {/* 1 ─ Can we cover upcoming bills? */}
+        <section className={`rounded-2xl border ${hl.ring} ${hl.bg} p-6 mb-4`}>
+          <div className="flex items-baseline justify-between gap-4 flex-wrap">
+            <h2 className="text-white font-bold text-lg">Can we cover upcoming bills?</h2>
+            <span className="text-gray-500 text-xs">Operating account *2649 · balance read {operating ? freshnessLabel(operating.asOf) : 'never'}</span>
           </div>
-          <div className="grid grid-cols-2 gap-x-8 gap-y-3 shrink-0">
-            <div><p className={kicker}>*2649 verified cash now</p><p className="text-xl font-bold text-white tabular-nums">{big(headline.operatingAvailableCents)}</p></div>
-            <div>
-              <p className={kicker}>Safe-to-Spend today</p>
-              <p className={`text-xl font-bold tabular-nums ${(headline.safeToSpendTodayCents ?? 0) > 0 ? 'text-white' : 'text-gray-400'}`}>{big(headline.safeToSpendTodayCents)}</p>
-              {headline.liquidityShortfallCents > 0 && <p className="text-[11px] text-gray-500">today&apos;s cash is {big(headline.liquidityShortfallCents)} under 30-day committed obligations + the {big(headline.payrollFloorCents)} payroll floor</p>}
+          {!dash.verdict.showNumber ? (
+            <div className="mt-3">
+              <p className="text-2xl font-black text-amber-300">Can’t say right now</p>
+              {dash.verdict.blockers.map((b, i) => <p key={i} className="text-gray-300 text-sm mt-1">{b}</p>)}
+              <p className="text-gray-500 text-xs mt-2">Last balance read: {big(s2s.availableCents)} — shown for reference only, not as a spending figure.</p>
             </div>
-            <div>
-              <p className={kicker}>Projected low (30d) · realistic path</p>
-              <p className={`text-xl font-bold tabular-nums ${runway.overdraft ? 'text-red-400' : 'text-amber-300'}`}>{big(runway.lowCents)} <span className="text-gray-500 text-xs font-normal">on {runway.lowDate}</span></p>
-              {liquidityCushionNeeded > 0 && <p className="text-[11px] text-red-400">cushion needed to stay ≥ $0: {big(liquidityCushionNeeded)}</p>}
-            </div>
-            <div><p className={kicker}>Next 7 days (*2649)</p><p className="text-sm text-gray-300 tabular-nums mt-1"><span className="text-emerald-300">+{big(headline.next7InCents)}</span> in · <span className="text-red-300">−{big(headline.next7OutCents)}</span> out</p><p className="text-xs text-gray-500">projected ≈ <b className={`${(headline.next7ProjectedEndingCents ?? 0) < 0 ? 'text-red-400' : 'text-gray-300'}`}>{big(headline.next7ProjectedEndingCents)}</b></p></div>
-          </div>
-        </div>
-      </section>
-
-      {/* ═══ B. SAFE-TO-SPEND HERO ═══ */}
-      <section className={`${card} mb-4`}>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div>
-            <p className={kicker}>How much can I actually spend from *2649? · verified cash only</p>
-            <div className="mt-3 space-y-1.5 text-sm">
-              <div className="flex justify-between"><span className="text-gray-300">Verified cash now <span className="text-gray-600">(*2649 live, nets pending)</span></span><span className="tabular-nums text-white">{money(s2s.availableCents)}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">− Committed over next 30 days <span className="text-gray-600">(*2649 payroll, tax, rent, debt)</span></span><span className="tabular-nums text-red-300">−{money((s2s.criticalCents) + (s2s.contractualCents) + (s2s.reservesCents))}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">− Protected payroll floor <span className="text-gray-600">(1 normal week — always keep, NOT a bill)</span></span><span className="tabular-nums text-sky-300">−{money(s2s.payrollFloorCents)}</span></div>
-              <div className="flex justify-between border-t border-gray-700 pt-2 mt-1"><span className="text-white font-bold text-base">Safe-to-Spend today</span><span className={`tabular-nums font-black text-2xl ${(headline.safeToSpendTodayCents ?? 0) > 0 ? 'text-white' : 'text-gray-400'}`}>{big(headline.safeToSpendTodayCents)}</span></div>
-              {headline.liquidityShortfallCents > 0 && <div className="flex justify-between"><span className="text-amber-300/90 text-xs">30-day obligations not covered by today&apos;s cash <span className="text-gray-600">(a horizon gap — NOT an immediate hole; expected receipts fill it)</span></span><span className="tabular-nums text-amber-300 font-bold">{big(headline.liquidityShortfallCents)}</span></div>}
-              {liquidityCushionNeeded > 0 && <div className="flex justify-between"><span className="text-red-300 text-xs">Projected liquidity gap <span className="text-gray-600">(lowest the realistic path dips below $0 · {runway.lowDate})</span></span><span className="tabular-nums text-red-400 font-bold">−{big(liquidityCushionNeeded)}</span></div>}
-            </div>
-            <div className="mt-4 space-y-1.5 text-sm border-t border-gray-800 pt-3">
-              <div className="flex justify-between"><span className="text-gray-400">+ Expected money coming in <span className="text-gray-600">(high-confidence)</span></span><span className="tabular-nums text-emerald-300">+{money(forecast.expectedHighCents)}</span></div>
-              <div className="flex justify-between"><span className="text-emerald-200 font-semibold">Forecast cash available</span><span className={`tabular-nums font-bold text-lg ${(headline.forecastSafeToSpendCents ?? 0) < 0 ? 'text-amber-400' : 'text-emerald-300'}`}>{big(headline.forecastSafeToSpendCents)}</span></div>
-            </div>
-          </div>
-          <div className="lg:border-l lg:border-gray-800 lg:pl-6">
-            <p className={kicker}>Money I have vs money I expect</p>
-            {(s2s.coreSafeToSpendCents ?? 0) < 0 && (headline.forecastSafeToSpendCents ?? 0) >= 0 ? (
-              <div className="mt-3 rounded-xl border border-amber-900/50 bg-amber-950/15 p-3">
-                <p className="text-amber-200 text-sm font-semibold">Strict today: {big(s2s.coreSafeToSpendCents)} · Forecast: +{big(headline.forecastSafeToSpendCents)}</p>
-                <p className="text-gray-400 text-xs mt-1.5">Current verified cash alone does not cover this month's committed obligations, but normal Sterling/dealer payments and card settlements are expected to arrive before the tightest point. That's why the honest "money I have" number is negative while "money I expect to have" is positive.</p>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 mt-3">
+              <div className="lg:col-span-2">
+                <p className={`text-2xl font-black ${free > 0 ? 'text-emerald-300' : dips ? 'text-red-300' : 'text-amber-300'}`}>
+                  {free > 0 ? `Yes — ${big(free)} is free to spend` : dips ? 'Not without action' : 'Yes, if deposits arrive as usual'}
+                </p>
+                <p className="text-gray-300 text-sm mt-2 leading-relaxed">
+                  {free > 0
+                    ? 'That is what is left after every confirmed bill for the next 30 days, one week of payroll kept back, and checks not yet cashed.'
+                    : dips
+                      ? `Even counting the deposits we normally receive, the balance is projected to dip to ${big(lowAfterChecks)} on ${day(runway.lowDate)}. Hold spending and look at which bills land that week.`
+                      : `Nothing is free to spend today: the next 30 days of bills are ${big(-(dash.safeAfterChecksCents ?? 0))} more than the cash on hand, so they depend on deposits coming in. The lowest projected balance is ${big(lowAfterChecks)} on ${day(runway.lowDate)}.`}
+                </p>
+                <p className="text-xs mt-3"><a href="#cash-detail" className="text-indigo-300 underline">Bill-by-bill detail and the 30-day chart ↓</a></p>
               </div>
-            ) : (
-              <p className="text-gray-400 text-sm mt-3">Strict = only cash you can see in the bank, minus what's committed. Forecast layers in expected receipts by confidence. They are never combined into one number — {(s2s.coreSafeToSpendCents ?? 0) >= 0 ? 'both are positive here.' : 'watch the gap between them.'}</p>
-            )}
-            {s2s.disclosures.slice(0, 2).map((d, i) => <p key={i} className="text-gray-600 text-[11px] mt-2">⚠ {d}</p>)}
-          </div>
-        </div>
-      </section>
+              <div className="lg:col-span-3 text-sm space-y-1.5">
+                <Row label="Cash in the operating account now" tag="bank" value={money(s2s.availableCents)} />
+                <Row label="− Bills due in the next 30 days" hint="confirmed payroll, taxes, loans, rent, utilities" tag="scheduled" value={`−${money(committed30)}`} tone="out" />
+                <Row label="− One week of payroll, always kept back" tag="rule" value={`−${money(s2s.payrollFloorCents)}`} tone="out" />
+                {dash.outstanding.totalCents > 0 && <Row label={`− Checks written, not cashed yet (${dash.outstanding.checks.filter((c) => c.ageDays <= 60).length})`} hint="already spent — the bank just hasn’t taken it" tag="our records" value={`−${money(dash.outstanding.totalCents)}`} tone="out" />}
+                <div className="flex justify-between border-t border-gray-700 pt-2">
+                  <span className="text-white font-bold">= Free to spend today</span>
+                  <span className={`tabular-nums font-black text-xl ${free > 0 ? 'text-white' : 'text-gray-400'}`}>{big(free)}{free === 0 && (dash.safeAfterChecksCents ?? 0) < 0 && <span className="text-amber-300 text-xs font-semibold"> · short by {big(-(dash.safeAfterChecksCents ?? 0))}</span>}</span>
+                </div>
+                <Row label="+ Deposits we normally receive in 30 days" hint="based on past deposits — not money owed to us" tag="estimate" value={`+${money(forecast.expectedHighCents)}`} tone="in" />
+                <Row label="Lowest projected balance" hint={`on ${day(runway.lowDate)}`} tag="estimate" value={big(lowAfterChecks)} tone={(lowAfterChecks ?? 0) < 0 ? 'out' : undefined} />
+                {dash.verdict.cautions.map((c, i) => <p key={i} className="text-amber-300/80 text-[11px]">⚠ {c}</p>)}
+                <p className="text-gray-600 text-[11px]">A debit-card purchase is already out of the bank balance, so receipts are never subtracted again here. Planned owner draws ({money(s2s.plannedCents)} in 30 days) are not subtracted — they can be deferred.</p>
+              </div>
+            </div>
+          )}
+        </section>
 
+        <section className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+          {/* 2 ─ Are we making money? */}
+          <div className={card}>
+            <h2 className="text-white font-bold text-lg">Are we making money?</h2>
+            <p className="text-gray-500 text-xs mb-3">Profit is not cash. QuickBooks is the record; the middle line is spending it has not caught up on.</p>
+            <div className="grid grid-cols-2 gap-4">
+              {[{ title: `${monthName(dash.profit.thisMonth.month)} so far`, p: dash.profit.thisMonth }, { title: monthName(dash.profit.lastMonth.month), p: dash.profit.lastMonth }].map(({ title, p }) => (
+                <div key={p.month}>
+                  <p className={kicker}>{title}</p>
+                  {p.qbNetCents == null ? (
+                    <p className="text-amber-300 text-sm mt-1">QuickBooks has no report for this month yet — profit can’t be shown.</p>
+                  ) : (
+                    <div className="text-sm mt-1 space-y-1">
+                      <div className="flex justify-between"><span className="text-gray-400">QuickBooks profit</span><span className="tabular-nums text-gray-200">{big(p.qbNetCents)}</span></div>
+                      <p className="text-gray-600 text-[11px] -mt-1">income {big(p.incomeCents)} − costs {big(p.costsCents)}</p>
+                      <div className="flex justify-between"><span className="text-gray-400">− Not in QuickBooks yet</span><span className="tabular-nums text-red-300">{p.notInQuickBooksCents == null ? '—' : `−${big(p.notInQuickBooksCents)}`}</span></div>
+                      <p className="text-gray-600 text-[11px] -mt-1">{p.notInQuickBooksCount} purchases seen at the bank or on receipts</p>
+                      <div className="flex justify-between border-t border-gray-700 pt-1"><span className="text-white font-semibold">≈ Estimated profit</span><span className={`tabular-nums font-black text-lg ${(p.estimatedNetCents ?? 0) < 0 ? 'text-red-300' : 'text-emerald-300'}`}>{big(p.estimatedNetCents)}</span></div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 space-y-1 text-[11px]">
+              {qbBehind && <p className="text-amber-300/90">⚠ QuickBooks has checks through {day(dash.profit.quickBooksThrough.checks)} but card and bank purchases only through {day(dash.profit.quickBooksThrough.cardAndAch)}. Until the bookkeeper catches up, trust the estimate, not the QuickBooks line.</p>}
+              <p className="text-gray-500">The estimate is rough: it treats every purchase not yet in QuickBooks as a cost. Both businesses (detail and auto sales) are in one QuickBooks profit figure. Income counts invoices when sent — {ar.asOf ? `${big(ar.totalCents)} is still unpaid` : 'how much is still unpaid is not known yet (no receivables snapshot)'}.</p>
+              <p className="text-gray-600">QuickBooks read {dash.profit.quickBooksSyncedAt ? freshnessLabel(dash.profit.quickBooksSyncedAt) : 'never'} · bank through {day(dash.bankThrough)} · <a href="#profit-detail" className="text-indigo-300 underline">what’s not in QuickBooks ↓</a></p>
+            </div>
+          </div>
+
+          {/* 3 ─ What is driving our costs? */}
+          <div className={card}>
+            <h2 className="text-white font-bold text-lg">What is driving our costs?</h2>
+            <p className="text-gray-500 text-xs mb-3">Money that actually left the operating account, {monthName(dash.month)} 1–{day(dash.bankThrough)?.replace(/^\D+/, '')} · bank, not an estimate</p>
+            <table className="w-full text-sm"><tbody>
+              {dash.costs.thisMonth.groups.map((g) => {
+                const prev = dash.costs.lastMonth.groups.find((x) => x.key === g.key)?.cents
+                return (
+                  <tr key={g.key} className="border-b border-gray-800/50" title={g.note}>
+                    <td className="py-1.5 text-gray-300">{g.label}{!g.isCost && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full border border-gray-700 text-gray-500">cash out, not a cost</span>}</td>
+                    <td className={`py-1.5 text-right tabular-nums ${g.isCost ? 'text-white' : 'text-gray-400'}`}>{big(g.cents)}</td>
+                    <td className="py-1.5 pl-3 text-right tabular-nums text-gray-600 text-xs w-28">{prev != null ? `${big(prev)} all ${monthName(dash.profit.lastMonth.month).slice(0, 3)}` : ''}</td>
+                  </tr>
+                )
+              })}
+              <tr><td className="pt-2 text-white font-semibold">Costs so far</td><td className="pt-2 text-right tabular-nums text-white font-bold">{big(dash.costs.thisMonth.costCents)}</td><td className="pt-2 pl-3 text-right tabular-nums text-gray-600 text-xs">{big(dash.costs.lastMonth.costCents)}</td></tr>
+            </tbody></table>
+            {dash.costs.thisMonth.topVendors.length > 0 && <p className="text-gray-500 text-[11px] mt-3">Biggest purchases and bills: {dash.costs.thisMonth.topVendors.map((v) => `${v.label} ${big(v.cents)}`).join(' · ')}</p>}
+            <p className="text-gray-600 text-[11px] mt-1">Rent is paid by transfer to the holding account, so it sits in “Transfers out”, not in the cost total. Loan payments and owner draws use cash but are not costs — that is why cash can be tight in a profitable month.</p>
+          </div>
+
+          {/* 4 ─ Are we earning enough per car? */}
+          <div className={card}>
+            <h2 className="text-white font-bold text-lg">Are we earning enough per car?</h2>
+            {!dash.perCar || dash.perCar.cars === 0 ? (
+              <p className="text-amber-300 text-sm mt-2">{dash.perCar ? 'No cars have been finished this month yet.' : 'Can’t say — the bank feed has no transactions for this month yet, so costs and cars can’t be lined up over the same days.'}</p>
+            ) : (<>
+              <p className="text-gray-500 text-xs mb-3">Detail shop · {monthName(dash.month)} 1–{day(dash.perCar.to)?.replace(/^\D+/, '')} · cars and costs cover the same days</p>
+              <div className="grid grid-cols-3 gap-3">
+                <div><p className={kicker}>Work value per car</p><p className="text-2xl font-black text-white tabular-nums">{big(dash.perCar.avgValueCents)}</p><p className="text-[11px] text-gray-500">{dash.perCar.cars} cars finished</p></div>
+                <div><p className={kicker}>Direct cost per car</p><p className="text-2xl font-black text-white tabular-nums">{big(dash.perCar.directCostPerCarCents)}</p><p className="text-[11px] text-gray-500">payroll + purchases ÷ cars</p></div>
+                <div><p className={kicker}>Left per car</p><p className={`text-2xl font-black tabular-nums ${perCarLeft != null && perCarLeft < 0 ? 'text-red-300' : 'text-emerald-300'}`}>{big(perCarLeft)}</p><p className="text-[11px] text-gray-500">before rent, loans, owner pay</p></div>
+              </div>
+              <p className="text-gray-400 text-xs mt-3">Dealer: {dash.perCar.dealer.cars} cars at {big(dash.perCar.dealer.avgCents)} each · Retail: {dash.perCar.retail.cars} cars at {big(dash.perCar.retail.avgCents)} each.</p>
+              {dash.perCar.unpricedCars > 0 && <p className="text-amber-300/80 text-[11px] mt-1">⚠ {dash.perCar.unpricedCars} finished car{dash.perCar.unpricedCars === 1 ? ' has' : 's have'} no price yet — left out of the value average, still counted in the cost average. <a href="/production" className="underline">Price them</a></p>}
+              <p className="text-gray-600 text-[11px] mt-1">Work value is the job price before fees and tax, from the Production log — not what has been collected. Direct cost is everything paid from *2649 for payroll and purchases, including any bought for the car lot.</p>
+            </>)}
+          </div>
+
+          {/* 5 ─ What needs my attention now? */}
+          <div className={card}>
+            <h2 className="text-white font-bold text-lg">What needs my attention now?</h2>
+            {attention.length === 0 ? <p className="text-emerald-300 text-sm mt-2">Nothing right now — the data is current and no gaps were found.</p> : (
+              <ul className="mt-2 space-y-2.5">
+                {attention.map((a, i) => (
+                  <li key={i} className="flex gap-2.5">
+                    <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${a.level === 'now' ? 'bg-red-400' : a.level === 'soon' ? 'bg-amber-400' : 'bg-gray-500'}`} />
+                    <div>
+                      <p className="text-gray-100 text-sm font-semibold">{a.title}</p>
+                      <p className="text-gray-500 text-xs">{a.detail}</p>
+                      <a href={a.href} className="text-indigo-300 text-xs underline">{a.action} →</a>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </section>
+      </>)}
+
+      <p className="text-gray-600 text-xs uppercase tracking-widest mt-6 mb-2">Detail — open what you need</p>
+      <details id="cash-detail" className={`${card} mb-4`}>
+        <summary className="text-white font-bold cursor-pointer">Cash forecast, bills and expected deposits <span className="text-gray-600 text-sm font-normal">— behind “Can we cover upcoming bills?”</span></summary>
+        <div className="mt-4">
       {/* ═══ C. 30-DAY CASH FORECAST ═══ */}
       <section className={`${card} mb-4`}>
         <div className="flex items-center justify-between mb-1">
@@ -340,6 +452,23 @@ export default async function FinancePage() {
           })}
         </div>
         <p className="text-gray-600 text-[11px] mt-2">Probable money is never treated as guaranteed. The chart line is the EXPECTED (high-confidence) scenario.</p>
+      </section>
+
+      {/* ═══ E. NEXT CASH-FLOW RISK ═══ */}
+      <section className={`${card} mb-4 border ${danger.risk === 'HIGH' || danger.risk === 'CRITICAL' ? 'border-red-900/50' : danger.risk === 'MODERATE' ? 'border-amber-900/40' : 'border-gray-800'}`}>
+        <div className="flex items-start justify-between">
+          <div>
+            <p className={kicker}>Next cash-flow risk</p>
+            <p className="text-white text-xl font-bold mt-1">{danger.date ?? '—'} <span className={`text-sm font-semibold ${RISK[danger.risk]}`}>· {danger.risk} risk</span></p>
+          </div>
+          <div className="text-right"><p className={kicker}>Projected low</p><p className={`text-2xl font-black tabular-nums ${danger.overdraft ? 'text-red-400' : 'text-amber-300'}`}>{big(danger.lowCents)}</p></div>
+        </div>
+        {danger.items.length > 0 && (
+          <div className="flex flex-wrap gap-2 mt-3">
+            {danger.items.map((it, i) => <span key={i} className="text-xs rounded-lg border border-gray-800 bg-gray-900/60 px-2.5 py-1 text-gray-300">{it.label} <span className="tabular-nums text-red-300">−{big(it.cents)}</span></span>)}
+          </div>
+        )}
+        <p className="text-gray-400 text-sm mt-3 max-w-3xl">{danger.explanation}</p>
       </section>
 
       {/* ═══ D. MONEY IN / MONEY OUT ═══ */}
@@ -373,6 +502,110 @@ export default async function FinancePage() {
         </div>
       </section>
 
+      {/* ═══ G2. 30-DAY BILL CALENDAR ═══ */}
+      <section className={`${card} mb-4`}>
+        <div className="flex items-baseline justify-between mb-3">
+          <div>
+            <h2 className="text-white font-bold">Bill calendar <span className="text-gray-600 text-sm font-normal">· next 30 days · *2649 operating</span></h2>
+            <p className="text-gray-600 text-xs">What leaves the operating account, and when. Exact amounts show as-is; variable bills show a <b>~estimate</b>; unconfirmed amounts show <b className="text-purple-300">⚠</b>.</p>
+          </div>
+          <span className="text-sm tabular-nums text-gray-400">30d total <b className="text-red-300">−{big(opWin.window30)}</b></span>
+        </div>
+        <BillCalendar events={opEvents} days={30} />
+        <p className="text-gray-600 text-[11px] mt-2">Monthly/weekly recurring coverage is good. Quarterly/annual bills may be missing — bank history only spans ~3 months, so anything that bills less often than monthly isn&apos;t discoverable yet. The protected one-week payroll floor is a liquidity cushion and is intentionally NOT shown here as a bill.</p>
+      </section>
+
+      {/* ═══ H. UPCOMING OBLIGATIONS ═══ */}
+      <section className={`${card} mb-4`}>
+        <div className="flex items-baseline justify-between mb-3">
+          <h2 className="text-white font-bold">Upcoming obligations <span className="text-gray-600 text-sm font-normal">· *2649 operating</span></h2>
+          <span className="text-sm tabular-nums text-gray-400">7d <b className="text-red-300">−{big(opWin.window7)}</b> · 14d <b className="text-red-300">−{big(opWin.window14)}</b> · 30d <b className="text-red-300">−{big(opWin.window30)}</b></span>
+        </div>
+        {needsVerify.length > 0 && (
+          <div className="rounded-xl border border-purple-900/40 bg-purple-950/15 p-3 mb-3">
+            <p className="text-purple-300 text-xs font-bold uppercase tracking-widest mb-1">Needs verification — not counted as a bill</p>
+            {needsVerify.map((n, i) => <p key={i} className="text-gray-300 text-sm">{n.vendor} <span className="text-gray-500">~{money(n.amountCents)}/{n.frequency}</span> <span className="text-purple-300/80 text-xs">· status UNKNOWN</span></p>)}
+            <p className="text-gray-500 text-[11px] mt-1">{needsVerify[0]?.notes?.slice(0, 180)}…</p>
+          </div>
+        )}
+        <table className="w-full text-sm"><tbody>
+          {opEvents.slice(0, 16).map((e, i) => {
+            const dt = new Date(e.due + 'T00:00:00Z'); const dow = dt.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })
+            const pc = e.priority === 'critical' ? 'text-red-400' : e.priority === 'contractual' ? 'text-amber-400' : 'text-gray-500'
+            return (
+              <tr key={i} className="border-b border-gray-800/50">
+                <td className="py-1.5 text-gray-500 text-xs whitespace-nowrap w-24">{dow} {e.due.slice(5)}</td>
+                <td className="py-1.5 text-gray-300">{e.label}</td>
+                <td className="py-1.5"><span className={`text-[10px] ${pc}`}>● {e.priority}</span></td>
+                <td className="py-1.5 text-right tabular-nums text-red-300">−{money(e.cents)}</td>
+              </tr>
+            )
+          })}
+        </tbody></table>
+        {asWin && (asWin.window30 > 0) && (
+          <details className="mt-3">
+            <summary className="text-gray-500 text-xs cursor-pointer">Auto-sales *5600 obligations (separate — paid from *5600, NOT operating): 30d −{big(asWin.window30)} ▾</summary>
+            <table className="w-full text-sm mt-2"><tbody>
+              {asEvents.slice(0, 8).map((e, i) => { const dt = new Date(e.due + 'T00:00:00Z'); const dow = dt.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })
+                return <tr key={i} className="border-b border-gray-800/40"><td className="py-1 text-gray-600 text-xs w-24">{dow} {e.due.slice(5)}</td><td className="py-1 text-gray-500">{e.label}</td><td className="py-1 text-right tabular-nums text-gray-500">−{money(e.cents)}</td></tr>
+              })}
+            </tbody></table>
+          </details>
+        )}
+      </section>
+
+        </div>
+      </details>
+
+      <details id="profit-detail" className={`${card} mb-4`}>
+        <summary className="text-white font-bold cursor-pointer">Spending not in QuickBooks, receipts and who owes us <span className="text-gray-600 text-sm font-normal">— behind “Are we making money?”</span></summary>
+        <div className="mt-4">
+          {dash && (() => {
+            const p = dash.provisional.thisMonth
+            const BANK: Record<string, string> = { bank_confirmed: 'receipt + bank payment · confirmed', bank_likely: 'receipt + bank payment · looks matched', bank_only: 'bank payment · no receipt', not_visible_yet: 'receipt only · bank can’t show it yet', cash: 'receipt only · cash' }
+            const QB: Record<string, { t: string; c: string }> = { in_quickbooks: { t: 'in QuickBooks', c: 'text-emerald-300' }, likely_in_quickbooks: { t: 'looks like it’s in QuickBooks', c: 'text-sky-300' }, not_in_quickbooks: { t: 'not in QuickBooks yet', c: 'text-amber-300' } }
+            const withReceipt = p.items.filter((i) => i.receiptIds.length > 0)
+            const bankOnly = p.items.filter((i) => i.bank === 'bank_only' && i.quickbooks === 'not_in_quickbooks').sort((a, b) => b.amountCents - a.amountCents)
+            const line = (i: (typeof p.items)[number]) => (
+              <tr key={i.key} className="border-b border-gray-800/50" title={i.note}>
+                <td className="py-1 text-gray-500 text-xs whitespace-nowrap w-20">{day(i.date)}</td>
+                <td className="py-1 text-gray-300">{i.label}{i.receiptIds[0] && <a href={`/api/expenses/receipt/${i.receiptIds[0]}/image`} target="_blank" rel="noreferrer" className="text-indigo-300 ml-2 text-[11px] underline">receipt</a>}</td>
+                <td className="py-1 text-gray-500 text-xs">{BANK[i.bank]}{i.entity ? ` · ${rcptEntityLabel(i.entity)}` : ''}</td>
+                <td className={`py-1 text-xs ${QB[i.quickbooks].c}`}>{QB[i.quickbooks].t}</td>
+                <td className="py-1 text-right tabular-nums text-gray-200">{money(i.amountCents)}</td>
+              </tr>
+            )
+            return (
+              <div className="mb-6">
+                <h3 className="text-gray-200 font-semibold text-sm">{monthName(p.month)} purchases — each one counted once <span className="text-gray-600 font-normal">· {money(p.totalCents)} in {p.items.length} purchases</span></h3>
+                <p className="text-gray-600 text-[11px] mb-2">The bank payment is the purchase; a receipt explains it and never adds to it. A receipt is counted on its own only when the bank can’t show the purchase yet. Nothing is matched for you — “looks matched” is only used so this total doesn’t count a purchase twice.</p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+                  <div className="rounded-lg border border-emerald-900/40 bg-emerald-950/10 p-2"><p className="text-[10px] text-gray-500 uppercase">In QuickBooks · confirmed</p><p className="text-sm font-bold tabular-nums text-emerald-300">{money(p.inQuickBooksCents)}</p></div>
+                  <div className="rounded-lg border border-sky-900/40 bg-sky-950/10 p-2"><p className="text-[10px] text-gray-500 uppercase">Looks like it’s in QuickBooks</p><p className="text-sm font-bold tabular-nums text-sky-300">{money(p.likelyInQuickBooksCents)}</p><p className="text-[10px] text-gray-600">same account, amount and dates · not confirmed</p></div>
+                  <div className="rounded-lg border border-amber-900/40 bg-amber-950/10 p-2"><p className="text-[10px] text-gray-500 uppercase">Not in QuickBooks yet · provisional</p><p className="text-sm font-bold tabular-nums text-amber-200">{money(p.provisionalCents)}</p><p className="text-[10px] text-gray-600">{money(p.provisionalReceiptBackedCents)} with a receipt · {money(p.provisionalBankOnlyCents)} bank only · {money(p.provisionalReceiptOnlyCents)} receipt only</p></div>
+                  <div className="rounded-lg border border-gray-800 bg-gray-900/40 p-2"><p className="text-[10px] text-gray-500 uppercase">Receipts not counted · unclear</p><p className="text-sm font-bold tabular-nums text-gray-200">{money(p.unclearCents)}</p><p className="text-[10px] text-gray-600">{p.unclear.length} with no clear bank payment</p></div>
+                </div>
+                <p className="text-gray-500 text-[11px] mb-3">Receipt ↔ bank: {p.bankConfirmedCount} confirmed, {p.bankLikelyCount} look matched and wait for you. Provisional purchases with a receipt, by business: {Object.entries(p.provisionalByEntity).map(([k, v]) => `${rcptEntityLabel(k)} ${money(v)}`).join(' · ') || 'none'}. <a href="/admin/finance/reconcile" className="text-indigo-300 underline">Confirm matches</a> — a confirmed QuickBooks match moves a purchase out of “provisional” and keeps the receipt, the bank payment and the decision on record.</p>
+                {withReceipt.length > 0 && (<>
+                  <p className={kicker}>Purchases with a receipt ({withReceipt.length})</p>
+                  <table className="w-full text-sm mb-3"><tbody>{withReceipt.map(line)}</tbody></table>
+                </>)}
+                {bankOnly.length > 0 && (
+                  <details>
+                    <summary className="text-gray-400 text-sm cursor-pointer">{bankOnly.length} bank payments with no receipt, not in QuickBooks yet · {money(bankOnly.reduce((t, i) => t + i.amountCents, 0))} ▾</summary>
+                    <table className="w-full text-sm mt-2"><tbody>{bankOnly.slice(0, 60).map(line)}</tbody></table>
+                  </details>
+                )}
+                {p.unclear.length > 0 && (
+                  <div className="mt-3 rounded-xl border border-gray-800 bg-gray-900/40 p-3">
+                    <p className="text-gray-300 text-sm font-semibold">Receipts with no clear bank payment — not counted until checked</p>
+                    {p.unclear.map((u) => <p key={u.receiptId} className="text-gray-400 text-xs mt-1">{u.label} · {day(u.date)} · {money(u.amountCents)} — <span className="text-gray-500">{u.reason}</span> <a href={`/api/expenses/receipt/${u.receiptId}/image`} target="_blank" rel="noreferrer" className="text-indigo-300 underline">receipt</a></p>)}
+                    <p className="text-[11px] mt-2"><a href="/expenses/review?status=filed" className="text-indigo-300 underline">Open filed receipts to correct one</a></p>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
       {/* ═══ D2. REAL A/R (production QuickBooks) ═══ */}
       <section className={`${card} mb-4`}>
         <div className="flex items-baseline justify-between mb-2">
@@ -492,117 +725,12 @@ export default async function FinancePage() {
         </section>
       )}
 
-      {/* ═══ E. NEXT CASH-FLOW RISK ═══ */}
-      <section className={`${card} mb-4 border ${danger.risk === 'HIGH' || danger.risk === 'CRITICAL' ? 'border-red-900/50' : danger.risk === 'MODERATE' ? 'border-amber-900/40' : 'border-gray-800'}`}>
-        <div className="flex items-start justify-between">
-          <div>
-            <p className={kicker}>Next cash-flow risk</p>
-            <p className="text-white text-xl font-bold mt-1">{danger.date ?? '—'} <span className={`text-sm font-semibold ${RISK[danger.risk]}`}>· {danger.risk} risk</span></p>
-          </div>
-          <div className="text-right"><p className={kicker}>Projected low</p><p className={`text-2xl font-black tabular-nums ${danger.overdraft ? 'text-red-400' : 'text-amber-300'}`}>{big(danger.lowCents)}</p></div>
         </div>
-        {danger.items.length > 0 && (
-          <div className="flex flex-wrap gap-2 mt-3">
-            {danger.items.map((it, i) => <span key={i} className="text-xs rounded-lg border border-gray-800 bg-gray-900/60 px-2.5 py-1 text-gray-300">{it.label} <span className="tabular-nums text-red-300">−{big(it.cents)}</span></span>)}
-          </div>
-        )}
-        <p className="text-gray-400 text-sm mt-3 max-w-3xl">{danger.explanation}</p>
-      </section>
+      </details>
 
-      {/* ═══ F. CFO RECOMMENDED ACTIONS ═══ */}
-      <section className={`${card} mb-4`}>
-        <h2 className="text-white font-bold mb-1">What should I do next?</h2>
-        <p className="text-gray-600 text-xs mb-3">Ranked by impact on liquidity, cost, and reserve-building. Each explains the why — never just “pay debt.”</p>
-        <div className="space-y-2">
-          {recs.map((r) => {
-            const tagc: Record<string, string> = { liquidity: 'text-sky-300 border-sky-900/50 bg-sky-950/20', debt: 'text-orange-300 border-orange-900/50 bg-orange-950/20', reserve: 'text-emerald-300 border-emerald-900/50 bg-emerald-950/20', caution: 'text-amber-300 border-amber-900/50 bg-amber-950/20' }
-            return (
-              <details key={r.rank} className="rounded-xl border border-gray-800 bg-gray-900/40 px-4 py-3 group">
-                <summary className="flex items-center gap-3 cursor-pointer list-none">
-                  <span className="w-6 h-6 rounded-full bg-gray-800 text-gray-300 text-xs font-bold flex items-center justify-center shrink-0">{r.rank}</span>
-                  <span className="text-gray-100 font-semibold text-sm flex-1">{r.title}</span>
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full border ${tagc[r.tag]}`}>{r.tag}</span>
-                  <span className="text-gray-600 text-xs group-open:hidden">why ▾</span>
-                </summary>
-                <p className="text-gray-400 text-sm mt-2 pl-9">{r.why}</p>
-              </details>
-            )
-          })}
-        </div>
-      </section>
-
-      {/* ═══ G. RESERVE BUILDER ═══ */}
-      <section className={`${card} mb-4`}>
-        <div className="flex items-baseline justify-between mb-1">
-          <h2 className="text-white font-bold">Cash reserve builder</h2>
-          <span className="text-gray-500 text-xs">first milestone {big(reserve.targetCents)} · long-term {big(reserve.nextTargetCents)}</span>
-        </div>
-        <div className="flex items-baseline gap-3 mt-2">
-          <span className="text-3xl font-black text-white tabular-nums">{big(reserve.trueReserveCents)}</span>
-          <span className="text-gray-500">/ {big(reserve.targetCents)}</span>
-          <span className="text-emerald-300 font-semibold">{reserve.pct}% funded</span>
-        </div>
-        <div className="h-3 rounded-full bg-gray-800 mt-3 overflow-hidden"><div className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400" style={{ width: `${Math.max(1, Math.min(100, reserve.pct))}%` }} /></div>
-        <p className="text-gray-400 text-xs mt-3">{reserve.note}</p>
-        <div className="grid grid-cols-3 gap-4 mt-3 text-sm">
-          <div><p className={kicker}>Raw operating cash</p><p className="text-gray-200 tabular-nums">{money(reserve.rawCashCents)}</p></div>
-          <div><p className={kicker}>Claimed by 30d obligations</p><p className="text-red-300 tabular-nums">−{money(reserve.obligations30Cents)}</p></div>
-          <div><p className={kicker}>True free reserve</p><p className="text-emerald-300 tabular-nums">{money(reserve.trueReserveCents)}</p></div>
-        </div>
-      </section>
-
-      {/* ═══ G2. 30-DAY BILL CALENDAR ═══ */}
-      <section className={`${card} mb-4`}>
-        <div className="flex items-baseline justify-between mb-3">
-          <div>
-            <h2 className="text-white font-bold">Bill calendar <span className="text-gray-600 text-sm font-normal">· next 30 days · *2649 operating</span></h2>
-            <p className="text-gray-600 text-xs">What leaves the operating account, and when. Exact amounts show as-is; variable bills show a <b>~estimate</b>; unconfirmed amounts show <b className="text-purple-300">⚠</b>.</p>
-          </div>
-          <span className="text-sm tabular-nums text-gray-400">30d total <b className="text-red-300">−{big(opWin.window30)}</b></span>
-        </div>
-        <BillCalendar events={opEvents} days={30} />
-        <p className="text-gray-600 text-[11px] mt-2">Monthly/weekly recurring coverage is good. Quarterly/annual bills may be missing — bank history only spans ~3 months, so anything that bills less often than monthly isn&apos;t discoverable yet. The protected one-week payroll floor is a liquidity cushion and is intentionally NOT shown here as a bill.</p>
-      </section>
-
-      {/* ═══ H. UPCOMING OBLIGATIONS ═══ */}
-      <section className={`${card} mb-4`}>
-        <div className="flex items-baseline justify-between mb-3">
-          <h2 className="text-white font-bold">Upcoming obligations <span className="text-gray-600 text-sm font-normal">· *2649 operating</span></h2>
-          <span className="text-sm tabular-nums text-gray-400">7d <b className="text-red-300">−{big(opWin.window7)}</b> · 14d <b className="text-red-300">−{big(opWin.window14)}</b> · 30d <b className="text-red-300">−{big(opWin.window30)}</b></span>
-        </div>
-        {needsVerify.length > 0 && (
-          <div className="rounded-xl border border-purple-900/40 bg-purple-950/15 p-3 mb-3">
-            <p className="text-purple-300 text-xs font-bold uppercase tracking-widest mb-1">Needs verification — not counted as a bill</p>
-            {needsVerify.map((n, i) => <p key={i} className="text-gray-300 text-sm">{n.vendor} <span className="text-gray-500">~{money(n.amountCents)}/{n.frequency}</span> <span className="text-purple-300/80 text-xs">· status UNKNOWN</span></p>)}
-            <p className="text-gray-500 text-[11px] mt-1">{needsVerify[0]?.notes?.slice(0, 180)}…</p>
-          </div>
-        )}
-        <table className="w-full text-sm"><tbody>
-          {opEvents.slice(0, 16).map((e, i) => {
-            const dt = new Date(e.due + 'T00:00:00Z'); const dow = dt.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })
-            const pc = e.priority === 'critical' ? 'text-red-400' : e.priority === 'contractual' ? 'text-amber-400' : 'text-gray-500'
-            return (
-              <tr key={i} className="border-b border-gray-800/50">
-                <td className="py-1.5 text-gray-500 text-xs whitespace-nowrap w-24">{dow} {e.due.slice(5)}</td>
-                <td className="py-1.5 text-gray-300">{e.label}</td>
-                <td className="py-1.5"><span className={`text-[10px] ${pc}`}>● {e.priority}</span></td>
-                <td className="py-1.5 text-right tabular-nums text-red-300">−{money(e.cents)}</td>
-              </tr>
-            )
-          })}
-        </tbody></table>
-        {asWin && (asWin.window30 > 0) && (
-          <details className="mt-3">
-            <summary className="text-gray-500 text-xs cursor-pointer">Auto-sales *5600 obligations (separate — paid from *5600, NOT operating): 30d −{big(asWin.window30)} ▾</summary>
-            <table className="w-full text-sm mt-2"><tbody>
-              {asEvents.slice(0, 8).map((e, i) => { const dt = new Date(e.due + 'T00:00:00Z'); const dow = dt.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })
-                return <tr key={i} className="border-b border-gray-800/40"><td className="py-1 text-gray-600 text-xs w-24">{dow} {e.due.slice(5)}</td><td className="py-1 text-gray-500">{e.label}</td><td className="py-1 text-right tabular-nums text-gray-500">−{money(e.cents)}</td></tr>
-              })}
-            </tbody></table>
-          </details>
-        )}
-      </section>
-
+      <details className={`${card} mb-4`}>
+        <summary className="text-white font-bold cursor-pointer">Debt and reserve <span className="text-gray-600 text-sm font-normal">— what we owe, and progress toward a cushion</span></summary>
+        <div className="mt-4">
       {/* ═══ I. DEBT COMMAND CENTER ═══ */}
       <section className={`${card} mb-4`}>
         <h2 className="text-white font-bold mb-3">Debt</h2>
@@ -637,54 +765,46 @@ export default async function FinancePage() {
         </details>
       </section>
 
-      {/* ═══ J. OPERATING VS AUTO SALES ═══ */}
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-        <div className={card}>
-          <p className={kicker}>Detail / Operating</p>
-          <p className="text-gray-300 text-sm mt-1">American Momentum *2649</p>
-          <div className="grid grid-cols-2 gap-3 mt-2">
-            <div><p className={kicker}>Bank cash</p><p className="text-lg font-bold text-white tabular-nums">{money(operating?.availableCents)}</p></div>
-            <div><p className={kicker}>Safe-to-Spend today</p><p className={`text-lg font-bold tabular-nums ${(headline.safeToSpendTodayCents ?? 0) > 0 ? 'text-white' : 'text-gray-400'}`}>{big(headline.safeToSpendTodayCents)}</p>{headline.liquidityShortfallCents > 0 && <p className="text-[10px] text-gray-500">30d committed &gt; cash by {big(headline.liquidityShortfallCents)}</p>}</div>
-            <div><p className={kicker}>30-day projected low</p><p className={`text-lg font-bold tabular-nums ${runway.overdraft ? 'text-red-400' : 'text-amber-300'}`}>{big(runway.lowCents)}</p></div>
-          </div>
-        </div>
-        <div className={`${card} border-blue-900/30`}>
-          <p className={kicker}>Auto Sales · separate entity · financial modeling incomplete</p>
-          <p className="text-gray-300 text-sm mt-1">Extraco *5600</p>
-          <div className="grid grid-cols-2 gap-3 mt-2">
-            <div><p className={kicker}>Bank cash</p><p className="text-lg font-bold text-white tabular-nums">{money(autoSales.bankAvailableCents)}</p></div>
-            <div><p className={kicker}>Verified unencumbered</p><p className="text-lg font-bold text-amber-400">{autoSales.unencumberedCents == null ? 'UNKNOWN' : money(autoSales.unencumberedCents)}</p></div>
-            <div><p className={kicker}>Floor-plan exposure</p><p className="text-lg font-bold text-gray-400 tabular-nums">{big(autoSales.floorPlanBalanceCents)}</p></div>
-            <div><p className={kicker}>Status</p><p className="text-sm font-semibold text-amber-400">Potentially encumbered</p></div>
-          </div>
-          <p className="text-emerald-300/80 text-[11px] mt-2 font-semibold">✓ Contributes $0 to *2649 Safe-to-Spend — no auto-sales cash is counted as operating liquidity unless an actual *5600→*2649 transfer occurs.</p>
-          <p className="text-gray-600 text-[11px] mt-1">True unencumbered cash needs the auto-sales VIN/floor-plan ledger (Phase B) — not built yet.</p>
-        </div>
-      </section>
-
-      {/* Company-wide liquidity — explicitly NOT combined until auto-sales is modeled */}
-      <section className={`${card} mb-4 border-gray-800`}>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className={kicker}>Company-wide Safe-to-Spend</p>
-            <p className="text-xl font-bold text-gray-400 mt-1">NOT YET CALCULATED</p>
-          </div>
-          <p className="text-gray-500 text-xs max-w-md text-right">Adding *2649 + *5600 would overstate real liquidity. A company-wide number waits until auto-sales vehicle/floor-plan encumbrances are modeled (Phase B). Until then: <b className="text-gray-300">Operating *2649 = {big(headline.safeToSpendTodayCents)}</b> safe today; <b className="text-gray-300">Auto-sales *5600 unencumbered = UNKNOWN</b>.</p>
-        </div>
-      </section>
-
-      {/* ═══ K. PROFIT-TO-CASH (structure ready; honest incomplete) ═══ */}
+      {/* ═══ G. RESERVE BUILDER ═══ */}
       <section className={`${card} mb-4`}>
-        <h2 className="text-white font-bold mb-1">Why is cash tight even when we're busy?</h2>
-        <p className="text-gray-400 text-sm max-w-3xl">On *2649, profit and cash differ because cash is consumed by things the P&amp;L doesn't show: <b>debt principal</b> (~{big(debt.operatingMonthlyServiceCents)}/mo operating service), <b>owner distributions</b> (~{big(s2s.plannedCents)}/mo planned), <b>uncollected receivables</b>, and <b>timing</b> between doing the work and getting paid. Some *2649 outflows are actually auto-sales expenses (historically commingled) — those are a segment-attribution question for later, not operating cash. A full profit-to-cash bridge needs mature segment + per-vehicle attribution — shown as structure, not fabricated numbers.</p>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 text-sm">
-          <div><p className={kicker}>Operating debt /mo</p><p className="text-red-300 tabular-nums">−{big(debt.operatingMonthlyServiceCents)}</p></div>
-          <div><p className={kicker}>Planned / owner /mo</p><p className="text-red-300 tabular-nums">−{big(s2s.plannedCents)}</p></div>
-          <div><p className={kicker}>Vehicle inventory</p><p className="text-gray-500">not attributed</p></div>
-          <div><p className={kicker}>Receivable timing</p><p className="text-gray-500">not attributed</p></div>
+        <div className="flex items-baseline justify-between mb-1">
+          <h2 className="text-white font-bold">Cash reserve builder</h2>
+          <span className="text-gray-500 text-xs">first milestone {big(reserve.targetCents)} · long-term {big(reserve.nextTargetCents)}</span>
+        </div>
+        <div className="flex items-baseline gap-3 mt-2">
+          <span className="text-3xl font-black text-white tabular-nums">{big(reserve.trueReserveCents)}</span>
+          <span className="text-gray-500">/ {big(reserve.targetCents)}</span>
+          <span className="text-emerald-300 font-semibold">{reserve.pct}% funded</span>
+        </div>
+        <div className="h-3 rounded-full bg-gray-800 mt-3 overflow-hidden"><div className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400" style={{ width: `${Math.max(1, Math.min(100, reserve.pct))}%` }} /></div>
+        <p className="text-gray-400 text-xs mt-3">{reserve.note}</p>
+        <div className="grid grid-cols-3 gap-4 mt-3 text-sm">
+          <div><p className={kicker}>Raw operating cash</p><p className="text-gray-200 tabular-nums">{money(reserve.rawCashCents)}</p></div>
+          <div><p className={kicker}>Claimed by 30d obligations</p><p className="text-red-300 tabular-nums">−{money(reserve.obligations30Cents)}</p></div>
+          <div><p className={kicker}>True free reserve</p><p className="text-emerald-300 tabular-nums">{money(reserve.trueReserveCents)}</p></div>
         </div>
       </section>
 
+        </div>
+      </details>
+
+      <details className={`${card} mb-4`}>
+        <summary className="text-white font-bold cursor-pointer">Auto sales account (*5600) <span className="text-gray-600 text-sm font-normal">— kept separate; never counted as operating cash{autoSource && autoSource.state !== 'ok' ? ' · ⚠ not updating' : ''}</span></summary>
+        <div className="mt-4">
+          {autoSource && autoSource.state !== 'ok' && <p className="text-red-300 text-sm mb-3">⚠ {autoSource.detail} The balance below is that old reading, not today’s.</p>}
+          <div className="grid grid-cols-3 gap-3">
+            <div><p className={kicker}>Bank cash {autoSales.asOf ? `· read ${freshnessLabel(autoSales.asOf)}` : ''}</p><p className={`text-lg font-bold tabular-nums ${autoSource && autoSource.state !== 'ok' ? 'text-gray-500' : 'text-white'}`}>{money(autoSales.bankAvailableCents)}</p></div>
+            <div><p className={kicker}>Owed on the floor plan</p><p className="text-lg font-bold text-gray-300 tabular-nums">{big(autoSales.floorPlanBalanceCents)}</p></div>
+            <div><p className={kicker}>Free of the floor plan</p><p className="text-lg font-bold text-amber-400">{autoSales.unencumberedCents == null ? 'Unknown' : money(autoSales.unencumberedCents)}</p></div>
+          </div>
+          <p className="text-gray-500 text-xs mt-2">{autoSales.note}</p>
+          <p className="text-gray-600 text-[11px] mt-2">There is no company-wide “free to spend” figure: adding this account to the operating account would overstate what is free until each sold car’s floor-plan payoff is tracked. This account’s own bills are listed under the cash forecast above.</p>
+        </div>
+      </details>
+
+      <details className={`${card} mb-4`}>
+        <summary className="text-white font-bold cursor-pointer">How reliable each data source is <span className="text-gray-600 text-sm font-normal">— source-by-source scorecard and open gaps</span></summary>
+        <div className="mt-4">
       {/* ═══ L. CFO CONFIDENCE SCORECARD (per-domain data reliability) ═══ */}
       {(() => {
         const TIER: Record<Tier, string> = { authoritative: 'text-emerald-300', trustworthy: 'text-emerald-300', useful: 'text-amber-300', directional: 'text-orange-300', unreliable: 'text-red-300' }
@@ -756,8 +876,11 @@ export default async function FinancePage() {
         )
       })()}
 
+        </div>
+      </details>
+
       {/* ═══ M. ACCOUNTING & ADMIN DETAIL (demoted) ═══ */}
-      <details className={`${card} mb-4`}>
+      <details id="connections" className={`${card} mb-4`}>
         <summary className="text-white font-bold cursor-pointer">Accounts, connections & controls <span className="text-gray-600 text-sm font-normal">— accounting detail + admin</span></summary>
 
         {/* Cash & Accounts */}
@@ -809,11 +932,12 @@ export default async function FinancePage() {
 
         {/* Obligations confirm/ignore */}
         <div className="mt-6">
-          <h3 className="text-gray-300 font-semibold text-sm mb-1">Recurring obligations <span className="text-gray-600">(confirm / ignore)</span></h3>
+          <h3 id="bills-admin" className="text-gray-300 font-semibold text-sm mb-1 scroll-mt-4">Recurring bills <span className="text-gray-600">(confirmed bills are forecast; “ignore” ends one — past payments stay in the bank history)</span></h3>
+          {dash && dash.quiet.length > 0 && <div className="rounded-lg border border-amber-900/50 bg-amber-950/15 p-2 mb-2">{dash.quiet.map((q) => <p key={q.id} className="text-amber-200 text-xs"><b>{q.vendor}</b> — {q.message}</p>)}</div>}
           {oblByStatus.confirmed.length > 0 && <table className="w-full text-sm mb-2"><tbody>{oblByStatus.confirmed.map((o) => (
             <tr key={o.id} className="border-b border-gray-800"><td className="py-1.5 text-gray-200">{o.critical && <span className="text-amber-400">★ </span>}{o.vendor}</td><td className="py-1.5 text-gray-600 text-xs">{o.category ?? '—'} · {o.frequency ?? '—'}</td><td className="py-1.5 text-right tabular-nums text-white">{money(o.amountCents)}</td><td className="py-1.5 pl-2 text-right"><form action={obligationStatusAction}><input type="hidden" name="id" value={o.id} /><input type="hidden" name="status" value="ignored" /><button className="text-gray-600 text-xs underline">ignore</button></form></td></tr>
           ))}</tbody></table>}
-          {oblByStatus.proposed.length > 0 && <><p className="text-gray-600 text-xs mb-1">Proposed ({oblByStatus.proposed.length})</p><table className="w-full text-sm"><tbody>{oblByStatus.proposed.slice(0, 20).map((o) => (
+          {oblByStatus.proposed.length > 0 && <><p className="text-gray-600 text-xs mb-1">Proposed ({oblByStatus.proposed.length}){oblByStatus.hiddenDuplicateProposals > 0 ? ` · ${oblByStatus.hiddenDuplicateProposals} duplicate or already-decided copies hidden` : ''}</p><table className="w-full text-sm"><tbody>{oblByStatus.proposed.slice(0, 20).map((o) => (
             <tr key={o.id} className="border-b border-gray-800/60"><td className="py-1.5 text-gray-300">{o.vendor}<span className="block text-gray-600 text-xs">{o.occurrences}× · {o.frequency} · avg {money(o.avgAmountCents)}</span></td><td className="py-1.5 text-right tabular-nums text-gray-300">{money(o.amountCents)}</td><td className="py-1.5 pl-2 text-right whitespace-nowrap"><form action={obligationStatusAction} className="inline"><input type="hidden" name="id" value={o.id} /><input type="hidden" name="status" value="confirmed" /><button className="bg-green-700 text-white text-xs px-2 py-1 rounded">Confirm</button></form><form action={obligationStatusAction} className="inline ml-1"><input type="hidden" name="id" value={o.id} /><input type="hidden" name="status" value="ignored" /><button className="text-gray-500 text-xs underline">ignore</button></form></td></tr>
           ))}</tbody></table></>}
         </div>

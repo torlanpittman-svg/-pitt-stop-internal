@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { authorizeSync, classifyFreshness, FRESH_MAX_HOURS } from './sync-health'
+import { authorizeSync, classifyFreshness, classifySource, overallHealth, FRESH_MAX_HOURS } from './sync-health'
 
 describe('finance-sync auth policy', () => {
   const token = 'tok_finance'
@@ -58,5 +58,36 @@ describe('finance freshness policy', () => {
 
   it('no sync at all is UNKNOWN, not silently zero/fresh', () => {
     expect(classifyFreshness(null, null, null, now).status).toBe('unknown')
+  })
+})
+
+describe('per-connection health — one healthy bank must not hide a broken one', () => {
+  const now = new Date('2026-11-17T12:00:00Z')
+  const src = (o: Partial<Parameters<typeof classifySource>[0]> = {}) => ({ label: 'Pitt Stop Auto Sales *5600', institution: 'Extraco Banks', operating: false, itemStatus: 'active', lastError: null, balanceAsOf: '2026-11-17T09:00:00Z', ...o })
+
+  it('a connection in error is an error, with how long ago it last read a balance', () => {
+    const h = classifySource(src({ itemStatus: 'error', lastError: 'finance:plaid /accounts/balance/get → INSTITUTION_NOT_RESPONDING: try again soon', balanceAsOf: '2026-09-26T09:16:41Z' }), now)
+    expect(h.state).toBe('error')
+    expect(h.detail).toMatch(/not updating/)
+    expect(h.detail).toMatch(/52 days ago/)
+    expect(h.detail).not.toMatch(/finance:plaid/)          // no internal route noise in what the owner reads
+  })
+  it('an active connection is ok inside the freshness window and stale beyond it', () => {
+    expect(classifySource(src(), now).state).toBe('ok')
+    expect(classifySource(src({ balanceAsOf: '2026-11-15T00:00:00Z' }), now).state).toBe('stale')
+    expect(classifySource(src({ balanceAsOf: null }), now).state).toBe('stale')
+  })
+  it('a broken NON-operating bank downgrades "fresh" and is named in the message', () => {
+    const broken = classifySource(src({ itemStatus: 'error', balanceAsOf: '2026-09-26T09:16:41Z' }), now)
+    const o = overallHealth('fresh', 'Bank data is current.', [classifySource(src({ label: 'Pitt Stop Detail *2649', operating: true }), now), broken])
+    expect(o.status).toBe('stale')
+    expect(o.message).toMatch(/Operating account is current, but: .*\*5600 is not updating/)
+  })
+  it('a broken OPERATING bank is a failure', () => {
+    const op = classifySource(src({ label: 'Pitt Stop Detail *2649', operating: true, itemStatus: 'error', balanceAsOf: '2026-11-10T00:00:00Z' }), now)
+    expect(overallHealth('fresh', 'Bank data is current.', [op]).status).toBe('failed')
+  })
+  it('all healthy → unchanged', () => {
+    expect(overallHealth('fresh', 'Bank data is current.', [classifySource(src({ operating: true }), now)])).toEqual({ status: 'fresh', message: 'Bank data is current.' })
   })
 })

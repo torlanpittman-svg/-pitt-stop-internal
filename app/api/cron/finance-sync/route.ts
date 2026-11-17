@@ -69,8 +69,10 @@ export async function GET(req: Request) {
       logger.warn('cron:finance-sync', 'qbo_sync_failed', { error: quickbooks.error })
     }
     const summary = { balances, transactions, obligations, inflows, quickbooks }
-    const anyError = (transactions.errors?.length ?? 0) > 0
-    await db.update(finSyncRuns).set({ status: anyError ? 'partial' : 'ok', finishedAt: new Date(), summary: summary as any, error: anyError ? transactions.errors.join(' | ').slice(0, 500) : null }).where(eq(finSyncRuns.id, run.id))
+    // A bank that could not be reached makes the run PARTIAL (visible on the CFO page), never a clean 'ok'.
+    const errs = [...new Set([...(balances.errors ?? []), ...(transactions.errors ?? [])])]
+    const anyError = errs.length > 0
+    await db.update(finSyncRuns).set({ status: anyError ? 'partial' : 'ok', finishedAt: new Date(), summary: summary as any, error: anyError ? errs.join(' | ').slice(0, 500) : null }).where(eq(finSyncRuns.id, run.id))
     logger.info('cron:finance-sync', 'synced', { reason: decision.reason, ...summary })
     return NextResponse.json({ ok: true, ...summary })
   } catch (err) {
