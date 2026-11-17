@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeProvisional, traceReceipt, accountRefOf, type PReceipt, type PTxn, type PQb, type PLinks, type FeedCoverage } from './provisional'
+import { computeProvisional, traceReceipt, accountRefOf, notExpenseReason, type PReceipt, type PTxn, type PQb, type PLinks, type FeedCoverage } from './provisional'
 
 const MONTH = '2026-11'
 const noLinks = (): PLinks => ({ receiptTxn: {}, receiptNoBank: [], receiptQb: {}, txnQb: {} })
@@ -164,9 +164,10 @@ describe('QuickBooks catching up', () => {
 
   it('one QuickBooks entry cannot absorb two bank payments of the same amount', () => {
     const a = txn({ merchantName: 'Shell', date: '2026-11-02', amountCents: 1000 }), b = txn({ merchantName: 'ExxonMobil', date: '2026-11-03', amountCents: 1000 })
-    const p = run([], [a, b], [qbe({ date: '2026-11-02', totalCents: 1000 })])
+    const p = run([], [a, b], [qbe({ date: '2026-11-02', totalCents: 1000, payee: 'Shell' })])
     expect(p.likelyInQuickBooksCents).toBe(1000)
     expect(p.provisionalCents).toBe(1000)
+    expect(p.items.find((i) => i.label === 'ExxonMobil')?.quickbooks).toBe('not_in_quickbooks')
   })
 
   it('a QuickBooks entry on a DIFFERENT paying account does not recognise the purchase', () => {
@@ -215,8 +216,62 @@ describe('shared overhead and the acceptance case', () => {
 
   it('only purchases dated in the month are reported; an earlier payment still claims its own QuickBooks entry', () => {
     const oct = txn({ merchantName: 'Shell', date: '2026-10-30', amountCents: 1000 }), nov = txn({ merchantName: 'Shell', date: '2026-11-02', amountCents: 1000 })
-    const p = run([], [oct, nov], [qbe({ date: '2026-10-30', totalCents: 1000 })])
+    const p = run([], [oct, nov], [qbe({ date: '2026-10-30', totalCents: 1000, payee: 'Shell' })])
     expect(p.items).toHaveLength(1)
     expect(p.provisionalCents).toBe(1000)                            // November's is NOT hidden by October's entry
+  })
+})
+
+describe('a possible QuickBooks match never silently removes spending', () => {
+  it('account + amount + nearby date with NO merchant to compare stays in the total, flagged for review', () => {
+    const t = txn({ merchantName: 'Shell', date: '2026-11-02', amountCents: 1000 })
+    const p = run([], [t], [qbe({ date: '2026-11-02', totalCents: 1000 })])                 // QuickBooks entry has no payee
+    expect(p.items[0].quickbooks).toBe('possible_match')
+    expect(p.provisionalCents).toBe(1000)
+    expect(p.possibleMatchCents).toBe(1000)
+    expect(p.likelyInQuickBooksCents).toBe(0)
+  })
+  it('a DIFFERENT merchant on the same account, amount and day is not a match', () => {
+    const t = txn({ merchantName: 'Shell', date: '2026-11-02', amountCents: 1000 })
+    const p = run([], [t], [qbe({ date: '2026-11-02', totalCents: 1000, payee: 'ExxonMobil' })])
+    expect(p.items[0].quickbooks).toBe('possible_match')
+    expect(p.provisionalCents).toBe(1000)
+  })
+  it('paper checks: competing candidates (two $200 checks, two $200 entries) stay visible; a single pair on both sides is accepted', () => {
+    const c1 = txn({ merchantName: 'Check(C21 Inclearings)', date: '2026-11-05', amountCents: 20000, txnClass: 'check' })
+    const c2 = txn({ merchantName: 'Check(C21 Inclearings)', date: '2026-11-06', amountCents: 20000, txnClass: 'check' })
+    const lone = txn({ merchantName: 'Check(C21 Inclearings)', date: '2026-11-13', amountCents: 7000, txnClass: 'check' })
+    const p = run([], [c1, c2, lone], [
+      qbe({ date: '2026-11-03', totalCents: 20000, paymentType: 'Check', payee: 'Thomas Blanchard' }), qbe({ date: '2026-11-05', totalCents: 20000, paymentType: 'Check', payee: 'Thomas Blanchard' }),
+      qbe({ date: '2026-11-10', totalCents: 7000, paymentType: 'Check', payee: 'James Poole' }),
+    ])
+    expect(p.items.filter((i) => i.amountCents === 20000).map((i) => i.quickbooks)).toEqual(['possible_match', 'possible_match'])
+    expect(p.items.find((i) => i.amountCents === 7000)?.quickbooks).toBe('likely_in_quickbooks')
+    expect(p.provisionalCents).toBe(40000)
+    expect(p.possibleMatchCount).toBe(2)
+  })
+  it('a receipt-only purchase with a same-account entry but no merchant is only a possible match', () => {
+    const r = rcpt({ vendor: 'Kroger Fuel', date: '2026-11-04', totalCents: 1000, accountRef: '*5600' })
+    const p = run([r], [], [qbe({ date: '2026-11-04', totalCents: 1000, accountRef: '*5600' })])
+    expect(traceReceipt(p, r.id).item?.quickbooks).toBe('possible_match')
+    expect(p.provisionalCents).toBe(1000)
+  })
+})
+
+describe('money out that is not an expense is never in the totals', () => {
+  it('recognises back-tax, loan and financing payments — and the owner’s own confirmed debt bills', () => {
+    expect(notExpenseReason({ merchantName: 'Internal Revenue Service', name: 'IRS USATAXPYMT' })).toMatch(/IRS/)
+    expect(notExpenseReason({ merchantName: 'Premium Finance', name: 'US PREMIUM FINANCE DRAFT' })).toMatch(/Loan or financing/)
+    expect(notExpenseReason({ merchantName: null, name: 'PAYME LEND INGS ERVICES CCD' }, ['payme'])).toMatch(/payme/)
+    expect(notExpenseReason({ merchantName: "O'Reilly Auto Parts", name: 'POS DEB O REILLY 710' }, ['payme'])).toBeNull()
+    expect(notExpenseReason({ merchantName: 'Intuit', name: 'INTUIT TAX' })).toBeNull()          // payroll tax IS a cost
+    expect(notExpenseReason({ merchantName: 'AT&T', name: 'ATT BILL PAYMENT' }, ['payme'])).toBeNull()  // "payme" is not "payment"
+  })
+  it('such a payment is listed apart and left out of unreconciled spending', () => {
+    const p = run([], [txn({ merchantName: 'Internal Revenue Service', date: '2026-11-16', amountCents: 64600 }), txn({ merchantName: 'Google', date: '2026-11-16', amountCents: 50000 })])
+    expect(p.provisionalCents).toBe(50000)
+    expect(p.totalCents).toBe(50000)
+    expect(p.excludedCents).toBe(64600)
+    expect(p.excluded[0].notExpense).toMatch(/IRS/)
   })
 })

@@ -10,9 +10,9 @@ No QuickBooks write, no production data change. Everything new is read-only.
 | Question | Built from | Module |
 |---|---|---|
 | Can we cover upcoming bills? | Safe-to-Spend engine (unchanged formula) − checks written but not cashed | `apps/finance/safe-to-spend.ts`, `cash-checks.ts` |
-| Are we making money? | QuickBooks P&L as synced − spending QuickBooks has not recorded | `apps/finance/provisional.ts` |
+| Are we making money? | QuickBooks P&L as synced, beside UNRECONCILED spending (never netted into a loss headline) | `apps/finance/provisional.ts` |
 | What is driving our costs? | Operating bank feed, grouped into costs vs cash that is not a cost | `apps/finance/dashboard.ts` |
-| Are we earning enough per car? | Production log ÷ and bank costs over the SAME dates | `apps/workflow/production.ts` (`productionSummary`) |
+| Are we earning enough per car? | Production log work value per car (dealer / retail). Cost per car is withheld — the operating account mixes car-lot spending and omits rent | `apps/workflow/production.ts` (`productionSummary`) |
 | What needs my attention now? | One ranked list with a link per item | `dashboard.ts` (`buildAttention`) |
 
 ## Provisional spending — the rule
@@ -21,8 +21,14 @@ No QuickBooks write, no production data change. Everything new is read-only.
 - A **receipt explains** a bank purchase and never adds to it. A receipt is added on its own only when the bank
   cannot show the purchase (cash, a connection that is down, or too recent to have posted).
 - A purchase **stops being provisional** when QuickBooks has it: a person confirmed the match
-  (`purchase_links`), or QuickBooks shows one entry on the same paying account, for the same amount, in the same
-  few days. The second kind is labelled "looks like it's in QuickBooks" and is **never stored** as a match.
+  (`purchase_links`), or QuickBooks shows the same MERCHANT on the same paying account, for the same amount, in
+  the same few days (never stored as a match). Account + amount + date without a merchant, or with competing
+  candidates, is only a **possible match**: it stays in the total and is shown for review. A paper check (no
+  payee at the bank) is accepted only when it is the single candidate on both sides.
+- Transfers, payroll, card payments, owner draws and loan payments are never spending here; loan / financing /
+  IRS back-tax payments the bank files under ordinary expenses are excluded too and listed apart.
+- The figure is called **unreconciled spending**, not a loss: what a paper check or an uncategorised bank
+  line bought is not known.
 - A receipt whose bank payment is unclear is **not counted** and is listed for review.
 - Receipt ↔ bank pairing needs the same amount, vendor, payment account and ≤ 5 days. An equal amount alone
   never pairs anything. Returns: a net-of-returns receipt pairs with the net bank payment.

@@ -30,20 +30,28 @@ export interface PlSnapshot { income: number | null; cogs?: number | null; gross
 export interface ProfitLine {
   month: string; periodEnd: string | null
   incomeCents: number | null; costsCents: number | null; qbNetCents: number | null       // QuickBooks, as synced
-  notInQuickBooksCents: number | null; notInQuickBooksCount: number                    // provisional spending
-  estimatedNetCents: number | null                                                     // QuickBooks − provisional
+  unreconciledCents: number | null; unreconciledCount: number   // spending not matched to QuickBooks — NOT a loss until reconciled
+  possibleMatchCents: number                                    // …of which QuickBooks has a possible, unverified match
+  notExpenseCents: number                                       // loan / financing / back-tax payments left out of it
+  floorNetCents: number | null                                  // QuickBooks profit if EVERY unreconciled dollar proves to be an expense (a floor, not an estimate)
   likelyInQuickBooksCents: number; unclearReceiptCents: number; unclearReceiptCount: number
 }
 const toCents = (n: number | null | undefined) => (typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) : null)
+type ProvForProfit = Pick<ProvisionalView, 'provisionalCents' | 'provisionalCount' | 'possibleMatchCents' | 'excludedCents' | 'likelyInQuickBooksCents' | 'unclearCents' | 'unclear'>
 
-/** PURE. A missing QuickBooks figure stays null — it is never shown as $0 profit. */
-export function profitLine(month: string, pl: PlSnapshot | null | undefined, prov: Pick<ProvisionalView, 'provisionalCents' | 'provisionalCount' | 'likelyInQuickBooksCents' | 'unclearCents' | 'unclear'> | null): ProfitLine {
+/**
+ * PURE. A missing QuickBooks figure stays null — never $0 profit. The unreconciled figure is reported beside
+ * QuickBooks profit, not netted into a headline: what a paper check or an uncategorised bank line bought is
+ * not known, so the only honest derived number is the floor.
+ */
+export function profitLine(month: string, pl: PlSnapshot | null | undefined, prov: ProvForProfit | null): ProfitLine {
   const income = toCents(pl?.income), net = toCents(pl?.net)
   const costs = income != null && net != null ? income - net : null
   return {
     month, periodEnd: pl?.periodEnd ?? null, incomeCents: income, costsCents: costs, qbNetCents: net,
-    notInQuickBooksCents: prov ? prov.provisionalCents : null, notInQuickBooksCount: prov?.provisionalCount ?? 0,
-    estimatedNetCents: net != null && prov ? net - prov.provisionalCents : null,
+    unreconciledCents: prov ? prov.provisionalCents : null, unreconciledCount: prov?.provisionalCount ?? 0,
+    possibleMatchCents: prov?.possibleMatchCents ?? 0, notExpenseCents: prov?.excludedCents ?? 0,
+    floorNetCents: net != null && prov ? net - prov.provisionalCents : null,
     likelyInQuickBooksCents: prov?.likelyInQuickBooksCents ?? 0, unclearReceiptCents: prov?.unclearCents ?? 0, unclearReceiptCount: prov?.unclear.length ?? 0,
   }
 }
@@ -88,17 +96,19 @@ export interface PerCar {
   cars: number; pricedCars: number; unpricedCars: number
   workValueCents: number; avgValueCents: number | null          // ÷ PRICED cars only
   dealer: { cars: number; avgCents: number | null }; retail: { cars: number; avgCents: number | null }
-  directCostCents: number; directCostPerCarCents: number | null   // payroll + purchases from the operating account ÷ ALL cars, same dates
 }
-/** PURE. Value and cost use the SAME date range and the SAME business (the detail shop's operating account). */
-export function perCar(p: ProductionSummary, directCostCents: number): PerCar {
+/**
+ * PURE. What a finished car is worth to us, from the Production log. COST per car is deliberately absent: the
+ * operating account also pays for the car lot, and rent leaves by transfer, so a per-car cost built from it
+ * would mislead pricing. It returns when detail-shop costs can be separated.
+ */
+export function perCar(p: ProductionSummary): PerCar {
   const avg = (v: number, n: number) => (n > 0 ? Math.round(v / n) : null)
   return {
     from: p.from, to: p.to, cars: p.count, pricedCars: p.pricedCount, unpricedCars: p.unpricedCount,
     workValueCents: p.valueCents, avgValueCents: avg(p.valueCents, p.pricedCount),
     dealer: { cars: p.byKind.dealer.count, avgCents: avg(p.byKind.dealer.valueCents, p.byKind.dealer.pricedCount) },
     retail: { cars: p.byKind.retail.count + p.byKind.unknown.count, avgCents: avg(p.byKind.retail.valueCents + p.byKind.unknown.valueCents, p.byKind.retail.pricedCount + p.byKind.unknown.pricedCount) },
-    directCostCents, directCostPerCarCents: avg(directCostCents, p.count),
   }
 }
 
@@ -120,8 +130,8 @@ export function buildAttention(i: {
   if (i.projectedLowCents != null && i.projectedLowCents < 0) out.push({ level: 'now', title: `Cash is projected to go below zero on ${i.projectedLowDate ? human(i.projectedLowDate) : 'an upcoming day'}`, detail: `The 30-day projection dips to −${usd0(-i.projectedLowCents)} even after the deposits we normally receive.`, href: '#cash-detail', action: 'See which bills land that week' })
   const behindDays = i.quickBooksCardThrough ? Math.round((utc(i.today) - utc(i.quickBooksCardThrough)) / DAY) : null
   if (behindDays == null || behindDays > 21) {
-    const missing = (i.thisMonth.notInQuickBooksCents ?? 0) + (i.lastMonth.notInQuickBooksCents ?? 0)
-    out.push({ level: 'now', title: 'QuickBooks is behind on card and bank purchases', detail: `${i.quickBooksCardThrough ? `Nothing after ${human(i.quickBooksCardThrough)} has been recorded` : 'No card or bank purchases have been recorded'} for the operating account. About ${usd0(missing)} of spending this month and last is missing from QuickBooks profit.`, href: '#profit-detail', action: 'Ask the bookkeeper to categorise the bank feed' })
+    const open = (i.thisMonth.unreconciledCents ?? 0) + (i.lastMonth.unreconciledCents ?? 0)
+    out.push({ level: 'now', title: 'QuickBooks is behind on card and bank purchases', detail: `${i.quickBooksCardThrough ? `Nothing after ${human(i.quickBooksCardThrough)} has been recorded` : 'No card or bank purchases have been recorded'} for the operating account. About ${usd0(open)} of spending this month and last is not reconciled to QuickBooks, so its profit figure is incomplete.`, href: '#profit-detail', action: 'Ask the bookkeeper to categorise the bank feed' })
   }
   for (const q of i.quiet) out.push({ level: 'soon', title: `Is ${q.vendor} still a bill?`, detail: q.message, href: '#bills-admin', action: 'Mark it ended (ignore) or update the amount' })
   if (i.thisMonth.unclearReceiptCount + i.lastMonth.unclearReceiptCount > 0) out.push({ level: 'soon', title: `${i.thisMonth.unclearReceiptCount + i.lastMonth.unclearReceiptCount} receipts have no clear bank payment`, detail: `${usd0(i.thisMonth.unclearReceiptCents + i.lastMonth.unclearReceiptCents)} is not counted anywhere until someone checks the date, total or payment source.`, href: '#profit-detail', action: 'Review the list' })
@@ -189,14 +199,9 @@ export async function getDashboard(input: { s2s: SafeToSpend; health: SyncHealth
   const inMonth = (m: string) => posted.filter((t) => t.txnDate.slice(0, 7) === m)
   const costsThis = costDrivers(inMonth(month)), costsLast = costDrivers(inMonth(last))
 
-  // Per car: production and direct cost over the SAME dates — the month so far, through the last day the bank shows.
-  let pc: PerCar | null = null
-  const to = bankThrough && bankThrough.slice(0, 7) === month ? bankThrough : null
-  if (to) {
-    const prod = await productionSummary(`${month}-01`, to).catch(() => null)
-    const direct = costDrivers(posted.filter((t) => t.txnDate >= `${month}-01` && t.txnDate <= to)).costCents
-    if (prod) pc = perCar(prod, direct)
-  }
+  // Per car: work value of the cars finished this month so far (shop calendar).
+  const prod = await productionSummary(`${month}-01`, today).catch(() => null)
+  const pc: PerCar | null = prod ? perCar(prod) : null
   return {
     today, month, bankThrough, outstanding, quiet, cardOwedCents, cardReservedCents, verdict,
     safeAfterChecksCents: input.s2s.coreSafeToSpendCents == null ? null : input.s2s.coreSafeToSpendCents - outstanding.totalCents,

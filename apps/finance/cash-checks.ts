@@ -34,6 +34,11 @@ export function vendorToken(vendor: string): string | null {
   return first.length >= 3 && !GENERIC.has(first) ? first : null
 }
 
+/** Does a bank line contain this vendor word as a WHOLE word? ("payme" must not match "payment".) */
+export function hasVendorWord(text: string, token: string): boolean {
+  return text.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).includes(token)
+}
+
 /**
  * A confirmed MONTHLY bill (of $50 or more) that the bank no longer shows being paid:
  *   no_payment_seen — nothing at all from that vendor for more than ~6 weeks;
@@ -51,7 +56,7 @@ export function quietBills(bills: BillInput[], txns: BillTxn[], today: string, f
     const expected = b.amountCents ?? b.avgAmountCents ?? 0
     const token = vendorToken(b.vendor)
     if (expected < 5000 || !token) continue
-    const mine = txns.filter((t) => `${t.merchantName ?? ''} ${t.name ?? ''}`.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').includes(token)).sort((x, y) => y.date.localeCompare(x.date))
+    const mine = txns.filter((t) => hasVendorWord(`${t.merchantName ?? ''} ${t.name ?? ''}`, token)).sort((x, y) => y.date.localeCompare(x.date))
     if (mine.length === 0) continue
     const last = mine[0], sinceLast = days(today, last.date)
     if (sinceLast > 41) {

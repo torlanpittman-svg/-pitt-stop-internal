@@ -231,7 +231,6 @@ export default async function FinancePage() {
   const committed30 = s2s.criticalCents + s2s.contractualCents + s2s.reservesCents
   const lowAfterChecks = runway.lowCents == null ? null : runway.lowCents - (dash?.outstanding.totalCents ?? 0)
   const dips = (lowAfterChecks ?? 0) < 0
-  const perCarLeft = dash?.perCar?.avgValueCents != null && dash.perCar.directCostPerCarCents != null ? dash.perCar.avgValueCents - dash.perCar.directCostPerCarCents : null
   const qbBehind = !!dash && (!dash.profit.quickBooksThrough.cardAndAch || (Date.parse(dash.today) - Date.parse(dash.profit.quickBooksThrough.cardAndAch)) / 86400_000 > 21)
   const autoSource = syncHealth.sources.find((x) => /5600/.test(x.label))
   const s = (run?.summary ?? {}) as any
@@ -336,29 +335,26 @@ export default async function FinancePage() {
           {/* 2 ─ Are we making money? */}
           <div className={card}>
             <h2 className="text-white font-bold text-lg">Are we making money?</h2>
-            <p className="text-gray-500 text-xs mb-3">Profit is not cash. QuickBooks is the record; the middle line is spending it has not caught up on.</p>
+            <p className="text-gray-500 text-xs mb-3">Use this to decide whether the books can be trusted yet — not to read a profit or a loss off the second line.</p>
             <div className="grid grid-cols-2 gap-4">
               {[{ title: `${monthName(dash.profit.thisMonth.month)} so far`, p: dash.profit.thisMonth }, { title: monthName(dash.profit.lastMonth.month), p: dash.profit.lastMonth }].map(({ title, p }) => (
                 <div key={p.month}>
                   <p className={kicker}>{title}</p>
-                  {p.qbNetCents == null ? (
-                    <p className="text-amber-300 text-sm mt-1">QuickBooks has no report for this month yet — profit can’t be shown.</p>
-                  ) : (
-                    <div className="text-sm mt-1 space-y-1">
-                      <div className="flex justify-between"><span className="text-gray-400">QuickBooks profit</span><span className="tabular-nums text-gray-200">{big(p.qbNetCents)}</span></div>
-                      <p className="text-gray-600 text-[11px] -mt-1">income {big(p.incomeCents)} − costs {big(p.costsCents)}</p>
-                      <div className="flex justify-between"><span className="text-gray-400">− Not in QuickBooks yet</span><span className="tabular-nums text-red-300">{p.notInQuickBooksCents == null ? '—' : `−${big(p.notInQuickBooksCents)}`}</span></div>
-                      <p className="text-gray-600 text-[11px] -mt-1">{p.notInQuickBooksCount} purchases seen at the bank or on receipts</p>
-                      <div className="flex justify-between border-t border-gray-700 pt-1"><span className="text-white font-semibold">≈ Estimated profit</span><span className={`tabular-nums font-black text-lg ${(p.estimatedNetCents ?? 0) < 0 ? 'text-red-300' : 'text-emerald-300'}`}>{big(p.estimatedNetCents)}</span></div>
-                    </div>
-                  )}
+                  <div className="text-sm mt-1 space-y-1">
+                    <div className="flex justify-between"><span className="text-gray-300">QuickBooks profit</span><span className="tabular-nums text-white font-bold text-lg">{p.qbNetCents == null ? 'no report' : big(p.qbNetCents)}</span></div>
+                    {p.qbNetCents != null && <p className="text-gray-600 text-[11px] -mt-1">income {big(p.incomeCents)} − costs {big(p.costsCents)}{qbBehind ? ' · incomplete' : ''}</p>}
+                    <div className="flex justify-between border-t border-gray-800 pt-1"><span className="text-gray-300">Unreconciled spending</span><span className="tabular-nums text-amber-200 font-bold text-lg">{p.unreconciledCents == null ? '—' : big(p.unreconciledCents)}</span></div>
+                    <p className="text-gray-600 text-[11px] -mt-1">{p.unreconciledCount} purchases not matched to QuickBooks{p.possibleMatchCents > 0 ? ` · ${big(p.possibleMatchCents)} has a possible match to review` : ''}</p>
+                    {p.floorNetCents != null && <p className="text-gray-500 text-[11px]">If every dollar of it proves to be an expense, profit would be {big(p.floorNetCents)}. That is a floor, not a result.</p>}
+                  </div>
                 </div>
               ))}
             </div>
             <div className="mt-3 space-y-1 text-[11px]">
-              {qbBehind && <p className="text-amber-300/90">⚠ QuickBooks has checks through {day(dash.profit.quickBooksThrough.checks)} but card and bank purchases only through {day(dash.profit.quickBooksThrough.cardAndAch)}. Until the bookkeeper catches up, trust the estimate, not the QuickBooks line.</p>}
-              <p className="text-gray-500">The estimate is rough: it treats every purchase not yet in QuickBooks as a cost. Both businesses (detail and auto sales) are in one QuickBooks profit figure. Income counts invoices when sent — {ar.asOf ? `${big(ar.totalCents)} is still unpaid` : 'how much is still unpaid is not known yet (no receivables snapshot)'}.</p>
-              <p className="text-gray-600">QuickBooks read {dash.profit.quickBooksSyncedAt ? freshnessLabel(dash.profit.quickBooksSyncedAt) : 'never'} · bank through {day(dash.bankThrough)} · <a href="#profit-detail" className="text-indigo-300 underline">what’s not in QuickBooks ↓</a></p>
+              {qbBehind && <p className="text-amber-300/90">⚠ QuickBooks has checks through {day(dash.profit.quickBooksThrough.checks)} but card and bank purchases only through {day(dash.profit.quickBooksThrough.cardAndAch)}, so its profit is overstated until the bookkeeper catches up.</p>}
+              <p className="text-gray-500">“Unreconciled” is money that left for purchases, bills and checks and isn’t matched to a QuickBooks entry. It is not called a loss: what a paper check or an uncategorised bank line paid for isn’t known yet. Transfers, payroll, credit-card payments, owner draws and loan or back-tax payments are left out{dash.profit.thisMonth.notExpenseCents > 0 ? ` (${big(dash.profit.thisMonth.notExpenseCents)} of loan and tax-plan payments this month)` : ''}.</p>
+              <p className="text-gray-500">QuickBooks profit covers both businesses and counts invoices when sent — {ar.asOf ? `${big(ar.totalCents)} is still unpaid` : 'how much is still unpaid is not known yet'}. Profit is not cash.</p>
+              <p className="text-gray-600">QuickBooks read {dash.profit.quickBooksSyncedAt ? freshnessLabel(dash.profit.quickBooksSyncedAt) : 'never'} · bank through {day(dash.bankThrough)} · <a href="#profit-detail" className="text-indigo-300 underline">see and reconcile the list ↓</a></p>
             </div>
           </div>
 
@@ -386,18 +382,16 @@ export default async function FinancePage() {
           {/* 4 ─ Are we earning enough per car? */}
           <div className={card}>
             <h2 className="text-white font-bold text-lg">Are we earning enough per car?</h2>
-            {!dash.perCar || dash.perCar.cars === 0 ? (
-              <p className="text-amber-300 text-sm mt-2">{dash.perCar ? 'No cars have been finished this month yet.' : 'Can’t say — the bank feed has no transactions for this month yet, so costs and cars can’t be lined up over the same days.'}</p>
-            ) : (<>
-              <p className="text-gray-500 text-xs mb-3">Detail shop · {monthName(dash.month)} 1–{day(dash.perCar.to)?.replace(/^\D+/, '')} · cars and costs cover the same days</p>
+            {!dash.perCar ? <p className="text-amber-300 text-sm mt-2">Can’t say — the Production log could not be read just now.</p> : dash.perCar.cars === 0 ? <p className="text-gray-400 text-sm mt-2">No cars have been finished this month yet.</p> : (<>
+              <p className="text-gray-500 text-xs mb-3">Detail shop · {monthName(dash.month)} 1–{day(dash.perCar.to)?.replace(/^\D+/, '')} · use it to watch price and the dealer/retail mix</p>
               <div className="grid grid-cols-3 gap-3">
                 <div><p className={kicker}>Work value per car</p><p className="text-2xl font-black text-white tabular-nums">{big(dash.perCar.avgValueCents)}</p><p className="text-[11px] text-gray-500">{dash.perCar.cars} cars finished</p></div>
-                <div><p className={kicker}>Direct cost per car</p><p className="text-2xl font-black text-white tabular-nums">{big(dash.perCar.directCostPerCarCents)}</p><p className="text-[11px] text-gray-500">payroll + purchases ÷ cars</p></div>
-                <div><p className={kicker}>Left per car</p><p className={`text-2xl font-black tabular-nums ${perCarLeft != null && perCarLeft < 0 ? 'text-red-300' : 'text-emerald-300'}`}>{big(perCarLeft)}</p><p className="text-[11px] text-gray-500">before rent, loans, owner pay</p></div>
+                <div><p className={kicker}>Dealer</p><p className="text-2xl font-black text-white tabular-nums">{big(dash.perCar.dealer.avgCents)}</p><p className="text-[11px] text-gray-500">{dash.perCar.dealer.cars} cars</p></div>
+                <div><p className={kicker}>Retail</p><p className="text-2xl font-black text-white tabular-nums">{big(dash.perCar.retail.avgCents)}</p><p className="text-[11px] text-gray-500">{dash.perCar.retail.cars} cars</p></div>
               </div>
-              <p className="text-gray-400 text-xs mt-3">Dealer: {dash.perCar.dealer.cars} cars at {big(dash.perCar.dealer.avgCents)} each · Retail: {dash.perCar.retail.cars} cars at {big(dash.perCar.retail.avgCents)} each.</p>
-              {dash.perCar.unpricedCars > 0 && <p className="text-amber-300/80 text-[11px] mt-1">⚠ {dash.perCar.unpricedCars} finished car{dash.perCar.unpricedCars === 1 ? ' has' : 's have'} no price yet — left out of the value average, still counted in the cost average. <a href="/production" className="underline">Price them</a></p>}
-              <p className="text-gray-600 text-[11px] mt-1">Work value is the job price before fees and tax, from the Production log — not what has been collected. Direct cost is everything paid from *2649 for payroll and purchases, including any bought for the car lot.</p>
+              {dash.perCar.unpricedCars > 0 && <p className="text-amber-300/80 text-[11px] mt-2">⚠ {dash.perCar.unpricedCars} finished car{dash.perCar.unpricedCars === 1 ? ' has' : 's have'} no price yet — left out of the averages. <a href="/production" className="underline">Price them</a></p>}
+              <p className="text-gray-400 text-xs mt-3"><b className="text-gray-300">Cost per car is not shown.</b> The operating account also pays for the car lot, and rent leaves it as a transfer, so a cost per car built from it would be wrong in both directions. Don’t set prices from this card yet.</p>
+              <p className="text-gray-600 text-[11px] mt-1">Work value is the job price before fees and tax, from the Production log — what the work was worth, not what has been collected.</p>
             </>)}
           </div>
 
@@ -558,14 +552,14 @@ export default async function FinancePage() {
       </details>
 
       <details id="profit-detail" className={`${card} mb-4`}>
-        <summary className="text-white font-bold cursor-pointer">Spending not in QuickBooks, receipts and who owes us <span className="text-gray-600 text-sm font-normal">— behind “Are we making money?”</span></summary>
+        <summary className="text-white font-bold cursor-pointer">Unreconciled spending, receipts and who owes us <span className="text-gray-600 text-sm font-normal">— behind “Are we making money?”</span></summary>
         <div className="mt-4">
           {dash && (() => {
             const p = dash.provisional.thisMonth
             const BANK: Record<string, string> = { bank_confirmed: 'receipt + bank payment · confirmed', bank_likely: 'receipt + bank payment · looks matched', bank_only: 'bank payment · no receipt', not_visible_yet: 'receipt only · bank can’t show it yet', cash: 'receipt only · cash' }
-            const QB: Record<string, { t: string; c: string }> = { in_quickbooks: { t: 'in QuickBooks', c: 'text-emerald-300' }, likely_in_quickbooks: { t: 'looks like it’s in QuickBooks', c: 'text-sky-300' }, not_in_quickbooks: { t: 'not in QuickBooks yet', c: 'text-amber-300' } }
+            const QB: Record<string, { t: string; c: string }> = { in_quickbooks: { t: 'in QuickBooks', c: 'text-emerald-300' }, likely_in_quickbooks: { t: 'same merchant found in QuickBooks', c: 'text-sky-300' }, possible_match: { t: 'possible QuickBooks match — review', c: 'text-purple-300' }, not_in_quickbooks: { t: 'not in QuickBooks yet', c: 'text-amber-300' } }
             const withReceipt = p.items.filter((i) => i.receiptIds.length > 0)
-            const bankOnly = p.items.filter((i) => i.bank === 'bank_only' && i.quickbooks === 'not_in_quickbooks').sort((a, b) => b.amountCents - a.amountCents)
+            const bankOnly = p.items.filter((i) => i.bank === 'bank_only' && (i.quickbooks === 'not_in_quickbooks' || i.quickbooks === 'possible_match')).sort((a, b) => b.amountCents - a.amountCents)
             const line = (i: (typeof p.items)[number]) => (
               <tr key={i.key} className="border-b border-gray-800/50" title={i.note}>
                 <td className="py-1 text-gray-500 text-xs whitespace-nowrap w-20">{day(i.date)}</td>
@@ -581,19 +575,25 @@ export default async function FinancePage() {
                 <p className="text-gray-600 text-[11px] mb-2">The bank payment is the purchase; a receipt explains it and never adds to it. A receipt is counted on its own only when the bank can’t show the purchase yet. Nothing is matched for you — “looks matched” is only used so this total doesn’t count a purchase twice.</p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
                   <div className="rounded-lg border border-emerald-900/40 bg-emerald-950/10 p-2"><p className="text-[10px] text-gray-500 uppercase">In QuickBooks · confirmed</p><p className="text-sm font-bold tabular-nums text-emerald-300">{money(p.inQuickBooksCents)}</p></div>
-                  <div className="rounded-lg border border-sky-900/40 bg-sky-950/10 p-2"><p className="text-[10px] text-gray-500 uppercase">Looks like it’s in QuickBooks</p><p className="text-sm font-bold tabular-nums text-sky-300">{money(p.likelyInQuickBooksCents)}</p><p className="text-[10px] text-gray-600">same account, amount and dates · not confirmed</p></div>
-                  <div className="rounded-lg border border-amber-900/40 bg-amber-950/10 p-2"><p className="text-[10px] text-gray-500 uppercase">Not in QuickBooks yet · provisional</p><p className="text-sm font-bold tabular-nums text-amber-200">{money(p.provisionalCents)}</p><p className="text-[10px] text-gray-600">{money(p.provisionalReceiptBackedCents)} with a receipt · {money(p.provisionalBankOnlyCents)} bank only · {money(p.provisionalReceiptOnlyCents)} receipt only</p></div>
+                  <div className="rounded-lg border border-sky-900/40 bg-sky-950/10 p-2"><p className="text-[10px] text-gray-500 uppercase">Same merchant found in QuickBooks</p><p className="text-sm font-bold tabular-nums text-sky-300">{money(p.likelyInQuickBooksCents)}</p><p className="text-[10px] text-gray-600">merchant, account, amount and dates agree · not confirmed</p></div>
+                  <div className="rounded-lg border border-amber-900/40 bg-amber-950/10 p-2"><p className="text-[10px] text-gray-500 uppercase">Unreconciled spending</p><p className="text-sm font-bold tabular-nums text-amber-200">{money(p.provisionalCents)}</p><p className="text-[10px] text-gray-600">{money(p.possibleMatchCents)} has a possible match to review ({p.possibleMatchCount}) · {money(p.provisionalReceiptBackedCents)} with a receipt · {money(p.provisionalBankOnlyCents)} bank only · {money(p.provisionalReceiptOnlyCents)} receipt only</p></div>
                   <div className="rounded-lg border border-gray-800 bg-gray-900/40 p-2"><p className="text-[10px] text-gray-500 uppercase">Receipts not counted · unclear</p><p className="text-sm font-bold tabular-nums text-gray-200">{money(p.unclearCents)}</p><p className="text-[10px] text-gray-600">{p.unclear.length} with no clear bank payment</p></div>
                 </div>
-                <p className="text-gray-500 text-[11px] mb-3">Receipt ↔ bank: {p.bankConfirmedCount} confirmed, {p.bankLikelyCount} look matched and wait for you. Provisional purchases with a receipt, by business: {Object.entries(p.provisionalByEntity).map(([k, v]) => `${rcptEntityLabel(k)} ${money(v)}`).join(' · ') || 'none'}. <a href="/admin/finance/reconcile" className="text-indigo-300 underline">Confirm matches</a> — a confirmed QuickBooks match moves a purchase out of “provisional” and keeps the receipt, the bank payment and the decision on record.</p>
+                <p className="text-gray-500 text-[11px] mb-3">Receipt ↔ bank: {p.bankConfirmedCount} confirmed, {p.bankLikelyCount} look matched and wait for you. Unreconciled purchases with a receipt, by business: {Object.entries(p.provisionalByEntity).map(([k, v]) => `${rcptEntityLabel(k)} ${money(v)}`).join(' · ') || 'none'}. <a href="/admin/finance/reconcile" className="text-indigo-300 underline">Confirm matches</a> — a confirmed QuickBooks match moves a purchase out of “unreconciled” and keeps the receipt, the bank payment and the decision on record. A “possible match” (same account, amount and dates, but the merchant can’t be checked or more than one record fits) stays in the total until you decide.</p>
                 {withReceipt.length > 0 && (<>
                   <p className={kicker}>Purchases with a receipt ({withReceipt.length})</p>
                   <table className="w-full text-sm mb-3"><tbody>{withReceipt.map(line)}</tbody></table>
                 </>)}
                 {bankOnly.length > 0 && (
                   <details>
-                    <summary className="text-gray-400 text-sm cursor-pointer">{bankOnly.length} bank payments with no receipt, not in QuickBooks yet · {money(bankOnly.reduce((t, i) => t + i.amountCents, 0))} ▾</summary>
+                    <summary className="text-gray-400 text-sm cursor-pointer">{bankOnly.length} bank payments with no receipt, not reconciled to QuickBooks · {money(bankOnly.reduce((t, i) => t + i.amountCents, 0))} ▾</summary>
                     <table className="w-full text-sm mt-2"><tbody>{bankOnly.slice(0, 60).map(line)}</tbody></table>
+                  </details>
+                )}
+                {p.excluded.length > 0 && (
+                  <details className="mt-2">
+                    <summary className="text-gray-400 text-sm cursor-pointer">{p.excluded.length} payments left out because they are not expenses · {money(p.excludedCents)} ▾</summary>
+                    {p.excluded.map((i) => <p key={i.key} className="text-gray-400 text-xs mt-1">{day(i.date)} · {i.label} · {money(i.amountCents)} — <span className="text-gray-500">{i.notExpense}</span></p>)}
                   </details>
                 )}
                 {p.unclear.length > 0 && (
