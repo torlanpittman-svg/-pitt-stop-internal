@@ -10,16 +10,16 @@
 import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-vi.mock('../actions', () => ({ checkInAction: vi.fn(), noShowAction: vi.fn(), cancelAction: vi.fn(), rescheduleAction: vi.fn(), noteAction: vi.fn() }))
+vi.mock('../actions', () => ({ checkInAction: vi.fn(), noShowAction: vi.fn(), cancelAction: vi.fn(), rescheduleAction: vi.fn(), noteAction: vi.fn(), declineEstimateAction: vi.fn() }))
 vi.mock('../SlotPicker', () => ({ default: () => null }))
 
-import AppointmentActions, { submittedVehicleChoice, type SavedVehicleOption } from './AppointmentActions'
+import AppointmentActions, { submittedVehicleChoice, canDeclineEstimate, declineSuccessMessage, type SavedVehicleOption } from './AppointmentActions'
 
 const truck = (over: Partial<SavedVehicleOption> = {}): SavedVehicleOption =>
   ({ id: 'b2f7f0a4-0000-0000-0000-000000000001', label: '2019 Ford F-150', color: 'Blue', vin: '1FTFW1E52KFA00002', matches: true, ...over })
 
 const render = (over: Partial<Parameters<typeof AppointmentActions>[0]> = {}) => renderToStaticMarkup(
-  <AppointmentActions id="a1" status="confirmed" hasJob={false} isManager={false} past={false}
+  <AppointmentActions id="a1" status="confirmed" hasJob={false} isManager={false} checkinStarted={false} past={false}
     date="2026-11-10" time="08:00" serviceKeys={['complete_detail']}
     bookedVehicle="2019 Ford F-150" bookedVin={null} savedVehicles={[]} {...over} />,
 )
@@ -34,6 +34,33 @@ describe('submittedVehicleChoice — a hidden selector submits NOTHING', () => {
     expect(submittedVehicleChoice(true, '')).toBeNull()
     expect(submittedVehicleChoice(true, 'new')).toEqual({ newVehicle: true })
     expect(submittedVehicleChoice(true, truck().id)).toEqual({ vehicleId: truck().id })
+  })
+})
+
+describe('"Attended — estimate declined" — who sees it and what success says', () => {
+  const base = { status: 'confirmed', hasJob: false, isManager: true, checkinStarted: false }
+  it('offered only to a manager on a confirmed, job-less, unclaimed appointment', () => {
+    expect(canDeclineEstimate(base)).toBe(true)
+    expect(canDeclineEstimate({ ...base, isManager: false })).toBe(false)
+    expect(canDeclineEstimate({ ...base, hasJob: true })).toBe(false)
+    expect(canDeclineEstimate({ ...base, checkinStarted: true })).toBe(false)
+    for (const status of ['arrived', 'cancelled', 'no_show', 'declined']) expect(canDeclineEstimate({ ...base, status })).toBe(false)
+  })
+  it('the button renders for an eligible manager and never for the ineligible', () => {
+    expect(render({ isManager: true })).toContain('Attended — estimate declined')
+    expect(render({ isManager: false })).not.toContain('Attended — estimate declined')
+    expect(render({ isManager: true, hasJob: true })).not.toContain('Attended — estimate declined')
+    expect(render({ isManager: true, checkinStarted: true })).not.toContain('Attended — estimate declined')
+    expect(render({ isManager: true, status: 'cancelled' })).not.toContain('Attended — estimate declined')
+  })
+  it('check-in stays available and unchanged alongside the decline button', () => {
+    const html = render({ isManager: true })
+    expect(checkInButton(html)).toContain('Check in')
+  })
+  it('success copy covers only COMPLETE outcomes — partial success has no message because it cannot happen', () => {
+    expect(declineSuccessMessage('lost')).toContain('now Lost')
+    expect(declineSuccessMessage('none')).toContain('No marketing lead is linked')
+    expect(declineSuccessMessage('already')).toContain('already marked')
   })
 })
 

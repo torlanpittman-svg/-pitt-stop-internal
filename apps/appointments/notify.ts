@@ -258,6 +258,11 @@ export function staleReason(kind: string, a: Appointment, now: Date): string | n
   if (kind === 'reminder' && a.status !== 'confirmed') return `appointment ${a.status}`
   if (kind === 'reminder' && a.startsAt.getTime() <= now.getTime()) return 'drop-off time passed'
   if ((kind === 'confirmation' || kind === 'reschedule') && a.status === 'cancelled') return 'appointment cancelled'
+  // Declined = the customer already attended and said no to the estimate. Telling them their drop-off "is
+  // confirmed" after that is wrong. decline skips its pending notices in the same statement; this catches a
+  // notice already claimed 'sending' when the decline lands, and anything a manager re-queues later. It is
+  // never a missed send: the customer was here in person.
+  if ((kind === 'confirmation' || kind === 'reschedule') && a.status === 'declined') return 'estimate declined'
   // A confirmation is only true while the drop-off is still ahead. Once it has passed, telling the customer
   // their drop-off "is confirmed" for a past time is wrong and confusing — this is what stops a notice that
   // sat un-sent (no provider, a failure, a staff retry weeks later) from going out as a backdated

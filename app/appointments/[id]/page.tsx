@@ -87,7 +87,7 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
         )}
 
         <AppointmentActions
-          id={a.id} status={a.status} hasJob={!!a.serviceOrderId} isManager={!!mgr}
+          id={a.id} status={a.status} hasJob={!!a.serviceOrderId} isManager={!!mgr} checkinStarted={!!a.checkinStartedAt}
           past={!isFuture(a.startsAt)} date={a.localDate} time={a.localTime} serviceKeys={a.serviceKeys ?? []}
           bookedVehicle={bookedVehicleLabel(a)} bookedVin={a.vehicleVin}
           savedVehicles={saved.map((v) => ({ id: v.id, label: [v.year, v.make, v.model].filter(Boolean).join(' ') || 'Vehicle', color: v.color, vin: v.vin, matches: v.matches }))}
@@ -149,6 +149,7 @@ export default async function AppointmentDetail({ params }: { params: Promise<{ 
                 {e.eventType === 'email_uncertain' && ` · ${(e.meta as { kind?: string }).kind ?? 'email'} may have been delivered (connection lost) — not resent`}
                 {e.eventType === 'email_failed' && ` · ${(e.meta as { kind?: string }).kind ?? 'email'} was not delivered`}
                 {e.eventType === 'rescheduled' && (() => { const m = e.meta as { from?: { date: string; time: string }; to?: { date: string; time: string } }; return m.from && m.to ? ` · ${m.from.date} ${m.from.time} → ${m.to.date} ${m.to.time}` : '' })()}
+                {e.eventType === 'estimate_declined' && (() => { const m = e.meta as { reason?: string | null; lead?: string }; return `${m.reason ? ` · ${m.reason}` : ''}${m.lead === 'lost' ? ' · lead marked Lost' : ''}` })()}
               </li>
             ))}
           </ul>

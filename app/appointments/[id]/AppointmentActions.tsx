@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useTransition } from 'react'
-import { checkInAction, noShowAction, cancelAction, rescheduleAction, noteAction, type ActionResult } from '../actions'
+import { useEffect, useRef, useState, useTransition } from 'react'
+import { checkInAction, noShowAction, cancelAction, rescheduleAction, noteAction, declineEstimateAction, type ActionResult, type DeclineActionResult } from '../actions'
 import SlotPicker from '../SlotPicker'
 
 export interface SavedVehicleOption { id: string; label: string; color: string | null; vin: string | null; matches: boolean }
@@ -16,8 +16,26 @@ export function submittedVehicleChoice(selectorShown: boolean, selection: string
   return selection === 'new' ? { newVehicle: true } : { vehicleId: selection }
 }
 
-export default function AppointmentActions({ id, status, hasJob, isManager, past, date, time, serviceKeys, bookedVehicle, bookedVin, savedVehicles }: {
-  id: string; status: string; hasJob: boolean; isManager: boolean; past: boolean; date: string; time: string; serviceKeys: string[]
+/**
+ * When "Attended — estimate declined" is offered: managers/admins only, confirmed appointment, no linked
+ * Work Board job and no started check-in claim (a claim means a Job may exist — the server refuses too).
+ */
+export function canDeclineEstimate(a: { status: string; hasJob: boolean; isManager: boolean; checkinStarted: boolean }): boolean {
+  return a.isManager && a.status === 'confirmed' && !a.hasJob && !a.checkinStarted
+}
+
+/**
+ * Honest success copy per lead outcome. Only complete outcomes exist: the decline and the linked lead's
+ * move to Lost commit together or the action errors — there is no partial-success message to show.
+ */
+export function declineSuccessMessage(lead: Extract<DeclineActionResult, { ok: true }>['lead']): string {
+  if (lead === 'lost') return 'Marked attended — estimate declined. The linked marketing lead is now Lost.'
+  if (lead === 'none') return 'Marked attended — estimate declined. No marketing lead is linked to this appointment.'
+  return 'This appointment was already marked attended — estimate declined.'
+}
+
+export default function AppointmentActions({ id, status, hasJob, isManager, checkinStarted, past, date, time, serviceKeys, bookedVehicle, bookedVin, savedVehicles }: {
+  id: string; status: string; hasJob: boolean; isManager: boolean; checkinStarted: boolean; past: boolean; date: string; time: string; serviceKeys: string[]
   /** What the customer booked (year make model) and the VIN if staff entered one on the appointment. */
   bookedVehicle: string; bookedVin: string | null
   /** The customer's saved vehicles. Empty = nothing on file (the Job starts without a VIN; scan it on the Job). */
@@ -25,16 +43,29 @@ export default function AppointmentActions({ id, status, hasJob, isManager, past
 }) {
   const [pending, start] = useTransition()
   const [error, setError] = useState<string | null>(null)
-  const [panel, setPanel] = useState<'none' | 'reschedule' | 'cancel' | 'note'>('none')
+  const [success, setSuccess] = useState<string | null>(null)
+  const [panel, setPanel] = useState<'none' | 'reschedule' | 'cancel' | 'note' | 'decline'>('none')
   const [reason, setReason] = useState('')
+  const [declineReason, setDeclineReason] = useState('')
   const [note, setNote] = useState('')
+  const declineReasonRef = useRef<HTMLInputElement>(null)
+  // Opening the decline panel moves focus into it (its optional Reason field); closing it leaves focus
+  // on the toggle button the user is already on.
+  useEffect(() => { if (panel === 'decline') declineReasonRef.current?.focus() }, [panel])
   const [slot, setSlot] = useState<{ date: string; time: string | null; override: boolean }>({ date, time: null, override: false })
 
   const run = (fn: () => Promise<ActionResult>, after?: () => void) => start(async () => {
-    setError(null)
+    setError(null); setSuccess(null)
     const r = await fn()
     if (r && !r.ok) setError(r.error)
     else { setPanel('none'); after?.() }
+  })
+
+  const submitDecline = () => start(async () => {
+    setError(null); setSuccess(null)
+    const r = await declineEstimateAction(id, declineReason)
+    if (!r.ok) setError(r.error)
+    else { setPanel('none'); setDeclineReason(''); setSuccess(declineSuccessMessage(r.lead)) }
   })
 
   // Which vehicle is here? Asked only when the answer can matter: the customer has saved vehicles AND the
@@ -78,7 +109,7 @@ export default function AppointmentActions({ id, status, hasJob, isManager, past
       <div className="flex flex-wrap gap-2">
         {canCheckIn && (
           <button type="button" disabled={pending || (needsVehicleChoice && !chosen)} onClick={() => run(() => checkInAction(id, chosen))}
-            className="min-h-12 flex-1 rounded-xl bg-emerald-500 px-5 font-semibold text-gray-950 disabled:opacity-60">
+            className="min-h-12 min-w-48 flex-1 rounded-xl bg-emerald-500 px-5 font-semibold text-gray-950 disabled:opacity-60">
             {pending ? 'Working…' : 'Check in → Work Board'}
           </button>
         )}
@@ -90,6 +121,11 @@ export default function AppointmentActions({ id, status, hasJob, isManager, past
             <button type="button" onClick={() => setPanel(panel === 'reschedule' ? 'none' : 'reschedule')} className="min-h-12 rounded-xl border border-gray-700 px-4 text-gray-200">Reschedule</button>
             <button type="button" onClick={() => setPanel(panel === 'cancel' ? 'none' : 'cancel')} className="min-h-12 rounded-xl border border-red-900 px-4 text-red-300">Cancel</button>
           </>
+        )}
+        {canDeclineEstimate({ status, hasJob, isManager, checkinStarted }) && (
+          <button type="button" aria-expanded={panel === 'decline'} aria-controls="decline-panel"
+            onClick={() => setPanel(panel === 'decline' ? 'none' : 'decline')}
+            className="min-h-12 rounded-xl border border-amber-800 px-4 text-amber-200">Attended — estimate declined</button>
         )}
         <button type="button" onClick={() => setPanel(panel === 'note' ? 'none' : 'note')} className="min-h-12 rounded-xl border border-gray-700 px-4 text-gray-200">Add note</button>
       </div>
@@ -111,6 +147,25 @@ export default function AppointmentActions({ id, status, hasJob, isManager, past
             className="mt-3 min-h-11 w-full rounded-lg bg-red-500 font-semibold text-white disabled:opacity-60">Cancel appointment (frees the time)</button>
         </div>
       )}
+      {panel === 'decline' && (
+        <form id="decline-panel" aria-labelledby="decline-heading" className="mt-4 rounded-xl border border-amber-900/70 bg-amber-950/20 p-4"
+          onSubmit={(e) => { e.preventDefault(); submitDecline() }}>
+          <h3 id="decline-heading" className="text-sm font-semibold text-amber-200">Attended — estimate declined</h3>
+          <p className="mt-2 text-sm text-gray-200">
+            The customer attended but declined the estimate. This records the visit and marks the linked
+            marketing lead <span className="font-semibold">Lost</span>. No job or invoice is created and no
+            email is sent to the customer.
+          </p>
+          <label htmlFor="decline-reason" className="mt-3 block text-sm text-gray-300">Reason <span className="text-gray-500">(optional)</span></label>
+          <input id="decline-reason" name="reason" ref={declineReasonRef} value={declineReason} onChange={(e) => setDeclineReason(e.target.value)}
+            placeholder="e.g. price too high" maxLength={300}
+            className="mt-1 h-12 w-full rounded-lg border border-gray-700 bg-gray-950 px-3 text-white placeholder-gray-600" />
+          <button type="submit" disabled={pending}
+            className="mt-3 min-h-12 w-full rounded-lg bg-amber-500 font-semibold text-gray-950 disabled:opacity-60">
+            {pending ? 'Recording…' : 'Confirm: attended, estimate declined'}
+          </button>
+        </form>
+      )}
       {panel === 'note' && (
         <div className="mt-4 rounded-xl border border-gray-800 bg-gray-900 p-4">
           <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} placeholder="Staff-only note"
@@ -120,6 +175,7 @@ export default function AppointmentActions({ id, status, hasJob, isManager, past
         </div>
       )}
       {error && <p role="alert" className="mt-3 rounded-lg border border-amber-900/60 bg-amber-950/40 p-3 text-sm text-amber-200">{error}</p>}
+      {success && <p role="status" className="mt-3 rounded-lg border border-emerald-900/60 bg-emerald-950/40 p-3 text-sm text-emerald-200">{success}</p>}
     </section>
   )
 }

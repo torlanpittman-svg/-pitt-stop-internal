@@ -7,7 +7,7 @@ import { type BookingConfig, formatDateLabel, formatTimeLabel, toMinutes, fromMi
 
 export interface PublicAppointment {
   reference: string
-  status: 'confirmed' | 'arrived' | 'cancelled' | 'no_show'
+  status: 'confirmed' | 'arrived' | 'cancelled' | 'no_show' | 'declined'
   date: string
   time: string
   dateLabel: string

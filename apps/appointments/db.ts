@@ -474,6 +474,107 @@ export async function markNoShow(id: string, actor: string | null, now = new Dat
   return (await getAppointment(id))!
 }
 
+/** What happened to the linked marketing lead when the estimate was declined. */
+export type DeclineLeadOutcome =
+  | 'lost'      // linked lead marked Lost — in the SAME statement as the decline, or not at all
+  | 'none'      // no lead was ever linked — stated honestly, nothing claimed
+  | 'already'   // retry: the appointment was already declined; the lead was NOT touched again
+
+export interface DeclineResult { appointment: Appointment; lead: DeclineLeadOutcome }
+
+/** The appointment-side decline conditions, with a clear error per refusal. Mirrors the SQL gate. */
+function apptBlocksDecline(a: Appointment): void {
+  if (a.serviceOrderId) throw new BookingError('conflict', 'This appointment already has a Work Board job — handle the estimate on the Job instead.')
+  if (a.checkinStartedAt) throw new BookingError('conflict', 'A check-in was started for this appointment, so a Job may exist. Finish the check-in and handle the estimate on the Job.')
+  if (a.status !== 'confirmed') throw new BookingError('conflict', `Only a confirmed appointment can be marked estimate-declined — this one is ${a.status.replace('_', '-')}.`)
+}
+
+/** The lead-side decline conditions. A dangling reference REFUSES: it must be fixed, never papered over. */
+async function leadBlocksDecline(leadId: string): Promise<void> {
+  const [lead] = rowsOf(await getDb().execute(sql`SELECT status, service_order_id FROM marketing_leads WHERE id = ${leadId}::uuid LIMIT 1`)) as { status: string; service_order_id: string | null }[]
+  if (!lead) throw new BookingError('conflict', 'This appointment points at a marketing lead record that no longer exists — fix the lead link on the Marketing leads screen, then decline.')
+  if (lead.status === 'won' || lead.service_order_id) throw new BookingError('conflict', 'The linked marketing lead is already Won or linked to a job — update it on the Marketing leads screen instead.')
+}
+
+/**
+ * "Attended — estimate declined": the customer CAME to the drop-off, got an estimate, and said no.
+ * Not a cancellation or a no-show, and never a check-in — no Job, no invoice, no customer email.
+ *
+ * FAIL-CLOSED ATOMICITY. One statement, consistent lock order (appointment, then lead):
+ *   1. `appt` locks the appointment row FOR UPDATE with every eligibility condition in its WHERE;
+ *   2. `lead` locks the linked lead row FOR UPDATE (not Won, not job-linked) — joined off the LOCKED
+ *      appointment row's marketing_lead_id, never off the preflight read, so a re-linked lead can
+ *      never cause the wrong row to be updated;
+ *   3. both UPDATEs and both append-only audits run only when the appointment is locked AND its lead
+ *      (when linked) is locked-and-eligible — so the decline and the lead's move to Lost commit
+ *      together or nothing is written at all.
+ * In READ COMMITTED, FOR UPDATE waits for a concurrent writer and re-evaluates its conditions on the
+ * newest row version; a row that no longer qualifies drops out, the gate comes up empty, and the whole
+ * statement writes nothing. The acquired locks are held to commit, so the later UPDATEs cannot be
+ * raced after the gate passed. A lead that turns Won/job-linked concurrently, or a dangling lead
+ * reference, therefore refuses the WHOLE decline and leaves the appointment confirmed.
+ *
+ * The preflight reads below exist only for clear error messages — they protect nothing; the statement
+ * is the guard. The event's created_at is the recorded-at time; arrived_at is never fabricated.
+ * Idempotent: a retry on an already-declined appointment returns 'already' with no second audit and no
+ * lead write, so it can never clobber a lead a manager has since changed.
+ */
+export async function declineEstimate(id: string, opts: { actor: string | null; reason?: string | null }): Promise<DeclineResult> {
+  const appt = await getAppointment(id)
+  if (!appt) throw new BookingError('not_found', 'Appointment not found.')
+  if (appt.status === 'declined') return { appointment: appt, lead: 'already' }
+  apptBlocksDecline(appt)
+  if (appt.marketingLeadId) await leadBlocksDecline(appt.marketingLeadId)
+  const reason = (opts.reason ?? '').trim().slice(0, 300) || null
+
+  const rows = rowsOf(await getDb().execute(sql`WITH appt AS MATERIALIZED (
+      SELECT id, marketing_lead_id FROM appointments
+      WHERE id = ${id}::uuid AND status = 'confirmed' AND service_order_id IS NULL AND checkin_started_at IS NULL
+      FOR UPDATE
+    ), lead AS MATERIALIZED (
+      SELECT l.id FROM marketing_leads l JOIN appt ON l.id = appt.marketing_lead_id
+      WHERE l.status <> 'won' AND l.service_order_id IS NULL
+      FOR UPDATE OF l
+    ), ok AS (
+      SELECT appt.id, appt.marketing_lead_id FROM appt
+      WHERE appt.marketing_lead_id IS NULL OR EXISTS (SELECT 1 FROM lead)
+    ), u AS (
+      UPDATE appointments a SET status = 'declined', updated_at = now()
+      FROM ok WHERE a.id = ok.id
+      RETURNING a.id, a.marketing_lead_id
+    ), ld AS (
+      UPDATE marketing_leads l SET status = 'lost', updated_at = now()
+      FROM u WHERE l.id = u.marketing_lead_id
+      RETURNING l.id
+    ), ev AS (
+      INSERT INTO appointment_events (appointment_id, event_type, actor, meta)
+      SELECT u.id, 'estimate_declined', ${opts.actor}, jsonb_build_object(
+        'reason', ${reason}::text, 'marketingLeadId', u.marketing_lead_id::text,
+        'lead', CASE WHEN u.marketing_lead_id IS NULL THEN 'none' ELSE 'lost' END)
+      FROM u
+    ), mev AS (
+      INSERT INTO marketing_events (event_type, entity_type, entity_id, actor, meta)
+      SELECT 'lead_updated', 'lead', ld.id, ${opts.actor}, jsonb_build_object(
+        'status', 'lost', 'reason', ${reason}::text,
+        'appointmentId', ${id}::text, 'appointmentReference', ${appt.reference}::text,
+        'via', 'appointment_estimate_declined')
+      FROM ld
+    )${skipPending(['reminder', 'confirmation', 'reschedule'])}
+    SELECT u.id AS appt_id, u.marketing_lead_id AS lead_id FROM u`))
+
+  if (rows.length && rows[0].appt_id) {
+    return { appointment: (await getAppointment(id))!, lead: rows[0].lead_id ? 'lost' : 'none' }
+  }
+  // Refused — nothing was written. Diagnose against FRESH reads (the preflight is stale by definition):
+  // a parallel decline that already landed is a harmless retry; everything else is a conflict.
+  const again = await getAppointment(id)
+  if (!again) throw new BookingError('not_found', 'Appointment not found.')
+  if (again.status === 'declined') return { appointment: again, lead: 'already' }
+  apptBlocksDecline(again)
+  if (again.marketingLeadId) await leadBlocksDecline(again.marketingLeadId)
+  throw new BookingError('conflict', 'This appointment changed while declining. Refresh and try again.')
+}
+
 export async function rescheduleAppointment(id: string, to: { date: string; time: string }, opts: { actor: string; override?: boolean; now?: Date; cfg?: BookingConfig }): Promise<Appointment> {
   const appt = await getAppointment(id)
   if (!appt) throw new BookingError('not_found', 'Appointment not found.')
@@ -531,7 +632,7 @@ export async function acknowledgeAppointments(ids: string[], actor: string): Pro
 export async function addInternalNote(id: string, note: string, actor: string): Promise<void> {
   const text = note.trim().slice(0, 1000)
   if (!text) return
-  await transition(id, ['confirmed', 'arrived', 'cancelled', 'no_show'],
+  await transition(id, ['confirmed', 'arrived', 'cancelled', 'no_show', 'declined'],
     sql`internal_notes = trim(both from coalesce(internal_notes, '') || ${`\n${text}`})`, 'note_added', actor, { note: text })
 }
 

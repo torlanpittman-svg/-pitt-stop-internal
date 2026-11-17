@@ -147,6 +147,44 @@ Staff phone entries (`/appointments/new`) have the same dropdown but may leave i
   (`REFERRAL_SOURCE_PLATFORMS`); the Quick Entry and quote pickers are unchanged.
 - Not carried on unfinished-booking drafts: a resumed draft asks again (it is required anyway).
 
+## "Attended — estimate declined" (2026-11-17 — branch `codex/appointment-estimate-declined`, NOT deployed; needs migration 0081)
+
+A manager/admin outcome for a confirmed appointment with **no** linked Work Board job: the customer came
+to the drop-off, received an estimate in person, and declined it. Distinct from cancel (chose not to come),
+no-show (never came) and check-in (work accepted → Job). Recorded on the staff appointment detail via an
+inline confirmation form with an optional reason (e.g. "price too high").
+
+- **Status** `declined` (constraint extended by `0081_appointment_estimate_declined.sql` — idempotent
+  and transactional, so a failed re-add can never leave the table unconstrained).
+  Staff label "Attended — estimate declined"; customer page shows "Visit completed — no work scheduled".
+  Terminal: it frees capacity (not in `ACTIVE_STATUSES`), blocks check-in/cancel/no-show/reschedule, and
+  staff notes still work. `arrived_at` is **never** set — the outcome is retrospective; the recorded-at
+  time is the `estimate_declined` appointment event's own `created_at`.
+- **Fail-closed atomic statement** (`declineEstimate`, `apps/appointments/db.ts`), consistent lock
+  order: the appointment row is locked `FOR UPDATE` with every eligibility condition (`confirmed`, no
+  job, no check-in claim), then the linked lead row is locked `FOR UPDATE` (not Won, not job-linked) —
+  joined off the **locked** appointment's `marketing_lead_id`, never a stale read. Only when both are
+  locked and eligible do the updates run: `status='declined'` + `marketing_leads.status='lost'` +
+  append-only `appointment_events` row (reason, lead outcome, lead id) + canonical `marketing_events`
+  `lead_updated` (status, reason, appointmentId/Reference, `via: appointment_estimate_declined`) +
+  pending confirmation/reminder/reschedule notices skipped. The decline and the lead's Lost **commit
+  together or nothing is written** — a lead that turns Won/job-linked concurrently, or a dangling lead
+  reference, refuses the whole decline with a conflict and leaves the appointment confirmed.
+  **No cancellation email is ever queued** and already-sent notices are untouched. The dispatcher also
+  retires any notice revived later (`staleReason` knows `declined`), without counting it a missed
+  send — the customer was here in person.
+- **Lead honesty:** the only outcomes are `'lost'` (lead moved with the decline), `'none'` (no lead was
+  ever linked — stated, not claimed) and `'already'` (idempotent retry: no duplicate audit, never
+  clobbers a lead a manager has since changed). There is no partial success. Attribution, source,
+  revenue and estimates are never modified.
+- **Race with check-in:** the check-in claim UPDATE now re-checks `status IN ('confirmed','arrived')`
+  in SQL (it previously relied on a pre-read), so a decline can never be claimed over and turned into a
+  Job; conversely decline refuses whenever `checkin_started_at` is set (a Job may be mid-creation).
+- Tests: `apps/appointments/decline.integration.test.ts`, `decline-checkin-race.integration.test.ts`
+  (PGlite), `app/appointments/decline-action.auth.test.ts`, UI rules in
+  `app/appointments/[id]/AppointmentActions.test.tsx`. Handoff:
+  `docs/APPOINTMENT_ESTIMATE_DECLINED_2026-11-17.md`.
+
 ## Rules (manager-editable at `/appointments/settings`, stored in `app_settings.booking_config`)
 
 | Setting | Default |

@@ -13,8 +13,8 @@ import { authenticatedActor, authorizedManager, authorizedManagerStrict, employe
 import { setDraftStaffStatus, requeueDraftFollowUp, STAFF_STATUSES, type StaffStatus } from '@/apps/appointments/drafts'
 import {
   createAppointment, cancelAppointment, markNoShow, rescheduleAppointment, acknowledgeAppointments, addInternalNote,
-  addBlock, removeBlock, getAvailability, getBookingConfig, saveBookingConfig, BookingError, APPOINTMENT_SOURCES,
-  type AppointmentSource, type BookingInput,
+  addBlock, removeBlock, declineEstimate, getAvailability, getBookingConfig, saveBookingConfig, BookingError, APPOINTMENT_SOURCES,
+  type AppointmentSource, type BookingInput, type DeclineLeadOutcome,
 } from '@/apps/appointments/db'
 import { checkInAppointment, type VehicleChoice } from '@/apps/appointments/checkin'
 import { dispatchDue, requeueNotification } from '@/apps/appointments/notify'
@@ -87,6 +87,32 @@ export async function cancelAction(id: string, reason: string): Promise<ActionRe
     await cancelAppointment(id, { actor: name, by: 'staff', reason: reason.slice(0, 300) || null })
     dispatchLater(id); revalidatePath('/appointments'); return { ok: true }
   } catch (e) { return fail(e) }
+}
+
+export type DeclineActionResult = { ok: true; lead: DeclineLeadOutcome } | { ok: false; error: string }
+
+/**
+ * "Attended — estimate declined" (managers/admins): the customer came in, got an estimate and said no.
+ * Marks the appointment declined and the linked marketing lead Lost in one transaction. Creates no Job,
+ * no invoice, and NEVER an email — no dispatch is triggered (the decline statement itself retires the
+ * appointment's pending notices).
+ */
+export async function declineEstimateAction(id: string, reason: string): Promise<DeclineActionResult> {
+  try {
+    const name = await manager()
+    // A server action is a public endpoint: validate the raw argument types, not just their shapes.
+    if (typeof id !== 'string' || !UUID.test(id)) return { ok: false, error: 'Invalid appointment.' }
+    if (typeof reason !== 'string') return { ok: false, error: 'Invalid reason.' }
+    const trimmed = reason.trim()
+    if (trimmed.length > 300) return { ok: false, error: 'Keep the reason under 300 characters.' }
+    const { lead } = await declineEstimate(id, { actor: name, reason: trimmed || null })
+    revalidatePath('/appointments'); revalidatePath(`/appointments/${id}`)
+    revalidatePath('/marketing/leads'); revalidatePath('/marketing/report'); revalidatePath('/marketing')
+    return { ok: true, lead }
+  } catch (e) {
+    const f = fail(e)
+    return { ok: false, error: f.ok ? 'Something went wrong.' : f.error }
+  }
 }
 
 export async function rescheduleAction(id: string, date: string, time: string, override: boolean): Promise<ActionResult> {

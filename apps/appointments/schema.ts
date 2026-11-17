@@ -10,7 +10,7 @@ export const appointments = pgTable('appointments', {
   reference:         varchar('reference', { length: 16 }).notNull(),
   tokenHash:         varchar('token_hash', { length: 64 }).notNull(),
   idempotencyKey:    varchar('idempotency_key', { length: 80 }).notNull(),
-  status:            varchar('status', { length: 16 }).notNull().default('confirmed'), // confirmed | arrived | cancelled | no_show
+  status:            varchar('status', { length: 16 }).notNull().default('confirmed'), // confirmed | arrived | cancelled | no_show | declined (attended — estimate declined; 0081)
   localDate:         date('local_date').notNull(),               // shop-local YYYY-MM-DD
   localTime:         varchar('local_time', { length: 5 }).notNull(), // shop-local HH:MM drop-off time
   startsAt:          timestamp('starts_at', { withTimezone: true }).notNull(),

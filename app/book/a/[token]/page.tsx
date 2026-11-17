@@ -15,6 +15,8 @@ export const dynamic = 'force-dynamic'
 
 const STATUS_COPY: Record<string, string> = {
   confirmed: 'Appointment Confirmed', arrived: 'Vehicle checked in', cancelled: 'Appointment cancelled', no_show: 'Missed appointment',
+  // Customer-safe: the visit happened and no work was scheduled — no internal "lead" or staff wording.
+  declined: 'Visit completed — no work scheduled',
 }
 
 export default async function ManageAppointment({ params }: { params: Promise<{ token: string }> }) {

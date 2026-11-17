@@ -16,7 +16,7 @@
  * year/make/model. It never guesses: with several candidates (or none that match while others are on
  * file) it refuses until staff choose. See resolveCheckinVehicle.
  */
-import { and, desc, eq, gte, ilike, isNull, sql } from 'drizzle-orm'
+import { and, desc, eq, gte, ilike, inArray, isNull, sql } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { createQuickEntryJob } from '@/apps/quick-entry/jobs-db'
 import { serviceOrders, jobEstimates, vehicles } from '@/apps/workflow/schema'
@@ -146,13 +146,17 @@ export async function checkInAppointment(id: string, actor: string, choice?: Veh
   // Decide the vehicle first: a refusal ("choose which saved vehicle") must not claim the appointment.
   const vehicle = await resolveCheckinVehicle(a, choice)
 
+  // The claim re-checks status: a decline/cancel landing between the read above and this UPDATE must not
+  // be claimed over — otherwise the Job created next would overwrite the terminal status via linkJob.
   const [claimed] = await db.update(appointments).set({ checkinStartedAt: new Date() }).where(and(
     eq(appointments.id, id), isNull(appointments.serviceOrderId),
+    inArray(appointments.status, ['confirmed', 'arrived']),
     sql`(${appointments.checkinStartedAt} IS NULL OR ${appointments.checkinStartedAt} < ${new Date(Date.now() - CLAIM_MS).toISOString()}::timestamptz)`,
   )).returning()
   if (!claimed) {
     const again = await getAppointment(id)
     if (again?.serviceOrderId) return { serviceOrderId: again.serviceOrderId, existing: true }
+    if (again && again.status !== 'confirmed' && again.status !== 'arrived') throw new BookingError('conflict', `This appointment is ${again.status.replace('_', '-')}.`)
     throw new BookingError('conflict', 'Check-in is already in progress for this appointment. Refresh in a moment.')
   }
 
