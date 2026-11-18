@@ -17,6 +17,7 @@ vi.mock('@/apps/expenses/ui/JobPicker', () => ({ default: () => null }))
 
 import JobItemsPanel, { type JobItemsPanelProps } from './JobItemsPanel'
 import JobExpenses from './JobExpenses'
+import { AddPartDialog } from './AddToJob'
 import type { EstimateViewData, PartView, ServiceView } from './estimate/save-feedback'
 
 const svc = (id: string, title: string, cents: number): ServiceView => ({ id, title, declined: false, priceCents: cents, lineCents: cents } as unknown as ServiceView)
@@ -114,5 +115,48 @@ describe('Expenses — one collapsed row', () => {
   it('the existing add-receipt action is still inside the section (not removed), for an open Job only', () => {
     expect(renderToStaticMarkup(<JobExpenses orderId="o1" manager={false} />)).toContain('href="/expenses?job=o1"')
     expect(renderToStaticMarkup(<JobExpenses orderId="o1" manager={false} cancelled />)).not.toContain('/expenses?job=')
+  })
+})
+
+describe('Add part form — what blocks it and what never does (markup; behavior is exercised in the browser)', () => {
+  const OPTIONS = [{ key: 'job', label: 'Whole job' }, { key: 'svc:s1', label: 'Interior Detail' }]
+  const form = (over: Partial<Parameters<typeof AddPartDialog>[0]>) => renderToStaticMarkup(
+    <AddPartDialog manager busy={false} error={null} options={OPTIONS} initialAssign="job" importHost={null} onOpenImport={noop} onSubmit={noop} onCancel={noop} {...over} />,
+  )
+  const button = (html: string, label: string) => html.match(new RegExp(`<button[^>]*>${label}</button>`))?.[0] ?? ''
+  const fieldsDisabled = (html: string) => (html.match(/<(input|select)[^>]*disabled=""/g) ?? []).length
+
+  it('labels the four fields and distinguishes the customer charge from our internal cost', () => {
+    const html = form({})
+    for (const label of ['Part name', 'Assign to', 'Quantity', 'Customer price']) expect(html).toContain(`>${label}</span>`)
+    expect(html).toContain('charged to the customer')
+    expect(html).toContain('Never shown to the customer or added to the invoice')
+    expect(form({ manager: false })).not.toContain('Our cost')
+    expect(fieldsDisabled(html)).toBe(0)
+  })
+
+  it('a removed Job disables every field and the submit — but Cancel stays usable (the dialog can always be closed)', () => {
+    const html = form({ jobRemoved: true })
+    expect(html).toContain('This job was removed')
+    expect(fieldsDisabled(html)).toBe(6)
+    expect(html).toMatch(/<button[^>]*type="submit"[^>]*disabled=""/)
+    expect(html).not.toContain('Saving…')
+    expect(button(html, 'Cancel')).not.toMatch(/disabled=""/)
+  })
+
+  it('only a save actually in flight disables Cancel', () => {
+    expect(button(form({ busy: true }), 'Cancel')).toMatch(/disabled=""/)
+    expect(button(form({ locked: 'refused' }), 'Cancel')).not.toMatch(/disabled=""/)
+  })
+
+  it('after a failed send the fields are frozen and the button offers the identical retry', () => {
+    for (const locked of ['refused', 'unconfirmed'] as const) {
+      const html = form({ locked })
+      expect(fieldsDisabled(html)).toBe(6)
+      expect(html).toMatch(/<button[^>]*type="submit"[^>]*>Try again<\/button>/)
+      expect(button(html, 'Import PartsTech screenshot')).toMatch(/disabled=""/)
+    }
+    expect(form({ locked: 'unconfirmed' })).toContain('it will not be added twice')
+    expect(form({ locked: 'refused' })).toContain('cancel and add the part again')
   })
 })

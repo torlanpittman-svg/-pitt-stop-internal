@@ -87,9 +87,12 @@ export function AddMenu({ choices, onPick, onCancel }: {
  * import rendered into it). The dialog shows it while open and hands it back on close, so dismissing the dialog
  * during an upload or save loses nothing.
  */
-export function AddPartDialog({ manager, busy, error, options, initialAssign, locked, importHost, onOpenImport, onSubmit, onCancel }: {
+export function AddPartDialog({ manager, busy, jobRemoved = false, error, options, initialAssign, locked, importHost, onOpenImport, onSubmit, onCancel }: {
   manager: boolean
+  /** A save (or another edit on the page) is actually in flight — the only thing that blocks dismissal. */
   busy: boolean
+  /** The Job was removed while this form was open: nothing can be added, but the form can always be closed. */
+  jobRemoved?: boolean
   error: string | null
   options: readonly PartAssignOption[]
   initialAssign: string
@@ -127,14 +130,14 @@ export function AddPartDialog({ manager, busy, error, options, initialAssign, lo
   }, [importing, importHost])
   // Frozen after an unconfirmed add: the disabled fields can't hold focus, so put it on the one thing left to do.
   useEffect(() => { if (locked && !busy) submitRef.current?.focus() }, [locked, busy])
-  const frozen = busy || !!locked
+  const frozen = busy || !!locked || jobRemoved
   const busyRef = useRef(busy)
   useLayoutEffect(() => { busyRef.current = busy })
 
   // A choice that left the Job while the form was open (its service was removed) is never silently re-pointed.
   const assignKnown = options.some((o) => o.key === assign)
   const set = (k: keyof PartDraft) => (e: React.ChangeEvent<HTMLInputElement>) => { setF({ ...f, [k]: e.target.value }); if (problem?.field === k) setProblem(null) }
-  const canSubmit = !busy && f.name.trim().length > 0
+  const canSubmit = !busy && !jobRemoved && f.name.trim().length > 0
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!canSubmit) return
@@ -240,7 +243,8 @@ export function AddPartDialog({ manager, busy, error, options, initialAssign, lo
           </details>
 
           {error && !problem && <p role="alert" className="text-sm text-amber-300">{error}</p>}
-          {locked && <p role="status" className="rounded-xl border border-amber-800/60 bg-amber-950/40 px-3 py-2.5 text-sm text-amber-100">{locked === 'unconfirmed' ? UNCONFIRMED_ADD_MSG : REFUSED_ADD_MSG}</p>}
+          {jobRemoved && <p role="alert" className="text-sm text-amber-300">This job was removed — nothing can be added to it.</p>}
+          {locked && !jobRemoved && <p role="status" className="rounded-xl border border-amber-800/60 bg-amber-950/40 px-3 py-2.5 text-sm text-amber-100">{locked === 'unconfirmed' ? UNCONFIRMED_ADD_MSG : REFUSED_ADD_MSG}</p>}
           <button ref={submitRef} type="submit" disabled={!canSubmit || !assignKnown}
             className="w-full min-h-12 rounded-xl bg-blue-600 px-4 py-3 text-base font-semibold text-white active:bg-blue-700 disabled:opacity-40">
             {busy ? 'Saving…' : locked ? 'Try again' : 'Add part'}

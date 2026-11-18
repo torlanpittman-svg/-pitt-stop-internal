@@ -111,14 +111,26 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
   })
 
   /** One /parts call at a time — a double-tap can never send the same add or removal twice. */
-  const post = async (body: Record<string, unknown>): Promise<PartsPostOutcome> => {
+  /**
+   * `readBack`: after a confirmed save, also read the Job's items INSIDE the same in-flight window (the form stays
+   * busy and cannot be dismissed or replaced until it settles). `view` is then the fresh view, or null when the
+   * read failed — the caller must treat null as "could not confirm", never as success.
+   */
+  const post = async (body: Record<string, unknown>, readBack = false): Promise<PartsPostOutcome & { view?: EstimateViewData | null }> => {
     // Nothing was sent, so nothing can have been written.
     if (inFlight.current) return { ok: false, error: 'Still saving — one moment.', sent: false, explained: true }
     inFlight.current = true; setLocalBusy(true); setError(null)
     try {
-      const r = await fetch(`/api/workflow/orders/${orderId}/parts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      return partsPostOutcome(r.status, await r.json().catch(() => null))
-    } catch { return partsPostOutcome(null, null) }
+      let out: PartsPostOutcome
+      try {
+        const r = await fetch(`/api/workflow/orders/${orderId}/parts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        out = partsPostOutcome(r.status, await r.json().catch(() => null))
+      } catch { out = partsPostOutcome(null, null) }
+      if (!out.ok || !readBack) return out
+      const view = await fetch(`/api/workflow/orders/${orderId}/items`, { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null)).then((d) => (d?.ok && d.view ? d.view as EstimateViewData : null)).catch(() => null)
+      return { ...out, view }
+    }
     finally { inFlight.current = false; setLocalBusy(false) }
   }
 
@@ -148,6 +160,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
     // Resolved against the CURRENT list: a service removed while the form was open is refused, never re-pointed.
     const target = resolvePartAssign(assignKey, grouped.services, textOnly)
     if (!target) { setError(ASSIGN_GONE_MSG); return }
+    const retry = !!partForm?.locked
     // The customer price is entered by whoever adds the part (owner decision 2026-11-03) and is required —
     // the form has already validated it; the server validates it again for every role. Our cost is sent
     // only by a manager (the server drops it otherwise).
@@ -157,7 +170,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
       laborServiceId: target.kind === 'service' ? target.serviceId : null,
       laborServiceTitle: target.kind === 'text' ? target.title : null,
       requestId,
-    })
+    }, retry)
     if (!out.ok) {
       setError(out.error)
       // The request went out and failed. The server may still have written the part, or used up this request id
@@ -167,17 +180,17 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
       if (out.sent) setPartForm((cur) => (cur ? { ...cur, locked: out.explained ? 'refused' : 'unconfirmed' } : cur))
       return
     }
-    if (partForm?.locked) {
-      // A retry: the server may have replayed the first attempt's part, wherever that left it. Read the Job back
-      // and say what is true — never "added to X" from what the form says.
-      const fresh = await fetch(`/api/workflow/orders/${orderId}/items`, { cache: 'no-store' }).then((r) => r.json()).then((d) => (d?.ok && d.view ? d.view as EstimateViewData : null)).catch(() => null)
-      const place = fresh ? placeOfAddedPart(fresh, out.partId) : null
+    if (retry) {
+      // A retry: the server may have replayed the first attempt's part, wherever that left it (even cancelled).
+      // The Job was read back with the save; say only what that read shows — never "added to X" from the form,
+      // and never a success when the read could not confirm it.
+      const fresh = out.view ?? null
       setPartForm(null); refocusAdd(); onChanged()
-      if (fresh && !place) { setError(`“${f.name}” was not added — the first try did not go through. Add it again.`); return }
+      if (!fresh || !out.partId) { setError(`We couldn’t confirm whether “${f.name}” was added. Check the list before adding it again.`); return }
+      const place = placeOfAddedPart(fresh, out.partId)
+      if (!place) { setError(`“${f.name}” was not added — the first try did not go through. Add it again.`); return }
       setFlash(out.partId)
-      setNotice(!place ? { text: `${f.name} saved.`, at: 'job' }
-        : place.kind === 'job' ? { text: `${f.name} added to this job.`, at: 'job' }
-        : { text: `${f.name} added to ${place.title}.`, at: place.serviceId })
+      setNotice(place.kind === 'job' ? { text: `${f.name} added to this job.`, at: 'job' } : { text: `${f.name} added to ${place.title}.`, at: place.serviceId })
       return
     }
     setPartForm(null); setFlash(out.partId); refocusAdd()
@@ -356,7 +369,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
 
       {menuOpen && <AddMenu choices={choices} onPick={pick} onCancel={() => setMenuOpen(false)} />}
       {partForm && (
-        <AddPartDialog manager={manager} busy={busy} error={error} options={assignOptions} initialAssign={partForm.assign} locked={partForm.locked}
+        <AddPartDialog manager={manager} busy={p.busy || localBusy} jobRemoved={frozen} error={error} options={assignOptions} initialAssign={partForm.assign} locked={partForm.locked}
           importHost={p.importPanel ? importHost : null} onOpenImport={p.importPanel ? () => setImportHost((h) => h ?? document.createElement('div')) : undefined}
           onSubmit={(f, key, rid) => void addPart(f, key, rid)}
           // Leaving a form whose add was never confirmed: re-read the Job so the list shows whether it was saved.
