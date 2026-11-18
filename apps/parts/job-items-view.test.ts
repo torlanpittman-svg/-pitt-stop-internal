@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { EstimatePartView, EstimateServiceView } from '@/apps/workflow/estimate-db'
-import { groupJobItems, redactItemsView, removeServiceMessage, validatePartDraft, partAssignOptions, partsPostOutcome, placeOfAddedPart, resolvePartAssign, serviceAssignKey, textAssignKey, WHOLE_JOB, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG } from './job-items-view'
+import { groupJobItems, redactItemsView, removeServiceMessage, validatePartDraft, partAssignOptions, partsPostOutcome, placeOfAddedPart, removedAfterAddMessage, replayedAddMessage, resolvePartAssign, serviceAssignKey, textAssignKey, WHOLE_JOB, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG, UNCONFIRMED_ADD_MSG } from './job-items-view'
 
 const svc = (id: string, title = id, declined = false): EstimateServiceView => ({ id, title, priceCents: 1000, suggestedCents: null, declined } as unknown as EstimateServiceView)
 
@@ -162,17 +162,40 @@ describe('add-part "Assign to" (Whole job or one of the Job\'s services)', () =>
   })
 })
 
-describe('partsPostOutcome — a sent request that failed may have written (or used up its request id)', () => {
-  it('a confirmed save is ok and carries the part id', () => {
-    expect(partsPostOutcome(200, { ok: true, partId: 'p1' })).toEqual({ ok: true, partId: 'p1' })
+describe('partsPostOutcome — saved, definitely not saved, or not known', () => {
+  it('a confirmed save is ok and carries the part id; a first save is not a replay', () => {
+    expect(partsPostOutcome(200, { ok: true, partId: 'p1' })).toEqual({ ok: true, partId: 'p1', replayed: false, differs: false, removed: false })
   })
-
-  it('EVERY failed response counts as sent — a 4xx with a message too (the add can fail after its first write)', () => {
-    expect(partsPostOutcome(400, { ok: false, error: 'That service is no longer on this job.' })).toEqual({ ok: false, error: 'That service is no longer on this job.', needsManager: undefined, sent: true, explained: true })
-    expect(partsPostOutcome(403, { ok: false, error: 'Ask a manager.', needsManager: true })).toMatchObject({ ok: false, needsManager: true, sent: true, explained: true })
+  it('a repeat that found the part already saved says so — including when the form had changed, or the part was since removed', () => {
+    expect(partsPostOutcome(200, { ok: true, partId: 'p1', replayed: true, differs: true })).toEqual({ ok: true, partId: 'p1', replayed: true, differs: true, removed: false })
+    expect(partsPostOutcome(200, { ok: true, partId: 'p1', replayed: true, removed: true })).toMatchObject({ replayed: true, removed: true })
+  })
+  it('a 4xx with a reason is a refusal: nothing was written, so the form may be corrected and sent again', () => {
+    expect(partsPostOutcome(400, { ok: false, error: 'That service is no longer on this job.' })).toEqual({ ok: false, error: 'That service is no longer on this job.', needsManager: undefined, saved: 'no' })
+    expect(partsPostOutcome(403, { ok: false, error: 'Ask a manager.', needsManager: true })).toMatchObject({ ok: false, needsManager: true, saved: 'no' })
+    expect(partsPostOutcome(409, { ok: false, error: 'This job was removed.' })).toMatchObject({ saved: 'no' })
+  })
+  it('no response, a 5xx, or an answer that does not say: the part MAY have been saved — never shown as a refusal, never the server’s raw text', () => {
     for (const [status, body] of [[null, null], [500, { ok: false, error: 'boom' }], [502, null], [200, null], [400, null], [200, { ok: false }]] as const) {
-      expect(partsPostOutcome(status, body)).toMatchObject({ ok: false, sent: true, explained: false })
+      const out = partsPostOutcome(status, body)
+      expect(out).toMatchObject({ ok: false, saved: 'unknown' })
+      expect((out as { error: string }).error).not.toContain('boom')
     }
+  })
+})
+
+describe('what the user is told after a retry found the part already saved', () => {
+  it('unchanged form: a plain confirmation of where it is', () => {
+    expect(replayedAddMessage('Brake pads', { kind: 'job' }, false)).toBe('Brake pads saved on this job.')
+    expect(replayedAddMessage('Brake pads', { kind: 'service', title: 'Brake job' }, false)).toBe('Brake pads saved under Brake job.')
+  })
+  it('changed form: says the first try was kept, that the changes were NOT applied, and how to change the part — never "cancel and start over"', () => {
+    const msg = replayedAddMessage('Brake pads', { kind: 'service', title: 'Brake job' }, true)
+    expect(msg).toContain('already saved under Brake job')
+    expect(msg).toContain('were not applied')
+    expect(msg).toContain('tap the part to edit it')
+    expect(msg + UNCONFIRMED_ADD_MSG + removedAfterAddMessage('x')).not.toMatch(/cancel|start over/i)
+    expect(UNCONFIRMED_ADD_MSG).toContain('will not be added twice')
   })
 })
 

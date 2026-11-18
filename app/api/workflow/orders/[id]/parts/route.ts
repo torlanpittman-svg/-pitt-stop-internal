@@ -7,7 +7,7 @@ import { partsVisibleFor } from '@/apps/parts/visibility'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { estimateEnabled } from '@/apps/workflow/estimate'
 import { guidedJobItemsEnabled } from '@/apps/settings/db'
-import { addPartForJob, jobHasQbInvoice, removeEstimatePartWithLabor } from '@/apps/parts/estimate-parts'
+import { addPartForJobOnce, PartNotAddedError, jobHasQbInvoice, removeEstimatePartWithLabor } from '@/apps/parts/estimate-parts'
 import { INVOICED_NEEDS_MANAGER_MSG } from '@/apps/parts/job-items-view'
 import { listPartsForOrder, addPart, updatePart, markOrdered, receivePart, recordReturn, billPart, type Part, cancelPart } from '@/apps/parts/db'
 
@@ -89,6 +89,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   let partIdOut: string | null = null
+  let replay: { replayed: boolean; differs: boolean; removed: boolean } | null = null
   try {
     switch (action) {
       case 'add': {
@@ -104,13 +105,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           // older Jobs / no estimate yet): the estimate row is created inside this add, never on a read.
           const attachTo = typeof body.laborServiceId === 'string' && body.laborServiceId ? body.laborServiceId
             : typeof body.laborServiceTitle === 'string' && body.laborServiceTitle.trim() ? { title: body.laborServiceTitle.trim() } : null
-          const row = await addPartForJob(id, {
-            description, partNumber: str(body.partNumber), supplier: str(body.supplier), quantity: posNum(body.quantity, 1),
-            unitCostCents: manager ? intOrNull(body.unitCostCents) : null,
-            sellPriceCents: amountInput(body.sellPriceCents),
-            requestId: typeof body.requestId === 'string' ? body.requestId : null,
-          }, actorName, actor?.role ?? null, attachTo)
-          partIdOut = row.id
+          // Retry-safe: the request id (one per open form) is this add's identity on THIS Job. A repeat — a double
+          // tap, an overlapping retry, or "try again" after a lost response — returns the part saved the first
+          // time and writes nothing. The three outcomes are told apart for the form: saved (ok), definitely not
+          // saved (400 notSaved — refused before or by the one atomic write), and not confirmed (500).
+          let added
+          try {
+            added = await addPartForJobOnce(id, {
+              description, partNumber: str(body.partNumber), supplier: str(body.supplier), quantity: posNum(body.quantity, 1),
+              unitCostCents: manager ? intOrNull(body.unitCostCents) : null,
+              sellPriceCents: amountInput(body.sellPriceCents),
+              requestId: typeof body.requestId === 'string' ? body.requestId : null,
+            }, actorName, actor?.role ?? null, attachTo)
+          } catch (err) {
+            if (err instanceof PartNotAddedError) return NextResponse.json({ ok: false, error: err.message, notSaved: true }, { status: 400 })
+            console.error('[parts] add not confirmed', err)
+            return NextResponse.json({ ok: false, error: 'We couldn’t confirm this part was saved.' }, { status: 500 })
+          }
+          partIdOut = added.part.id
+          replay = { replayed: added.replayed, differs: added.differs, removed: added.removed }
           break
         }
         const row = await addPart({
@@ -216,7 +229,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   const parts = await listPartsForOrder(id)
-  return NextResponse.json({ ok: true, parts: redact(parts, manager), manager, partId: partIdOut })
+  return NextResponse.json({ ok: true, parts: redact(parts, manager), manager, partId: partIdOut, ...(replay ?? {}) })
 }
 
 function str(v: unknown): string | null {

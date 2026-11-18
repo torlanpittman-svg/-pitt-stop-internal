@@ -12,7 +12,7 @@
  * JobItemsPanel, which sends it through the existing POST /parts `add`.
  */
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { validatePartDraft, REFUSED_ADD_MSG, UNCONFIRMED_ADD_MSG, type AddLock, type DraftProblem, type PartAssignOption, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
+import { validatePartDraft, UNCONFIRMED_ADD_MSG, type DraftProblem, type PartAssignOption, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
 
 export type AddChoice = 'service' | 'part' | 'expense'
 
@@ -79,15 +79,16 @@ export function AddMenu({ choices, onPick, onCancel }: {
  * one leaves it empty; nothing is restored while typing, and a blank price is a problem on submit, never $0.
  * Part number and (manager only) our internal cost stay available under More details.
  *
- * `locked`: the last add was sent and failed — it may have been saved, or have used up its request id. Every field
- * is frozen and the button says "Try again", so the retry is the identical submission under the same request id
- * (the server replays it — never added twice). To change anything the user cancels and starts a new form.
+ * `unconfirmed`: the last add got no usable answer, so the part may have been saved. Nothing is frozen and
+ * nothing typed is lost: the button says "Try again" and sends the form under the SAME request id, which the
+ * server answers with the part saved the first time — never a second one. If the form was changed in between
+ * and the first try had saved, the server keeps the saved part and the Job screen says so.
  *
  * The PartsTech import is NOT owned by this dialog: `importHost` is a DOM node the Job screen keeps (with the
  * import rendered into it). The dialog shows it while open and hands it back on close, so dismissing the dialog
  * during an upload or save loses nothing.
  */
-export function AddPartDialog({ manager, busy, jobRemoved = false, error, options, initialAssign, locked, importHost, onOpenImport, onSubmit, onCancel }: {
+export function AddPartDialog({ manager, busy, jobRemoved = false, error, options, initialAssign, unconfirmed = false, importHost, onOpenImport, onSubmit, onCancel }: {
   manager: boolean
   /** A save (or another edit on the page) is actually in flight — the only thing that blocks dismissal. */
   busy: boolean
@@ -96,7 +97,7 @@ export function AddPartDialog({ manager, busy, jobRemoved = false, error, option
   error: string | null
   options: readonly PartAssignOption[]
   initialAssign: string
-  locked?: AddLock
+  unconfirmed?: boolean
   /** Where the Job screen keeps the PartsTech import (null until first opened). */
   importHost: HTMLElement | null
   /** Offer "Import PartsTech screenshot" and ask the Job screen to create the import (omitted = no import here). */
@@ -128,9 +129,9 @@ export function AddPartDialog({ manager, busy, jobRemoved = false, error, option
     slot.appendChild(importHost)
     return () => { importHost.remove() }
   }, [importing, importHost])
-  // Frozen after an unconfirmed add: the disabled fields can't hold focus, so put it on the one thing left to do.
-  useEffect(() => { if (locked && !busy) submitRef.current?.focus() }, [locked, busy])
-  const frozen = busy || !!locked || jobRemoved
+  // After an unconfirmed add the natural next step is the retry: put focus on it (the fields stay editable).
+  useEffect(() => { if (unconfirmed && !busy) submitRef.current?.focus() }, [unconfirmed, busy])
+  const frozen = busy || jobRemoved
   const busyRef = useRef(busy)
   useLayoutEffect(() => { busyRef.current = busy })
 
@@ -196,7 +197,7 @@ export function AddPartDialog({ manager, busy, jobRemoved = false, error, option
               {!assignKnown && <option value="" disabled>Choose where this part goes</option>}
               {options.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
             </select>
-            {!assignKnown && <span role="alert" className="mt-1.5 block text-sm text-amber-300">That service is no longer on this job — {locked ? 'cancel and add the part again' : 'choose again'}.</span>}
+            {!assignKnown && <span role="alert" className="mt-1.5 block text-sm text-amber-300">That service is no longer on this job — choose again.</span>}
           </label>
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
@@ -244,10 +245,10 @@ export function AddPartDialog({ manager, busy, jobRemoved = false, error, option
 
           {error && !problem && <p role="alert" className="text-sm text-amber-300">{error}</p>}
           {jobRemoved && <p role="alert" className="text-sm text-amber-300">This job was removed — nothing can be added to it.</p>}
-          {locked && !jobRemoved && <p role="status" className="rounded-xl border border-amber-800/60 bg-amber-950/40 px-3 py-2.5 text-sm text-amber-100">{locked === 'unconfirmed' ? UNCONFIRMED_ADD_MSG : REFUSED_ADD_MSG}</p>}
+          {unconfirmed && !busy && !jobRemoved && <p role="alert" className="rounded-xl border border-amber-800/60 bg-amber-950/40 px-3 py-2.5 text-sm text-amber-100">{UNCONFIRMED_ADD_MSG}</p>}
           <button ref={submitRef} type="submit" disabled={!canSubmit || !assignKnown}
             className="w-full min-h-12 rounded-xl bg-blue-600 px-4 py-3 text-base font-semibold text-white active:bg-blue-700 disabled:opacity-40">
-            {busy ? 'Saving…' : locked ? 'Try again' : 'Add part'}
+            {busy ? 'Saving…' : unconfirmed ? 'Try again' : 'Add part'}
           </button>
         </form>
 

@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   invoiced: false,
   calls: { addPartForJob: [] as unknown[][], addPart: [] as unknown[][], removeWithLabor: [] as unknown[][], cancelPart: [] as unknown[][], hasInvoice: 0 },
   addThrows: null as Error | null,
+  addResult: { replayed: false, differs: false, removed: false },
   removeThrows: null as Error | null,
 }))
 
@@ -32,11 +33,20 @@ vi.mock('@/platform/db', () => ({
   getDb: () => ({ select: () => ({ from: () => ({ where: () => ({ limit: async () => (h.order ? [h.order] : []) }) }) }) }),
 }))
 vi.mock('@/apps/workflow/schema', () => ({ serviceOrders: { id: 'id', source: 'source', serviceType: 'service_type', status: 'status' } }))
-vi.mock('@/apps/parts/estimate-parts', () => ({
-  addPartForJob: async (...a: unknown[]) => { h.calls.addPartForJob.push(a); if (h.addThrows) throw h.addThrows; return { id: 'new-part' } },
+vi.mock('@/apps/parts/estimate-parts', () => {
+  class PartNotAddedError extends Error { readonly notSaved = true }
+  return {
+  PartNotAddedError,
+  // A plain Error set by a test stands for a refusal (nothing written); anything else is an unconfirmed failure.
+  addPartForJobOnce: async (...a: unknown[]) => {
+    h.calls.addPartForJob.push(a)
+    if (h.addThrows) throw h.addThrows.constructor === Error ? new PartNotAddedError(h.addThrows.message) : h.addThrows
+    return { part: { id: 'new-part' }, ...h.addResult }
+  },
   jobHasQbInvoice: async () => { h.calls.hasInvoice++; return h.invoiced },
   removeEstimatePartWithLabor: async (...a: unknown[]) => { h.calls.removeWithLabor.push(a); if (h.removeThrows) throw h.removeThrows },
-}))
+  }
+})
 vi.mock('@/apps/parts/db', () => ({
   listPartsForOrder: async () => h.parts,
   addPart: async (input: unknown) => { h.calls.addPart.push([input]); return { id: 'legacy-part' } },
@@ -50,7 +60,7 @@ const MANAGER = { key: 'tony', name: 'Tony', role: 'manager' }
 
 beforeEach(() => {
   h.actor = null; h.authorized = true; h.estimateOn = true; h.guidedOn = true; h.order = { source: 'quick_entry', serviceType: 'retail', status: 'in_progress' }
-  h.parts = [{ id: 'p1', status: 'needed', jobLineItemId: 'line-1' }]; h.invoiced = false; h.addThrows = null; h.removeThrows = null
+  h.parts = [{ id: 'p1', status: 'needed', jobLineItemId: 'line-1' }]; h.invoiced = false; h.addThrows = null; h.removeThrows = null; h.addResult = { replayed: false, differs: false, removed: false }
   h.calls = { addPartForJob: [], addPart: [], removeWithLabor: [], cancelPart: [], hasInvoice: 0 }
 })
 
@@ -93,6 +103,30 @@ describe('add', () => {
     expect((h.calls.addPartForJob[0][1] as { requestId: unknown }).requestId).toBe('c3f1a9d2-aaaa-bbbb-cccc-000000000001')
     await post({ action: 'add', description: 'Gasket', sellPriceCents: 500 })
     expect((h.calls.addPartForJob[1][1] as { requestId: unknown }).requestId).toBeNull()
+  })
+  it('tells the form the three outcomes apart: saved, definitely NOT saved (400 notSaved), and not confirmed (500, no raw error text)', async () => {
+    const saved = await post({ action: 'add', description: 'Gasket', sellPriceCents: 500, requestId: 'c3f1a9d2-aaaa-bbbb-cccc-000000000002' })
+    expect(saved.status).toBe(200)
+    expect(await saved.json()).toMatchObject({ ok: true, partId: 'new-part', replayed: false, differs: false, removed: false })
+
+    h.addThrows = new Error('That service is no longer on this job. Refresh to see the current list.')
+    const refused = await post({ action: 'add', description: 'Gasket', sellPriceCents: 500, laborServiceId: 'gone' })
+    expect(refused.status).toBe(400)
+    expect(await refused.json()).toMatchObject({ ok: false, notSaved: true, error: expect.stringMatching(/no longer on this job/) })
+
+    h.addThrows = new TypeError('fetch failed: connection reset at 10.0.0.4')
+    const unknown = await post({ action: 'add', description: 'Gasket', sellPriceCents: 500 })
+    expect(unknown.status).toBe(500)
+    const body = await unknown.json()
+    expect(body).toMatchObject({ ok: false })
+    expect(body.notSaved).toBeUndefined()
+    expect(body.error).not.toMatch(/fetch failed|10\.0/)
+  })
+  it('a repeat of a request that already saved reports the replay (and whether the form had changed, or the part was since removed)', async () => {
+    h.addResult = { replayed: true, differs: true, removed: false }
+    expect(await (await post({ action: 'add', description: 'Gasket', sellPriceCents: 900, requestId: 'c3f1a9d2-aaaa-bbbb-cccc-000000000003' })).json()).toMatchObject({ ok: true, partId: 'new-part', replayed: true, differs: true, removed: false })
+    h.addResult = { replayed: true, differs: false, removed: true }
+    expect(await (await post({ action: 'add', description: 'Gasket', sellPriceCents: 500, requestId: 'c3f1a9d2-aaaa-bbbb-cccc-000000000003' })).json()).toMatchObject({ replayed: true, removed: true })
   })
   it('a removed (cancelled) Job is frozen: add / remove / cancel are a 409 and nothing is called', async () => {
     h.order = { source: 'quick_entry', serviceType: 'retail', status: 'cancelled' }; h.actor = MANAGER

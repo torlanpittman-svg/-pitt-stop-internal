@@ -7,7 +7,8 @@
  *   dealer  = dealer_scans.rate (flat, unchanged)
  *   retail/unknown = retailProductionValueCents precedence:
  *     1. explicit_total_cents  (manager authoritative pre-fee/pre-tax work price)   ← manager override wins
- *     2. itemized non-generated line subtotal (manager itemized)
+ *     2. itemized non-generated line subtotal (manager itemized) — Σ unit price × quantity per line,
+ *        through the pricing engine's own eligibleBasisCents (the figure the Invoice Draft bills from)
  *     3. agreed_price_cents    (employee-confirmed EXPECTED value at intake)
  *     4. null → "—"
  * This is the pre-fee/pre-tax WORK value (consistent with the flat dealer rate) — NOT the invoiced
@@ -17,7 +18,28 @@
 import { getDb } from '@/platform/db'
 import { sql } from 'drizzle-orm'
 import { shopTimezone } from './completion'
-import { orderSourceKind } from './fees'
+import { orderSourceKind, eligibleBasisCents } from './fees'
+
+/**
+ * A Job's itemized work subtotal from its hand-entered (non-generated) estimate lines: each line is
+ * unit price × quantity, rounded per line by the pricing engine (eligibleBasisCents → lineAmountCents) —
+ * the SAME sum the estimate totals, Invoice Draft and QuickBooks payload use. Never re-derived in SQL
+ * (a plain SUM(price_cents) drops the quantity: 2 × $125.50 would count as $125.50).
+ */
+export function itemizedSubtotalFromLines(lines: unknown): number {
+  const rows = typeof lines === 'string' ? safeJson(lines) : lines
+  if (!Array.isArray(rows)) return 0
+  return eligibleBasisCents(rows.map((l) => {
+    const r = (l ?? {}) as { p?: unknown; q?: unknown }
+    return { priceCents: Number(r.p), qty: r.q == null ? 0 : String(r.q) }
+  }))
+}
+function safeJson(s: string): unknown { try { return JSON.parse(s) } catch { return null } }
+
+/** The non-generated lines of the estimate aliased `je`, as [{p: unit price cents, q: quantity text}]. */
+const ITEM_LINES_SQL = sql`(SELECT COALESCE(json_agg(json_build_object('p', li.price_cents, 'q', li.qty::text)), '[]'::json) FROM job_line_items li
+         JOIN job_services js ON js.id = li.job_service_id
+        WHERE js.job_estimate_id = je.id AND li.generated = false)`
 
 /** ONE retail/unknown production value from the estimate, by precedence. Never sums prices. */
 export function retailProductionValueCents(v: { explicitTotalCents: number | null; itemizedSubtotalCents: number | null; agreedPriceCents: number | null }): number | null {
@@ -74,9 +96,7 @@ async function productionRows(from: string, to: string, tz: string): Promise<Pro
       v.year AS year, v.make AS make, v.model AS model,
       je.explicit_total_cents AS explicit_total_cents,
       je.agreed_price_cents   AS agreed_price_cents,
-      (SELECT COALESCE(SUM(li.price_cents), 0) FROM job_line_items li
-         JOIN job_services js ON js.id = li.job_service_id
-        WHERE js.job_estimate_id = je.id AND li.generated = false) AS itemized_subtotal_cents,
+      ${ITEM_LINES_SQL} AS item_lines,
       ds.rate AS dealer_rate,
       ds.id   AS scan_id,
       COALESCE(so.production_date_override, (so.completed_at AT TIME ZONE ${tz})::date)::text AS eff_date
@@ -101,7 +121,7 @@ async function productionRows(from: string, to: string, tz: string): Promise<Pro
       ? (r.dealer_rate != null ? Math.round(Number(r.dealer_rate) * 100) : null)
       : retailProductionValueCents({
           explicitTotalCents: r.explicit_total_cents != null ? Number(r.explicit_total_cents) : null,
-          itemizedSubtotalCents: r.itemized_subtotal_cents != null ? Number(r.itemized_subtotal_cents) : null,
+          itemizedSubtotalCents: itemizedSubtotalFromLines(r.item_lines),
           agreedPriceCents: r.agreed_price_cents != null ? Number(r.agreed_price_cents) : null,
         })
     jobs.push({
@@ -239,16 +259,14 @@ export async function getOrderRetailWorkValueCents(orderId: string): Promise<num
   const rows = await db.execute(sql`
     SELECT je.explicit_total_cents AS explicit_total_cents,
            je.agreed_price_cents   AS agreed_price_cents,
-           (SELECT COALESCE(SUM(li.price_cents), 0) FROM job_line_items li
-              JOIN job_services js ON js.id = li.job_service_id
-             WHERE js.job_estimate_id = je.id AND li.generated = false) AS itemized_subtotal_cents
+           ${ITEM_LINES_SQL} AS item_lines
     FROM job_estimates je WHERE je.service_order_id = ${orderId} LIMIT 1
   `)
-  const r = rows.rows[0] as { explicit_total_cents: number | null; agreed_price_cents: number | null; itemized_subtotal_cents: number | null } | undefined
+  const r = rows.rows[0] as { explicit_total_cents: number | null; agreed_price_cents: number | null; item_lines: unknown } | undefined
   if (!r) return null
   return retailProductionValueCents({
     explicitTotalCents: r.explicit_total_cents != null ? Number(r.explicit_total_cents) : null,
-    itemizedSubtotalCents: r.itemized_subtotal_cents != null ? Number(r.itemized_subtotal_cents) : null,
+    itemizedSubtotalCents: itemizedSubtotalFromLines(r.item_lines),
     agreedPriceCents: r.agreed_price_cents != null ? Number(r.agreed_price_cents) : null,
   })
 }

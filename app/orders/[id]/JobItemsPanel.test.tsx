@@ -146,17 +146,23 @@ describe('Add part form — what blocks it and what never does (markup; behavior
 
   it('only a save actually in flight disables Cancel', () => {
     expect(button(form({ busy: true }), 'Cancel')).toMatch(/disabled=""/)
-    expect(button(form({ locked: 'refused' }), 'Cancel')).not.toMatch(/disabled=""/)
+    expect(button(form({ unconfirmed: true }), 'Cancel')).not.toMatch(/disabled=""/)
   })
 
-  it('after a failed send the fields are frozen and the button offers the identical retry', () => {
-    for (const locked of ['refused', 'unconfirmed'] as const) {
-      const html = form({ locked })
-      expect(fieldsDisabled(html)).toBe(6)
-      expect(html).toMatch(/<button[^>]*type="submit"[^>]*>Try again<\/button>/)
-      expect(button(html, 'Import PartsTech screenshot')).toMatch(/disabled=""/)
-    }
-    expect(form({ locked: 'unconfirmed' })).toContain('it will not be added twice')
-    expect(form({ locked: 'refused' })).toContain('cancel and add the part again')
+  it('after an unconfirmed send nothing is frozen: the fields stay editable, the button offers the safe retry, and the user is not told to start over', () => {
+    const html = form({ unconfirmed: true })
+    expect(fieldsDisabled(html)).toBe(0)
+    expect(html).toMatch(/<button[^>]*type="submit"[^>]*>Try again<\/button>/)
+    expect(button(html, 'Import PartsTech screenshot')).not.toMatch(/disabled=""/)
+    expect(html).toContain('it will not be added twice')
+    expect(html).not.toMatch(/cancel and add|start over/i)
+  })
+
+  it('a refusal (nothing saved) shows its reason and leaves an ordinary, fully editable form', () => {
+    const html = form({ error: 'That service is no longer on this job. Refresh to see the current list.' })
+    expect(html).toContain('no longer on this job')
+    expect(fieldsDisabled(html)).toBe(0)
+    expect(html).toMatch(/<button[^>]*type="submit"[^>]*>Add part<\/button>/)
+    expect(html).not.toContain('will not be added twice')
   })
 })

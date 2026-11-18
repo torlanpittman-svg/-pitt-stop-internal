@@ -26,6 +26,28 @@ records, pricing, permissions and the `/parts` + estimate routes are unchanged.
 - The fallback screen (dealer Jobs, estimate layer off, or the switch OFF) keeps its plain Services list and parts
   tracker; only its Expenses section became the same single row.
 
+### 2026-11-18 follow-up — quantity in the Job total, and a retry-safe add
+
+- **Job header “Total price” and the Production log now count quantity.** Both summed `job_line_items.price_cents`
+  in SQL and dropped the quantity (2 × $125.50 showed as $125.50). They now sum each line as unit price × quantity
+  through the pricing engine’s own `eligibleBasisCents` (`apps/workflow/production.ts` → `itemizedSubtotalFromLines`).
+  The item list, Invoice Draft, stored estimate totals and QuickBooks create / sync payloads were already right and are
+  unchanged — no invoice amount was affected. Nothing is stored: past Jobs simply display the corrected value.
+- **Adding a part is one atomic, repeatable write** (`addPartForJobOnce`, `apps/parts/estimate-parts.ts`). The part’s
+  id is derived from (Job, add operation, the form’s request id) — `partIdForAddRequest` — so the primary key is the
+  idempotency claim: a double submit, an overlapping retry or a retry after a lost response conflicts on it and writes
+  nothing. One statement writes the part record, its estimate row and priced line, the link to its service and both
+  audit events, and re-checks at that moment that the Job is not removed and the chosen service is still there — a
+  refused add leaves nothing behind and does not use up its request id. No migration. A new form is a new request id,
+  so two intentional identical parts are still two parts.
+- **What the form does when a save is not confirmed.** The route answers three ways: saved (`ok`, plus
+  `replayed` / `differs` / `removed` on a repeat), definitely not saved (400 `notSaved` — fix the form and send again),
+  or not confirmed (500 / no response). On “not confirmed” the page re-sends the identical request once by itself;
+  if that also fails the form stays open and fully editable with “Try again — it will not be added twice”. If the
+  first try had saved and the form was changed before the retry, the saved part is kept as it was and the page says
+  so (“…already saved by your first try. The changes you made after that were not applied — tap the part to edit it”).
+  This replaces the frozen “cancel and add the part again” form from earlier the same day.
+
 ## Rollout switch — how to turn the guided interface on / off
 
 `guided_job_items_enabled` (settings registry `apps/settings/db.ts`, accessor `guidedJobItemsEnabled()`, served to the

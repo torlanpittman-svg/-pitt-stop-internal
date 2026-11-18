@@ -175,26 +175,40 @@ export const ASSIGN_GONE_MSG = 'That service is no longer on this job. Choose wh
 // ── What a /parts response means for the form that sent it ──
 
 export type PartsPostOutcome =
-  | { ok: true; partId: string | null }
   /**
-   * sent = the request went out, so the server MAY have written the part and consumed the request id — even when
-   * it answered with a 4xx (the add path can fail after its first write: e.g. the chosen service vanished between
-   * validation and attach, which cancels the part but keeps its replay record). explained = the server gave a reason.
+   * replayed = this request id had already saved the part (nothing new was written). differs = …and what was sent
+   * now is not what was saved then (the form was edited before the retry) — the saved part was left as it was.
+   * removed = …and the part has since been taken off the Job.
    */
-  | { ok: false; error: string; needsManager?: boolean; sent: boolean; explained: boolean }
+  | { ok: true; partId: string | null; replayed: boolean; differs: boolean; removed: boolean }
+  /**
+   * saved: 'no' = the server answered that nothing was written (it refuses an add before, or by, its one atomic
+   * write — never after), so the form can be corrected and sent again freely. 'unknown' = no answer, or one that
+   * does not say: the part may have been saved. Sending the SAME form again settles it either way — the server
+   * answers a repeat of a request id with the part saved the first time, never a second one.
+   */
+  | { ok: false; error: string; needsManager?: boolean; saved: 'no' | 'unknown' }
 
 /** Classify a /parts response. `status` null = the request never produced a response. */
-export function partsPostOutcome(status: number | null, body: { ok?: boolean; error?: string; needsManager?: boolean; partId?: string | null } | null): PartsPostOutcome {
-  if (status === null) return { ok: false, error: 'No connection — check the internet and try again.', sent: true, explained: false }
-  if (status >= 200 && status < 300 && body?.ok) return { ok: true, partId: body.partId ?? null }
-  const explained = status >= 400 && status < 500 && typeof body?.error === 'string' && body.error.length > 0
-  return { ok: false, error: body?.error || 'Could not save — check your connection and try again.', needsManager: body?.needsManager, sent: true, explained }
+export function partsPostOutcome(status: number | null, body: { ok?: boolean; error?: string; needsManager?: boolean; partId?: string | null; replayed?: boolean; differs?: boolean; removed?: boolean } | null): PartsPostOutcome {
+  if (status === null) return { ok: false, error: 'No connection — check the internet and try again.', saved: 'unknown' }
+  if (status >= 200 && status < 300 && body?.ok) return { ok: true, partId: body.partId ?? null, replayed: body.replayed === true, differs: body.differs === true, removed: body.removed === true }
+  const refused = status >= 400 && status < 500 && typeof body?.error === 'string' && body.error.length > 0
+  if (refused) return { ok: false, error: body!.error!, needsManager: body?.needsManager, saved: 'no' }
+  return { ok: false, error: 'Could not save — check your connection and try again.', saved: 'unknown' }
 }
 
-/** Why the add-part form is frozen after a failed add (a retry must be the identical submission under the same request id). */
-export type AddLock = 'unconfirmed' | 'refused'
-export const UNCONFIRMED_ADD_MSG = 'We couldn’t confirm this part was saved. Try again sends the same part — it will not be added twice.'
-export const REFUSED_ADD_MSG = 'Try again sends the same part. To change anything, cancel and add the part again.'
+/** Shown in the add-part form while its last send is unconfirmed. The form stays editable. */
+export const UNCONFIRMED_ADD_MSG = 'We couldn’t confirm whether this part was saved. Try again — it will not be added twice.'
+
+/** What to tell the user when a retry found the part already saved by the first try. */
+export function replayedAddMessage(name: string, place: { kind: 'job' } | { kind: 'service'; title: string } | null, differs: boolean): string {
+  const where = !place ? 'on this job' : place.kind === 'job' ? 'on this job' : `under ${place.title}`
+  return differs
+    ? `“${name}” was already saved ${where} by your first try. The changes you made after that were not applied — tap the part to edit it.`
+    : `${name} saved ${where}.`
+}
+export const removedAfterAddMessage = (name: string) => `“${name}” was saved by your first try and has since been removed from this job. Add it again if it is still needed.`
 
 /**
  * After a RETRIED add reports success, where is that part really? The server answers a repeated request id with the

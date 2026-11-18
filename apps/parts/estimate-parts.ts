@@ -11,7 +11,7 @@
  * Nothing here invents a parts/labor split, a price, or a quantity: prices are only what the user
  * enters. All changes are audited (service_order_events, append-only).
  */
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { getDb } from '@/platform/db'
 import { and, eq, ne, sql } from 'drizzle-orm'
 import { jobParts } from './schema'
@@ -632,8 +632,8 @@ async function mirrorTextService(orderId: string, title: string, actor: string |
 }
 
 /**
- * Retry safety: a lost response + "tap again" must not charge twice. The add's audit event carries the client's
- * requestId; a repeat of the same key returns the part that was already added (whatever its state now).
+ * LEGACY replay record (adds made before the atomic add below shipped): the add's audit event carried the
+ * client's requestId. Still honoured so a retry that straddles the release finds the part already added.
  */
 async function replayedPart(orderId: string, requestId: string): Promise<PartRow | null> {
   const [ev] = await getDb().select({ note: serviceOrderEvents.note }).from(serviceOrderEvents)
@@ -647,48 +647,203 @@ async function replayedPart(orderId: string, requestId: string): Promise<PartRow
   return row ?? null
 }
 
+/** Nothing of this part was written: refused before the one atomic write, or by it. Route → 400 `notSaved`. */
+export class PartNotAddedError extends Error { readonly notSaved = true }
+
+const ADD_REQUEST_ID = /^[A-Za-z0-9_-]{8,64}$/
+
+/**
+ * The part id an add request will use: derived from (this Job, the Job-screen add operation, the client's request
+ * id). The primary key is therefore the idempotency claim — the same logical add can only ever insert ONE part,
+ * however many times or however concurrently it arrives — and a different Job, a different operation or a new
+ * form (new request id) always gets a different id, so two intentional identical additions stay possible.
+ */
+export function partIdForAddRequest(orderId: string, requestId: string): string {
+  const h = createHash('sha256').update(`pitt-stop:job-screen-part-add:${orderId}:${requestId}`).digest('hex')
+  const variant = ((parseInt(h.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${variant}${h.slice(18, 20)}-${h.slice(20, 32)}`
+}
+
+export interface AddPartResult {
+  part: PartRow
+  /** This request id had already added the part — nothing new was written or charged. */
+  replayed: boolean
+  /** Replayed, and what was sent now is NOT what was saved then (the form was edited before the retry): the saved part is untouched. */
+  differs: boolean
+  /** Replayed, and the part has since been removed from the Job. */
+  removed: boolean
+}
+
+const STALE_SERVICE_MSG = 'That service is no longer on this job. Refresh to see the current list.'
+const JOB_REMOVED_MSG = 'This job was removed. Parts can’t be added or removed.'
+
+/** Derived pricing + the QuickBooks sync flag for a saved add. Idempotent (recomputed from the lines), so it is
+ *  safe — and repairing — to run again on every replay. One quiet second try covers a concurrent recompute. */
+async function settleAddedPart(orderId: string, estimateId: string): Promise<void> {
+  const run = async () => {
+    await settlePricingAfterLineChange(estimateId, true)
+    await flagQbSyncNeededIfInvoiced(orderId, 'a part was added')
+  }
+  try { await run() } catch { await run() }
+}
+
+/** A request id that already added its part: repair derived state, and say whether this retry matches what was saved. */
+async function finishReplay(orderId: string, saved: PartRow, input: EstimatePartInput, isManager: boolean, attachTo: AttachTarget): Promise<AddPartResult> {
+  if (saved.status === 'cancelled') return { part: saved, replayed: true, differs: false, removed: true }
+  const est = await getEstimateRow(orderId)
+  if (est) await settleAddedPart(orderId, est.id)
+  const same = <T>(read: () => T, was: T): boolean => { try { return read() === was } catch { return false } }
+  let differs = !same(() => text(input.description, 200), saved.description)
+    || !same(() => qtyOf(input.quantity), Number(saved.quantity))
+    || !same(() => requiredPriceCents(input.sellPriceCents), saved.sellPriceCents as number)
+    || !same(() => text(input.partNumber, 80), saved.partNumber)
+    || (isManager && !same(() => money(input.unitCostCents), saved.unitCostCents))
+  if (!differs) {
+    if (typeof attachTo === 'string' && attachTo) differs = saved.laborServiceId !== attachTo
+    else if (attachTo && typeof attachTo === 'object') {
+      const [svc] = saved.laborServiceId ? await getDb().select({ title: jobServices.title }).from(jobServices).where(eq(jobServices.id, saved.laborServiceId)).limit(1) : []
+      differs = !svc || svc.title.trim().toLowerCase() !== attachTo.title.trim().toLowerCase()
+    } else differs = saved.laborServiceId != null
+  }
+  return { part: saved, replayed: true, differs, removed: false }
+}
+
+/**
+ * The Job screen's add, safe against double submissions, overlapping retries and a response lost after the save.
+ *
+ * ONE statement writes everything the add creates — the procurement record (the claim), its estimate row and
+ * priced line, the link to the service that installs it, and both audit events — so it commits whole or not at
+ * all. The claim is the part's primary key (partIdForAddRequest): a repeat of the same request, sequential or
+ * concurrent, conflicts on it and writes nothing, so a retry can never add a second part, a second charge or a
+ * second audit event. The statement itself re-checks what must still be true at the moment of the write (the Job
+ * is not removed, the chosen service is still on the estimate, an employee is not itemizing a flat Job), so an
+ * add that is refused leaves nothing behind — no cancelled orphan and no used-up request id.
+ * (The Neon HTTP driver has no interactive transactions; a single statement is this codebase's atomic unit —
+ * see clarifyServiceWithPart.)
+ *
+ * A repeat returns the part saved the first time and re-runs the derived pricing (repairing a crash after the
+ * commit). If the repeat carries different details than were saved, nothing is changed and `differs` says so.
+ * Without a request id every call is its own add (no replay), as before.
+ */
+export async function addPartForJobOnce(
+  orderId: string, input: EstimatePartInput, actor: string | null, role: string | null, attachTo?: AttachTarget,
+): Promise<AddPartResult> {
+  const requestId = typeof input.requestId === 'string' && ADD_REQUEST_ID.test(input.requestId) ? input.requestId : null
+  const isManager = role === 'manager' || role === 'admin'
+  const partId = requestId ? partIdForAddRequest(orderId, requestId) : randomUUID()
+  const db = getDb()
+  const findSaved = async () => (await db.select().from(jobParts).where(and(eq(jobParts.id, partId), eq(jobParts.serviceOrderId, orderId))).limit(1))[0] ?? null
+  if (requestId) {
+    const saved = (await findSaved()) ?? (await replayedPart(orderId, requestId))
+    if (saved) return finishReplay(orderId, saved, input, isManager, attachTo)
+  }
+
+  // ── Everything below runs BEFORE the part is written: a failure here means the part was not added. ──
+  let prepared: { estimateId: string; attachId: string | null; description: string; quantity: number; sellPriceCents: number; unitCostCents: number | null; partNumber: string | null; supplier: string | null; fitment: string | null }
+  try {
+    const description = text(input.description, 200)
+    if (!description) throw new Error('Describe the part (e.g. “Driver-side mirror assembly”).')
+    // Owner decision 2026-11-03: whoever adds the part on the Job screen enters the customer price, so a manager
+    // never has to price it afterwards. The price must be an EXPLICIT amount (0 is allowed for a no-charge part;
+    // a blank is never treated as $0) and is validated here for every role — the route forwards it as sent.
+    // Our cost is internal and comes only from a manager/admin; anything else sent is dropped, not stored.
+    const sellPriceCents = requiredPriceCents(input.sellPriceCents)
+    const quantity = qtyOf(input.quantity)
+    const unitCostCents = isManager ? money(input.unitCostCents) : null
+    if (!isManager) {
+      // A Job priced as ONE flat Work Price: a priced part line would itemize it (the agreed amount becomes a
+      // reference and every service needs its own price before invoicing). That is a manager's call, made
+      // knowingly from the Invoice Draft — never a side effect of an employee's add.
+      const flatEst = await getEstimateRow(orderId)
+      if (flatEst?.priceMode === 'explicit_pretax' && flatEst.explicitTotalCents != null) throw new Error(FLAT_NEEDS_MANAGER_MSG)
+    }
+    let attachId: string | null = null
+    if (typeof attachTo === 'string' && attachTo) {
+      if (!(await coverableServiceIds(orderId)).has(attachTo)) throw new Error(STALE_SERVICE_MSG)
+      attachId = attachTo
+    } else if (attachTo && typeof attachTo === 'object') {
+      attachId = await mirrorTextService(orderId, attachTo.title, actor)
+    }
+    const est = await getOrCreateEstimate(orderId, actor)
+    prepared = { estimateId: est.id, attachId, description, quantity, sellPriceCents, unitCostCents,
+      partNumber: text(input.partNumber, 80), supplier: text(input.supplier, 120), fitment: text(input.fitment, 200) }
+  } catch (err) {
+    // Our own refusals are plain Errors with a message for the user; anything else (driver / network) gets a neutral one.
+    throw new PartNotAddedError(err instanceof Error && err.constructor === Error ? err.message : 'The part could not be added — nothing was saved. Try again.')
+  }
+  const { estimateId, attachId, description, quantity, sellPriceCents, unitCostCents, partNumber, supplier, fitment } = prepared
+
+  const svcId = randomUUID()
+  const lineId = randomUUID()
+  const entryText = input.entryText ? String(input.entryText).slice(0, 300) : null
+  const lineDesc = partLineDescription({ description, fitment, partNumber })
+  const addedNote = JSON.stringify({ partId, description, supply: 'shop', quantity, unitCostCents, sellPriceCents, fitment, partNumber, entry: input.entryText ?? null, ...(requestId ? { requestId } : {}) })
+  const laborNote = JSON.stringify({ partId, part: description, status: 'included', laborServiceId: attachId, reason: null })
+  // supply 'shop' = the part is sold to the customer, so its price × quantity lands on the estimate line once.
+  const res = await db.execute(sql`
+    WITH gate AS (
+      SELECT je.id FROM job_estimates je JOIN service_orders so ON so.id = je.service_order_id
+       WHERE je.id = ${estimateId}::uuid AND so.id = ${orderId}::uuid AND so.status <> 'cancelled'
+         AND (${isManager}::boolean OR NOT (je.price_mode = 'explicit_pretax' AND je.explicit_total_cents IS NOT NULL))
+         AND (${attachId}::uuid IS NULL OR EXISTS (
+           SELECT 1 FROM job_services s WHERE s.id = ${attachId}::uuid AND s.job_estimate_id = je.id AND s.source <> 'system' AND s.kind <> 'part'))
+    ), claim AS (
+      INSERT INTO job_parts (id, service_order_id, description, part_number, supplier, fitment, supply, quantity,
+        unit_cost_cents, sell_price_cents, job_service_id, job_line_item_id, labor_service_id,
+        status, labor_status, labor_decided_by, labor_decided_at, created_by, updated_by, created_at, updated_at)
+      SELECT ${partId}::uuid, ${orderId}::uuid, ${description}, ${partNumber}, ${supplier}, ${fitment}, 'shop', ${String(quantity)}::numeric,
+        ${unitCostCents}::int, ${sellPriceCents}::int, ${svcId}::uuid, ${lineId}::uuid, ${attachId}::uuid,
+        'needed', ${attachId ? 'included' : 'needs_review'}, ${attachId ? actor : null},
+        CASE WHEN ${attachId}::uuid IS NULL THEN NULL ELSE now() END, ${actor}, ${actor}, now(), now()
+      FROM gate
+      ON CONFLICT (id) DO NOTHING
+      RETURNING id
+    ), part_svc AS (
+      INSERT INTO job_services (id, job_estimate_id, title, source, kind, entry_text, sort_order, created_at, updated_at)
+      SELECT ${svcId}::uuid, ${estimateId}::uuid, ${description}, 'manual', 'part', ${entryText}, 0, now(), now() FROM claim
+      RETURNING id
+    ), part_line AS (
+      -- Retail QuickBooks lines are non-taxable (TaxCodeRef NON). job_line_items has no updated_at.
+      INSERT INTO job_line_items (id, job_service_id, type, name, description, qty, unit, cost_cents, price_cents, taxable, tax_category, part_number, supplier, created_at)
+      SELECT ${lineId}::uuid, part_svc.id, 'part', ${description}, ${lineDesc}, ${String(quantity)}::numeric, 'each',
+        ${unitCostCents ?? 0}::int, ${sellPriceCents}::int, false, 'repair_parts', ${partNumber}, ${supplier}, now()
+      FROM part_svc
+      RETURNING id
+    ), ev_part AS (
+      INSERT INTO service_order_events (service_order_id, event_type, employee_name, note)
+      SELECT ${orderId}::uuid, 'part_added', ${actor}, ${addedNote} FROM claim
+      RETURNING id
+    ), ev_labor AS (
+      INSERT INTO service_order_events (service_order_id, event_type, employee_name, note)
+      SELECT ${orderId}::uuid, 'part_labor_review', ${actor}, ${laborNote} FROM claim WHERE ${attachId}::uuid IS NOT NULL
+      RETURNING id
+    )
+    SELECT id FROM claim
+  `)
+
+  if (!rowsOf(res)[0]?.id) {
+    // No claim: either the same request already added the part (an overlapping retry won the key) …
+    const saved = await findSaved()
+    if (saved) return finishReplay(orderId, saved, input, isManager, attachTo)
+    // … or the statement refused the add at the moment of the write. Nothing was written; say why.
+    const [order] = await db.select({ status: serviceOrders.status }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
+    if (!order || order.status === 'cancelled') throw new PartNotAddedError(JOB_REMOVED_MSG)
+    const now = await getEstimateRow(orderId)
+    if (!isManager && now?.priceMode === 'explicit_pretax' && now.explicitTotalCents != null) throw new PartNotAddedError(FLAT_NEEDS_MANAGER_MSG)
+    if (attachId && !(await coverableServiceIds(orderId)).has(attachId)) throw new PartNotAddedError(STALE_SERVICE_MSG)
+    throw new PartNotAddedError('The part could not be added — nothing was saved. Try again.')
+  }
+  await settleAddedPart(orderId, estimateId)
+  const row = await findSaved()
+  if (!row) throw new Error('The part was added but could not be read back.')
+  return { part: row, replayed: false, differs: false, removed: false }
+}
+
+/** addPartForJobOnce, returning just the part (a replay returns the part saved the first time). */
 export async function addPartForJob(
   orderId: string, input: EstimatePartInput, actor: string | null, role: string | null, attachTo?: AttachTarget,
 ): Promise<PartRow> {
-  const requestId = typeof input.requestId === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(input.requestId) ? input.requestId : null
-  if (requestId) { const done = await replayedPart(orderId, requestId); if (done) return done }
-  // Owner decision 2026-11-03: whoever adds the part on the Job screen enters the customer price, so a manager
-  // never has to price it afterwards. The price must be an EXPLICIT amount (0 is allowed for a no-charge part;
-  // a blank is never treated as $0) and is validated here for every role — the route forwards it as sent.
-  // Our cost is internal and comes only from a manager/admin; anything else sent is dropped, not stored.
-  const sellPriceCents = requiredPriceCents(input.sellPriceCents)
-  const isManager = role === 'manager' || role === 'admin'
-  const unitCostCents = isManager ? input.unitCostCents : null
-  if (!isManager) {
-    // A Job priced as ONE flat Work Price: a priced part line would itemize it (the agreed amount becomes a
-    // reference and every service needs its own price before invoicing). That is a manager's call, made
-    // knowingly from the Invoice Draft — never a side effect of an employee's add. Refused before any write.
-    const est = await getEstimateRow(orderId)
-    if (est?.priceMode === 'explicit_pretax' && est.explicitTotalCents != null) throw new Error(FLAT_NEEDS_MANAGER_MSG)
-  }
-  let attachToServiceId: string | null = null
-  if (typeof attachTo === 'string' && attachTo) {
-    // Validate the service BEFORE any write so an invalid attach never leaves an orphan part behind.
-    const coverable = await coverableServiceIds(orderId)
-    if (!coverable.has(attachTo)) throw new Error('That service is no longer on this job. Refresh to see the current list.')
-    attachToServiceId = attachTo
-  } else if (attachTo && typeof attachTo === 'object') {
-    attachToServiceId = await mirrorTextService(orderId, attachTo.title, actor)
-  }
-  // supply 'shop' = the part is sold to the customer, so its price × quantity lands on the estimate line once.
-  const part = await addEstimatePart(orderId, { ...input, supply: 'shop', sellPriceCents, unitCostCents, requestId }, actor)
-  if (attachToServiceId) {
-    try {
-      await decidePartLabor(orderId, part.id, { action: 'included', serviceId: attachToServiceId }, actor, role)
-    } catch (err) {
-      // The attach failed AFTER the priced row was written (e.g. the service vanished in between): never leave a
-      // charged part behind that the user was told failed (a retry would then charge twice). Undo, then surface it.
-      await removeEstimatePart(orderId, part.id, actor).catch((e) => console.error('[parts] attach failed and the undo failed too', e))
-      throw err
-    }
-  }
-  const [row] = await getDb().select().from(jobParts).where(eq(jobParts.id, part.id)).limit(1)
-  return row ?? part
+  return (await addPartForJobOnce(orderId, input, actor, role, attachTo)).part
 }
 
 /**
