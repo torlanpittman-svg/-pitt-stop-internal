@@ -28,7 +28,7 @@ import { createPortal } from 'react-dom'
 import type { EstimateViewData, PartView, ServiceView } from './estimate/save-feedback'
 import { partPrice, servicePrice } from './estimate/ItemRows'
 import RemovableServiceRow from '@/app/components/RemovableServiceRow'
-import { groupJobItems, partAssignOptions, partsPostOutcome, resolvePartAssign, serviceRemovalConsequence, ASSIGN_GONE_MSG, INVOICED_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG, LABOR_STAYS_NOTE, WHOLE_JOB, type PartInput, type PartsPostOutcome } from '@/apps/parts/job-items-view'
+import { groupJobItems, partAssignOptions, partsPostOutcome, placeOfAddedPart, resolvePartAssign, serviceRemovalConsequence, ASSIGN_GONE_MSG, INVOICED_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG, LABOR_STAYS_NOTE, WHOLE_JOB, type AddLock, type PartInput, type PartsPostOutcome } from '@/apps/parts/job-items-view'
 import { AddMenu, AddPartDialog, type AddChoice } from './AddToJob'
 
 const BTN = 'rounded-xl font-semibold text-sm px-4 min-h-11 active:opacity-80 disabled:opacity-40'
@@ -37,8 +37,8 @@ const LINK = 'min-h-11 inline-flex items-center px-1 text-sm font-semibold activ
 /** The add-part form is open; `assign` is the "Assign to" value it starts on (Whole job unless opened for a service). */
 type PartForm = null | {
   assign: string
-  /** The last add got no clear answer (it may have been saved): the form is frozen so a retry is the SAME submission. */
-  locked?: boolean
+  /** The last add was sent and failed (it may have been saved or have used up its request id): the form is frozen so a retry is the SAME submission. */
+  locked?: AddLock
 }
 const textKey = (title: string) => `text:${title.trim().toLowerCase()}`
 type Confirm = null
@@ -112,8 +112,8 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
 
   /** One /parts call at a time — a double-tap can never send the same add or removal twice. */
   const post = async (body: Record<string, unknown>): Promise<PartsPostOutcome> => {
-    // Nothing was sent, so nothing is uncertain about it.
-    if (inFlight.current) return { ok: false, error: 'Still saving — one moment.', uncertain: false }
+    // Nothing was sent, so nothing can have been written.
+    if (inFlight.current) return { ok: false, error: 'Still saving — one moment.', sent: false, explained: true }
     inFlight.current = true; setLocalBusy(true); setError(null)
     try {
       const r = await fetch(`/api/workflow/orders/${orderId}/parts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -160,9 +160,24 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
     })
     if (!out.ok) {
       setError(out.error)
-      // No clear answer: the part may be saved. Freeze the form so the retry is this exact submission (the request
-      // id makes the server replay it) — changing where it goes now could report a place it was never saved to.
-      if (out.uncertain) setPartForm((f) => (f ? { ...f, locked: true } : f))
+      // The request went out and failed. The server may still have written the part, or used up this request id
+      // (its add can fail after the first write, and answers that with a 4xx too). Freeze the form: the only
+      // retry is this exact submission, which the server replays — an edited one could be reported as saved
+      // somewhere it never was.
+      if (out.sent) setPartForm((cur) => (cur ? { ...cur, locked: out.explained ? 'refused' : 'unconfirmed' } : cur))
+      return
+    }
+    if (partForm?.locked) {
+      // A retry: the server may have replayed the first attempt's part, wherever that left it. Read the Job back
+      // and say what is true — never "added to X" from what the form says.
+      const fresh = await fetch(`/api/workflow/orders/${orderId}/items`, { cache: 'no-store' }).then((r) => r.json()).then((d) => (d?.ok && d.view ? d.view as EstimateViewData : null)).catch(() => null)
+      const place = fresh ? placeOfAddedPart(fresh, out.partId) : null
+      setPartForm(null); refocusAdd(); onChanged()
+      if (fresh && !place) { setError(`“${f.name}” was not added — the first try did not go through. Add it again.`); return }
+      setFlash(out.partId)
+      setNotice(!place ? { text: `${f.name} saved.`, at: 'job' }
+        : place.kind === 'job' ? { text: `${f.name} added to this job.`, at: 'job' }
+        : { text: `${f.name} added to ${place.title}.`, at: place.serviceId })
       return
     }
     setPartForm(null); setFlash(out.partId); refocusAdd()
@@ -341,7 +356,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
 
       {menuOpen && <AddMenu choices={choices} onPick={pick} onCancel={() => setMenuOpen(false)} />}
       {partForm && (
-        <AddPartDialog manager={manager} busy={busy} error={error} options={assignOptions} initialAssign={partForm.assign} locked={!!partForm.locked}
+        <AddPartDialog manager={manager} busy={busy} error={error} options={assignOptions} initialAssign={partForm.assign} locked={partForm.locked}
           importHost={p.importPanel ? importHost : null} onOpenImport={p.importPanel ? () => setImportHost((h) => h ?? document.createElement('div')) : undefined}
           onSubmit={(f, key, rid) => void addPart(f, key, rid)}
           // Leaving a form whose add was never confirmed: re-read the Job so the list shows whether it was saved.

@@ -176,20 +176,36 @@ export const ASSIGN_GONE_MSG = 'That service is no longer on this job. Choose wh
 
 export type PartsPostOutcome =
   | { ok: true; partId: string | null }
-  /** uncertain = we cannot tell whether the server saved it (no response, a server error, an unreadable body). */
-  | { ok: false; error: string; needsManager?: boolean; uncertain: boolean }
+  /**
+   * sent = the request went out, so the server MAY have written the part and consumed the request id — even when
+   * it answered with a 4xx (the add path can fail after its first write: e.g. the chosen service vanished between
+   * validation and attach, which cancels the part but keeps its replay record). explained = the server gave a reason.
+   */
+  | { ok: false; error: string; needsManager?: boolean; sent: boolean; explained: boolean }
 
-/**
- * Classify a /parts response. A refusal the server explained (4xx with its message) wrote nothing, so the form
- * may be corrected and sent again. Anything else is UNCERTAIN: the add may have been saved, so the only safe
- * retry is the identical submission (same request id → the server replays it instead of adding twice).
- * `status` null = the request never produced a response.
- */
+/** Classify a /parts response. `status` null = the request never produced a response. */
 export function partsPostOutcome(status: number | null, body: { ok?: boolean; error?: string; needsManager?: boolean; partId?: string | null } | null): PartsPostOutcome {
-  if (status === null) return { ok: false, error: 'No connection — check the internet and try again.', uncertain: true }
+  if (status === null) return { ok: false, error: 'No connection — check the internet and try again.', sent: true, explained: false }
   if (status >= 200 && status < 300 && body?.ok) return { ok: true, partId: body.partId ?? null }
-  const refused = status >= 400 && status < 500 && typeof body?.error === 'string' && body.error.length > 0
-  return { ok: false, error: body?.error || 'Could not save — check your connection and try again.', needsManager: body?.needsManager, uncertain: !refused }
+  const explained = status >= 400 && status < 500 && typeof body?.error === 'string' && body.error.length > 0
+  return { ok: false, error: body?.error || 'Could not save — check your connection and try again.', needsManager: body?.needsManager, sent: true, explained }
 }
 
+/** Why the add-part form is frozen after a failed add (a retry must be the identical submission under the same request id). */
+export type AddLock = 'unconfirmed' | 'refused'
 export const UNCONFIRMED_ADD_MSG = 'We couldn’t confirm this part was saved. Try again sends the same part — it will not be added twice.'
+export const REFUSED_ADD_MSG = 'Try again sends the same part. To change anything, cancel and add the part again.'
+
+/**
+ * After a RETRIED add reports success, where is that part really? The server answers a repeated request id with the
+ * part from the first attempt — wherever that attempt left it, including cancelled (attach failed after the write).
+ * So the page reads the Job back and reports what is true: the service it sits under, the whole job, or null when it
+ * is not a live part of this Job at all (nothing was added — never announce it).
+ */
+export function placeOfAddedPart(view: Pick<EstimateView, 'services' | 'parts'>, partId: string | null): { kind: 'job' } | { kind: 'service'; serviceId: string; title: string } | null {
+  if (!partId) return null
+  const g = groupJobItems(view)
+  if (g.standalone.some((p) => p.id === partId)) return { kind: 'job' }
+  const s = g.services.find((x) => x.parts.some((p) => p.id === partId))
+  return s ? { kind: 'service', serviceId: s.id, title: s.title } : null
+}

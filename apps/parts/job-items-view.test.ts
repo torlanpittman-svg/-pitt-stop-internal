@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { EstimatePartView, EstimateServiceView } from '@/apps/workflow/estimate-db'
-import { groupJobItems, redactItemsView, removeServiceMessage, validatePartDraft, partAssignOptions, partsPostOutcome, resolvePartAssign, serviceAssignKey, textAssignKey, WHOLE_JOB, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG } from './job-items-view'
+import { groupJobItems, redactItemsView, removeServiceMessage, validatePartDraft, partAssignOptions, partsPostOutcome, placeOfAddedPart, resolvePartAssign, serviceAssignKey, textAssignKey, WHOLE_JOB, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG } from './job-items-view'
 
 const svc = (id: string, title = id, declined = false): EstimateServiceView => ({ id, title, priceCents: 1000, suggestedCents: null, declined } as unknown as EstimateServiceView)
 
@@ -162,22 +162,34 @@ describe('add-part "Assign to" (Whole job or one of the Job\'s services)', () =>
   })
 })
 
-describe('partsPostOutcome — may the form be changed before a retry?', () => {
+describe('partsPostOutcome — a sent request that failed may have written (or used up its request id)', () => {
   it('a confirmed save is ok and carries the part id', () => {
     expect(partsPostOutcome(200, { ok: true, partId: 'p1' })).toEqual({ ok: true, partId: 'p1' })
   })
 
-  it('a refusal the server explained (4xx + message) wrote nothing — NOT uncertain, the form may be corrected', () => {
-    expect(partsPostOutcome(400, { ok: false, error: 'Enter the customer price.' })).toEqual({ ok: false, error: 'Enter the customer price.', needsManager: undefined, uncertain: false })
-    expect(partsPostOutcome(403, { ok: false, error: 'Ask a manager.', needsManager: true })).toMatchObject({ ok: false, needsManager: true, uncertain: false })
+  it('EVERY failed response counts as sent — a 4xx with a message too (the add can fail after its first write)', () => {
+    expect(partsPostOutcome(400, { ok: false, error: 'That service is no longer on this job.' })).toEqual({ ok: false, error: 'That service is no longer on this job.', needsManager: undefined, sent: true, explained: true })
+    expect(partsPostOutcome(403, { ok: false, error: 'Ask a manager.', needsManager: true })).toMatchObject({ ok: false, needsManager: true, sent: true, explained: true })
+    for (const [status, body] of [[null, null], [500, { ok: false, error: 'boom' }], [502, null], [200, null], [400, null], [200, { ok: false }]] as const) {
+      expect(partsPostOutcome(status, body)).toMatchObject({ ok: false, sent: true, explained: false })
+    }
   })
+})
 
-  it('no response, a server error, an unreadable body or an unexplained failure is UNCERTAIN — it may have been saved', () => {
-    expect(partsPostOutcome(null, null)).toMatchObject({ ok: false, uncertain: true })
-    expect(partsPostOutcome(500, { ok: false, error: 'boom' })).toMatchObject({ ok: false, uncertain: true })
-    expect(partsPostOutcome(502, null)).toMatchObject({ ok: false, uncertain: true })
-    expect(partsPostOutcome(200, null)).toMatchObject({ ok: false, uncertain: true })
-    expect(partsPostOutcome(400, null)).toMatchObject({ ok: false, uncertain: true })
-    expect(partsPostOutcome(200, { ok: false })).toMatchObject({ ok: false, uncertain: true })
+describe('placeOfAddedPart — after a retry, report where the part REALLY is', () => {
+  const s = (id: string, title: string, declined = false) => ({ id, title, declined }) as EstimateServiceView
+  const p = (id: string, laborServiceId: string | null) => ({ id, description: id, laborServiceId, laborStatus: laborServiceId ? 'included' : 'none' }) as unknown as EstimatePartView
+  const v = { services: [s('a', 'Oil Change'), s('b', 'Oil Change'), s('c', 'Wax', true)], parts: [p('p1', 'b'), p('p2', null), p('p3', 'c')] }
+
+  it('a part under a service is reported under THAT service (by id — same-named services stay distinct)', () => {
+    expect(placeOfAddedPart(v, 'p1')).toEqual({ kind: 'service', serviceId: 'b', title: 'Oil Change' })
+  })
+  it('a whole-job part — and one whose service was declined — is reported on the job', () => {
+    expect(placeOfAddedPart(v, 'p2')).toEqual({ kind: 'job' })
+    expect(placeOfAddedPart(v, 'p3')).toEqual({ kind: 'job' })
+  })
+  it('a part that is not live on the Job (replayed but cancelled) is null — it must not be announced as added', () => {
+    expect(placeOfAddedPart(v, 'cancelled-id')).toBeNull()
+    expect(placeOfAddedPart(v, null)).toBeNull()
   })
 })
