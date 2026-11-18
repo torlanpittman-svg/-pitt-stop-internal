@@ -197,16 +197,24 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
       return
     }
     if (out.replayed) {
-      // An earlier try had already saved this part. Nothing new was written; report what is really on the Job
-      // (read back with the save), never what the form currently says.
+      // An earlier try had already saved this part. Nothing new was written. Report only what is known: the name
+      // the SERVER saved (the form may have been changed since), and where the fresh list shows it — keeping
+      // "could not read the list" apart from "the list no longer has it".
       const fresh = out.view ?? null
-      const savedName = fresh?.parts?.find((x) => x.id === out.partId)?.description ?? f.name
+      const name = out.savedName ?? fresh?.parts?.find((x) => x.id === out.partId)?.description ?? 'The part'
       setPartForm(null); refocusAdd(); onChanged()
-      if (out.removed) { setError(removedAfterAddMessage(savedName)); return }
-      const place = fresh ? placeOfAddedPart(fresh, out.partId) : null
-      if (place && out.partId) setFlash(out.partId)
-      if (out.differs) { setError(replayedAddMessage(savedName, place, true)); return }
-      setNotice({ text: replayedAddMessage(savedName, place, false), at: place?.kind === 'service' ? place.serviceId : 'job' })
+      if (out.removed) { setError(removedAfterAddMessage(name)); return }
+      if (!fresh) {
+        const msg = replayedAddMessage(name, 'unread', out.differs, canEdit)
+        if (out.differs) setError(msg); else setNotice({ text: msg, at: 'job' })
+        return
+      }
+      const place = placeOfAddedPart(fresh, out.partId)
+      // Read fine, and the part is not on the Job any more (removed since the save was confirmed).
+      if (!place) { setError(removedAfterAddMessage(name)); return }
+      setFlash(out.partId)
+      if (out.differs) { setError(replayedAddMessage(name, place, true, canEdit)); return }
+      setNotice({ text: replayedAddMessage(name, place, false), at: place.kind === 'service' ? place.serviceId : 'job' })
       return
     }
     setPartForm(null); setFlash(out.partId); refocusAdd()

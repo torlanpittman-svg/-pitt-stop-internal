@@ -638,7 +638,7 @@ async function mirrorTextService(orderId: string, title: string, actor: string |
 async function replayedPart(orderId: string, requestId: string): Promise<PartRow | null> {
   const [ev] = await getDb().select({ note: serviceOrderEvents.note }).from(serviceOrderEvents)
     .where(and(eq(serviceOrderEvents.serviceOrderId, orderId), eq(serviceOrderEvents.eventType, 'part_added'),
-      sql`${serviceOrderEvents.note} LIKE ${'%"requestId":"' + requestId + '"%'}`)).limit(1)
+      sql`position(${'"requestId":"' + requestId + '"'} in ${serviceOrderEvents.note}) > 0`)).limit(1)   // exact text, no wildcards
   if (!ev?.note) return null
   let partId = ''
   try { partId = String((JSON.parse(ev.note) as { partId?: unknown }).partId ?? '') } catch { return null }
@@ -647,7 +647,8 @@ async function replayedPart(orderId: string, requestId: string): Promise<PartRow
   return row ?? null
 }
 
-/** Nothing of this part was written: refused before the one atomic write, or by it. Route → 400 `notSaved`. */
+/** The part was NOT added: refused before the one atomic write, or by it. Route → 400 `notSaved`. (Preparing an
+ *  add can still have created the Job's estimate or mirrored a text service — never the part or a charge.) */
 export class PartNotAddedError extends Error { readonly notSaved = true }
 
 const ADD_REQUEST_ID = /^[A-Za-z0-9_-]{8,64}$/
@@ -677,26 +678,58 @@ export interface AddPartResult {
 const STALE_SERVICE_MSG = 'That service is no longer on this job. Refresh to see the current list.'
 const JOB_REMOVED_MSG = 'This job was removed. Parts can’t be added or removed.'
 
-/** Derived pricing + the QuickBooks sync flag for a saved add. Idempotent (recomputed from the lines), so it is
- *  safe — and repairing — to run again on every replay. One quiet second try covers a concurrent recompute. */
-async function settleAddedPart(orderId: string, estimateId: string): Promise<void> {
+const SETTLED_EVENT = 'part_add_settled'
+const settledNote = (partId: string) => JSON.stringify({ partId })
+async function addWasSettled(orderId: string, partId: string): Promise<boolean> {
+  const [ev] = await getDb().select({ id: serviceOrderEvents.id }).from(serviceOrderEvents)
+    .where(and(eq(serviceOrderEvents.serviceOrderId, orderId), eq(serviceOrderEvents.eventType, SETTLED_EVENT), eq(serviceOrderEvents.note, settledNote(partId)))).limit(1)
+  return !!ev
+}
+
+/**
+ * The steps that follow the atomic write of an add: pricing state + derived totals, and the QuickBooks sync flag.
+ * They run ONCE per add. Completion is recorded as an append-only `part_add_settled` event, so a later repeat of the
+ * same request knows the add is finished and touches nothing — it can never undo a pricing decision made since
+ * (e.g. a manager setting a flat Work Price) or re-flag an invoice that has been synced. Only when that record is
+ * missing (the first attempt died between the write and here) does a repeat finish the job.
+ *
+ * `mayItemize`: a priced part line itemizes a flat-priced Job, which is a manager's call — so only a manager's add
+ * does it. An employee's add never does (the write refuses an employee on a flat Job; if the Job became flat a
+ * moment later, the flat price stands and the totals are simply recomputed).
+ * One quiet second try covers a concurrent recompute of the same estimate.
+ */
+async function settleAddedPart(orderId: string, estimateId: string, partId: string, mayItemize: boolean, actor: string | null): Promise<void> {
   const run = async () => {
-    await settlePricingAfterLineChange(estimateId, true)
+    await settlePricingAfterLineChange(estimateId, mayItemize)
     await flagQbSyncNeededIfInvoiced(orderId, 'a part was added')
   }
   try { await run() } catch { await run() }
+  await event(orderId, SETTLED_EVENT, actor, { partId })
 }
 
-/** A request id that already added its part: repair derived state, and say whether this retry matches what was saved. */
-async function finishReplay(orderId: string, saved: PartRow, input: EstimatePartInput, isManager: boolean, attachTo: AttachTarget): Promise<AddPartResult> {
+/** The part a Job-screen add request already saved on this Job (by its derived id, or the pre-release replay record), or null. */
+export async function savedPartForAddRequest(orderId: string, requestId: unknown): Promise<PartRow | null> {
+  if (typeof requestId !== 'string' || !ADD_REQUEST_ID.test(requestId)) return null
+  const [row] = await getDb().select().from(jobParts).where(and(eq(jobParts.id, partIdForAddRequest(orderId, requestId)), eq(jobParts.serviceOrderId, orderId))).limit(1)
+  return row ?? (await replayedPart(orderId, requestId))
+}
+
+/** A request id that already added its part: finish the add if it never finished, and say whether this retry matches what was saved. */
+async function finishReplay(orderId: string, saved: PartRow, input: EstimatePartInput, isManager: boolean, attachTo: AttachTarget, actor: string | null): Promise<AddPartResult> {
   if (saved.status === 'cancelled') return { part: saved, replayed: true, differs: false, removed: true }
-  const est = await getEstimateRow(orderId)
-  if (est) await settleAddedPart(orderId, est.id)
+  // Adds made by this code carry the derived id and a completion record; an older add (found through its legacy
+  // replay record) was settled inline by the code that made it and is never settled again here.
+  const ours = !!input.requestId && saved.id === partIdForAddRequest(orderId, String(input.requestId))
+  if (ours && !(await addWasSettled(orderId, saved.id))) {
+    const est = await getEstimateRow(orderId)
+    if (est) await settleAddedPart(orderId, est.id, saved.id, isManager, actor)
+  }
   const same = <T>(read: () => T, was: T): boolean => { try { return read() === was } catch { return false } }
   let differs = !same(() => text(input.description, 200), saved.description)
     || !same(() => qtyOf(input.quantity), Number(saved.quantity))
     || !same(() => requiredPriceCents(input.sellPriceCents), saved.sellPriceCents as number)
     || !same(() => text(input.partNumber, 80), saved.partNumber)
+    || !same(() => text(input.supplier, 120), saved.supplier)
     || (isManager && !same(() => money(input.unitCostCents), saved.unitCostCents))
   if (!differs) {
     if (typeof attachTo === 'string' && attachTo) differs = saved.laborServiceId !== attachTo
@@ -715,14 +748,16 @@ async function finishReplay(orderId: string, saved: PartRow, input: EstimatePart
  * priced line, the link to the service that installs it, and both audit events — so it commits whole or not at
  * all. The claim is the part's primary key (partIdForAddRequest): a repeat of the same request, sequential or
  * concurrent, conflicts on it and writes nothing, so a retry can never add a second part, a second charge or a
- * second audit event. The statement itself re-checks what must still be true at the moment of the write (the Job
- * is not removed, the chosen service is still on the estimate, an employee is not itemizing a flat Job), so an
- * add that is refused leaves nothing behind — no cancelled orphan and no used-up request id.
+ * second audit event. The statement also re-checks, against the data it sees as it starts, that the Job is not
+ * removed, the chosen service is still on the estimate and an employee is not itemizing a flat Job — so a refused
+ * add leaves no part behind (no cancelled orphan, no used-up request id). That check is a snapshot, not a lock: a
+ * change committed while the statement runs is not seen by it.
  * (The Neon HTTP driver has no interactive transactions; a single statement is this codebase's atomic unit —
  * see clarifyServiceWithPart.)
  *
- * A repeat returns the part saved the first time and re-runs the derived pricing (repairing a crash after the
- * commit). If the repeat carries different details than were saved, nothing is changed and `differs` says so.
+ * A repeat returns the part saved the first time. It finishes the add's pricing step only if the first attempt
+ * never did (settleAddedPart), and otherwise changes nothing. If the repeat carries different details than were
+ * saved, the saved part is left as it is and `differs` says so.
  * Without a request id every call is its own add (no replay), as before.
  */
 export async function addPartForJobOnce(
@@ -735,7 +770,7 @@ export async function addPartForJobOnce(
   const findSaved = async () => (await db.select().from(jobParts).where(and(eq(jobParts.id, partId), eq(jobParts.serviceOrderId, orderId))).limit(1))[0] ?? null
   if (requestId) {
     const saved = (await findSaved()) ?? (await replayedPart(orderId, requestId))
-    if (saved) return finishReplay(orderId, saved, input, isManager, attachTo)
+    if (saved) return finishReplay(orderId, saved, { ...input, requestId }, isManager, attachTo, actor)
   }
 
   // ── Everything below runs BEFORE the part is written: a failure here means the part was not added. ──
@@ -769,7 +804,7 @@ export async function addPartForJobOnce(
       partNumber: text(input.partNumber, 80), supplier: text(input.supplier, 120), fitment: text(input.fitment, 200) }
   } catch (err) {
     // Our own refusals are plain Errors with a message for the user; anything else (driver / network) gets a neutral one.
-    throw new PartNotAddedError(err instanceof Error && err.constructor === Error ? err.message : 'The part could not be added — nothing was saved. Try again.')
+    throw new PartNotAddedError(err instanceof Error && err.constructor === Error ? err.message : 'The part was not added. Try again.')
   }
   const { estimateId, attachId, description, quantity, sellPriceCents, unitCostCents, partNumber, supplier, fitment } = prepared
 
@@ -824,16 +859,16 @@ export async function addPartForJobOnce(
   if (!rowsOf(res)[0]?.id) {
     // No claim: either the same request already added the part (an overlapping retry won the key) …
     const saved = await findSaved()
-    if (saved) return finishReplay(orderId, saved, input, isManager, attachTo)
+    if (saved) return finishReplay(orderId, saved, { ...input, requestId }, isManager, attachTo, actor)
     // … or the statement refused the add at the moment of the write. Nothing was written; say why.
     const [order] = await db.select({ status: serviceOrders.status }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
     if (!order || order.status === 'cancelled') throw new PartNotAddedError(JOB_REMOVED_MSG)
     const now = await getEstimateRow(orderId)
     if (!isManager && now?.priceMode === 'explicit_pretax' && now.explicitTotalCents != null) throw new PartNotAddedError(FLAT_NEEDS_MANAGER_MSG)
     if (attachId && !(await coverableServiceIds(orderId)).has(attachId)) throw new PartNotAddedError(STALE_SERVICE_MSG)
-    throw new PartNotAddedError('The part could not be added — nothing was saved. Try again.')
+    throw new PartNotAddedError('The part was not added. Try again.')
   }
-  await settleAddedPart(orderId, estimateId)
+  await settleAddedPart(orderId, estimateId, partId, isManager, actor)
   const row = await findSaved()
   if (!row) throw new Error('The part was added but could not be read back.')
   return { part: row, replayed: false, differs: false, removed: false }

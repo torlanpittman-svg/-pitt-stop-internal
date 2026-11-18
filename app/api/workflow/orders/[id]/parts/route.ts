@@ -7,7 +7,7 @@ import { partsVisibleFor } from '@/apps/parts/visibility'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { estimateEnabled } from '@/apps/workflow/estimate'
 import { guidedJobItemsEnabled } from '@/apps/settings/db'
-import { addPartForJobOnce, PartNotAddedError, jobHasQbInvoice, removeEstimatePartWithLabor } from '@/apps/parts/estimate-parts'
+import { addPartForJobOnce, savedPartForAddRequest, PartNotAddedError, jobHasQbInvoice, removeEstimatePartWithLabor } from '@/apps/parts/estimate-parts'
 import { INVOICED_NEEDS_MANAGER_MSG } from '@/apps/parts/job-items-view'
 import { listPartsForOrder, addPart, updatePart, markOrdered, receivePart, recordReturn, billPart, type Part, cancelPart } from '@/apps/parts/db'
 
@@ -89,12 +89,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   let partIdOut: string | null = null
-  let replay: { replayed: boolean; differs: boolean; removed: boolean } | null = null
+  let replay: { replayed: boolean; differs: boolean; removed: boolean; savedName?: string } | null = null
   try {
     switch (action) {
       case 'add': {
         const description = String(body.description ?? '').trim()
-        if (!description) return NextResponse.json({ ok: false, error: 'A part description is required.' }, { status: 400 })
+        if (!description) return NextResponse.json({ ok: false, error: 'A part description is required.', notSaved: true }, { status: 400 })
         if (await usesEstimatePath(order)) {
           // Job-screen guided flow (retail): the estimate's own part row + priced line, so customer
           // price × quantity reaches the total and Invoice Draft exactly once. Our cost is internal and
@@ -123,7 +123,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
             return NextResponse.json({ ok: false, error: 'We couldn’t confirm this part was saved.' }, { status: 500 })
           }
           partIdOut = added.part.id
-          replay = { replayed: added.replayed, differs: added.differs, removed: added.removed }
+          replay = { replayed: added.replayed, differs: added.differs, removed: added.removed, ...(added.replayed ? { savedName: added.part.description } : {}) }
+          break
+        }
+        // A guided-form request (it carries that form's request id) arriving while the guided screen is switched
+        // off: if it already saved its part, this is that add's retry — answer with the saved part, never a second
+        // record. (An open form can outlive a switch change; the legacy tracker form sends no request id.)
+        const prior = await savedPartForAddRequest(id, body.requestId)
+        if (prior) {
+          partIdOut = prior.id
+          replay = { replayed: true, differs: false, removed: prior.status === 'cancelled', savedName: prior.description }
           break
         }
         const row = await addPart({

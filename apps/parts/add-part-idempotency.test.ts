@@ -38,7 +38,7 @@ import { seedProductionCatalog, CLEAR_TABLES } from '@/apps/quick-entry/catalog-
 import { getOrCreateEstimate, addService, setServicePrice, setExplicitPrice, recomputeEstimate, getEstimateView, getEstimateRow } from '@/apps/workflow/estimate-db'
 import { addPartForJobOnce, partIdForAddRequest, PartNotAddedError, removeEstimatePart } from './estimate-parts'
 import { groupJobItems } from './job-items-view'
-import { serviceOrders, vehicles, jobParts, jobLineItems, jobServices, serviceOrderEvents } from '@/drizzle/schema'
+import { serviceOrders, vehicles, jobParts, jobLineItems, jobServices, jobEstimates, serviceOrderEvents } from '@/drizzle/schema'
 
 let db: PgliteDatabase<typeof schema>
 let seq = 0
@@ -77,7 +77,7 @@ async function footprint(orderId: string, estimateId: string) {
   for (const r of rows) lines += (await db.select().from(jobLineItems).where(eq(jobLineItems.jobServiceId, r.id))).length
   const ev = async (type: string) => (await db.select().from(serviceOrderEvents).where(and(eq(serviceOrderEvents.serviceOrderId, orderId), eq(serviceOrderEvents.eventType, type)))).length
   const fees = (await db.select().from(jobLineItems).innerJoin(jobServices, eq(jobServices.id, jobLineItems.jobServiceId)).where(and(eq(jobServices.jobEstimateId, estimateId), eq(jobLineItems.generated, true)))).length
-  return { parts: parts.length, live: parts.filter((p) => p.status !== 'cancelled').length, partRows: rows.length, partLines: lines, added: await ev('part_added'), labor: await ev('part_labor_review'), feeLines: fees }
+  return { parts: parts.length, live: parts.filter((p) => p.status !== 'cancelled').length, partRows: rows.length, partLines: lines, added: await ev('part_added'), labor: await ev('part_labor_review'), settled: await ev('part_add_settled'), feeLines: fees }
 }
 const ONE = { parts: 1, live: 1, partRows: 1, partLines: 1, added: 1 }
 
@@ -101,7 +101,7 @@ describe('the same logical add never lands twice', () => {
     expect(b).toMatchObject({ replayed: true, differs: false, removed: false })
     expect(b.part.id).toBe(a.part.id)
     expect(a.part.id).toBe(partIdForAddRequest(orderId, rid(1)))
-    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, labor: 1, feeLines: 2 })
+    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, labor: 1, settled: 1, feeLines: 2 })
     expect((await getEstimateView(orderId)).workTotalCents).toBe(6000 + 25100)
     expect((await getEstimateRow(orderId))!.totalCents).toBe(total1)
   })
@@ -125,12 +125,12 @@ describe('the same logical add never lands twice', () => {
     const first = addPartForJobOnce(orderId, { ...PADS, requestId: rid(3) }, M, 'manager')
     await expect(first).rejects.toThrow()
     await expect(first).rejects.not.toBeInstanceOf(PartNotAddedError)   // NOT reported as "nothing saved"
-    expect(await footprint(orderId, estimateId)).toMatchObject(ONE)
+    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, settled: 0 })   // written, not finished
     expect((await getEstimateRow(orderId))!.totalCents).toBe(before)     // derived totals never ran
 
     const retry = await addPartForJobOnce(orderId, { ...PADS, requestId: rid(3) }, M, 'manager')
     expect(retry).toMatchObject({ replayed: true, differs: false, removed: false })
-    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, labor: 0, feeLines: 2 })
+    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, labor: 0, settled: 1, feeLines: 2 })
     const work = 6000 + 25100
     expect((await getEstimateView(orderId)).workTotalCents).toBe(work)
     // 3% shop supplies + 3% card charge on the work value, each once.
@@ -147,6 +147,57 @@ describe('the same logical add never lands twice', () => {
     expect(a.part.id).toBe(b.part.id)
     expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, feeLines: 2 })
     expect((await getEstimateView(orderId)).workTotalCents).toBe(6000 + 25100)
+  })
+})
+
+describe('a repeat never redoes the add’s pricing step once it has finished', () => {
+  const estOf = async (estimateId: string) => (await db.select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)))[0]
+
+  it('a manager sets a flat Work Price AFTER an employee’s add; the employee’s retry leaves that price exactly as the manager set it', async () => {
+    const { orderId, estimateId } = await job()
+    const input = { ...PADS, requestId: rid(50) }
+    await addPartForJobOnce(orderId, input, 'Employee', 'employee')
+    await setExplicitPrice(estimateId, 40000, M); await recomputeEstimate(estimateId)
+    const before = await estOf(estimateId)
+    expect(before).toMatchObject({ priceMode: 'explicit_pretax', explicitTotalCents: 40000 })
+
+    const retry = await addPartForJobOnce(orderId, input, 'Employee', 'employee')
+    expect(retry).toMatchObject({ replayed: true, differs: false, removed: false })
+    const after = await estOf(estimateId)
+    expect(after).toMatchObject({ priceMode: 'explicit_pretax', explicitTotalCents: 40000, totalCents: before.totalCents })
+    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, settled: 1 })
+  })
+
+  it('an invoice synced after the add is not flagged "sync needed" again by a retry', async () => {
+    const { orderId, estimateId } = await job()
+    await db.update(jobEstimates).set({ qbInvoiceId: 'INV-SYN', qbInvoiceNumber: '100900', qbStatus: 'created' }).where(eq(jobEstimates.id, estimateId))
+    const input = { ...PADS, requestId: rid(51) }
+    await addPartForJobOnce(orderId, input, M, 'manager')
+    expect((await estOf(estimateId)).qbSyncError).toMatch(/sync needed/i)      // the add itself flags the linked invoice
+    await db.update(jobEstimates).set({ qbSyncError: null }).where(eq(jobEstimates.id, estimateId))   // …a manager syncs it
+    await addPartForJobOnce(orderId, input, M, 'manager')
+    await addPartForJobOnce(orderId, input, M, 'manager')
+    expect((await estOf(estimateId)).qbSyncError).toBeNull()
+    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, settled: 1 })
+  })
+
+  it('an UNFINISHED employee add, retried after a manager set a flat price: the retry finishes it without itemizing the flat price', async () => {
+    const { orderId, estimateId } = await job()
+    const input = { ...PADS, requestId: rid(52) }
+    fault.settleFailures = 2
+    await expect(addPartForJobOnce(orderId, input, 'Employee', 'employee')).rejects.toThrow()
+    await setExplicitPrice(estimateId, 40000, M); await recomputeEstimate(estimateId)
+    const retry = await addPartForJobOnce(orderId, input, 'Employee', 'employee')
+    expect(retry).toMatchObject({ replayed: true, differs: false })
+    expect(await estOf(estimateId)).toMatchObject({ priceMode: 'explicit_pretax', explicitTotalCents: 40000 })
+    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, settled: 1 })
+  })
+
+  it('a manager’s own add on a flat-priced Job still itemizes it, as before (first add only)', async () => {
+    const { orderId, estimateId } = await job()
+    await setExplicitPrice(estimateId, 15000, M); await recomputeEstimate(estimateId)
+    await addPartForJobOnce(orderId, { ...PADS, requestId: rid(53) }, M, 'manager')
+    expect((await estOf(estimateId)).priceMode).toBe('itemized')
   })
 })
 
@@ -230,6 +281,14 @@ describe('a retry that is not the same submission', () => {
     expect(b).toMatchObject({ replayed: true, differs: false })
   })
 
+  it('a request id is matched exactly, never as a pattern (an underscore is not a wildcard)', async () => {
+    const { orderId, estimateId } = await job()
+    await addPartForJobOnce(orderId, { ...PADS, requestId: 'reviewABCx0001' }, M, 'manager')
+    const other = await addPartForJobOnce(orderId, { ...PADS, requestId: 'reviewABC_0001' }, M, 'manager')
+    expect(other.replayed).toBe(false)
+    expect(await footprint(orderId, estimateId)).toMatchObject({ parts: 2, added: 2 })
+  })
+
   it('retrying after the part was removed reports that, and adds nothing back', async () => {
     const { orderId, estimateId } = await job()
     const a = await addPartForJobOnce(orderId, { ...PADS, requestId: rid(32) }, M, 'manager')
@@ -296,7 +355,7 @@ describe('a refused add leaves nothing behind and does not use up its request id
     try {
       const refused = addPartForJobOnce(orderId, PADS, M, 'manager')
       await expect(refused).rejects.toBeInstanceOf(PartNotAddedError)
-      await expect(refused).rejects.toThrow(/nothing was saved/)
+      await expect(refused).rejects.toThrow(/^The part was not added\. Try again\.$/)
     } finally { holder.db = real }
     await expectNothing(orderId, estimateId)
   })

@@ -17,6 +17,8 @@ const h = vi.hoisted(() => ({
   calls: { addPartForJob: [] as unknown[][], addPart: [] as unknown[][], removeWithLabor: [] as unknown[][], cancelPart: [] as unknown[][], hasInvoice: 0 },
   addThrows: null as Error | null,
   addResult: { replayed: false, differs: false, removed: false },
+  addThrowsRaw: null as Error | null,
+  priorForRequest: null as { id: string; status: string; description: string } | null,
   removeThrows: null as Error | null,
 }))
 
@@ -40,9 +42,11 @@ vi.mock('@/apps/parts/estimate-parts', () => {
   // A plain Error set by a test stands for a refusal (nothing written); anything else is an unconfirmed failure.
   addPartForJobOnce: async (...a: unknown[]) => {
     h.calls.addPartForJob.push(a)
+    if (h.addThrowsRaw) throw h.addThrowsRaw   // thrown exactly as given (not converted into a refusal)
     if (h.addThrows) throw h.addThrows.constructor === Error ? new PartNotAddedError(h.addThrows.message) : h.addThrows
-    return { part: { id: 'new-part' }, ...h.addResult }
+    return { part: { id: 'new-part', description: 'Saved name' }, ...h.addResult }
   },
+  savedPartForAddRequest: async (_orderId: string, requestId: unknown) => (typeof requestId === 'string' ? h.priorForRequest : null),
   jobHasQbInvoice: async () => { h.calls.hasInvoice++; return h.invoiced },
   removeEstimatePartWithLabor: async (...a: unknown[]) => { h.calls.removeWithLabor.push(a); if (h.removeThrows) throw h.removeThrows },
   }
@@ -60,7 +64,7 @@ const MANAGER = { key: 'tony', name: 'Tony', role: 'manager' }
 
 beforeEach(() => {
   h.actor = null; h.authorized = true; h.estimateOn = true; h.guidedOn = true; h.order = { source: 'quick_entry', serviceType: 'retail', status: 'in_progress' }
-  h.parts = [{ id: 'p1', status: 'needed', jobLineItemId: 'line-1' }]; h.invoiced = false; h.addThrows = null; h.removeThrows = null; h.addResult = { replayed: false, differs: false, removed: false }
+  h.parts = [{ id: 'p1', status: 'needed', jobLineItemId: 'line-1' }]; h.invoiced = false; h.addThrows = null; h.removeThrows = null; h.addResult = { replayed: false, differs: false, removed: false }; h.addThrowsRaw = null; h.priorForRequest = null
   h.calls = { addPartForJob: [], addPart: [], removeWithLabor: [], cancelPart: [], hasInvoice: 0 }
 })
 
@@ -122,9 +126,32 @@ describe('add', () => {
     expect(body.notSaved).toBeUndefined()
     expect(body.error).not.toMatch(/fetch failed|10\.0/)
   })
+  it('an ordinary Error thrown by the add (e.g. after its write) is NOT turned into "not saved": 500, unmarked, neutral text', async () => {
+    h.addThrowsRaw = new Error('recompute failed: relation locked')
+    const res = await post({ action: 'add', description: 'Gasket', sellPriceCents: 500, requestId: 'c3f1a9d2-aaaa-bbbb-cccc-000000000009' })
+    expect(res.status).toBe(500)
+    const body = await res.json()
+    expect(body.notSaved).toBeUndefined()
+    expect(body.error).toBe('We couldn’t confirm this part was saved.')
+  })
+  it('a blank description is marked notSaved (nothing was attempted)', async () => {
+    expect(await (await post({ action: 'add', description: ' ' })).json()).toMatchObject({ ok: false, notSaved: true })
+  })
+  it('rollout switch turned OFF between a guided form’s first try and its retry: the retry returns the part already saved — no second record', async () => {
+    h.guidedOn = false
+    h.priorForRequest = { id: 'guided-part', status: 'needed', description: 'Gasket' }
+    const res = await post({ action: 'add', description: 'Gasket', sellPriceCents: 500, requestId: 'c3f1a9d2-aaaa-bbbb-cccc-000000000010' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ ok: true, partId: 'guided-part', replayed: true, removed: false, savedName: 'Gasket' })
+    expect(h.calls.addPart).toHaveLength(0)
+    expect(h.calls.addPartForJob).toHaveLength(0)
+    // The legacy tracker form sends no request id and adds as before.
+    await post({ action: 'add', description: 'Gasket' })
+    expect(h.calls.addPart).toHaveLength(1)
+  })
   it('a repeat of a request that already saved reports the replay (and whether the form had changed, or the part was since removed)', async () => {
     h.addResult = { replayed: true, differs: true, removed: false }
-    expect(await (await post({ action: 'add', description: 'Gasket', sellPriceCents: 900, requestId: 'c3f1a9d2-aaaa-bbbb-cccc-000000000003' })).json()).toMatchObject({ ok: true, partId: 'new-part', replayed: true, differs: true, removed: false })
+    expect(await (await post({ action: 'add', description: 'Gasket', sellPriceCents: 900, requestId: 'c3f1a9d2-aaaa-bbbb-cccc-000000000003' })).json()).toMatchObject({ ok: true, partId: 'new-part', replayed: true, differs: true, removed: false, savedName: 'Saved name' })
     h.addResult = { replayed: true, differs: false, removed: true }
     expect(await (await post({ action: 'add', description: 'Gasket', sellPriceCents: 500, requestId: 'c3f1a9d2-aaaa-bbbb-cccc-000000000003' })).json()).toMatchObject({ replayed: true, removed: true })
   })

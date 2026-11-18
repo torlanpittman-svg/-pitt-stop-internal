@@ -178,35 +178,43 @@ export type PartsPostOutcome =
   /**
    * replayed = this request id had already saved the part (nothing new was written). differs = …and what was sent
    * now is not what was saved then (the form was edited before the retry) — the saved part was left as it was.
-   * removed = …and the part has since been taken off the Job.
+   * removed = …and the part has since been taken off the Job. savedName = the saved part's name, from the server.
    */
-  | { ok: true; partId: string | null; replayed: boolean; differs: boolean; removed: boolean }
+  | { ok: true; partId: string | null; replayed: boolean; differs: boolean; removed: boolean; savedName: string | null }
   /**
-   * saved: 'no' = the server answered that nothing was written (it refuses an add before, or by, its one atomic
-   * write — never after), so the form can be corrected and sent again freely. 'unknown' = no answer, or one that
-   * does not say: the part may have been saved. Sending the SAME form again settles it either way — the server
-   * answers a repeat of a request id with the part saved the first time, never a second one.
+   * saved: 'no' = the server answered that the part was not added: it marks an add it refused before, or by, its
+   * one atomic write (`notSaved`), and a 401 / 403 / 404 / 409 is decided before any write. The form can then be
+   * corrected and sent again freely. 'unknown' = no answer, or one that does not say (any 5xx, an unmarked 400):
+   * the part may have been saved. Sending the SAME form again settles it either way — the server answers a repeat
+   * of a request id with the part saved the first time, never a second one.
+   * `error` is always the server's own explanation when it gave one.
    */
   | { ok: false; error: string; needsManager?: boolean; saved: 'no' | 'unknown' }
 
 /** Classify a /parts response. `status` null = the request never produced a response. */
-export function partsPostOutcome(status: number | null, body: { ok?: boolean; error?: string; needsManager?: boolean; partId?: string | null; replayed?: boolean; differs?: boolean; removed?: boolean } | null): PartsPostOutcome {
+export function partsPostOutcome(status: number | null, body: { ok?: boolean; error?: string; needsManager?: boolean; notSaved?: boolean; partId?: string | null; replayed?: boolean; differs?: boolean; removed?: boolean; savedName?: string } | null): PartsPostOutcome {
   if (status === null) return { ok: false, error: 'No connection — check the internet and try again.', saved: 'unknown' }
-  if (status >= 200 && status < 300 && body?.ok) return { ok: true, partId: body.partId ?? null, replayed: body.replayed === true, differs: body.differs === true, removed: body.removed === true }
-  const refused = status >= 400 && status < 500 && typeof body?.error === 'string' && body.error.length > 0
-  if (refused) return { ok: false, error: body!.error!, needsManager: body?.needsManager, saved: 'no' }
-  return { ok: false, error: 'Could not save — check your connection and try again.', saved: 'unknown' }
+  if (status >= 200 && status < 300 && body?.ok) {
+    return { ok: true, partId: body.partId ?? null, replayed: body.replayed === true, differs: body.differs === true, removed: body.removed === true, savedName: typeof body.savedName === 'string' && body.savedName ? body.savedName : null }
+  }
+  const error = typeof body?.error === 'string' && body.error.length > 0 ? body.error : null
+  const refused = !!error && (body?.notSaved === true || status === 401 || status === 403 || status === 404 || status === 409)
+  return { ok: false, error: error ?? 'Could not save — check your connection and try again.', needsManager: body?.needsManager, saved: refused ? 'no' : 'unknown' }
 }
 
 /** Shown in the add-part form while its last send is unconfirmed. The form stays editable. */
 export const UNCONFIRMED_ADD_MSG = 'We couldn’t confirm whether this part was saved. Try again — it will not be added twice.'
 
-/** What to tell the user when a retry found the part already saved by the first try. */
-export function replayedAddMessage(name: string, place: { kind: 'job' } | { kind: 'service'; title: string } | null, differs: boolean): string {
-  const where = !place ? 'on this job' : place.kind === 'job' ? 'on this job' : `under ${place.title}`
-  return differs
-    ? `“${name}” was already saved ${where} by your first try. The changes you made after that were not applied — tap the part to edit it.`
-    : `${name} saved ${where}.`
+/**
+ * What to tell the user when a retry found the part already saved by the first try. `place`: where the fresh list
+ * shows it; 'unread' = the list could not be read back (the server confirmed the part, its position is unknown).
+ * `canEdit`: whether this user can open the part to change it.
+ */
+export function replayedAddMessage(name: string, place: { kind: 'job' } | { kind: 'service'; title: string } | 'unread', differs: boolean, canEdit = true): string {
+  const where = place === 'unread' || place.kind === 'job' ? 'on this job' : `under ${place.title}`
+  const unread = place === 'unread' ? ' The list could not be refreshed — check it before adding anything else.' : ''
+  if (!differs) return `${name} saved ${where}.${unread}`
+  return `“${name}” was already saved ${where} by your first try. The changes you made after that were not applied — ${canEdit ? 'tap the part to edit it' : 'ask a manager to change it'}.${unread}`
 }
 export const removedAfterAddMessage = (name: string) => `“${name}” was saved by your first try and has since been removed from this job. Add it again if it is still needed.`
 

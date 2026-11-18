@@ -38,8 +38,14 @@ records, pricing, permissions and the `/parts` + estimate routes are unchanged.
   idempotency claim: a double submit, an overlapping retry or a retry after a lost response conflicts on it and writes
   nothing. One statement writes the part record, its estimate row and priced line, the link to its service and both
   audit events, and re-checks at that moment that the Job is not removed and the chosen service is still there — a
-  refused add leaves nothing behind and does not use up its request id. No migration. A new form is a new request id,
+  refused add leaves no part behind and does not use up its request id. No migration. A new form is a new request id,
   so two intentional identical parts are still two parts.
+- **The add’s pricing step runs once.** After the write, pricing state / totals are settled and a linked QuickBooks
+  invoice is flagged; completion is recorded as an append-only `part_add_settled` event. A repeat of a finished add
+  touches nothing (it cannot undo a flat Work Price a manager set afterwards, or re-flag a synced invoice); a repeat
+  of an add that died before that record finishes it. Only a manager’s add may itemize a flat-priced Job.
+- **Switch OFF mid-form:** a guided form’s retry that arrives after `guided_job_items_enabled` was turned off is
+  answered with the part it already saved (`savedPartForAddRequest`), never a second tracker record.
 - **What the form does when a save is not confirmed.** The route answers three ways: saved (`ok`, plus
   `replayed` / `differs` / `removed` on a repeat), definitely not saved (400 `notSaved` — fix the form and send again),
   or not confirmed (500 / no response). On “not confirmed” the page re-sends the identical request once by itself;
