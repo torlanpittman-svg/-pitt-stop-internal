@@ -285,7 +285,7 @@ function CompletionModal({ services, qcRequired, busy, error, onConfirm, onCance
         {noServices ? (
           <div className="mt-4 rounded-2xl bg-amber-950/40 border border-amber-700/50 px-4 py-4">
             <p className="text-amber-300 font-medium text-sm">No services are listed on this Job.</p>
-            <p className="text-amber-400/80 text-xs mt-1">Add the work performed with <b>＋ Add Service</b> before finishing it.</p>
+            <p className="text-amber-400/80 text-xs mt-1">Add the work performed under <b>Services</b> before finishing it.</p>
           </div>
         ) : (
           <div className="mt-4 space-y-2">
@@ -1106,6 +1106,7 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
   const [picking,     setPicking]     = useState<ActionConfig | null>(null)
   const [error,       setError]       = useState<string | null>(null)
   const [addingService, setAddingService] = useState(false)  // picker open
+  const [expenseOpenSignal, setExpenseOpenSignal] = useState(0)  // "+ Add" → Expense opens the Expenses row
   const [addBusy,     setAddBusy]     = useState(false)
   const [addError,    setAddError]    = useState<string | null>(null)
   const [completing,  setCompleting]  = useState(false)   // completion checklist open
@@ -1445,11 +1446,12 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
       )}
 
       {itemsEnabled ? (
-        /* Services with their attached parts, standalone parts, add forms that open in place, confirmed removals.
+        /* Services with their attached parts, whole-job parts (only when there are any), one "+ Add" menu, confirmed removals.
            Amounts are the estimate's own (customer price × quantity, once) — nothing is priced here. */
         <JobItemsPanel orderId={order.id} view={itemsView} textServices={services} manager={isManager} canEdit={itemsEditable} cancelled={order.status === 'cancelled'}
           partsVisible={identity.partsVisible} busy={items.busy}
           onAddService={() => { setAddError(null); setAddingService(true) }}
+          onAddExpense={() => setExpenseOpenSignal((n) => n + 1)}
           onOpenService={items.openService} onOpenPart={items.openPart}
           onRemoveServiceWithParts={items.removeServiceWithParts} onRemoveTextService={removeService}
           onChanged={() => { refreshItems(); void reload(); router.refresh() }}
@@ -1513,7 +1515,7 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
 
       {/* Expenses — what we spent on this car (receipt-backed; never touches the customer invoice). Every role
           can add a receipt from here; amounts, linking and corrections are manager-only (enforced server-side). */}
-      {!isDealerOrder(order) && <div className="px-6 mb-6"><JobExpenses orderId={order.id} manager={isManager} cancelled={order.status === 'cancelled'} /></div>}
+      {!isDealerOrder(order) && <div className="px-6 mb-6"><JobExpenses orderId={order.id} manager={isManager} cancelled={order.status === 'cancelled'} openSignal={expenseOpenSignal} /></div>}
 
       {isManager && <div className="px-6 mb-6"><OrderPhotos orderId={order.id} /></div>}
 

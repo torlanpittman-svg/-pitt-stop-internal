@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { EstimatePartView, EstimateServiceView } from '@/apps/workflow/estimate-db'
-import { groupJobItems, redactItemsView, removeServiceMessage, validatePartDraft, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG } from './job-items-view'
+import { groupJobItems, redactItemsView, removeServiceMessage, validatePartDraft, partAssignOptions, resolvePartAssign, serviceAssignKey, textAssignKey, WHOLE_JOB, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG } from './job-items-view'
 
 const svc = (id: string, title = id, declined = false): EstimateServiceView => ({ id, title, priceCents: 1000, suggestedCents: null, declined } as unknown as EstimateServiceView)
 
@@ -113,5 +113,51 @@ describe('serviceRemovalConsequence (swipe confirmation + editor Remove share it
     expect(serviceRemovalConsequence([])).toBe('Its charge will also be removed.')
     expect(serviceRemovalConsequence([{ description: 'Cabin filter' }])).toBe('Its attached part “Cabin filter” and its charges will also be removed.')
     expect(serviceRemovalConsequence([{ description: 'A' }, { description: 'B' }])).toBe('Its 2 attached parts (“A”, “B”) and their charges will also be removed.')
+  })
+})
+
+describe('add-part "Assign to" (Whole job or one of the Job\'s services)', () => {
+  const services = [
+    { id: 'a1', title: 'Oil Change' },
+    { id: 'b2', title: 'Replace Carpet' },
+    { id: 'c3', title: 'Oil Change' },          // same name as a1 — a different service
+    { id: 'd4', title: 'Declined Wax', declined: true },
+  ]
+
+  it('lists Whole job first, then each listed service in screen order; a declined service is not offered', () => {
+    const o = partAssignOptions(services, [])
+    expect(o.map((x) => x.key)).toEqual([WHOLE_JOB, 'svc:a1', 'svc:b2', 'svc:c3'])
+    expect(o[0].label).toBe('Whole job')
+    expect(o[2].label).toBe('Replace Carpet')
+  })
+
+  it('services that share a name get distinct values (their ids) and distinguishable labels', () => {
+    const o = partAssignOptions(services, [])
+    const oil = o.filter((x) => x.label.startsWith('Oil Change'))
+    expect(oil.map((x) => x.label)).toEqual(['Oil Change (1 of 2)', 'Oil Change (2 of 2)'])
+    expect(new Set(o.map((x) => x.key)).size).toBe(o.length)
+  })
+
+  it('the chosen value resolves to THAT service id — never to the first service with the same name', () => {
+    expect(resolvePartAssign(serviceAssignKey('c3'), services, [])).toEqual({ kind: 'service', serviceId: 'c3', title: 'Oil Change' })
+    expect(resolvePartAssign(serviceAssignKey('a1'), services, [])).toEqual({ kind: 'service', serviceId: 'a1', title: 'Oil Change' })
+  })
+
+  it('Whole job resolves to no service', () => {
+    expect(resolvePartAssign(WHOLE_JOB, services, [])).toEqual({ kind: 'job' })
+  })
+
+  it('a service that left the Job (removed or declined while the form was open) resolves to null — never silently Whole job', () => {
+    expect(resolvePartAssign(serviceAssignKey('gone'), services, [])).toBeNull()
+    expect(resolvePartAssign(serviceAssignKey('d4'), services, [])).toBeNull()
+    expect(resolvePartAssign('', services, [])).toBeNull()
+    expect(resolvePartAssign('nonsense', services, [])).toBeNull()
+  })
+
+  it('text-only services are offered once per title (the server mirrors them by title) and resolve by title', () => {
+    const o = partAssignOptions(services, ['Tint', ' tint ', 'Oil Change', 'Headlights'])
+    expect(o.slice(4).map((x) => x.label)).toEqual(['Tint', 'Headlights'])   // "Oil Change" is already a listed service
+    expect(resolvePartAssign(textAssignKey('Tint'), services, ['Tint', 'Headlights'])).toEqual({ kind: 'text', title: 'Tint' })
+    expect(resolvePartAssign(textAssignKey('Tint'), services, ['Headlights'])).toBeNull()
   })
 })

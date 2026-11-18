@@ -5,6 +5,27 @@ fast-forward pushed to `main` on 2026-11-03 (deployment record: Claude memory `p
 (`0070_guided_job_items_enabled.sql` — a single `app_settings` row, the rollout switch; applied after the deploy was verified).
 No customer / job / invoice data touched. Nothing sent.
 
+## 2026-11-18 update — one “+ Add”, parts under their service, Expenses as one row
+
+The screen sketches further down describe the 2026-11-03 layout. Since 2026-11-18 the guided Job screen is simpler;
+records, pricing, permissions and the `/parts` + estimate routes are unchanged.
+
+- **One compact “+ Add”** beside Services (replaces “+ Add Service”, every per-service “+ Add part to this service”,
+  the big “+ Add a part” and the on-screen PartsTech import). It opens a menu — a bottom sheet on a phone — with
+  **Service** (the existing service picker), **Part** (the add-part form) and **Expense** (opens the Expenses row).
+  Components: `app/orders/[id]/AddToJob.tsx` (`AddMenu`, `AddPartDialog`, native modal `<dialog>`s).
+- **Add part** is one form: Part name · **Assign to** (Whole job, or one of the Job’s services) · Quantity · Customer
+  price (per part, required, never a silent $0). Part number and — managers only — our internal cost stay under
+  *More details*. “Import PartsTech screenshot” is a secondary action inside this form. Assign to defaults to Whole job.
+- **Assign to goes by service ID.** `partAssignOptions` / `resolvePartAssign` (`apps/parts/job-items-view.ts`): two
+  services with the same name are separate choices (“Oil Change (1 of 2)”), and a service removed while the form was
+  open is refused, never re-pointed to Whole job. Text-only (Work Board) services are still mirrored by title.
+- **Parts section only when the Job has whole-job parts.** Parts assigned to a service sit under that service.
+- **Expenses is one row** (`JobExpenses.tsx`): “Expenses”, the recorded total (managers), a chevron. Tapping it — or
+  + Add → Expense — opens the same details and actions as before (add receipt, link a filed receipt, fix or move).
+- The fallback screen (dealer Jobs, estimate layer off, or the switch OFF) keeps its plain Services list and parts
+  tracker; only its Expenses section became the same single row.
+
 ## Rollout switch — how to turn the guided interface on / off
 
 `guided_job_items_enabled` (settings registry `apps/settings/db.ts`, accessor `guidedJobItemsEnabled()`, served to the

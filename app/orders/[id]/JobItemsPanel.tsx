@@ -4,11 +4,15 @@
  * Job screen — Services and Parts, the guided version.
  *
  * One list of services, each showing its name and price, with the parts attached to it (the parts
- * that service installs) nested underneath and "+ Add part to this service" inside the service. A
- * manager removes a service by swiping it left, or from its editor (tap the name → Remove item);
- * there is no per-row remove control, so prices line up on the right edge. Below it, the job's standalone parts with "+ Add a part". Every add form opens right
- * under the button that was tapped, with focus on "What part?"; every removal asks once and says what
- * will happen; every success is confirmed in a short notice.
+ * that service installs) nested underneath. A manager removes a service by swiping it left, or from
+ * its editor (tap the name → Remove item); there is no per-row control, so prices line up on the
+ * right edge. Whole-job parts get their own Parts list — shown only when there are any.
+ *
+ * Everything is added from ONE "+ Add" button beside Services: a menu (bottom sheet on a phone) with
+ * Service, Part and Expense. Service opens the existing service picker; Part opens the add-part form
+ * (Part name · Assign to · Quantity · Customer price, PartsTech import as a secondary action);
+ * Expense opens the Job's Expenses. Every removal asks once and says what will happen; every success
+ * is confirmed in a short notice.
  *
  * Nothing here prices or classifies on its own:
  *   • the view is the authoritative estimate view (GET /items → getEstimateView), so a part's amount is
@@ -19,21 +23,18 @@
  *   • service removals go through the estimate route `remove_service_with_parts` (manager/admin).
  * Part rows deliberately show only name · amount · Remove — no ordering/receiving, no statuses.
  */
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { EstimateViewData, PartView, ServiceView } from './estimate/save-feedback'
 import { partPrice, servicePrice } from './estimate/ItemRows'
 import RemovableServiceRow from '@/app/components/RemovableServiceRow'
-import { groupJobItems, serviceRemovalConsequence, validatePartDraft, INVOICED_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG, LABOR_STAYS_NOTE, type DraftProblem, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
-
-/** One key per add attempt: a retry of the same open form replays instead of charging twice (the server keeps it on the audit event). */
-const newRequestId = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`)
+import { groupJobItems, partAssignOptions, resolvePartAssign, serviceRemovalConsequence, ASSIGN_GONE_MSG, INVOICED_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG, LABOR_STAYS_NOTE, WHOLE_JOB, type PartInput } from '@/apps/parts/job-items-view'
+import { AddMenu, AddPartDialog, type AddChoice } from './AddToJob'
 
 const BTN = 'rounded-xl font-semibold text-sm px-4 min-h-11 active:opacity-80 disabled:opacity-40'
-const INPUT = 'w-full bg-gray-950 border border-gray-700 text-white rounded-xl px-3 py-2.5 text-base placeholder:text-gray-500 focus:border-blue-500 focus:outline-none disabled:opacity-60'
 const LINK = 'min-h-11 inline-flex items-center px-1 text-sm font-semibold active:opacity-70 disabled:opacity-40'
 
-/** serviceId null = a Job service that only exists as Work Board text (older Jobs); the server mirrors it on add. */
-type Adding = null | { kind: 'job' } | { kind: 'service'; serviceId: string | null; title: string }
+/** The add-part form is open; `assign` is the "Assign to" value it starts on (Whole job unless opened for a service). */
+type PartForm = null | { assign: string }
 const textKey = (title: string) => `text:${title.trim().toLowerCase()}`
 type Confirm = null
   | { kind: 'part'; id: string }
@@ -55,6 +56,8 @@ export interface JobItemsPanelProps {
   /** An estimate edit is in flight elsewhere on the page. */
   busy: boolean
   onAddService: () => void
+  /** Open the Job's Expenses (new receipt / link a filed one). Omitted where the Job has no Expenses section. */
+  onAddExpense?: () => void
   onOpenService: (id: string) => void
   onOpenPart: (id: string) => void
   /** Manager: remove the service and its attached parts (estimate route). Resolves true when the server confirmed it. */
@@ -63,13 +66,15 @@ export interface JobItemsPanelProps {
   onRemoveTextService: (name: string, index: number) => Promise<boolean>
   /** A /parts change was confirmed — refetch the view and the Job. */
   onChanged: () => void
-  /** The collapsed "Add from a PartsTech screenshot" content. */
+  /** The PartsTech screenshot import — a secondary action inside the add-part form. */
   importPanel?: ReactNode
 }
 
 export default function JobItemsPanel(p: JobItemsPanelProps) {
   const { orderId, view, manager, canEdit, partsVisible, onChanged } = p
-  const [adding, setAdding] = useState<Adding>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [partForm, setPartForm] = useState<PartForm>(null)
+  const addButton = useRef<HTMLButtonElement>(null)
   const [confirm, setConfirm] = useState<Confirm>(null)
   const [notice, setNotice] = useState<{ text: string; at: string } | null>(null)   // at = service id | 'job'
   const [error, setError] = useState<string | null>(null)
@@ -97,7 +102,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
   })
 
   /** One /parts call at a time — a double-tap can never send the same add or removal twice. */
-  const post = useCallback(async (body: Record<string, unknown>): Promise<{ ok: true; partId: string | null } | { ok: false; error: string; needsManager?: boolean }> => {
+  const post = async (body: Record<string, unknown>): Promise<{ ok: true; partId: string | null } | { ok: false; error: string; needsManager?: boolean }> => {
     if (inFlight.current) return { ok: false, error: 'Still saving — one moment.' }
     inFlight.current = true; setLocalBusy(true); setError(null)
     try {
@@ -107,7 +112,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
       return { ok: true, partId: d.partId ?? null }
     } catch { return { ok: false, error: 'No connection — check the internet and try again.' } }
     finally { inFlight.current = false; setLocalBusy(false) }
-  }, [orderId])
+  }
 
   const grouped = view ? groupJobItems(view) : { services: [], standalone: [] }
   const flat = !!view?.flat
@@ -116,21 +121,39 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
   // (identical names can appear more than once), never a lookup by name alone.
   const unmirrored = p.textServices.map((name, index) => ({ name, index })).filter(({ name }) => !mirrored.has(name.trim().toLowerCase()))
 
+  // "Assign to": Whole job, each listed service BY ID (same-named services stay distinct), each text-only service.
+  const textOnly = unmirrored.map((u) => u.name)
+  const assignOptions = partAssignOptions(grouped.services, textOnly)
+
+  // ── the one "+ Add" ──
+  const refocusAdd = () => requestAnimationFrame(() => addButton.current?.focus())
+  const pick = (c: AddChoice) => {
+    setMenuOpen(false); setError(null); setConfirm(null)
+    if (c === 'service') p.onAddService()
+    else if (c === 'part') setPartForm({ assign: WHOLE_JOB })
+    else p.onAddExpense?.()
+  }
+  const choices: AddChoice[] = ['service', ...(partsVisible ? ['part' as const] : []), ...(p.onAddExpense ? ['expense' as const] : [])]
+
   // ── adds ──
-  const addPart = async (f: PartInput, attach: Adding & { kind: 'service' } | null, requestId: string) => {
+  const addPart = async (f: PartInput, assignKey: string, requestId: string) => {
+    // Resolved against the CURRENT list: a service removed while the form was open is refused, never re-pointed.
+    const target = resolvePartAssign(assignKey, grouped.services, textOnly)
+    if (!target) { setError(ASSIGN_GONE_MSG); return }
     // The customer price is entered by whoever adds the part (owner decision 2026-11-03) and is required —
     // the form has already validated it; the server validates it again for every role. Our cost is sent
     // only by a manager (the server drops it otherwise).
     const out = await post({
       action: 'add', description: f.name, partNumber: f.partNumber, quantity: f.quantity,
       sellPriceCents: f.priceCents, unitCostCents: manager ? f.costCents : undefined,
-      laborServiceId: attach?.serviceId ?? null,
-      laborServiceTitle: attach && !attach.serviceId ? attach.title : null,
+      laborServiceId: target.kind === 'service' ? target.serviceId : null,
+      laborServiceTitle: target.kind === 'text' ? target.title : null,
       requestId,
     })
     if (!out.ok) { setError(out.error); return }
-    setAdding(null); setFlash(out.partId)
-    setNotice(attach ? { text: `${f.name} added to ${attach.title}.`, at: attach.serviceId ?? textKey(attach.title) } : { text: `${f.name} added to this job.`, at: 'job' })
+    setPartForm(null); setFlash(out.partId); refocusAdd()
+    setNotice(target.kind === 'job' ? { text: `${f.name} added to this job.`, at: 'job' }
+      : { text: `${f.name} added to ${target.title}.`, at: target.kind === 'service' ? target.serviceId : textKey(target.title) })
     onChanged()
   }
 
@@ -168,8 +191,6 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
     finally { inFlight.current = false; setLocalBusy(false) }
   }
 
-  const partCount = grouped.services.reduce((n, s) => n + s.parts.length, 0) + grouped.standalone.length
-
   const partRow = (part: PartView, attachedTo: ServiceView | null) => (
     <li key={part.id} data-part={part.id} className={`py-2.5 transition-colors ${flash === part.id ? 'bg-emerald-900/30 rounded-lg -mx-2 px-2' : ''}`}>
       <div className="flex items-start justify-between gap-3">
@@ -205,15 +226,16 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
       <section aria-labelledby="job-services-heading">
         <div className="flex items-center justify-between mb-2">
           <h2 id="job-services-heading" className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Services</h2>
-          <button type="button" data-add-service onClick={p.onAddService} disabled={frozen} className="text-blue-400 text-sm font-semibold active:opacity-70 min-h-11 disabled:opacity-40">+ Add Service</button>
+          <button ref={addButton} type="button" data-add-service aria-haspopup="dialog" disabled={frozen}
+            onClick={() => { setError(null); setConfirm(null); setMenuOpen(true) }}
+            className="min-h-11 rounded-xl border border-blue-400/70 px-4 text-sm font-semibold text-blue-300 active:opacity-70 disabled:opacity-40">+ Add</button>
         </div>
         {frozen && <p className="mb-2 text-amber-300/90 text-sm">This job was removed — nothing can be added or taken off it.</p>}
         {grouped.services.length + unmirrored.length === 0 ? (
-          <p className="text-gray-600 text-sm italic">No services yet — tap ＋ Add Service.</p>
+          <p className="text-gray-600 text-sm italic">No services yet — tap ＋ Add.</p>
         ) : (
           <ul aria-label="Services" className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800 overflow-hidden">
             {grouped.services.filter((s) => !s.declined).map((s) => {
-              const attachOpen = adding?.kind === 'service' && adding.serviceId === s.id
               return (
                 <li key={s.id} data-service={s.id} className="px-4 py-3">
                   {/* Manager: swipe-left asks "Are you sure you want to remove this line?" — nothing is
@@ -251,26 +273,13 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                     </ul>
                   )}
 
-                  {partsVisible && (
-                    <div className="mt-1">
-                      <button type="button" disabled={busy || attachOpen} onClick={() => { setError(null); setConfirm(null); setAdding({ kind: 'service', serviceId: s.id, title: s.title }) }}
-                        className={`${LINK} text-blue-400`}>+ Add part to this service</button>
-                    </div>
-                  )}
-
                   {(notice?.at === s.id || notice?.at === textKey(s.title)) && <Notice text={notice.text} />}
-                  {attachOpen && (
-                    <AddPartForm key={`svc-${s.id}`} manager={manager} busy={busy} error={error} attachedTo={s.title}
-                      onSubmit={(f, rid) => void addPart(f, adding as Adding & { kind: 'service' }, rid)} onCancel={() => { setAdding(null); setError(null) }} />
-                  )}
-
                 </li>
               )
             })}
             {/* A Job service that exists only as Work Board text (older Jobs / no estimate yet). Opening the Job never
-                creates its estimate row; adding a part to it does (the same mirror Add Service runs), then it shows above. */}
+                creates its estimate row; assigning a part to it does (the same mirror Add Service runs), then it shows above. */}
             {unmirrored.map(({ name, index }) => {
-              const attachOpen = adding?.kind === 'service' && adding.serviceId === null && adding.title === name
               const header = (
                 <div className="flex items-start justify-between gap-3">
                   <span className="min-w-0 flex-1 font-semibold text-white text-base leading-snug break-words min-h-11 flex items-center">{name}</span>
@@ -293,17 +302,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                     {header}
                   </RemovableServiceRow>
                 ) : header}
-                {partsVisible && (
-                  <div className="mt-1">
-                    <button type="button" disabled={busy || attachOpen} onClick={() => { setError(null); setConfirm(null); setAdding({ kind: 'service', serviceId: null, title: name }) }}
-                      className={`${LINK} text-blue-400`}>+ Add part to this service</button>
-                  </div>
-                )}
                 {notice?.at === textKey(name) && <Notice text={notice.text} />}
-                {attachOpen && (
-                  <AddPartForm key={`text-${name}`} manager={manager} busy={busy} error={error} attachedTo={name}
-                    onSubmit={(f, rid) => void addPart(f, adding as Adding & { kind: 'service' }, rid)} onCancel={() => { setAdding(null); setError(null) }} />
-                )}
               </li>
               )
             })}
@@ -311,43 +310,27 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
         )}
       </section>
 
-      {/* ── Parts (standalone) ── */}
-      {partsVisible && (
+      {/* ── Parts for the whole job — only when there are any (parts for a service sit under that service) ── */}
+      {partsVisible && grouped.standalone.length > 0 && (
         <section aria-labelledby="job-parts-heading">
           <h2 id="job-parts-heading" className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-2">
-            Parts{partCount > 0 && <span className="text-gray-400 normal-case"> · {partCount}</span>}
+            Parts<span className="text-gray-400 normal-case"> · {grouped.standalone.length}</span>
           </h2>
-          {adding?.kind === 'job' ? (
-            <AddPartForm key="job" manager={manager} busy={busy} error={error} attachedTo={null}
-              onSubmit={(f, rid) => void addPart(f, null, rid)} onCancel={() => { setAdding(null); setError(null) }} />
-          ) : (
-            <button type="button" disabled={busy} onClick={() => { setError(null); setConfirm(null); setAdding({ kind: 'job' }) }}
-              className="w-full rounded-xl bg-blue-600 text-white font-semibold py-3 min-h-12 active:bg-blue-700 disabled:opacity-40">
-              + Add a part
-            </button>
-          )}
-
-          {grouped.standalone.length > 0 && (
-            <ul aria-label="Parts" className="mt-3 rounded-2xl border border-gray-800 bg-gray-900 px-4 divide-y divide-gray-800">
-              {grouped.standalone.map((part) => partRow(part, null))}
-            </ul>
-          )}
-          {notice?.at === 'job' && <Notice text={notice.text} />}
-
-          {p.importPanel && (
-            <details className="mt-3 group">
-              <summary className="min-h-11 flex cursor-pointer list-none items-center justify-between text-sm text-gray-300 [&::-webkit-details-marker]:hidden">
-                <span>Add from a PartsTech screenshot</span>
-                <span aria-hidden className="text-gray-500 transition-transform group-open:rotate-90">›</span>
-              </summary>
-              <p className="text-xs text-gray-500 mb-1">Open PartsTech, screenshot the cart, upload it here.</p>
-              {p.importPanel}
-            </details>
-          )}
+          <ul aria-label="Parts" className="rounded-2xl border border-gray-800 bg-gray-900 px-4 divide-y divide-gray-800">
+            {grouped.standalone.map((part) => partRow(part, null))}
+          </ul>
         </section>
       )}
+      {notice?.at === 'job' && <Notice text={notice.text} />}
 
-      {error && !adding && <p role="alert" className="text-red-400 text-sm">{error}</p>}
+      {error && !partForm && <p role="alert" className="text-red-400 text-sm">{error}</p>}
+
+      {menuOpen && <AddMenu choices={choices} onPick={pick} onCancel={() => setMenuOpen(false)} />}
+      {partForm && (
+        <AddPartDialog manager={manager} busy={busy} error={error} options={assignOptions} initialAssign={partForm.assign} importPanel={p.importPanel}
+          onSubmit={(f, key, rid) => void addPart(f, key, rid)}
+          onCancel={() => { setPartForm(null); setError(null); refocusAdd() }} />
+      )}
     </div>
   )
 }
@@ -366,99 +349,5 @@ function ConfirmBox({ label, text, tone = 'danger', children }: { label: string;
       <p className={`text-sm ${tone === 'danger' ? 'text-red-100' : 'text-sky-100'}`}>{text}</p>
       <div className="flex flex-wrap gap-2">{children}</div>
     </div>
-  )
-}
-
-/**
- * The add-part form. "What part?" is focused on open. Everything else sits under "More details" in this
- * order: Our cost · each (manager only), Customer price · each (everyone — required), Part number,
- * Quantity (default 1). When the price is missing or invalid on submit, More details opens and the price
- * field takes focus. Submit says exactly where the part goes.
- */
-function AddPartForm({ manager, busy, error, attachedTo, onSubmit, onCancel }: {
-  manager: boolean; busy: boolean; error: string | null; attachedTo: string | null
-  onSubmit: (f: PartInput, requestId: string) => void; onCancel: () => void
-}) {
-  const requestId = useRef(newRequestId())   // stable for this open form: a retry replays, a new form gets a new key
-  const ids = useId()
-  const [f, setF] = useState<PartDraft>({ name: '', cost: '', price: '', partNumber: '', quantity: '1' })
-  const [problem, setProblem] = useState<DraftProblem | null>(null)
-  const nameRef = useRef<HTMLInputElement>(null)
-  const costRef = useRef<HTMLInputElement>(null)
-  const priceRef = useRef<HTMLInputElement>(null)
-  const qtyRef = useRef<HTMLInputElement>(null)
-  const detailsRef = useRef<HTMLDetailsElement>(null)
-  const formRef = useRef<HTMLFormElement>(null)
-  useEffect(() => { formRef.current?.scrollIntoView({ block: 'nearest' }); nameRef.current?.focus() }, [])
-  const set = (k: keyof PartDraft) => (e: React.ChangeEvent<HTMLInputElement>) => { setF({ ...f, [k]: e.target.value }); if (problem?.field === k || (k === 'price' && problem?.field === 'price')) setProblem(null) }
-  const canSubmit = !busy && f.name.trim().length > 0
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!canSubmit) return
-    const v = validatePartDraft(f, manager)
-    if (!v.ok) {
-      setProblem(v.problem)
-      // The field may be hidden under collapsed More details — open it, then focus the field itself.
-      if (detailsRef.current) detailsRef.current.open = true
-      const target = v.problem.field === 'price' ? priceRef : v.problem.field === 'cost' ? costRef : qtyRef
-      requestAnimationFrame(() => { target.current?.focus(); target.current?.select(); target.current?.scrollIntoView({ block: 'nearest' }) })
-      return
-    }
-    setProblem(null)
-    onSubmit(v.input, requestId.current)
-  }
-  const flag = (field: DraftProblem['field']) => problem?.field === field ? 'border-amber-400 ring-1 ring-amber-400' : ''
-  // The validation message sits right under the field it is about (visible even with the keyboard up).
-  const fieldError = (field: DraftProblem['field']) => problem?.field === field
-    ? <span role="alert" id={`${ids}-${field}-error`} className="mt-1.5 block text-amber-300 text-sm">{problem.message}</span> : null
-  return (
-    <form ref={formRef} onSubmit={submit} noValidate
-      aria-label={attachedTo ? `Add part to ${attachedTo}` : 'Add a part to this job'}
-      className="mt-2 rounded-2xl border border-gray-700 bg-gray-950/60 p-3 space-y-3">
-      {attachedTo && <p className="text-sm font-semibold text-white">Add part to {attachedTo}</p>}
-      <label className="block">
-        <span className="text-gray-300 text-sm">What part?</span>
-        <input ref={nameRef} id={`${ids}-name`} value={f.name} onChange={set('name')} maxLength={200} disabled={busy} placeholder="Cabin air filter" autoComplete="off" className={`${INPUT} mt-1.5`} />
-      </label>
-      <details ref={detailsRef} className="group">
-        <summary className="min-h-11 flex cursor-pointer list-none items-center justify-between text-sm text-gray-200 [&::-webkit-details-marker]:hidden">
-          <span>More details <span className="text-gray-500">· customer price, part #, qty</span></span>
-          <span aria-hidden className="text-gray-400 transition-transform group-open:rotate-90">›</span>
-        </summary>
-        <div className="space-y-3 pt-1">
-          {manager && (
-            <label className="block">
-              <span className="text-gray-300 text-sm">Our cost · each</span>
-              <span className="relative block mt-1.5"><span aria-hidden className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
-                <input ref={costRef} id={`${ids}-cost`} value={f.cost} onChange={set('cost')} inputMode="decimal" disabled={busy} placeholder="0.00" autoComplete="off" aria-invalid={problem?.field === 'cost' || undefined} aria-describedby={problem?.field === 'cost' ? `${ids}-cost-error` : undefined} className={`${INPUT} pl-7 tabular-nums ${flag('cost')}`} /></span>
-              {fieldError('cost')}
-            </label>
-          )}
-          <label className="block">
-            <span className="text-gray-300 text-sm">Customer price · each</span>
-            <span className="relative block mt-1.5"><span aria-hidden className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
-              <input ref={priceRef} id={`${ids}-price`} value={f.price} onChange={set('price')} inputMode="decimal" disabled={busy} placeholder="0.00" autoComplete="off" aria-required="true" aria-invalid={problem?.field === 'price' || undefined} aria-describedby={problem?.field === 'price' ? `${ids}-price-error` : undefined} className={`${INPUT} pl-7 tabular-nums ${flag('price')}`} /></span>
-            {fieldError('price')}
-          </label>
-          <label className="block">
-            <span className="text-gray-300 text-sm">Part number</span>
-            <input id={`${ids}-pn`} value={f.partNumber} onChange={set('partNumber')} maxLength={80} disabled={busy} autoComplete="off" autoCapitalize="characters" className={`${INPUT} mt-1.5`} />
-          </label>
-          <label className="block">
-            <span className="text-gray-300 text-sm">Quantity</span>
-            <input ref={qtyRef} id={`${ids}-qty`} value={f.quantity} onChange={set('quantity')} inputMode="decimal" disabled={busy} aria-invalid={problem?.field === 'quantity' || undefined} aria-describedby={problem?.field === 'quantity' ? `${ids}-quantity-error` : undefined} className={`${INPUT} mt-1.5 max-w-[8rem] ${flag('quantity')}`} />
-            {fieldError('quantity')}
-          </label>
-          <p className="text-xs text-gray-500">
-            Customer price × quantity goes on the invoice and adds to the job total.{manager ? ' Our cost is internal only.' : ''}
-          </p>
-        </div>
-      </details>
-      {error && !problem && <p role="alert" className="text-amber-300 text-sm">{error}</p>}
-      <div className="flex gap-2">
-        <button type="submit" disabled={!canSubmit} className={`${BTN} flex-1 bg-blue-600 text-white py-3`}>{busy ? 'Saving…' : attachedTo ? 'Add part to service' : 'Add to this job'}</button>
-        <button type="button" onClick={onCancel} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200 py-3`}>Cancel</button>
-      </div>
-    </form>
   )
 }

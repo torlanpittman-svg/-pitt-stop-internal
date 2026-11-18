@@ -92,6 +92,24 @@ describe('Add part to this service', () => {
     expect(d.pricingIncomplete).toBe(false)
     expect(d.serviceBreakdown).toEqual(expect.arrayContaining([{ title: 'Oil change', cents: 6000 }, { title: 'Oil filter', cents: 2500 }]))
   })
+  it('two services with the SAME name: the part goes to the service whose id was chosen, not the first one with that name', async () => {
+    const { orderId, estimateId, ids } = await job([['Oil change', 6000]])
+    const second = await addService(estimateId, 'Oil change', { actor: M })
+    await setServicePrice(estimateId, second.id, 7000, M)
+    expect(second.id).not.toBe(ids['Oil change'])
+    const part = await addPartForJob(orderId, { description: 'Drain plug', quantity: 1, sellPriceCents: 900, requestId: 'dup-name-0001' }, M, 'manager', second.id)
+    const whole = await addPartForJob(orderId, { description: 'Shop towels', quantity: 1, sellPriceCents: 300, requestId: 'dup-name-0002' }, M, 'manager')
+    expect((await livePart(part.id)).laborServiceId).toBe(second.id)
+    const g = groupJobItems((await getEstimateView(orderId))!)
+    expect(g.services.find((s) => s.id === second.id)!.parts.map((p) => p.description)).toEqual(['Drain plug'])
+    expect(g.services.find((s) => s.id === ids['Oil change'])!.parts).toEqual([])
+    expect(g.standalone.map((p) => p.id)).toEqual([whole.id])
+    // A repeated submit of the same form (same requestId) adds nothing more.
+    const again = await addPartForJob(orderId, { description: 'Drain plug', quantity: 1, sellPriceCents: 900, requestId: 'dup-name-0001' }, M, 'manager', second.id)
+    expect(again.id).toBe(part.id)
+    expect((await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, orderId))).length).toBe(2)
+  })
+
   it('a stale / foreign service id is refused BEFORE anything is written', async () => {
     const { orderId } = await job([['Oil change', 6000]])
     await expect(addPartForJob(orderId, { description: 'Oil filter', sellPriceCents: 1000 }, M, 'manager', '00000000-0000-0000-0000-000000000000')).rejects.toThrow(/no longer on this job/)

@@ -96,3 +96,78 @@ export function validatePartDraft(f: PartDraft, manager: boolean): { ok: true; i
   if (!Number.isFinite(quantity) || quantity <= 0) return { ok: false, problem: { field: 'quantity', message: 'Enter a quantity of 1 or more.' } }
   return { ok: true, input: { name: f.name.trim(), priceCents: price, costCents: cost, partNumber: f.partNumber.trim() || null, quantity } }
 }
+
+// ── "Assign to" for the add-part form (Whole job, or one of the Job's services) ──
+
+/** The select value for a part that belongs to the whole Job (no service). */
+export const WHOLE_JOB = 'job'
+
+export interface PartAssignOption {
+  /** Select value: WHOLE_JOB, `svc:<service id>`, or `text:<lower-cased title>` for a Work Board text-only service. */
+  key: string
+  label: string
+}
+export type PartAssignTarget =
+  | { kind: 'job' }
+  /** An estimate service — attached by ITS ID, so two services with the same name stay distinct. */
+  | { kind: 'service'; serviceId: string; title: string }
+  /** A service that only exists as Work Board text; the server mirrors it by title on add. */
+  | { kind: 'text'; title: string }
+
+const norm = (s: string) => s.trim().toLowerCase()
+export const serviceAssignKey = (serviceId: string) => `svc:${serviceId}`
+export const textAssignKey = (title: string) => `text:${norm(title)}`
+
+/**
+ * The "Assign to" choices, in screen order: Whole job, every listed (not declined) estimate service, then
+ * each distinct text-only service. Services that share a name are told apart by position ("Oil Change
+ * (1 of 2)") — the VALUE is always the service's own id, so the label never decides where a part goes.
+ */
+export function partAssignOptions(
+  services: readonly { id: string; title: string; declined?: boolean }[],
+  textOnlyTitles: readonly string[],
+): PartAssignOption[] {
+  const listed = services.filter((s) => !s.declined)
+  const totals = new Map<string, number>()
+  for (const s of listed) totals.set(norm(s.title), (totals.get(norm(s.title)) ?? 0) + 1)
+  const seen = new Map<string, number>()
+  const out: PartAssignOption[] = [{ key: WHOLE_JOB, label: 'Whole job' }]
+  for (const s of listed) {
+    const n = norm(s.title)
+    const total = totals.get(n) ?? 1
+    const nth = (seen.get(n) ?? 0) + 1
+    seen.set(n, nth)
+    out.push({ key: serviceAssignKey(s.id), label: total > 1 ? `${s.title} (${nth} of ${total})` : s.title })
+  }
+  const textSeen = new Set<string>()
+  for (const t of textOnlyTitles) {
+    const n = norm(t)
+    if (!n || textSeen.has(n) || totals.has(n)) continue   // the server mirrors text services by title — one choice per title
+    textSeen.add(n)
+    out.push({ key: textAssignKey(t), label: t.trim() })
+  }
+  return out
+}
+
+/**
+ * Where the chosen "Assign to" value sends the part. null = the choice is no longer on the Job (the service
+ * was removed while the form was open) — the caller must ask again, never fall back to Whole job.
+ */
+export function resolvePartAssign(
+  key: string,
+  services: readonly { id: string; title: string; declined?: boolean }[],
+  textOnlyTitles: readonly string[],
+): PartAssignTarget | null {
+  if (key === WHOLE_JOB) return { kind: 'job' }
+  if (key.startsWith('svc:')) {
+    const s = services.find((x) => !x.declined && serviceAssignKey(x.id) === key)
+    return s ? { kind: 'service', serviceId: s.id, title: s.title } : null
+  }
+  if (key.startsWith('text:')) {
+    const t = textOnlyTitles.find((x) => textAssignKey(x) === key)
+    return t ? { kind: 'text', title: t.trim() } : null
+  }
+  return null
+}
+
+export const ASSIGN_GONE_MSG = 'That service is no longer on this job. Choose where the part goes and try again.'

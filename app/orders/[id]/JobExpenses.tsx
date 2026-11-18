@@ -10,9 +10,12 @@
  *
  * Every row is a LINK to one filed receipt — never a second expense, never a customer price, never an invoice
  * line. A receipt that still needs review is listed but kept out of the total.
+ *
+ * On the Job screen this is ONE row — "Expenses", the recorded total (managers), a chevron. Tapping it (or
+ * choosing Expense from the Job's "+ Add" menu, via `openSignal`) opens everything above in place.
  */
 import Link from 'next/link'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import {
   loadJobExpensesAction, listLinkableReceiptsAction, linkReceiptAction, changeAllocationAction, removeAllocationAction,
 } from '@/apps/expenses/job-actions'
@@ -23,7 +26,30 @@ const money = (c: number | null | undefined) => (c == null ? '—' : `$${(c / 10
 const input = 'w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white'
 const ghost = 'rounded-xl border border-gray-700 px-3 py-3 text-sm font-semibold text-gray-200 disabled:opacity-40'
 
-export default function JobExpenses({ orderId, manager, cancelled = false }: { orderId: string; manager: boolean; cancelled?: boolean }) {
+export default function JobExpenses({ orderId, manager, cancelled = false, openSignal = 0 }: {
+  orderId: string; manager: boolean; cancelled?: boolean
+  /** Bump to open the section and move focus to its first action (the Job's "+ Add" → Expense). */
+  openSignal?: number
+}) {
+  const [open, setOpen] = useState(false)
+  const panelId = useId()
+  const panel = useRef<HTMLDivElement>(null)
+  // "+ Add" → Expense: open, then (once the opened section has rendered) bring it into view and focus its first action.
+  const seenSignal = useRef(openSignal)
+  const [focusRequest, setFocusRequest] = useState(0)
+  useEffect(() => {
+    if (openSignal === seenSignal.current) return
+    seenSignal.current = openSignal
+    setOpen(true); setFocusRequest((n) => n + 1)
+  }, [openSignal])
+  useEffect(() => {
+    if (!focusRequest || !open) return
+    const el = panel.current
+    if (!el) return
+    el.scrollIntoView({ block: 'nearest' })
+    ;(el.querySelector<HTMLElement>('a[href], button:not([disabled])') ?? el).focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per request, after the section is open
+  }, [focusRequest])
   const [data, setData] = useState<JobExpensesData | null>(null)
   const [loadErr, setLoadErr] = useState('')
   const [busy, setBusy] = useState(false)
@@ -53,17 +79,19 @@ export default function JobExpenses({ orderId, manager, cancelled = false }: { o
   }
 
   return (
-    <section aria-labelledby="job-expenses-title" className="rounded-2xl bg-gray-900 border border-gray-800 p-4">
-      <div className="flex items-baseline justify-between gap-3">
-        <h2 id="job-expenses-title" className="text-white font-semibold text-lg">Expenses</h2>
-        {manager && data && (
-          <p className="text-right">
-            <span className="block text-white font-bold text-lg tabular-nums">{money(data.recordedCents)}</span>
-            <span className="block text-gray-500 text-xs">recorded for this job</span>
-          </p>
-        )}
-      </div>
-      <p className="text-gray-500 text-xs mt-1">What we spent on this car. Our cost only — it never changes the customer’s invoice, and no customer price is needed.</p>
+    <section aria-labelledby="job-expenses-title" className="rounded-2xl bg-gray-900 border border-gray-800 overflow-hidden">
+      <h2 id="job-expenses-title">
+        <button type="button" data-job-expenses-toggle aria-expanded={open} aria-controls={panelId} onClick={() => setOpen((o) => !o)}
+          className="flex w-full min-h-14 items-center justify-between gap-3 px-4 py-3 text-left active:bg-gray-800/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500/70">
+          <span className="text-white font-semibold text-base">Expenses</span>
+          <span className="flex items-center gap-3">
+            {manager && data && <span className="text-white text-base tabular-nums"><span className="sr-only">recorded for this job: </span>{money(data.recordedCents)}</span>}
+            <span aria-hidden className={`text-gray-400 text-lg transition-transform ${open ? 'rotate-90' : ''}`}>›</span>
+          </span>
+        </button>
+      </h2>
+      <div id={panelId} ref={panel} tabIndex={-1} hidden={!open} className="border-t border-gray-800 p-4 outline-none">
+      <p className="text-gray-500 text-xs">What we spent on this car. Our cost only — it never changes the customer’s invoice, and no customer price is needed.</p>
 
       {!cancelled && (
         <Link href={`/expenses?job=${orderId}`} className="mt-3 block w-full text-center bg-indigo-600 active:bg-indigo-700 text-white text-base font-bold py-4 rounded-2xl">
@@ -119,6 +147,7 @@ export default function JobExpenses({ orderId, manager, cancelled = false }: { o
           <p className="text-gray-600 text-xs">Recorded purchases only. Labor, chemicals, shop supplies and overhead are not included, so this is not the job’s profit.</p>
         </div>
       )}
+      </div>
     </section>
   )
 }
