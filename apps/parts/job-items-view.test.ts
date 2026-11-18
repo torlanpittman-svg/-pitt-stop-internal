@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { EstimatePartView, EstimateServiceView } from '@/apps/workflow/estimate-db'
-import { groupJobItems, redactItemsView, removeServiceMessage, validatePartDraft, partAssignOptions, resolvePartAssign, serviceAssignKey, textAssignKey, WHOLE_JOB, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG } from './job-items-view'
+import { groupJobItems, redactItemsView, removeServiceMessage, validatePartDraft, partAssignOptions, partsPostOutcome, resolvePartAssign, serviceAssignKey, textAssignKey, WHOLE_JOB, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG } from './job-items-view'
 
 const svc = (id: string, title = id, declined = false): EstimateServiceView => ({ id, title, priceCents: 1000, suggestedCents: null, declined } as unknown as EstimateServiceView)
 
@@ -159,5 +159,25 @@ describe('add-part "Assign to" (Whole job or one of the Job\'s services)', () =>
     expect(o.slice(4).map((x) => x.label)).toEqual(['Tint', 'Headlights'])   // "Oil Change" is already a listed service
     expect(resolvePartAssign(textAssignKey('Tint'), services, ['Tint', 'Headlights'])).toEqual({ kind: 'text', title: 'Tint' })
     expect(resolvePartAssign(textAssignKey('Tint'), services, ['Headlights'])).toBeNull()
+  })
+})
+
+describe('partsPostOutcome — may the form be changed before a retry?', () => {
+  it('a confirmed save is ok and carries the part id', () => {
+    expect(partsPostOutcome(200, { ok: true, partId: 'p1' })).toEqual({ ok: true, partId: 'p1' })
+  })
+
+  it('a refusal the server explained (4xx + message) wrote nothing — NOT uncertain, the form may be corrected', () => {
+    expect(partsPostOutcome(400, { ok: false, error: 'Enter the customer price.' })).toEqual({ ok: false, error: 'Enter the customer price.', needsManager: undefined, uncertain: false })
+    expect(partsPostOutcome(403, { ok: false, error: 'Ask a manager.', needsManager: true })).toMatchObject({ ok: false, needsManager: true, uncertain: false })
+  })
+
+  it('no response, a server error, an unreadable body or an unexplained failure is UNCERTAIN — it may have been saved', () => {
+    expect(partsPostOutcome(null, null)).toMatchObject({ ok: false, uncertain: true })
+    expect(partsPostOutcome(500, { ok: false, error: 'boom' })).toMatchObject({ ok: false, uncertain: true })
+    expect(partsPostOutcome(502, null)).toMatchObject({ ok: false, uncertain: true })
+    expect(partsPostOutcome(200, null)).toMatchObject({ ok: false, uncertain: true })
+    expect(partsPostOutcome(400, null)).toMatchObject({ ok: false, uncertain: true })
+    expect(partsPostOutcome(200, { ok: false })).toMatchObject({ ok: false, uncertain: true })
   })
 })

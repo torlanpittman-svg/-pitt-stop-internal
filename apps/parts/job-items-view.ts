@@ -171,3 +171,25 @@ export function resolvePartAssign(
 }
 
 export const ASSIGN_GONE_MSG = 'That service is no longer on this job. Choose where the part goes and try again.'
+
+// ── What a /parts response means for the form that sent it ──
+
+export type PartsPostOutcome =
+  | { ok: true; partId: string | null }
+  /** uncertain = we cannot tell whether the server saved it (no response, a server error, an unreadable body). */
+  | { ok: false; error: string; needsManager?: boolean; uncertain: boolean }
+
+/**
+ * Classify a /parts response. A refusal the server explained (4xx with its message) wrote nothing, so the form
+ * may be corrected and sent again. Anything else is UNCERTAIN: the add may have been saved, so the only safe
+ * retry is the identical submission (same request id → the server replays it instead of adding twice).
+ * `status` null = the request never produced a response.
+ */
+export function partsPostOutcome(status: number | null, body: { ok?: boolean; error?: string; needsManager?: boolean; partId?: string | null } | null): PartsPostOutcome {
+  if (status === null) return { ok: false, error: 'No connection — check the internet and try again.', uncertain: true }
+  if (status >= 200 && status < 300 && body?.ok) return { ok: true, partId: body.partId ?? null }
+  const refused = status >= 400 && status < 500 && typeof body?.error === 'string' && body.error.length > 0
+  return { ok: false, error: body?.error || 'Could not save — check your connection and try again.', needsManager: body?.needsManager, uncertain: !refused }
+}
+
+export const UNCONFIRMED_ADD_MSG = 'We couldn’t confirm this part was saved. Try again sends the same part — it will not be added twice.'

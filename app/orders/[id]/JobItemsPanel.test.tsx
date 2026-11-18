@@ -80,8 +80,10 @@ describe('Job screen — one "+ Add", nothing repeated', () => {
   })
 
   it('a viewer without Parts access sees no parts and still gets the one "+ Add"', () => {
-    const html = panel({ partsVisible: false, view: view(SERVICES, [part('p1', 'Carpet', 's2'), part('p2', 'Shop towels', null)]) })
+    const html = panel({ partsVisible: false, view: view(SERVICES, [part('p1', 'Floor liner', 's2'), part('p2', 'Shop towels', null)]) })
     expect(html).not.toContain('Shop towels')
+    expect(html).not.toContain('Floor liner')       // the part attached to Replace Carpet is hidden too
+    expect(html).not.toContain('aria-label="Parts for')
     expect(html).not.toContain('job-parts-heading')
     expect(html.match(/>\+ Add<\/button>/g)).toHaveLength(1)
   })

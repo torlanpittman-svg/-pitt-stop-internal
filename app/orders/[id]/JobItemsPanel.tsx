@@ -24,17 +24,22 @@
  * Part rows deliberately show only name · amount · Remove — no ordering/receiving, no statuses.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import type { EstimateViewData, PartView, ServiceView } from './estimate/save-feedback'
 import { partPrice, servicePrice } from './estimate/ItemRows'
 import RemovableServiceRow from '@/app/components/RemovableServiceRow'
-import { groupJobItems, partAssignOptions, resolvePartAssign, serviceRemovalConsequence, ASSIGN_GONE_MSG, INVOICED_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG, LABOR_STAYS_NOTE, WHOLE_JOB, type PartInput } from '@/apps/parts/job-items-view'
+import { groupJobItems, partAssignOptions, partsPostOutcome, resolvePartAssign, serviceRemovalConsequence, ASSIGN_GONE_MSG, INVOICED_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG, LABOR_STAYS_NOTE, WHOLE_JOB, type PartInput, type PartsPostOutcome } from '@/apps/parts/job-items-view'
 import { AddMenu, AddPartDialog, type AddChoice } from './AddToJob'
 
 const BTN = 'rounded-xl font-semibold text-sm px-4 min-h-11 active:opacity-80 disabled:opacity-40'
 const LINK = 'min-h-11 inline-flex items-center px-1 text-sm font-semibold active:opacity-70 disabled:opacity-40'
 
 /** The add-part form is open; `assign` is the "Assign to" value it starts on (Whole job unless opened for a service). */
-type PartForm = null | { assign: string }
+type PartForm = null | {
+  assign: string
+  /** The last add got no clear answer (it may have been saved): the form is frozen so a retry is the SAME submission. */
+  locked?: boolean
+}
 const textKey = (title: string) => `text:${title.trim().toLowerCase()}`
 type Confirm = null
   | { kind: 'part'; id: string }
@@ -75,6 +80,10 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [partForm, setPartForm] = useState<PartForm>(null)
   const addButton = useRef<HTMLButtonElement>(null)
+  // The PartsTech import lives in its own DOM node, created the first time it is opened and kept for as long as
+  // this Job screen is: the add-part dialog only borrows it. Closing the dialog mid-upload or mid-save therefore
+  // never discards the import's draft, its pending request or its error — same as the always-mounted panel before.
+  const [importHost, setImportHost] = useState<HTMLElement | null>(null)
   const [confirm, setConfirm] = useState<Confirm>(null)
   const [notice, setNotice] = useState<{ text: string; at: string } | null>(null)   // at = service id | 'job'
   const [error, setError] = useState<string | null>(null)
@@ -102,15 +111,14 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
   })
 
   /** One /parts call at a time — a double-tap can never send the same add or removal twice. */
-  const post = async (body: Record<string, unknown>): Promise<{ ok: true; partId: string | null } | { ok: false; error: string; needsManager?: boolean }> => {
-    if (inFlight.current) return { ok: false, error: 'Still saving — one moment.' }
+  const post = async (body: Record<string, unknown>): Promise<PartsPostOutcome> => {
+    // Nothing was sent, so nothing is uncertain about it.
+    if (inFlight.current) return { ok: false, error: 'Still saving — one moment.', uncertain: false }
     inFlight.current = true; setLocalBusy(true); setError(null)
     try {
       const r = await fetch(`/api/workflow/orders/${orderId}/parts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      const d = await r.json().catch(() => ({})) as { ok?: boolean; error?: string; needsManager?: boolean; partId?: string | null }
-      if (!r.ok || !d.ok) return { ok: false, error: d.error || 'Could not save — check your connection and try again.', needsManager: d.needsManager }
-      return { ok: true, partId: d.partId ?? null }
-    } catch { return { ok: false, error: 'No connection — check the internet and try again.' } }
+      return partsPostOutcome(r.status, await r.json().catch(() => null))
+    } catch { return partsPostOutcome(null, null) }
     finally { inFlight.current = false; setLocalBusy(false) }
   }
 
@@ -150,7 +158,13 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
       laborServiceTitle: target.kind === 'text' ? target.title : null,
       requestId,
     })
-    if (!out.ok) { setError(out.error); return }
+    if (!out.ok) {
+      setError(out.error)
+      // No clear answer: the part may be saved. Freeze the form so the retry is this exact submission (the request
+      // id makes the server replay it) — changing where it goes now could report a place it was never saved to.
+      if (out.uncertain) setPartForm((f) => (f ? { ...f, locked: true } : f))
+      return
+    }
     setPartForm(null); setFlash(out.partId); refocusAdd()
     setNotice(target.kind === 'job' ? { text: `${f.name} added to this job.`, at: 'job' }
       : { text: `${f.name} added to ${target.title}.`, at: target.kind === 'service' ? target.serviceId : textKey(target.title) })
@@ -327,10 +341,13 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
 
       {menuOpen && <AddMenu choices={choices} onPick={pick} onCancel={() => setMenuOpen(false)} />}
       {partForm && (
-        <AddPartDialog manager={manager} busy={busy} error={error} options={assignOptions} initialAssign={partForm.assign} importPanel={p.importPanel}
+        <AddPartDialog manager={manager} busy={busy} error={error} options={assignOptions} initialAssign={partForm.assign} locked={!!partForm.locked}
+          importHost={p.importPanel ? importHost : null} onOpenImport={p.importPanel ? () => setImportHost((h) => h ?? document.createElement('div')) : undefined}
           onSubmit={(f, key, rid) => void addPart(f, key, rid)}
-          onCancel={() => { setPartForm(null); setError(null); refocusAdd() }} />
+          // Leaving a form whose add was never confirmed: re-read the Job so the list shows whether it was saved.
+          onCancel={() => { if (partForm.locked) onChanged(); setPartForm(null); setError(null); refocusAdd() }} />
       )}
+      {importHost && p.importPanel && createPortal(p.importPanel, importHost)}
     </div>
   )
 }

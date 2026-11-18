@@ -11,8 +11,8 @@
  * draft (validatePartDraft — the server re-validates every add) plus the chosen "Assign to" value back to
  * JobItemsPanel, which sends it through the existing POST /parts `add`.
  */
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { validatePartDraft, type DraftProblem, type PartAssignOption, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { validatePartDraft, UNCONFIRMED_ADD_MSG, type DraftProblem, type PartAssignOption, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
 
 export type AddChoice = 'service' | 'part' | 'expense'
 
@@ -78,15 +78,26 @@ export function AddMenu({ choices, onPick, onCancel }: {
  * the form was opened for a specific service). Quantity and Customer price are plain text state — clearing
  * one leaves it empty; nothing is restored while typing, and a blank price is a problem on submit, never $0.
  * Part number and (manager only) our internal cost stay available under More details.
+ *
+ * `locked`: the last add got no clear answer and may have been saved. Every field is frozen and the button says
+ * "Try again", so the retry is the identical submission under the same request id (the server replays it — it is
+ * never added twice, and never reported under a different service than it was sent to).
+ *
+ * The PartsTech import is NOT owned by this dialog: `importHost` is a DOM node the Job screen keeps (with the
+ * import rendered into it). The dialog shows it while open and hands it back on close, so dismissing the dialog
+ * during an upload or save loses nothing.
  */
-export function AddPartDialog({ manager, busy, error, options, initialAssign, importPanel, onSubmit, onCancel }: {
+export function AddPartDialog({ manager, busy, error, options, initialAssign, locked = false, importHost, onOpenImport, onSubmit, onCancel }: {
   manager: boolean
   busy: boolean
   error: string | null
   options: readonly PartAssignOption[]
   initialAssign: string
-  /** The PartsTech screenshot import, offered as a secondary action inside this form. */
-  importPanel?: ReactNode
+  locked?: boolean
+  /** Where the Job screen keeps the PartsTech import (null until first opened). */
+  importHost: HTMLElement | null
+  /** Offer "Import PartsTech screenshot" and ask the Job screen to create the import (omitted = no import here). */
+  onOpenImport?: () => void
   onSubmit: (f: PartInput, assignKey: string, requestId: string) => void
   onCancel: () => void
 }) {
@@ -100,12 +111,23 @@ export function AddPartDialog({ manager, busy, error, options, initialAssign, im
   const qtyRef = useRef<HTMLInputElement>(null)
   const detailsRef = useRef<HTMLDetailsElement>(null)
   const importHeading = useRef<HTMLHeadingElement>(null)
+  const importSlot = useRef<HTMLDivElement>(null)
+  const submitRef = useRef<HTMLButtonElement>(null)
   useModal(ref, nameRef)
   const [f, setF] = useState<PartDraft>({ name: '', cost: '', price: '', partNumber: '', quantity: '1' })
   const [assign, setAssign] = useState(initialAssign)
   const [problem, setProblem] = useState<DraftProblem | null>(null)
   const [importing, setImporting] = useState(false)
-  const [importMounted, setImportMounted] = useState(false)
+  // Borrow the Job screen's import node while it is showing here; hand it back (detached, still alive) afterwards.
+  useEffect(() => {
+    const slot = importSlot.current
+    if (!importing || !importHost || !slot) return
+    slot.appendChild(importHost)
+    return () => { importHost.remove() }
+  }, [importing, importHost])
+  // Frozen after an unconfirmed add: the disabled fields can't hold focus, so put it on the one thing left to do.
+  useEffect(() => { if (locked && !busy) submitRef.current?.focus() }, [locked, busy])
+  const frozen = busy || locked
   const busyRef = useRef(busy)
   useLayoutEffect(() => { busyRef.current = busy })
 
@@ -132,7 +154,7 @@ export function AddPartDialog({ manager, busy, error, options, initialAssign, im
     ? <span role="alert" id={`${ids}-${field}-error`} className="mt-1.5 block text-sm text-amber-300">{problem.message}</span> : null
   const close = () => { if (!busyRef.current) ref.current?.close() }
   const showImport = (on: boolean) => {
-    setImporting(on); if (on) setImportMounted(true)
+    setImporting(on); if (on) onOpenImport?.()
     requestAnimationFrame(() => (on ? importHeading.current : nameRef.current)?.focus())
   }
 
@@ -152,9 +174,9 @@ export function AddPartDialog({ manager, busy, error, options, initialAssign, im
 
         {/* The form stays mounted while the import is showing, so nothing typed is lost by looking at it. */}
         <form onSubmit={submit} noValidate hidden={importing} aria-label="Add part" className="space-y-4">
-          {importPanel && (
+          {onOpenImport && (
             <p className="text-center">
-              <button type="button" onClick={() => showImport(true)} disabled={busy}
+              <button type="button" onClick={() => showImport(true)} disabled={frozen}
                 className="inline-flex min-h-11 items-center px-2 text-sm font-semibold text-blue-400 underline underline-offset-4 active:opacity-70 disabled:opacity-40">
                 Import PartsTech screenshot
               </button>
@@ -162,11 +184,11 @@ export function AddPartDialog({ manager, busy, error, options, initialAssign, im
           )}
           <label className="block">
             <span className="text-sm font-semibold text-gray-200">Part name</span>
-            <input ref={nameRef} id={`${ids}-name`} value={f.name} onChange={set('name')} maxLength={200} disabled={busy} placeholder="Cabin air filter" autoComplete="off" className={`${INPUT} mt-1.5`} />
+            <input ref={nameRef} id={`${ids}-name`} value={f.name} onChange={set('name')} maxLength={200} disabled={frozen} placeholder="Cabin air filter" autoComplete="off" className={`${INPUT} mt-1.5`} />
           </label>
           <label className="block">
             <span className="text-sm font-semibold text-gray-200">Assign to</span>
-            <select id={`${ids}-assign`} value={assignKnown ? assign : ''} onChange={(e) => setAssign(e.target.value)} disabled={busy}
+            <select id={`${ids}-assign`} value={assignKnown ? assign : ''} onChange={(e) => setAssign(e.target.value)} disabled={frozen}
               aria-invalid={!assignKnown || undefined} className={`${INPUT} mt-1.5 ${assignKnown ? '' : 'border-amber-400 ring-1 ring-amber-400'}`}>
               {!assignKnown && <option value="" disabled>Choose where this part goes</option>}
               {options.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
@@ -176,7 +198,7 @@ export function AddPartDialog({ manager, busy, error, options, initialAssign, im
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
               <span className="text-sm font-semibold text-gray-200">Quantity</span>
-              <input ref={qtyRef} id={`${ids}-qty`} value={f.quantity} onChange={set('quantity')} inputMode="decimal" disabled={busy} autoComplete="off"
+              <input ref={qtyRef} id={`${ids}-qty`} value={f.quantity} onChange={set('quantity')} inputMode="decimal" disabled={frozen} autoComplete="off"
                 aria-invalid={problem?.field === 'quantity' || undefined} aria-describedby={problem?.field === 'quantity' ? `${ids}-quantity-error` : undefined}
                 className={`${INPUT} mt-1.5 tabular-nums ${flag('quantity')}`} />
               {fieldError('quantity')}
@@ -184,7 +206,7 @@ export function AddPartDialog({ manager, busy, error, options, initialAssign, im
             <label className="block">
               <span className="text-sm font-semibold text-gray-200">Customer price</span>
               <span className="relative mt-1.5 block"><span aria-hidden className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
-                <input ref={priceRef} id={`${ids}-price`} value={f.price} onChange={set('price')} inputMode="decimal" disabled={busy} placeholder="0.00" autoComplete="off" aria-required="true"
+                <input ref={priceRef} id={`${ids}-price`} value={f.price} onChange={set('price')} inputMode="decimal" disabled={frozen} placeholder="0.00" autoComplete="off" aria-required="true"
                   aria-invalid={problem?.field === 'price' || undefined} aria-describedby={`${ids}-price-hint${problem?.field === 'price' ? ` ${ids}-price-error` : ''}`}
                   className={`${INPUT} pl-7 tabular-nums ${flag('price')}`} /></span>
               <span id={`${ids}-price-hint`} className="mt-1 block text-xs text-gray-400">Per part · charged to the customer</span>
@@ -201,13 +223,13 @@ export function AddPartDialog({ manager, busy, error, options, initialAssign, im
             <div className="space-y-3 pb-3 pt-1">
               <label className="block">
                 <span className="text-sm text-gray-300">Part number</span>
-                <input id={`${ids}-pn`} value={f.partNumber} onChange={set('partNumber')} maxLength={80} disabled={busy} autoComplete="off" autoCapitalize="characters" className={`${INPUT} mt-1.5`} />
+                <input id={`${ids}-pn`} value={f.partNumber} onChange={set('partNumber')} maxLength={80} disabled={frozen} autoComplete="off" autoCapitalize="characters" className={`${INPUT} mt-1.5`} />
               </label>
               {manager && (
                 <label className="block">
                   <span className="text-sm text-gray-300">Our cost · each <span className="text-gray-500">(internal)</span></span>
                   <span className="relative mt-1.5 block"><span aria-hidden className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
-                    <input ref={costRef} id={`${ids}-cost`} value={f.cost} onChange={set('cost')} inputMode="decimal" disabled={busy} placeholder="0.00" autoComplete="off"
+                    <input ref={costRef} id={`${ids}-cost`} value={f.cost} onChange={set('cost')} inputMode="decimal" disabled={frozen} placeholder="0.00" autoComplete="off"
                       aria-invalid={problem?.field === 'cost' || undefined} aria-describedby={`${ids}-cost-hint${problem?.field === 'cost' ? ` ${ids}-cost-error` : ''}`}
                       className={`${INPUT} pl-7 tabular-nums ${flag('cost')}`} /></span>
                   <span id={`${ids}-cost-hint`} className="mt-1 block text-xs text-gray-500">What we paid. Never shown to the customer or added to the invoice.</span>
@@ -218,17 +240,18 @@ export function AddPartDialog({ manager, busy, error, options, initialAssign, im
           </details>
 
           {error && !problem && <p role="alert" className="text-sm text-amber-300">{error}</p>}
-          <button type="submit" disabled={!canSubmit || !assignKnown}
+          {locked && <p role="status" className="rounded-xl border border-amber-800/60 bg-amber-950/40 px-3 py-2.5 text-sm text-amber-100">{UNCONFIRMED_ADD_MSG}</p>}
+          <button ref={submitRef} type="submit" disabled={!canSubmit || !assignKnown}
             className="w-full min-h-12 rounded-xl bg-blue-600 px-4 py-3 text-base font-semibold text-white active:bg-blue-700 disabled:opacity-40">
-            {busy ? 'Saving…' : 'Add part'}
+            {busy ? 'Saving…' : locked ? 'Try again' : 'Add part'}
           </button>
         </form>
 
-        {importMounted && (
+        {onOpenImport && (
           <div hidden={!importing}>
             <h3 ref={importHeading} tabIndex={-1} className="text-base font-semibold outline-none">Import PartsTech screenshot</h3>
             <p className="mb-1 mt-1 text-xs text-gray-500">Open PartsTech, screenshot the cart, upload it here.</p>
-            {importPanel}
+            <div ref={importSlot} />
             <button type="button" onClick={close} className="mt-4 w-full min-h-12 rounded-xl border border-gray-600 px-4 py-3 text-base font-semibold text-gray-200 active:opacity-70">Done</button>
           </div>
         )}
