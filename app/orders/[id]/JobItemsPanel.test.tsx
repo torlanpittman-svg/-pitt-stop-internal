@@ -123,7 +123,12 @@ describe('Add part form — what blocks it and what never does (markup; behavior
   const form = (over: Partial<Parameters<typeof AddPartDialog>[0]>) => renderToStaticMarkup(
     <AddPartDialog manager busy={false} error={null} options={OPTIONS} initialAssign="job" importHost={null} onOpenImport={noop} onSubmit={noop} onCancel={noop} {...over} />,
   )
-  const button = (html: string, label: string) => html.match(new RegExp(`<button[^>]*>${label}</button>`))?.[0] ?? ''
+  /** The button's own markup — and a failure, not an empty string, when the button is not there at all. */
+  const button = (html: string, label: string) => {
+    const found = html.match(new RegExp(`<button[^>]*>${label}</button>`))?.[0]
+    if (!found) throw new Error(`no "${label}" button in the form`)
+    return found
+  }
   const fieldsDisabled = (html: string) => (html.match(/<(input|select)[^>]*disabled=""/g) ?? []).length
 
   it('labels the four fields and distinguishes the customer charge from our internal cost', () => {

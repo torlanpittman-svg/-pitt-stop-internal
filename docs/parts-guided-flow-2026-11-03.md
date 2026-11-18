@@ -44,8 +44,11 @@ records, pricing, permissions and the `/parts` + estimate routes are unchanged.
   is kept as the reference — only a manager can add a priced part to a flat Job) and flags a linked QuickBooks invoice
   “sync needed” (the Job’s own, or the shared invoice it is billed on). What runs afterwards is derived only —
   `refreshDerivedPricing` (`apps/workflow/estimate-db.ts`): fee lines, totals, and clearing a reference that has
-  nothing left to reconcile. It never changes the pricing mode, so a late step or a retry cannot undo a flat Work
-  Price a manager set in the meantime or re-flag an invoice that has been synced.
+  nothing left to reconcile. It never changes the pricing mode, so a late step cannot undo a flat Work Price a
+  manager set in the meantime or re-flag an invoice that has been synced. A **retry** does even less: it only
+  recomputes fee lines and stored totals and never clears a reference. (If a first attempt died before its own
+  follow-up, the Job may keep a reference equal to its total; the Invoice Draft then asks the manager to accept the
+  itemized total before invoicing.)
 - **Switch OFF mid-form:** only the guided form sends a request id, and such a request is never handed to the legacy
   tracker. If it already saved, its retry is answered through the same replay; if not, it is refused (409 `notSaved`,
   “This screen is out of date. Refresh the page…”), so a retry cannot create a second tracker record.

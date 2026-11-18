@@ -236,6 +236,36 @@ describe('every decision is made inside the write; what follows only recomputes'
     expect(await estOf(estimateId)).toMatchObject({ priceMode: 'explicit_pretax', explicitTotalCents: 40000, totalCents: 42400 })
   })
 
+  it('a first add that completes an itemization equal to the agreed reference clears the reference, as before', async () => {
+    const { orderId, estimateId } = await job()
+    await flatAt(estimateId, 6000 + 25100)
+    await addPartForJobOnce(orderId, { ...PADS, requestId: rid(58) }, M, 'manager')
+    expect(await estOf(estimateId)).toMatchObject({ priceMode: 'itemized', explicitTotalCents: null })
+  })
+
+  it('a RETRY never clears a price reference — not even when a manager edits a price between its reads (reference kept for the manager to accept)', async () => {
+    const { orderId, estimateId, ids } = await job()
+    const input = { ...PADS, requestId: rid(59) }
+    await flatAt(estimateId, 6000 + 25100)                      // agreed $311.00
+    fault.refreshFailures = 2
+    await expect(addPartForJobOnce(orderId, input, M, 'manager')).rejects.toThrow()   // written; its follow-up died
+    expect(await estOf(estimateId)).toMatchObject({ priceMode: 'itemized', explicitTotalCents: 31100 })
+
+    // A retry while the lines still add up to the reference: totals are refreshed, the reference is left alone.
+    expect(await addPartForJobOnce(orderId, input, M, 'manager')).toMatchObject({ replayed: true, differs: false })
+    expect(await estOf(estimateId)).toMatchObject({ priceMode: 'itemized', explicitTotalCents: 31100 })
+
+    // The manager raises the service to $160.00: itemized $411.00 against the $311.00 reference — kept, to be accepted.
+    await setServicePrice(estimateId, ids[0], 16000, M)
+    expect(await estOf(estimateId)).toMatchObject({ priceMode: 'itemized', explicitTotalCents: 31100 })
+    // Another retry (as late as it likes) still leaves that decision in place, and the totals follow the lines.
+    await addPartForJobOnce(orderId, input, M, 'manager')
+    const est = await estOf(estimateId)
+    expect(est).toMatchObject({ priceMode: 'itemized', explicitTotalCents: 31100 })
+    expect((await getEstimateView(orderId))).toMatchObject({ workTotalCents: 41100, referenceCents: 31100 })
+    expect(await footprint(orderId, estimateId)).toMatchObject(ONE)
+  })
+
   it('five overlapping requests leave exactly one audit trail — no extra events of any kind', async () => {
     const { orderId, estimateId } = await job()
     const before = (await db.select().from(serviceOrderEvents).where(eq(serviceOrderEvents.serviceOrderId, orderId))).length

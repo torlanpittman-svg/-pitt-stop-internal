@@ -682,14 +682,25 @@ const STALE_SERVICE_MSG = 'That service is no longer on this job. Refresh to see
 const JOB_REMOVED_MSG = 'This job was removed. Parts can’t be added or removed.'
 
 /**
- * What follows the atomic write of an add: ONLY derived work (refreshDerivedPricing — fee lines and totals, plus
- * clearing an itemized reference that has nothing left to reconcile). Every decision the add makes — the part, its
- * charge, the pricing mode, the QuickBooks "sync needed" flag — is inside the write itself, so this step can run
- * late, again on a retry, or alongside an overlapping request without changing anything a person has decided since.
- * One quiet second try covers a concurrent recompute of the same estimate.
+ * What follows the atomic write of a FIRST add: only derived work (refreshDerivedPricing — fee lines and totals,
+ * plus clearing an itemized reference that has nothing left to reconcile, exactly as the previous path did at this
+ * point). Every decision the add makes — the part, its charge, the pricing mode, the QuickBooks "sync needed"
+ * flag — is inside the write itself. One quiet second try covers a concurrent recompute of the same estimate.
  */
 async function refreshAfterAdd(estimateId: string): Promise<void> {
   try { await refreshDerivedPricing(estimateId) } catch { await refreshDerivedPricing(estimateId) }
+}
+
+/**
+ * A REPEAT of an add only recomputes fee lines and stored totals from what is on the estimate now (recomputeEstimate
+ * reads the pricing mode, the reference and the lines; it writes none of them). It never clears a price reference:
+ * that depends on the lines at one instant, and a repeat can arrive at any time — in the middle of a manager's price
+ * edit, for one. If a first attempt died before its own follow-up, an itemized Job may keep a reference that happens
+ * to equal its total; the Invoice Draft then asks the manager to accept the itemized total (invoicing stays blocked
+ * until they do) — never the other way round.
+ */
+async function recomputeAfterReplay(estimateId: string): Promise<void> {
+  try { await recomputeEstimate(estimateId) } catch { await recomputeEstimate(estimateId) }
 }
 
 /** True when the value is a Job-screen add-form request id (only that form sends one). */
@@ -702,12 +713,13 @@ export async function savedPartForAddRequest(orderId: string, requestId: unknown
   return row ?? (await replayedPart(orderId, requestId))
 }
 
-/** A request id that already added its part: bring the derived totals up to date (a first attempt may have died
- *  before doing so) and say whether this retry matches what was saved. Never writes a part, a charge or a decision. */
+/** A request id that already added its part: bring the stored totals up to date (a first attempt may have died
+ *  before doing so) and say whether this retry matches what was saved. Never writes a part, a charge, a pricing
+ *  mode or a price reference. */
 async function finishReplay(orderId: string, saved: PartRow, input: EstimatePartInput, isManager: boolean, attachTo: AttachTarget): Promise<AddPartResult> {
   if (saved.status === 'cancelled') return { part: saved, replayed: true, differs: false, removed: true }
   const est = await getEstimateRow(orderId)
-  if (est) await refreshAfterAdd(est.id)
+  if (est) await recomputeAfterReplay(est.id)
   const same = <T>(read: () => T, was: T): boolean => { try { return read() === was } catch { return false } }
   let differs = !same(() => text(input.description, 200), saved.description)
     || !same(() => qtyOf(input.quantity), Number(saved.quantity))
@@ -744,9 +756,9 @@ async function finishReplay(orderId: string, saved: PartRow, input: EstimatePart
  * can get here on a flat Job), and a linked QuickBooks invoice (this Job's, or the shared invoice it is on) is
  * flagged "sync needed". What is left for afterwards is derived only (refreshAfterAdd).
  *
- * A repeat returns the part saved the first time, re-runs that derived step (repairing a first attempt that died
- * before it) and decides nothing. If the repeat carries different details than were saved, the saved part is left
- * as it is and `differs` says so.
+ * A repeat returns the part saved the first time, recomputes the stored totals (repairing a first attempt that died
+ * before its follow-up) and decides nothing — see recomputeAfterReplay. If the repeat carries different details
+ * than were saved, the saved part is left as it is and `differs` says so.
  * Without a request id every call is its own add (no replay), as before.
  */
 export async function addPartForJobOnce(
