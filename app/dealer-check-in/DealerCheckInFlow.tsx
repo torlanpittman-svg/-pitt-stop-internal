@@ -16,6 +16,7 @@ import { useRouter } from 'next/navigation'
 import { resolveBack } from '@/app/components/back-origin'
 import NavHeader from '@/app/components/NavHeader'
 import { newClientRequestId, blankFields } from '@/apps/dealer-checkin/scan-session'
+import { sanitizePriceText, priceFieldValue, resolvePrice, type PriceText } from '@/apps/dealer-checkin/price-input'
 import PhotoInput from '@/app/components/PhotoInput'
 import AddDealerForm from '@/app/components/AddDealerForm'
 import { VIN_SUFFIX_STOCK_RE } from '@/apps/dealer-checkin/rules'
@@ -92,7 +93,11 @@ export default function DealerCheckInFlow({ canManageDealers = false }: { canMan
   // "$125 shortcut" toggle was removed in favor of that editable price. Stays false (drives rate/tagColor);
   // the setter is still used by the scan-reset paths below.
   const [newVehicle, setNewVehicle] = useState(false)
-  const [priceOverride, setPriceOverride] = useState<string>('')
+  // Operator's price TEXT. null = untouched (suggested rate applies); '' = cleared mid-edit, which must
+  // stay empty — never fall back to the suggested rate (that fallback caused 200 → "200125").
+  const [priceOverride, setPriceOverride] = useState<PriceText>(null)
+  const [priceErrorShown, setPriceErrorShown] = useState(false)
+  const priceInputRef = useRef<HTMLInputElement>(null)
   const [overrideFormat, setOverrideFormat] = useState(false)
   const [urgent, setUrgent] = useState(false)
 
@@ -171,7 +176,7 @@ export default function DealerCheckInFlow({ canManageDealers = false }: { canMan
     submittingRef.current = false
     clientRequestIdRef.current = newClientRequestId()
     setPreview(null); setSelectedDealerId(null); setOcrDealer(null); setVin(null)
-    setNewVehicle(false); setPriceOverride(''); setOverrideFormat(false); setUrgent(false); setWriteResult(null)
+    setNewVehicle(false); setPriceOverride(null); setPriceErrorShown(false); setOverrideFormat(false); setUrgent(false); setWriteResult(null)
     setImageHash(null); setRawOcr(null); setOcrValues(null); setStoredUrl(null); setFields(blankFields())
     setPhase('processing'); setError(null); setStatus('Reading tag…')
     startedAt.current = Date.now()
@@ -297,7 +302,7 @@ export default function DealerCheckInFlow({ canManageDealers = false }: { canMan
       }).catch(() => {})
     }
     clientRequestIdRef.current = newClientRequestId()
-    setPreview(null); setError(null); setNewVehicle(false); setPriceOverride('')
+    setPreview(null); setError(null); setNewVehicle(false); setPriceOverride(null); setPriceErrorShown(false)
     setOverrideFormat(false); setUrgent(false); setWriteResult(null); setVin(null); setStatus(null)
     setImageUrl(null); setStoredUrl(null); setImageHash(null); setRawOcr(null); setOcrValues(null)
     setSelectedDealerId(null); setOcrDealer(null)
@@ -320,13 +325,15 @@ export default function DealerCheckInFlow({ canManageDealers = false }: { canMan
   }, [clearScanState])
 
   // ── Confirm and Send (the only production write) ────────────────────────────
-  const rate = priceOverride.trim() !== ''
-    ? Number(priceOverride)
-    : newVehicle ? (preview?.pricing.newVehicleRate ?? 125) : (preview?.pricing.defaultRate ?? 200)
+  const suggestedRate = newVehicle ? (preview?.pricing.newVehicleRate ?? 125) : (preview?.pricing.defaultRate ?? 200)
+  const price = resolvePrice(priceOverride, suggestedRate)
+  const rate = price.ok ? price.rate : null
 
   const confirm = useCallback(async (force = false) => {
     if (submittingRef.current || writeResult) return // no concurrent / repeat submits
     if (!preview?.dealership?.qbCustomerId) { setError('No dealer matches this stock number.'); return }
+    // An empty/invalid price blocks the send — the suggested rate is never submitted in its place.
+    if (rate === null) { setPriceErrorShown(true); priceInputRef.current?.focus(); return }
     submittingRef.current = true
     setPhase('submitting'); setError(null)
     try {
@@ -339,7 +346,7 @@ export default function DealerCheckInFlow({ canManageDealers = false }: { canMan
           year: fields.year || null, make: fields.make || null, model: fields.model || null, color: fields.color || null,
           vin: vin ?? null,
           tagColor: newVehicle ? 'white' : 'yellow',
-          rate: Number.isFinite(rate) ? rate : undefined,
+          rate,
           force,
           photoUrl: storedUrl, imageHash, rawOcr, ocrValues,
           // Confirmed dealer = source of truth; OCR dealer sent for the audit trail.
@@ -525,7 +532,10 @@ export default function DealerCheckInFlow({ canManageDealers = false }: { canMan
               <EditRow label="Color" value={fields.color} onChange={(v) => setFields((f) => ({ ...f, color: v }))} />
             </div>
             <Row label="Service"><span className="text-lg">Complete Detail</span></Row>
-            <EditRow label="Price ($)" value={priceOverride || String(rate)} onChange={setPriceOverride} inputMode="numeric" />
+            <EditRow label="Price ($)" value={priceFieldValue(priceOverride, suggestedRate)}
+                     onChange={(v) => setPriceOverride(sanitizePriceText(v))} inputMode="decimal"
+                     onBlur={() => setPriceErrorShown(true)} inputRef={priceInputRef}
+                     error={priceErrorShown && !price.ok ? price.error : undefined} />
           </div>
 
           <p className="text-gray-500 text-sm mt-3">
@@ -624,22 +634,29 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 }
 
 function EditRow({
-  label, value, onChange, inputMode, autoCapitalize, mono, warn,
+  label, value, onChange, inputMode, autoCapitalize, mono, warn, onBlur, inputRef, error,
 }: {
   label: string
   value: string
   onChange: (v: string) => void
-  inputMode?: 'numeric' | 'text'
+  inputMode?: 'numeric' | 'decimal' | 'text'
   autoCapitalize?: string
   mono?: boolean
   warn?: boolean
+  onBlur?: () => void
+  inputRef?: React.Ref<HTMLInputElement>
+  error?: string
 }) {
   return (
     <div className="px-4 py-3">
       <p className="text-gray-500 text-xs uppercase tracking-widest">{label}</p>
       <input
         value={value}
+        ref={inputRef}
+        aria-label={label}
+        aria-invalid={error ? true : undefined}
         onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
         inputMode={inputMode}
         autoCapitalize={autoCapitalize}
         autoCorrect="off"
@@ -647,6 +664,7 @@ function EditRow({
         placeholder="—"
         className={`mt-0.5 w-full bg-transparent outline-none text-lg ${mono ? 'font-mono' : ''} ${warn ? 'text-amber-400' : 'text-white'} placeholder:text-gray-700`}
       />
+      {error && <p role="alert" className="mt-1 text-sm text-red-400">{error}</p>}
     </div>
   )
 }
