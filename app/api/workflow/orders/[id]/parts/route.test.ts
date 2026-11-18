@@ -47,6 +47,7 @@ vi.mock('@/apps/parts/estimate-parts', () => {
     return { part: { id: 'new-part', description: 'Saved name' }, ...h.addResult }
   },
   savedPartForAddRequest: async (_orderId: string, requestId: unknown) => (typeof requestId === 'string' ? h.priorForRequest : null),
+  isAddRequestId: (v: unknown) => typeof v === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(v),
   jobHasQbInvoice: async () => { h.calls.hasInvoice++; return h.invoiced },
   removeEstimatePartWithLabor: async (...a: unknown[]) => { h.calls.removeWithLabor.push(a); if (h.removeThrows) throw h.removeThrows },
   }
@@ -137,16 +138,27 @@ describe('add', () => {
   it('a blank description is marked notSaved (nothing was attempted)', async () => {
     expect(await (await post({ action: 'add', description: ' ' })).json()).toMatchObject({ ok: false, notSaved: true })
   })
-  it('rollout switch turned OFF between a guided form’s first try and its retry: the retry returns the part already saved — no second record', async () => {
+  it('rollout switch turned OFF after a guided form SAVED: its retry goes through the same replay (totals refreshed, changes compared) — never the legacy tracker', async () => {
     h.guidedOn = false
     h.priorForRequest = { id: 'guided-part', status: 'needed', description: 'Gasket' }
-    const res = await post({ action: 'add', description: 'Gasket', sellPriceCents: 500, requestId: 'c3f1a9d2-aaaa-bbbb-cccc-000000000010' })
+    h.addResult = { replayed: true, differs: true, removed: false }
+    const res = await post({ action: 'add', description: 'Gasket', quantity: 5, sellPriceCents: 500, requestId: 'c3f1a9d2-aaaa-bbbb-cccc-000000000010' })
     expect(res.status).toBe(200)
-    expect(await res.json()).toMatchObject({ ok: true, partId: 'guided-part', replayed: true, removed: false, savedName: 'Gasket' })
+    expect(await res.json()).toMatchObject({ ok: true, replayed: true, differs: true, savedName: 'Saved name' })
+    expect(h.calls.addPartForJob).toHaveLength(1)
+    expect(h.calls.addPart).toHaveLength(0)
+  })
+  it('rollout switch turned OFF before a guided form saved anything: refused as not-saved, twice — the legacy tracker never gets a request it cannot de-duplicate', async () => {
+    h.guidedOn = false
+    for (let i = 0; i < 2; i++) {
+      const res = await post({ action: 'add', description: 'Gasket', sellPriceCents: 500, requestId: 'c3f1a9d2-aaaa-bbbb-cccc-000000000011' })
+      expect(res.status).toBe(409)
+      expect(await res.json()).toMatchObject({ ok: false, notSaved: true, error: expect.stringMatching(/Refresh the page/) })
+    }
     expect(h.calls.addPart).toHaveLength(0)
     expect(h.calls.addPartForJob).toHaveLength(0)
     // The legacy tracker form sends no request id and adds as before.
-    await post({ action: 'add', description: 'Gasket' })
+    expect((await post({ action: 'add', description: 'Gasket' })).status).toBe(200)
     expect(h.calls.addPart).toHaveLength(1)
   })
   it('a repeat of a request that already saved reports the replay (and whether the form had changed, or the part was since removed)', async () => {

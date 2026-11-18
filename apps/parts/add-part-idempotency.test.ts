@@ -21,15 +21,17 @@ vi.mock('@/apps/settings/db', () => ({
   getBusinessConfig: async () => ({ shopSuppliesEnabled: true, shopSuppliesBps: 300, shopSuppliesCapCents: 2000, paymentEnabled: true, paymentBps: 300, paymentLabel: 'Card charge', paymentBasis: 'work_only', defaultTaxBps: 825 }),
   shopSuppliesLabel: async () => 'Shop supplies',
 }))
-// Fault injection for "saved, then the response failed": the derived-pricing step after the atomic write.
-const fault = vi.hoisted(() => ({ settleFailures: 0 }))
+// Fault injection for "saved, then the response failed": the derived step that follows the atomic write.
+// `beforeRefresh` runs just before that step — used to interleave a manager's decision between write and refresh.
+const fault = vi.hoisted(() => ({ refreshFailures: 0, beforeRefresh: null as null | (() => Promise<void>) }))
 vi.mock('@/apps/workflow/estimate-db', async (orig) => {
   const real = await orig<typeof import('@/apps/workflow/estimate-db')>()
   return {
     ...real,
-    settlePricingAfterLineChange: async (...a: Parameters<typeof real.settlePricingAfterLineChange>) => {
-      if (fault.settleFailures > 0) { fault.settleFailures--; throw new TypeError('fetch failed') }
-      return real.settlePricingAfterLineChange(...a)
+    refreshDerivedPricing: async (estimateId: string) => {
+      if (fault.beforeRefresh) { const hook = fault.beforeRefresh; fault.beforeRefresh = null; await hook() }
+      if (fault.refreshFailures > 0) { fault.refreshFailures--; throw new TypeError('fetch failed') }
+      return real.refreshDerivedPricing(estimateId)
     },
   }
 })
@@ -38,7 +40,7 @@ import { seedProductionCatalog, CLEAR_TABLES } from '@/apps/quick-entry/catalog-
 import { getOrCreateEstimate, addService, setServicePrice, setExplicitPrice, recomputeEstimate, getEstimateView, getEstimateRow } from '@/apps/workflow/estimate-db'
 import { addPartForJobOnce, partIdForAddRequest, PartNotAddedError, removeEstimatePart } from './estimate-parts'
 import { groupJobItems } from './job-items-view'
-import { serviceOrders, vehicles, jobParts, jobLineItems, jobServices, jobEstimates, serviceOrderEvents } from '@/drizzle/schema'
+import { serviceOrders, vehicles, jobParts, jobLineItems, jobServices, jobEstimates, retailInvoiceMembers, serviceOrderEvents } from '@/drizzle/schema'
 
 let db: PgliteDatabase<typeof schema>
 let seq = 0
@@ -49,9 +51,9 @@ beforeAll(async () => {
 beforeEach(async () => {
   for (const t of CLEAR_TABLES) await db.execute(`DELETE FROM ${t}`)
   await seedProductionCatalog(db)
-  fault.settleFailures = 0
+  fault.refreshFailures = 0; fault.beforeRefresh = null
 })
-afterEach(() => { fault.settleFailures = 0 })
+afterEach(() => { fault.refreshFailures = 0; fault.beforeRefresh = null })
 
 const M = 'Manager'
 async function job(services: Array<[string, number]> = [['Oil change', 6000]]) {
@@ -77,7 +79,7 @@ async function footprint(orderId: string, estimateId: string) {
   for (const r of rows) lines += (await db.select().from(jobLineItems).where(eq(jobLineItems.jobServiceId, r.id))).length
   const ev = async (type: string) => (await db.select().from(serviceOrderEvents).where(and(eq(serviceOrderEvents.serviceOrderId, orderId), eq(serviceOrderEvents.eventType, type)))).length
   const fees = (await db.select().from(jobLineItems).innerJoin(jobServices, eq(jobServices.id, jobLineItems.jobServiceId)).where(and(eq(jobServices.jobEstimateId, estimateId), eq(jobLineItems.generated, true)))).length
-  return { parts: parts.length, live: parts.filter((p) => p.status !== 'cancelled').length, partRows: rows.length, partLines: lines, added: await ev('part_added'), labor: await ev('part_labor_review'), settled: await ev('part_add_settled'), feeLines: fees }
+  return { parts: parts.length, live: parts.filter((p) => p.status !== 'cancelled').length, partRows: rows.length, partLines: lines, added: await ev('part_added'), labor: await ev('part_labor_review'), feeLines: fees }
 }
 const ONE = { parts: 1, live: 1, partRows: 1, partLines: 1, added: 1 }
 
@@ -101,7 +103,7 @@ describe('the same logical add never lands twice', () => {
     expect(b).toMatchObject({ replayed: true, differs: false, removed: false })
     expect(b.part.id).toBe(a.part.id)
     expect(a.part.id).toBe(partIdForAddRequest(orderId, rid(1)))
-    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, labor: 1, settled: 1, feeLines: 2 })
+    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, labor: 1, feeLines: 2 })
     expect((await getEstimateView(orderId)).workTotalCents).toBe(6000 + 25100)
     expect((await getEstimateRow(orderId))!.totalCents).toBe(total1)
   })
@@ -121,16 +123,16 @@ describe('the same logical add never lands twice', () => {
   it('saved, then the response failed (the step after the write threw): the part is there once, and the retry returns it and repairs the totals', async () => {
     const { orderId, estimateId } = await job()
     const before = (await getEstimateRow(orderId))!.totalCents
-    fault.settleFailures = 2   // the first attempt and its one internal second try
+    fault.refreshFailures = 2   // the first attempt and its one internal second try
     const first = addPartForJobOnce(orderId, { ...PADS, requestId: rid(3) }, M, 'manager')
     await expect(first).rejects.toThrow()
     await expect(first).rejects.not.toBeInstanceOf(PartNotAddedError)   // NOT reported as "nothing saved"
-    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, settled: 0 })   // written, not finished
+    expect(await footprint(orderId, estimateId)).toMatchObject(ONE)   // written, totals not refreshed yet
     expect((await getEstimateRow(orderId))!.totalCents).toBe(before)     // derived totals never ran
 
     const retry = await addPartForJobOnce(orderId, { ...PADS, requestId: rid(3) }, M, 'manager')
     expect(retry).toMatchObject({ replayed: true, differs: false, removed: false })
-    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, labor: 0, settled: 1, feeLines: 2 })
+    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, labor: 0, feeLines: 2 })
     const work = 6000 + 25100
     expect((await getEstimateView(orderId)).workTotalCents).toBe(work)
     // 3% shop supplies + 3% card charge on the work value, each once.
@@ -139,7 +141,7 @@ describe('the same logical add never lands twice', () => {
 
   it('an overlapping retry racing a first attempt whose post-write step fails still ends with one part and correct totals', async () => {
     const { orderId, estimateId } = await job()
-    fault.settleFailures = 1   // absorbed by the internal second try
+    fault.refreshFailures = 1   // absorbed by the internal second try
     const [a, b] = await Promise.all([
       addPartForJobOnce(orderId, { ...PADS, requestId: rid(4) }, M, 'manager'),
       addPartForJobOnce(orderId, { ...PADS, requestId: rid(4) }, M, 'manager'),
@@ -150,54 +152,98 @@ describe('the same logical add never lands twice', () => {
   })
 })
 
-describe('a repeat never redoes the add’s pricing step once it has finished', () => {
+describe('every decision is made inside the write; what follows only recomputes', () => {
   const estOf = async (estimateId: string) => (await db.select().from(jobEstimates).where(eq(jobEstimates.id, estimateId)))[0]
+  const flatAt = async (estimateId: string, cents: number) => { await setExplicitPrice(estimateId, cents, M); await recomputeEstimate(estimateId) }
 
   it('a manager sets a flat Work Price AFTER an employee’s add; the employee’s retry leaves that price exactly as the manager set it', async () => {
     const { orderId, estimateId } = await job()
     const input = { ...PADS, requestId: rid(50) }
     await addPartForJobOnce(orderId, input, 'Employee', 'employee')
-    await setExplicitPrice(estimateId, 40000, M); await recomputeEstimate(estimateId)
+    await flatAt(estimateId, 40000)
     const before = await estOf(estimateId)
     expect(before).toMatchObject({ priceMode: 'explicit_pretax', explicitTotalCents: 40000 })
-
-    const retry = await addPartForJobOnce(orderId, input, 'Employee', 'employee')
-    expect(retry).toMatchObject({ replayed: true, differs: false, removed: false })
-    const after = await estOf(estimateId)
-    expect(after).toMatchObject({ priceMode: 'explicit_pretax', explicitTotalCents: 40000, totalCents: before.totalCents })
-    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, settled: 1 })
+    for (const role of ['employee', 'manager'] as const) {
+      const retry = await addPartForJobOnce(orderId, input, role === 'manager' ? M : 'Employee', role)
+      expect(retry).toMatchObject({ replayed: true, differs: false, removed: false })
+      expect(await estOf(estimateId)).toMatchObject({ priceMode: 'explicit_pretax', explicitTotalCents: 40000, totalCents: before.totalCents })
+    }
+    expect(await footprint(orderId, estimateId)).toMatchObject(ONE)
   })
 
-  it('an invoice synced after the add is not flagged "sync needed" again by a retry', async () => {
+  it('the flag on a linked QuickBooks invoice is set BY the write (even if the step after it fails) and never again by a retry', async () => {
     const { orderId, estimateId } = await job()
     await db.update(jobEstimates).set({ qbInvoiceId: 'INV-SYN', qbInvoiceNumber: '100900', qbStatus: 'created' }).where(eq(jobEstimates.id, estimateId))
     const input = { ...PADS, requestId: rid(51) }
-    await addPartForJobOnce(orderId, input, M, 'manager')
-    expect((await estOf(estimateId)).qbSyncError).toMatch(/sync needed/i)      // the add itself flags the linked invoice
-    await db.update(jobEstimates).set({ qbSyncError: null }).where(eq(jobEstimates.id, estimateId))   // …a manager syncs it
+    fault.refreshFailures = 2
+    await expect(addPartForJobOnce(orderId, input, M, 'manager')).rejects.toThrow()
+    expect((await estOf(estimateId)).qbSyncError).toBe('QuickBooks sync needed — a part was added.')   // not lost with the response
+    await addPartForJobOnce(orderId, input, M, 'manager')                                              // the retry finishes the totals
+    await db.update(jobEstimates).set({ qbSyncError: null }).where(eq(jobEstimates.id, estimateId))    // …a manager syncs the invoice
     await addPartForJobOnce(orderId, input, M, 'manager')
     await addPartForJobOnce(orderId, input, M, 'manager')
     expect((await estOf(estimateId)).qbSyncError).toBeNull()
-    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, settled: 1 })
+    expect(await footprint(orderId, estimateId)).toMatchObject(ONE)
   })
 
-  it('an UNFINISHED employee add, retried after a manager set a flat price: the retry finishes it without itemizing the flat price', async () => {
+  it('a Job with no QuickBooks invoice is not flagged', async () => {
+    const { orderId, estimateId } = await job()
+    await addPartForJobOnce(orderId, { ...PADS, requestId: rid(54) }, M, 'manager')
+    expect((await estOf(estimateId)).qbSyncError).toBeNull()
+  })
+
+  it('a Job billed on ANOTHER Job’s shared invoice flags that invoice’s owner, in the same write', async () => {
+    const anchor = await job()
+    const member = await job()
+    await db.update(jobEstimates).set({ qbInvoiceId: 'INV-SHARED', qbInvoiceNumber: '100901', qbStatus: 'created' }).where(eq(jobEstimates.id, anchor.estimateId))
+    await db.update(jobEstimates).set({ qbStatus: 'linked' }).where(eq(jobEstimates.id, member.estimateId))
+    await db.insert(retailInvoiceMembers).values({ anchorEstimateId: anchor.estimateId, anchorServiceOrderId: anchor.orderId, memberEstimateId: member.estimateId, memberServiceOrderId: member.orderId, qbInvoiceId: 'INV-SHARED', state: 'applied' } as typeof retailInvoiceMembers.$inferInsert)
+    fault.refreshFailures = 2
+    await expect(addPartForJobOnce(member.orderId, { ...PADS, requestId: rid(55) }, M, 'manager')).rejects.toThrow()
+    expect((await estOf(anchor.estimateId)).qbSyncError).toBe('QuickBooks sync needed — on a linked vehicle, a part was added.')
+    expect((await estOf(member.estimateId)).qbSyncError).toBeNull()
+  })
+
+  it('a manager’s add on a flat-priced Job itemizes it in the write itself (the flat amount kept as the reference), as before', async () => {
+    const { orderId, estimateId } = await job()
+    await flatAt(estimateId, 15000)
+    fault.refreshFailures = 2
+    await expect(addPartForJobOnce(orderId, { ...PADS, requestId: rid(53) }, M, 'manager')).rejects.toThrow()
+    expect(await estOf(estimateId)).toMatchObject({ priceMode: 'itemized', explicitTotalCents: 15000 })
+    await addPartForJobOnce(orderId, { ...PADS, requestId: rid(53) }, M, 'manager')
+    // Every line is priced and the sum ($311.00) differs from the $150.00 reference → the reference stays for the manager to reconcile.
+    expect(await estOf(estimateId)).toMatchObject({ priceMode: 'itemized', explicitTotalCents: 15000 })
+    expect((await getEstimateView(orderId)).workTotalCents).toBe(6000 + 25100)
+  })
+
+  it('a manager sets a flat price BETWEEN the write and the step after it (the request was paused): the flat price stands', async () => {
+    const { orderId, estimateId } = await job()
+    fault.beforeRefresh = () => flatAt(estimateId, 40000)
+    const r = await addPartForJobOnce(orderId, { ...PADS, requestId: rid(56) }, M, 'manager')
+    expect(r.replayed).toBe(false)
+    const est = await estOf(estimateId)
+    expect(est).toMatchObject({ priceMode: 'explicit_pretax', explicitTotalCents: 40000 })
+    expect(est.totalCents).toBe(40000 + 1200 + 1200)   // the flat amount + its 3% shop supplies + 3% card charge
+  })
+
+  it('an UNFINISHED add retried after a manager set a flat price: the retry refreshes totals and leaves the flat price', async () => {
     const { orderId, estimateId } = await job()
     const input = { ...PADS, requestId: rid(52) }
-    fault.settleFailures = 2
-    await expect(addPartForJobOnce(orderId, input, 'Employee', 'employee')).rejects.toThrow()
-    await setExplicitPrice(estimateId, 40000, M); await recomputeEstimate(estimateId)
-    const retry = await addPartForJobOnce(orderId, input, 'Employee', 'employee')
-    expect(retry).toMatchObject({ replayed: true, differs: false })
-    expect(await estOf(estimateId)).toMatchObject({ priceMode: 'explicit_pretax', explicitTotalCents: 40000 })
-    expect(await footprint(orderId, estimateId)).toMatchObject({ ...ONE, settled: 1 })
+    fault.refreshFailures = 2
+    await expect(addPartForJobOnce(orderId, input, M, 'manager')).rejects.toThrow()
+    await flatAt(estimateId, 40000)
+    expect(await addPartForJobOnce(orderId, input, M, 'manager')).toMatchObject({ replayed: true, differs: false })
+    expect(await estOf(estimateId)).toMatchObject({ priceMode: 'explicit_pretax', explicitTotalCents: 40000, totalCents: 42400 })
   })
 
-  it('a manager’s own add on a flat-priced Job still itemizes it, as before (first add only)', async () => {
+  it('five overlapping requests leave exactly one audit trail — no extra events of any kind', async () => {
     const { orderId, estimateId } = await job()
-    await setExplicitPrice(estimateId, 15000, M); await recomputeEstimate(estimateId)
-    await addPartForJobOnce(orderId, { ...PADS, requestId: rid(53) }, M, 'manager')
-    expect((await estOf(estimateId)).priceMode).toBe('itemized')
+    const before = (await db.select().from(serviceOrderEvents).where(eq(serviceOrderEvents.serviceOrderId, orderId))).length
+    await Promise.all(Array.from({ length: 5 }, () => addPartForJobOnce(orderId, { ...PADS, requestId: rid(57) }, M, 'manager')))
+    const after = await db.select().from(serviceOrderEvents).where(eq(serviceOrderEvents.serviceOrderId, orderId))
+    expect(after.length - before).toBe(1)
+    expect(after.map((e) => e.eventType)).not.toContain('part_add_settled')
+    expect(await footprint(orderId, estimateId)).toMatchObject(ONE)
   })
 })
 

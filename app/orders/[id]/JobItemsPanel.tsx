@@ -137,7 +137,8 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
       }
       if (!out.ok || !opts.readBack || !out.replayed) return out
       const view = await fetch(`/api/workflow/orders/${orderId}/items`, { cache: 'no-store' })
-        .then((r) => (r.ok ? r.json() : null)).then((d) => (d?.ok && d.view ? d.view as EstimateViewData : null)).catch(() => null)
+        // A list that hides parts from this user (partsVisible false) is not a reading of where the part is.
+        .then((r) => (r.ok ? r.json() : null)).then((d) => (d?.ok && d.view && d.partsVisible !== false ? d.view as EstimateViewData : null)).catch(() => null)
       return { ...out, view }
     }
     finally { inFlight.current = false; setLocalBusy(false) }

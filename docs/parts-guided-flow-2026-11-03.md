@@ -40,12 +40,15 @@ records, pricing, permissions and the `/parts` + estimate routes are unchanged.
   audit events, and re-checks at that moment that the Job is not removed and the chosen service is still there — a
   refused add leaves no part behind and does not use up its request id. No migration. A new form is a new request id,
   so two intentional identical parts are still two parts.
-- **The add’s pricing step runs once.** After the write, pricing state / totals are settled and a linked QuickBooks
-  invoice is flagged; completion is recorded as an append-only `part_add_settled` event. A repeat of a finished add
-  touches nothing (it cannot undo a flat Work Price a manager set afterwards, or re-flag a synced invoice); a repeat
-  of an add that died before that record finishes it. Only a manager’s add may itemize a flat-priced Job.
-- **Switch OFF mid-form:** a guided form’s retry that arrives after `guided_job_items_enabled` was turned off is
-  answered with the part it already saved (`savedPartForAddRequest`), never a second tracker record.
+- **Every decision is inside that one write.** The same statement also puts the Job in itemized mode (a flat amount
+  is kept as the reference — only a manager can add a priced part to a flat Job) and flags a linked QuickBooks invoice
+  “sync needed” (the Job’s own, or the shared invoice it is billed on). What runs afterwards is derived only —
+  `refreshDerivedPricing` (`apps/workflow/estimate-db.ts`): fee lines, totals, and clearing a reference that has
+  nothing left to reconcile. It never changes the pricing mode, so a late step or a retry cannot undo a flat Work
+  Price a manager set in the meantime or re-flag an invoice that has been synced.
+- **Switch OFF mid-form:** only the guided form sends a request id, and such a request is never handed to the legacy
+  tracker. If it already saved, its retry is answered through the same replay; if not, it is refused (409 `notSaved`,
+  “This screen is out of date. Refresh the page…”), so a retry cannot create a second tracker record.
 - **What the form does when a save is not confirmed.** The route answers three ways: saved (`ok`, plus
   `replayed` / `differs` / `removed` on a repeat), definitely not saved (400 `notSaved` — fix the form and send again),
   or not confirmed (500 / no response). On “not confirmed” the page re-sends the identical request once by itself;

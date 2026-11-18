@@ -414,6 +414,22 @@ export async function settlePricingAfterLineChange(estimateId: string, priced: b
   await recomputeEstimate(estimateId)
 }
 
+/**
+ * The DERIVED follow-up to a priced line written elsewhere (the Job screen's atomic part add, which sets the pricing
+ * mode itself, inside its own write): drop an itemized Job's leftover reference when there is nothing left to
+ * reconcile, then recompute fees and totals. It makes NO pricing decision — it never changes price_mode, so it can
+ * run late, twice or concurrently without undoing a flat Work Price a manager has set since (the reference is only
+ * cleared by an UPDATE that re-checks the Job is still itemized with that same reference).
+ */
+export async function refreshDerivedPricing(estimateId: string): Promise<void> {
+  const [est] = await getDb().select({ mode: jobEstimates.priceMode, ref: jobEstimates.explicitTotalCents }).from(jobEstimates).where(eq(jobEstimates.id, estimateId)).limit(1)
+  if (est?.mode === 'itemized' && est.ref != null && (await isItemizationComplete(estimateId)) && est.ref === (await sumUserServiceLines(estimateId))) {
+    await getDb().update(jobEstimates).set({ explicitTotalCents: null, updatedAt: new Date() })
+      .where(and(eq(jobEstimates.id, estimateId), eq(jobEstimates.priceMode, 'itemized'), eq(jobEstimates.explicitTotalCents, est.ref)))
+  }
+  await recomputeEstimate(estimateId)
+}
+
 /** Explicitly switch a flat Job to itemized so the manager can enter per-service prices. */
 export async function itemizeEstimate(estimateId: string, actor: string | null): Promise<void> {
   void actor

@@ -7,7 +7,7 @@ import { partsVisibleFor } from '@/apps/parts/visibility'
 import { isDealerOrder } from '@/apps/workflow/fees'
 import { estimateEnabled } from '@/apps/workflow/estimate'
 import { guidedJobItemsEnabled } from '@/apps/settings/db'
-import { addPartForJobOnce, savedPartForAddRequest, PartNotAddedError, jobHasQbInvoice, removeEstimatePartWithLabor } from '@/apps/parts/estimate-parts'
+import { addPartForJobOnce, savedPartForAddRequest, isAddRequestId, PartNotAddedError, jobHasQbInvoice, removeEstimatePartWithLabor } from '@/apps/parts/estimate-parts'
 import { INVOICED_NEEDS_MANAGER_MSG } from '@/apps/parts/job-items-view'
 import { listPartsForOrder, addPart, updatePart, markOrdered, receivePart, recordReturn, billPart, type Part, cancelPart } from '@/apps/parts/db'
 
@@ -95,7 +95,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       case 'add': {
         const description = String(body.description ?? '').trim()
         if (!description) return NextResponse.json({ ok: false, error: 'A part description is required.', notSaved: true }, { status: 400 })
-        if (await usesEstimatePath(order)) {
+        // A request id is sent only by the guided add-part form, and it is that add's identity. The form can
+        // outlive a change of the rollout switch, so its requests are never handed to the legacy tracker (which
+        // keeps no request identity and would add a second record on a retry): a request that already saved its
+        // part is answered through the same replay as always; one that has not is refused, with nothing written.
+        const estimatePath = await usesEstimatePath(order)
+        const guidedRequest = isAddRequestId(body.requestId)
+        const alreadySaved = !estimatePath && guidedRequest ? await savedPartForAddRequest(id, body.requestId) : null
+        if (!estimatePath && guidedRequest && !alreadySaved) {
+          return NextResponse.json({ ok: false, error: 'This screen is out of date. Refresh the page, then add the part.', notSaved: true }, { status: 409 })
+        }
+        if (estimatePath || alreadySaved) {
           // Job-screen guided flow (retail): the estimate's own part row + priced line, so customer
           // price × quantity reaches the total and Invoice Draft exactly once. Our cost is internal and
           // comes only from a manager. The customer price is entered by whoever adds the part (owner
@@ -124,15 +134,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           }
           partIdOut = added.part.id
           replay = { replayed: added.replayed, differs: added.differs, removed: added.removed, ...(added.replayed ? { savedName: added.part.description } : {}) }
-          break
-        }
-        // A guided-form request (it carries that form's request id) arriving while the guided screen is switched
-        // off: if it already saved its part, this is that add's retry — answer with the saved part, never a second
-        // record. (An open form can outlive a switch change; the legacy tracker form sends no request id.)
-        const prior = await savedPartForAddRequest(id, body.requestId)
-        if (prior) {
-          partIdOut = prior.id
-          replay = { replayed: true, differs: false, removed: prior.status === 'cancelled', savedName: prior.description }
           break
         }
         const row = await addPart({

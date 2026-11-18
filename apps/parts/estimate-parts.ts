@@ -17,7 +17,7 @@ import { and, eq, ne, sql } from 'drizzle-orm'
 import { jobParts } from './schema'
 import { jobServices, jobLineItems, serviceOrderEvents, serviceOrders } from '@/apps/workflow/schema'
 import {
-  getOrCreateEstimate, getEstimateRow, addService, addLine, updateLine, removeLine, setServicePrice, settlePricingAfterLineChange, flagQbSyncNeededIfInvoiced, removeEstimateService, estimateHasQbInvoice, EstimateInvoicedError, promoteTextServices, recomputeEstimate,
+  getOrCreateEstimate, getEstimateRow, addService, addLine, updateLine, removeLine, setServicePrice, settlePricingAfterLineChange, flagQbSyncNeededIfInvoiced, removeEstimateService, estimateHasQbInvoice, EstimateInvoicedError, promoteTextServices, recomputeEstimate, refreshDerivedPricing,
 } from '@/apps/workflow/estimate-db'
 import { classifyPartWording } from '@/apps/quick-entry/service-interpret'
 import { partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
@@ -675,55 +675,39 @@ export interface AddPartResult {
   removed: boolean
 }
 
+// The same wording flagQbSyncNeededIfInvoiced writes (the Invoice Draft reads "sync needed" from it).
+const OWN_SYNC_FLAG = 'QuickBooks sync needed — a part was added.'
+const LINKED_SYNC_FLAG = 'QuickBooks sync needed — on a linked vehicle, a part was added.'
 const STALE_SERVICE_MSG = 'That service is no longer on this job. Refresh to see the current list.'
 const JOB_REMOVED_MSG = 'This job was removed. Parts can’t be added or removed.'
 
-const SETTLED_EVENT = 'part_add_settled'
-const settledNote = (partId: string) => JSON.stringify({ partId })
-async function addWasSettled(orderId: string, partId: string): Promise<boolean> {
-  const [ev] = await getDb().select({ id: serviceOrderEvents.id }).from(serviceOrderEvents)
-    .where(and(eq(serviceOrderEvents.serviceOrderId, orderId), eq(serviceOrderEvents.eventType, SETTLED_EVENT), eq(serviceOrderEvents.note, settledNote(partId)))).limit(1)
-  return !!ev
-}
-
 /**
- * The steps that follow the atomic write of an add: pricing state + derived totals, and the QuickBooks sync flag.
- * They run ONCE per add. Completion is recorded as an append-only `part_add_settled` event, so a later repeat of the
- * same request knows the add is finished and touches nothing — it can never undo a pricing decision made since
- * (e.g. a manager setting a flat Work Price) or re-flag an invoice that has been synced. Only when that record is
- * missing (the first attempt died between the write and here) does a repeat finish the job.
- *
- * `mayItemize`: a priced part line itemizes a flat-priced Job, which is a manager's call — so only a manager's add
- * does it. An employee's add never does (the write refuses an employee on a flat Job; if the Job became flat a
- * moment later, the flat price stands and the totals are simply recomputed).
+ * What follows the atomic write of an add: ONLY derived work (refreshDerivedPricing — fee lines and totals, plus
+ * clearing an itemized reference that has nothing left to reconcile). Every decision the add makes — the part, its
+ * charge, the pricing mode, the QuickBooks "sync needed" flag — is inside the write itself, so this step can run
+ * late, again on a retry, or alongside an overlapping request without changing anything a person has decided since.
  * One quiet second try covers a concurrent recompute of the same estimate.
  */
-async function settleAddedPart(orderId: string, estimateId: string, partId: string, mayItemize: boolean, actor: string | null): Promise<void> {
-  const run = async () => {
-    await settlePricingAfterLineChange(estimateId, mayItemize)
-    await flagQbSyncNeededIfInvoiced(orderId, 'a part was added')
-  }
-  try { await run() } catch { await run() }
-  await event(orderId, SETTLED_EVENT, actor, { partId })
+async function refreshAfterAdd(estimateId: string): Promise<void> {
+  try { await refreshDerivedPricing(estimateId) } catch { await refreshDerivedPricing(estimateId) }
 }
+
+/** True when the value is a Job-screen add-form request id (only that form sends one). */
+export const isAddRequestId = (v: unknown): v is string => typeof v === 'string' && ADD_REQUEST_ID.test(v)
 
 /** The part a Job-screen add request already saved on this Job (by its derived id, or the pre-release replay record), or null. */
 export async function savedPartForAddRequest(orderId: string, requestId: unknown): Promise<PartRow | null> {
-  if (typeof requestId !== 'string' || !ADD_REQUEST_ID.test(requestId)) return null
+  if (!isAddRequestId(requestId)) return null
   const [row] = await getDb().select().from(jobParts).where(and(eq(jobParts.id, partIdForAddRequest(orderId, requestId)), eq(jobParts.serviceOrderId, orderId))).limit(1)
   return row ?? (await replayedPart(orderId, requestId))
 }
 
-/** A request id that already added its part: finish the add if it never finished, and say whether this retry matches what was saved. */
-async function finishReplay(orderId: string, saved: PartRow, input: EstimatePartInput, isManager: boolean, attachTo: AttachTarget, actor: string | null): Promise<AddPartResult> {
+/** A request id that already added its part: bring the derived totals up to date (a first attempt may have died
+ *  before doing so) and say whether this retry matches what was saved. Never writes a part, a charge or a decision. */
+async function finishReplay(orderId: string, saved: PartRow, input: EstimatePartInput, isManager: boolean, attachTo: AttachTarget): Promise<AddPartResult> {
   if (saved.status === 'cancelled') return { part: saved, replayed: true, differs: false, removed: true }
-  // Adds made by this code carry the derived id and a completion record; an older add (found through its legacy
-  // replay record) was settled inline by the code that made it and is never settled again here.
-  const ours = !!input.requestId && saved.id === partIdForAddRequest(orderId, String(input.requestId))
-  if (ours && !(await addWasSettled(orderId, saved.id))) {
-    const est = await getEstimateRow(orderId)
-    if (est) await settleAddedPart(orderId, est.id, saved.id, isManager, actor)
-  }
+  const est = await getEstimateRow(orderId)
+  if (est) await refreshAfterAdd(est.id)
   const same = <T>(read: () => T, was: T): boolean => { try { return read() === was } catch { return false } }
   let differs = !same(() => text(input.description, 200), saved.description)
     || !same(() => qtyOf(input.quantity), Number(saved.quantity))
@@ -755,9 +739,14 @@ async function finishReplay(orderId: string, saved: PartRow, input: EstimatePart
  * (The Neon HTTP driver has no interactive transactions; a single statement is this codebase's atomic unit —
  * see clarifyServiceWithPart.)
  *
- * A repeat returns the part saved the first time. It finishes the add's pricing step only if the first attempt
- * never did (settleAddedPart), and otherwise changes nothing. If the repeat carries different details than were
- * saved, the saved part is left as it is and `differs` says so.
+ * The same statement makes the add's two other decisions, exactly as the previous multi-step path did after its
+ * writes: a priced part line puts the Job in itemized mode (a flat amount is kept as the reference — only a manager
+ * can get here on a flat Job), and a linked QuickBooks invoice (this Job's, or the shared invoice it is on) is
+ * flagged "sync needed". What is left for afterwards is derived only (refreshAfterAdd).
+ *
+ * A repeat returns the part saved the first time, re-runs that derived step (repairing a first attempt that died
+ * before it) and decides nothing. If the repeat carries different details than were saved, the saved part is left
+ * as it is and `differs` says so.
  * Without a request id every call is its own add (no replay), as before.
  */
 export async function addPartForJobOnce(
@@ -770,7 +759,7 @@ export async function addPartForJobOnce(
   const findSaved = async () => (await db.select().from(jobParts).where(and(eq(jobParts.id, partId), eq(jobParts.serviceOrderId, orderId))).limit(1))[0] ?? null
   if (requestId) {
     const saved = (await findSaved()) ?? (await replayedPart(orderId, requestId))
-    if (saved) return finishReplay(orderId, saved, { ...input, requestId }, isManager, attachTo, actor)
+    if (saved) return finishReplay(orderId, saved, input, isManager, attachTo)
   }
 
   // ── Everything below runs BEFORE the part is written: a failure here means the part was not added. ──
@@ -844,6 +833,19 @@ export async function addPartForJobOnce(
         ${unitCostCents ?? 0}::int, ${sellPriceCents}::int, false, 'repair_parts', ${partNumber}, ${supplier}, now()
       FROM part_svc
       RETURNING id
+    ), est_upd AS (
+      -- A priced part line itemizes the Job (flat amount kept as the reference); its own QuickBooks invoice is flagged.
+      UPDATE job_estimates je SET price_mode = 'itemized', updated_at = now(),
+        qb_sync_error = CASE WHEN je.qb_invoice_id IS NOT NULL THEN ${OWN_SYNC_FLAG} ELSE je.qb_sync_error END
+       WHERE je.id = ${estimateId}::uuid AND EXISTS (SELECT 1 FROM claim)
+      RETURNING je.id
+    ), anchor_upd AS (
+      -- On a shared invoice (an applied member with no invoice of its own): that invoice's owner is flagged instead.
+      UPDATE job_estimates a SET qb_sync_error = ${LINKED_SYNC_FLAG}, updated_at = now()
+        FROM retail_invoice_members m JOIN job_estimates me ON me.id = m.member_estimate_id
+       WHERE me.id = ${estimateId}::uuid AND me.qb_invoice_id IS NULL AND me.qb_status = 'linked' AND m.state = 'applied'
+         AND a.id = m.anchor_estimate_id AND a.id <> me.id AND a.qb_invoice_id IS NOT NULL AND EXISTS (SELECT 1 FROM claim)
+      RETURNING a.id
     ), ev_part AS (
       INSERT INTO service_order_events (service_order_id, event_type, employee_name, note)
       SELECT ${orderId}::uuid, 'part_added', ${actor}, ${addedNote} FROM claim
@@ -859,7 +861,7 @@ export async function addPartForJobOnce(
   if (!rowsOf(res)[0]?.id) {
     // No claim: either the same request already added the part (an overlapping retry won the key) …
     const saved = await findSaved()
-    if (saved) return finishReplay(orderId, saved, { ...input, requestId }, isManager, attachTo, actor)
+    if (saved) return finishReplay(orderId, saved, input, isManager, attachTo)
     // … or the statement refused the add at the moment of the write. Nothing was written; say why.
     const [order] = await db.select({ status: serviceOrders.status }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
     if (!order || order.status === 'cancelled') throw new PartNotAddedError(JOB_REMOVED_MSG)
@@ -868,7 +870,7 @@ export async function addPartForJobOnce(
     if (attachId && !(await coverableServiceIds(orderId)).has(attachId)) throw new PartNotAddedError(STALE_SERVICE_MSG)
     throw new PartNotAddedError('The part was not added. Try again.')
   }
-  await settleAddedPart(orderId, estimateId, partId, isManager, actor)
+  await refreshAfterAdd(estimateId)
   const row = await findSaved()
   if (!row) throw new Error('The part was added but could not be read back.')
   return { part: row, replayed: false, differs: false, removed: false }
