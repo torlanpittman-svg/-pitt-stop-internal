@@ -11,6 +11,7 @@ import {
   type LineType, type ApprovalState, type EstimateStatus, type TaxCategory,
 } from './estimate'
 import { computeFees, eligibleBasisCents, reconcilePlan, explicitPretaxTotals, effectiveFeeConfig, isDealerOrder, FEE_TAX_CATEGORY, type FeeCode } from './fees'
+import { resolveServiceRemoval, resolveBillRowMapping, normalizeServiceName, type ServiceRemovalHints } from './service-removal'
 import { getBusinessConfig } from '@/apps/settings/db'
 import { suggestedPricesForCatalogIds } from '@/apps/quick-entry/db'
 import { resolveCatalogId, resolveCatalogIds, normalizeServiceKey } from '@/apps/quick-entry/catalog-identity'
@@ -730,28 +731,53 @@ export async function flagQbSyncNeededIfInvoiced(orderId: string, reason: string
  * Jobs keep their manager-chosen total. If a retail QB invoice is linked, flags
  * "QuickBooks sync needed" (never silently diverges). Audited with before/after + impact.
  */
-export async function removeServiceFromJob(orderId: string, serviceName: string, actor: string | null): Promise<{ removed: boolean; services: string[]; pricingImpactCents: number | null; qbSyncNeeded: boolean }> {
+export async function removeServiceFromJob(orderId: string, serviceName: string, actor: string | null, hints: ServiceRemovalHints = {}): Promise<{ removed: boolean; stale?: boolean; ambiguous?: boolean; services: string[]; pricingImpactCents: number | null; qbSyncNeeded: boolean }> {
   const db = getDb()
-  const norm = (s: string) => s.trim().toLowerCase()
-  const target = norm(serviceName)
+  const target = normalizeServiceName(serviceName)
   const [cur] = await db.select({ services: serviceOrders.services }).from(serviceOrders).where(eq(serviceOrders.id, orderId)).limit(1)
   const existing = cur?.services ?? []
-  const next = existing.filter((s) => norm(s) !== target)
-  if (next.length === existing.length) return { removed: false, services: existing, pricingImpactCents: null, qbSyncNeeded: false }
+  // Exactly ONE occurrence is removed — identical names exist legitimately (the add route
+  // confirms duplicates), and a stale or ambiguous selection removes nothing (the caller
+  // asks the manager to refresh).
+  const resolution = resolveServiceRemoval(existing, serviceName, hints)
+  if (resolution.outcome === 'not_found') return { removed: false, services: existing, pricingImpactCents: null, qbSyncNeeded: false }
+  if (resolution.outcome === 'stale') return { removed: false, stale: true, services: existing, pricingImpactCents: null, qbSyncNeeded: false }
+  const next = resolution.next
 
-  await db.update(serviceOrders).set({ services: next, updatedAt: new Date() }).where(eq(serviceOrders.id, orderId))
+  // Map the removed occurrence to its billing row BEFORE any write. Both legacy shapes
+  // exist (one row per occurrence, or one shared row for duplicates); at most ONE row is
+  // deleted, and an untrustworthy mapping fails closed with nothing modified.
+  const est = await getEstimateRow(orderId)
+  let billRowId: string | null = null
+  if (est) {
+    const rows = await db
+      .select({ id: jobServices.id, title: jobServices.title, sortOrder: jobServices.sortOrder })
+      .from(jobServices)
+      .where(and(eq(jobServices.jobEstimateId, est.id), ne(jobServices.source, 'system')))
+    const mapping = resolveBillRowMapping(rows.filter((r) => normalizeServiceName(r.title) === target), resolution)
+    if (mapping.outcome === 'ambiguous') return { removed: false, ambiguous: true, services: existing, pricingImpactCents: null, qbSyncNeeded: false }
+    if (mapping.outcome === 'delete') billRowId = mapping.id
+  }
+
+  // Optimistic compare-and-set on the exact snapshot we resolved against (jsonb equality
+  // is order-sensitive): a concurrent edit between the read and this write means the
+  // resolution no longer applies, so nothing is overwritten and the caller refreshes.
+  const updated = await db
+    .update(serviceOrders)
+    .set({ services: next, updatedAt: new Date() })
+    .where(and(eq(serviceOrders.id, orderId), eq(serviceOrders.services, existing)))
+    .returning({ id: serviceOrders.id })
+  if (updated.length === 0) return { removed: false, stale: true, services: existing, pricingImpactCents: null, qbSyncNeeded: false }
 
   let pricingImpactCents: number | null = null
   let qbSyncNeeded = false
-  const est = await getEstimateRow(orderId)
   if (est) {
-    const svcs = await db.select().from(jobServices).where(and(eq(jobServices.jobEstimateId, est.id), ne(jobServices.source, 'system')))
-    for (const s of svcs.filter((x) => norm(x.title) === target)) {
-      const lines = await db.select().from(jobLineItems).where(eq(jobLineItems.jobServiceId, s.id))
+    if (billRowId) {
+      const lines = await db.select().from(jobLineItems).where(eq(jobLineItems.jobServiceId, billRowId))
       const priced = lines.filter((l) => !l.generated).reduce((sum, l) => sum + lineAmountCents(l.priceCents, l.qty), 0)
-      if (priced > 0) pricingImpactCents = (pricingImpactCents ?? 0) + priced
-      await reopenLaborCoveredBy(orderId, s.id, actor, 'covering labor was removed')
-      await db.delete(jobServices).where(eq(jobServices.id, s.id))   // job_line_items cascade
+      if (priced > 0) pricingImpactCents = priced
+      await reopenLaborCoveredBy(orderId, billRowId, actor, 'covering labor was removed')
+      await db.delete(jobServices).where(eq(jobServices.id, billRowId))   // job_line_items cascade
     }
     await recomputeEstimate(est.id)   // itemized → remaining lines set the total; flat → unchanged
     if (est.qbInvoiceId) {
@@ -762,7 +788,7 @@ export async function removeServiceFromJob(orderId: string, serviceName: string,
     }
   }
 
-  await logJobEvent(orderId, 'service_removed', actor, JSON.stringify({ removed: serviceName, before: existing, after: next, pricingImpactCents, qbSyncNeeded }))
+  await logJobEvent(orderId, 'service_removed', actor, JSON.stringify({ removed: serviceName, index: resolution.index, before: existing, after: next, pricingImpactCents, qbSyncNeeded }))
   return { removed: true, services: next, pricingImpactCents, qbSyncNeeded }
 }
 

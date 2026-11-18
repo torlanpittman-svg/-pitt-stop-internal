@@ -27,7 +27,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     if (!actor || (actor.role !== 'manager' && actor.role !== 'admin')) {
       return NextResponse.json({ ok: false, error: 'Only a manager or admin can remove a service.' }, { status: 403 })
     }
-    const body = (await req.json().catch(() => ({}))) as { service?: string }
+    const body = (await req.json().catch(() => ({}))) as { service?: string; index?: number; expectedServices?: string[] }
     const service = (body.service ?? '').trim()
     if (!service) return NextResponse.json({ ok: false, error: 'Which service?' }, { status: 400 })
 
@@ -37,7 +37,19 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
       return NextResponse.json({ ok: false, error: 'Dealer service handling is separate — not removable here.' }, { status: 400 })
     }
 
-    const result = await removeServiceFromJob(id, service, actor.name)
+    // The tapped row's index + the list the client displayed: exactly one occurrence is
+    // removed (identical names are legitimate), and a stale/ambiguous selection removes
+    // nothing — the client refreshes instead of guessing.
+    const result = await removeServiceFromJob(id, service, actor.name, {
+      index: typeof body.index === 'number' ? body.index : null,
+      expectedServices: Array.isArray(body.expectedServices) ? body.expectedServices.map(String) : null,
+    })
+    if (result.stale) {
+      return NextResponse.json({ ok: false, error: 'The service list changed — refresh and try again.' }, { status: 409 })
+    }
+    if (result.ambiguous) {
+      return NextResponse.json({ ok: false, error: "This line can't be matched to its billing safely — remove it from the Estimate screen, which targets the exact line." }, { status: 409 })
+    }
     if (!result.removed) return NextResponse.json({ ok: true, order, changed: false })
     const updated = await getOrderWithContext(id)
     return NextResponse.json({ ok: true, order: updated, changed: true, pricingImpactCents: result.pricingImpactCents, qbSyncNeeded: result.qbSyncNeeded })

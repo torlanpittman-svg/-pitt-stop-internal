@@ -21,7 +21,8 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { EstimateViewData, PartView, ServiceView } from './estimate/save-feedback'
 import { partPrice, servicePrice } from './estimate/ItemRows'
-import { groupJobItems, removeServiceMessage, validatePartDraft, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG, LABOR_STAYS_NOTE, type DraftProblem, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
+import RemovableServiceRow from '@/app/components/RemovableServiceRow'
+import { groupJobItems, validatePartDraft, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG, LABOR_STAYS_NOTE, type DraftProblem, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
 
 /** One key per add attempt: a retry of the same open form replays instead of charging twice (the server keeps it on the audit event). */
 const newRequestId = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`)
@@ -35,8 +36,6 @@ type Adding = null | { kind: 'job' } | { kind: 'service'; serviceId: string | nu
 const textKey = (title: string) => `text:${title.trim().toLowerCase()}`
 type Confirm = null
   | { kind: 'part'; id: string }
-  | { kind: 'service'; id: string }
-  | { kind: 'text-service'; name: string }
   | { kind: 'message'; id: string; text: string }
 
 export interface JobItemsPanelProps {
@@ -59,8 +58,8 @@ export interface JobItemsPanelProps {
   onOpenPart: (id: string) => void
   /** Manager: remove the service and its attached parts (estimate route). Resolves true when the server confirmed it. */
   onRemoveServiceWithParts: (id: string) => Promise<boolean>
-  /** Manager: remove a text-only (not yet mirrored) service by name. */
-  onRemoveTextService: (name: string) => Promise<void>
+  /** Manager: remove a text-only (not yet mirrored) service by its exact occurrence in textServices. */
+  onRemoveTextService: (name: string, index: number) => Promise<boolean>
   /** A /parts change was confirmed — refetch the view and the Job. */
   onChanged: () => void
   /** The collapsed "Add from a PartsTech screenshot" content. */
@@ -112,7 +111,9 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
   const grouped = view ? groupJobItems(view) : { services: [], standalone: [] }
   const flat = !!view?.flat
   const mirrored = new Set(grouped.services.map((s) => s.title.trim().toLowerCase()))
-  const unmirrored = p.textServices.filter((n) => !mirrored.has(n.trim().toLowerCase()))
+  // Keep each entry's exact position in textServices: removal targets that occurrence
+  // (identical names can appear more than once), never a lookup by name alone.
+  const unmirrored = p.textServices.map((name, index) => ({ name, index })).filter(({ name }) => !mirrored.has(name.trim().toLowerCase()))
 
   // ── adds ──
   const addPart = async (f: PartInput, attach: Adding & { kind: 'service' } | null, requestId: string) => {
@@ -150,25 +151,35 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
     if (!manager && part.laborStatus === 'labor_added') { setConfirm({ kind: 'message', id: part.id, text: LABOR_NEEDS_MANAGER_MSG }); return }
     setConfirm({ kind: 'part', id: part.id })
   }
-  const askRemoveService = (s: ServiceView) => {
-    setError(null)
-    if (!manager) { setConfirm({ kind: 'message', id: s.id, text: SERVICE_NEEDS_MANAGER_MSG }); return }
-    setConfirm({ kind: 'service', id: s.id })
-  }
-  const removeService = async (s: ServiceView & { parts: PartView[] }) => {
-    if (inFlight.current) return
+  // Confirmed removals (the shared RemovableServiceRow dialog already asked). The service
+  // goes through the canonical remove_service_with_parts path — the service AND its
+  // attached parts; failures surface in the items status line (with Retry) and keep the row.
+  const removeService = async (s: ServiceView): Promise<boolean> => {
+    if (inFlight.current) return false
     inFlight.current = true; setLocalBusy(true)
-    try {
-      const ok = await p.onRemoveServiceWithParts(s.id)
-      if (ok) setConfirm(null)
-    } finally { inFlight.current = false; setLocalBusy(false) }
-  }
-  const removeTextService = async (name: string) => {
-    if (inFlight.current) return
-    inFlight.current = true; setLocalBusy(true)
-    try { await p.onRemoveTextService(name); setConfirm(null) }
+    try { return await p.onRemoveServiceWithParts(s.id) }
     finally { inFlight.current = false; setLocalBusy(false) }
   }
+  const removeTextService = async (name: string, index: number): Promise<boolean> => {
+    if (inFlight.current) return false
+    inFlight.current = true; setLocalBusy(true)
+    try { return await p.onRemoveTextService(name, index) }
+    finally { inFlight.current = false; setLocalBusy(false) }
+  }
+  /** What a confirmed removal will actually do (remove_service_with_parts: the attached parts
+   *  and their charges go with the line). Neutral on totals — a flat job's total stays fixed. */
+  const serviceConsequence = (s: ServiceView & { parts: PartView[] }): string =>
+    s.parts.length === 0 ? 'Its charge will also be removed.'
+      : s.parts.length === 1 ? `Its attached part “${s.parts[0].description}” and its charges will also be removed.`
+      : `Its ${s.parts.length} attached parts (${s.parts.map((x) => `“${x.description}”`).join(', ')}) and their charges will also be removed.`
+  /** The compact ✕ for roles that can't remove: opens the same "manager needed" notice the old link did. */
+  const managerNeededButton = (id: string, title: string) => (
+    <button type="button" disabled={busy} onClick={() => { setError(null); setConfirm({ kind: 'message', id, text: SERVICE_NEEDS_MANAGER_MSG }) }}
+      aria-label={`Remove ${title}`} title={`Remove ${title}`}
+      className="shrink-0 flex items-center justify-center min-h-11 min-w-11 rounded-xl border border-gray-800 bg-gray-900 text-gray-500 active:text-red-300 disabled:opacity-40">
+      <span aria-hidden>✕</span>
+    </button>
+  )
 
   const partCount = grouped.services.reduce((n, s) => n + s.parts.length, 0) + grouped.standalone.length
 
@@ -207,7 +218,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
       <section aria-labelledby="job-services-heading">
         <div className="flex items-center justify-between mb-2">
           <h2 id="job-services-heading" className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Services</h2>
-          <button type="button" onClick={p.onAddService} disabled={frozen} className="text-blue-400 text-sm font-semibold active:opacity-70 min-h-11 disabled:opacity-40">+ Add Service</button>
+          <button type="button" data-add-service onClick={p.onAddService} disabled={frozen} className="text-blue-400 text-sm font-semibold active:opacity-70 min-h-11 disabled:opacity-40">+ Add Service</button>
         </div>
         {frozen && <p className="mb-2 text-amber-300/90 text-sm">This job was removed — nothing can be added or taken off it.</p>}
         {grouped.services.length + unmirrored.length === 0 ? (
@@ -218,17 +229,38 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
               const attachOpen = adding?.kind === 'service' && adding.serviceId === s.id
               return (
                 <li key={s.id} data-service={s.id} className="px-4 py-3">
-                  <div className="flex items-start justify-between gap-3">
-                    {canEdit ? (
-                      <button type="button" onClick={() => p.onOpenService(s.id)} aria-label={`Edit ${s.title}`}
-                        className="min-w-0 flex-1 text-left font-semibold text-white text-base leading-snug break-words min-h-11 flex items-center active:opacity-70">
-                        {s.title}
-                      </button>
+                  {/* Manager: swipe-left (or the ✕) asks "Are you sure you want to remove this line?" —
+                      nothing is removed until the dialog's Remove, and the canonical
+                      remove_service_with_parts path runs (attached parts + charges go too). Other
+                      roles keep the same ✕, which explains a manager is needed. No always-visible
+                      "Remove service" text either way. */}
+                  {(() => {
+                    const header = (
+                      <div className="flex items-start justify-between gap-3">
+                        {canEdit ? (
+                          <button type="button" onClick={() => p.onOpenService(s.id)} aria-label={`Edit ${s.title}`}
+                            className="min-w-0 flex-1 text-left font-semibold text-white text-base leading-snug break-words min-h-11 flex items-center active:opacity-70">
+                            {s.title}
+                          </button>
+                        ) : (
+                          <span className="min-w-0 flex-1 font-semibold text-white text-base leading-snug break-words min-h-11 flex items-center">{s.title}</span>
+                        )}
+                        <span className="shrink-0 min-h-11 flex items-center tabular-nums text-base">{servicePrice(s, { flat, readOnly: !canEdit })}</span>
+                      </div>
+                    )
+                    return manager ? (
+                      <RemovableServiceRow serviceName={s.title} busy={busy} rounded={false} contentClassName="bg-gray-900"
+                        fallbackFocusSelector="[data-add-service]" consequence={serviceConsequence(s)}
+                        onRemove={() => removeService(s)}>
+                        {header}
+                      </RemovableServiceRow>
                     ) : (
-                      <span className="min-w-0 flex-1 font-semibold text-white text-base leading-snug break-words min-h-11 flex items-center">{s.title}</span>
-                    )}
-                    <span className="shrink-0 min-h-11 flex items-center tabular-nums text-base">{servicePrice(s, { flat, readOnly: !canEdit })}</span>
-                  </div>
+                      <div className="flex items-center gap-2">
+                        <div className="min-w-0 flex-1">{header}</div>
+                        {managerNeededButton(s.id, s.title)}
+                      </div>
+                    )
+                  })()}
 
                   {/* Attached parts: visibly inside the service (indented, with a connector rail). */}
                   {partsVisible && s.parts.length > 0 && (
@@ -237,13 +269,12 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                     </ul>
                   )}
 
-                  <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3">
-                    {partsVisible ? (
+                  {partsVisible && (
+                    <div className="mt-1">
                       <button type="button" disabled={busy || attachOpen} onClick={() => { setError(null); setConfirm(null); setAdding({ kind: 'service', serviceId: s.id, title: s.title }) }}
                         className={`${LINK} text-blue-400`}>+ Add part to this service</button>
-                    ) : <span />}
-                    <button type="button" disabled={busy} onClick={() => askRemoveService(s)} className={`${LINK} text-red-400`}>Remove service</button>
-                  </div>
+                    </div>
+                  )}
 
                   {(notice?.at === s.id || notice?.at === textKey(s.title)) && <Notice text={notice.text} />}
                   {attachOpen && (
@@ -251,12 +282,6 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                       onSubmit={(f, rid) => void addPart(f, adding as Adding & { kind: 'service' }, rid)} onCancel={() => { setAdding(null); setError(null) }} />
                   )}
 
-                  {confirm?.kind === 'service' && confirm.id === s.id && (
-                    <ConfirmBox label={`Confirm removing ${s.title}`} text={removeServiceMessage(s.title, s.parts)}>
-                      <button type="button" disabled={busy} onClick={() => void removeService(s)} className={`${BTN} bg-red-600 text-white`}>Remove service</button>
-                      <button type="button" disabled={busy} onClick={() => setConfirm(null)} className={`${BTN} border border-gray-600 text-gray-200`}>Keep service</button>
-                    </ConfirmBox>
-                  )}
                   {confirm?.kind === 'message' && confirm.id === s.id && (
                     <ConfirmBox label="Manager needed" text={confirm.text} tone="info">
                       <button type="button" onClick={() => setConfirm(null)} className={`${BTN} border border-gray-600 text-gray-200`}>Got it</button>
@@ -267,32 +292,44 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
             })}
             {/* A Job service that exists only as Work Board text (older Jobs / no estimate yet). Opening the Job never
                 creates its estimate row; adding a part to it does (the same mirror Add Service runs), then it shows above. */}
-            {unmirrored.map((name, i) => {
+            {unmirrored.map(({ name, index }) => {
               const attachOpen = adding?.kind === 'service' && adding.serviceId === null && adding.title === name
-              return (
-              <li key={`u${i}`} data-service={textKey(name)} className="px-4 py-3">
+              const header = (
                 <div className="flex items-start justify-between gap-3">
                   <span className="min-w-0 flex-1 font-semibold text-white text-base leading-snug break-words min-h-11 flex items-center">{name}</span>
                   <span className="shrink-0 min-h-11 flex items-center text-gray-400 text-sm">Not priced</span>
                 </div>
-                <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3">
-                  {partsVisible ? (
+              )
+              return (
+              <li key={`u${index}`} data-service={textKey(name)} className="px-4 py-3">
+                {/* Same swipe/✕ → confirmation as mirrored services; the removal targets this exact
+                    occurrence in the Job's text list (identical names stay independent). */}
+                {manager ? (
+                  <RemovableServiceRow serviceName={name} busy={busy} rounded={false} contentClassName="bg-gray-900"
+                    fallbackFocusSelector="[data-add-service]"
+                    // Same legacy-path warning as the plain Job list: the view can be null while
+                    // loading/failed even though the server may already hold billing rows for
+                    // this name, and the DELETE helper removes exactly that line's own charges.
+                    consequence="Any charges belonging only to this line will also be removed; shared charges stay with the remaining service. Separately tracked parts are kept."
+                    onRemove={() => removeTextService(name, index)}>
+                    {header}
+                  </RemovableServiceRow>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">{header}</div>
+                    {managerNeededButton(`text:${name}`, name)}
+                  </div>
+                )}
+                {partsVisible && (
+                  <div className="mt-1">
                     <button type="button" disabled={busy || attachOpen} onClick={() => { setError(null); setConfirm(null); setAdding({ kind: 'service', serviceId: null, title: name }) }}
                       className={`${LINK} text-blue-400`}>+ Add part to this service</button>
-                  ) : <span />}
-                  <button type="button" disabled={busy} onClick={() => { setError(null); if (!manager) setConfirm({ kind: 'message', id: `text:${name}`, text: SERVICE_NEEDS_MANAGER_MSG }); else setConfirm({ kind: 'text-service', name }) }}
-                    className={`${LINK} text-red-400`}>Remove service</button>
-                </div>
+                  </div>
+                )}
                 {notice?.at === textKey(name) && <Notice text={notice.text} />}
                 {attachOpen && (
                   <AddPartForm key={`text-${name}`} manager={manager} busy={busy} error={error} attachedTo={name}
                     onSubmit={(f, rid) => void addPart(f, adding as Adding & { kind: 'service' }, rid)} onCancel={() => { setAdding(null); setError(null) }} />
-                )}
-                {confirm?.kind === 'text-service' && confirm.name === name && (
-                  <ConfirmBox label={`Confirm removing ${name}`} text={`Remove “${name}” from this job?`}>
-                    <button type="button" disabled={busy} onClick={() => void removeTextService(name)} className={`${BTN} bg-red-600 text-white`}>Remove service</button>
-                    <button type="button" disabled={busy} onClick={() => setConfirm(null)} className={`${BTN} border border-gray-600 text-gray-200`}>Keep service</button>
-                  </ConfirmBox>
                 )}
                 {confirm?.kind === 'message' && confirm.id === `text:${name}` && (
                   <ConfirmBox label="Manager needed" text={confirm.text} tone="info">

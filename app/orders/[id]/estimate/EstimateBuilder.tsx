@@ -477,7 +477,13 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
         {services.map((s) => (
           <ServiceRow key={s.id} s={s} flat={isFlat} readOnly={cancelled} busy={busy}
             onOpen={() => openPane({ kind: 'service', id: s.id }, `svc:${s.id}`)}
-            onRemove={() => { void post({ action: 'remove_service', serviceId: s.id }) }} />
+            // Runs only after the removal dialog's Remove; post reports success so a failed
+            // save keeps the row (status line + Retry explain). removeEstimateService keeps
+            // parts — only installation labor this line covered goes back to review.
+            consequence={parts.some((p) => p.laborServiceId === s.id)
+              ? 'Its price comes off this estimate. Its attached parts stay — their installation labor goes back to review.'
+              : 'Its price will be removed from this estimate.'}
+            onConfirmedRemove={() => post({ action: 'remove_service', serviceId: s.id })} />
         ))}
         {parts.map((p) => (
           <PartRow key={p.id} p={p} readOnly={cancelled} busy={busy}
@@ -501,7 +507,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
       )}
 
       {!cancelled && (
-        <button type="button" data-row="add" onClick={() => openPane({ kind: 'add' }, 'add')} disabled={busy}
+        <button type="button" data-row="add" data-add-service onClick={() => openPane({ kind: 'add' }, 'add')} disabled={busy}
           className="mt-4 flex w-full min-h-12 items-center justify-center gap-2 rounded-xl bg-blue-600 text-base font-semibold text-white active:opacity-80 disabled:opacity-50">
           <span aria-hidden className="text-xl leading-none">+</span>Add item
         </button>

@@ -6,9 +6,10 @@ import type { OrderWithContext, ServiceOrderEvent } from '@/apps/workflow/db'
 import { useIdentity } from '@/app/components/IdentityBar'
 import NavHeader from '@/app/components/NavHeader'
 import CustomerContactModal from '@/app/components/CustomerContactModal'
-import SwipeRow from '@/app/components/SwipeRow'
+import RemovableServiceRow from '@/app/components/RemovableServiceRow'
 import { useVinDecode, type VinDecodeResult } from '@/app/hooks/useVinDecode'
 import { isDealerOrder, orderSourceKind } from '@/apps/workflow/fees'
+import { mapDisplayedIndexToRaw } from '@/apps/workflow/service-removal'
 import type { MovePreview } from '@/apps/estimates/move-to-estimates'
 import PartsSection from './PartsSection'
 import JobExpenses from './JobExpenses'
@@ -1193,7 +1194,13 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
   const itemsEditable = isManager && itemsEnabled && order.status !== 'cancelled'
   const items = useJobItems({
     orderId: order.id, enabled: itemsEnabled, canEdit: itemsEditable, vehicleLabel: vehicleName, customerLabel: title,
-    onSaved: () => { void reload(); router.refresh() },
+    // Awaited by the edit's save path: the Job refetch settles before a removal resolves, so
+    // focus lands on stable rows. A failed refresh is caught here — the edit itself saved and
+    // is never retried for it.
+    onSaved: async () => {
+      try { await reload() } catch { setError('Saved — but refreshing the Job failed. Reload the page to see the current list.') }
+      router.refresh()
+    },
   })
   const itemsView = items.view?.exists ? items.view : null
   const refreshItems = items.refresh
@@ -1247,19 +1254,38 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
     } catch { setAddError('Network error — try again.') } finally { setAddBusy(false) }
   }, [order.id, activeTech, reload, refreshItems])
 
-  // Remove a service (manager/admin; swipe-left → Remove). Keeps services/estimate/pricing/
-  // completion in sync server-side; retail-invoiced Jobs get flagged "QuickBooks sync needed".
-  const removeService = useCallback(async (name: string) => {
+  // Remove a service (manager/admin; swipe-left or the row's ✕ → confirmation → Remove).
+  // The tapped index is a position in the DISPLAYED list (the classified split, which can
+  // hide part-classified labels) — map it onto the RAW stored list by same-name occurrence
+  // ordinal, conservatively (counts must agree, else fail closed and refresh), then send
+  // that raw index + the raw snapshot so the server removes exactly that occurrence and
+  // rejects stale selections. Keeps services/estimate/pricing/completion in sync
+  // server-side; retail-invoiced Jobs get flagged "QuickBooks sync needed".
+  const removeService = useCallback(async (name: string, displayedIndex: number): Promise<boolean> => {
     setError(null)
     try {
+      const raw = order.services ?? []
+      const displayed = order.items?.services ?? raw
+      const index = mapDisplayedIndexToRaw(displayed, displayedIndex, raw)
+      if (index == null) {
+        setError('The service list changed — refresh and try again.')
+        await reload(); refreshItems()
+        return false
+      }
       const res = await fetch(`/api/workflow/orders/${order.id}/services`, {
-        method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ service: name }),
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: name, index, expectedServices: raw }),
       })
       const d = await res.json()
-      if (!res.ok || !d.ok) { setError(d.error ?? 'Could not remove the service.'); return }
+      if (!res.ok || !d.ok) {
+        setError(d.error ?? 'Could not remove the service.')
+        if (res.status === 409) { await reload(); refreshItems() }   // the list changed under us — show the current one
+        return false
+      }
       await reload(); refreshItems()
-    } catch { setError('Network error — try again.') }
-  }, [order.id, reload, refreshItems])
+      return true
+    } catch { setError('Network error — try again.'); return false }
+  }, [order.id, order.services, order.items, reload, refreshItems])
 
   const doTransition = useCallback(async (action: ActionConfig, employeeName: string | null) => {
     setPending(action.newStatus)
@@ -1435,17 +1461,26 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
           <div className="px-6 mb-6">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Services</h2>
-              <button onClick={() => { setAddError(null); setAddingService(true) }}
+              <button data-add-service onClick={() => { setAddError(null); setAddingService(true) }}
                 className="text-blue-400 text-sm font-semibold active:opacity-70">+ Add Service</button>
             </div>
             {services.length > 0 ? (
               <ul className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800 overflow-hidden">
                 {services.map((s, i) => {
                   const inner = <div className="px-4 py-3.5 text-white text-base min-w-0 break-words">{s}</div>
-                  // Manager/admin on a retail Job → swipe-left to remove. Employees & dealer Jobs see the plain list.
-                  // Opaque foreground so the red Remove underlay only shows while swiping, never at rest.
+                  // Manager/admin on a retail Job → swipe-left (or the row's ✕) asks to remove; nothing
+                  // is removed until the confirmation's Remove. Employees & dealer Jobs see the plain list.
                   return (isManager && !isDealerOrder(order))
-                    ? <li key={i}><SwipeRow onRemove={() => removeService(s)} contentClassName="bg-gray-900">{inner}</SwipeRow></li>
+                    ? (
+                      <li key={i}>
+                        <RemovableServiceRow serviceName={s} rounded={false} contentClassName="bg-gray-900" className="pr-2"
+                          fallbackFocusSelector="[data-add-service]"
+                          consequence="Any charges belonging only to this line will also be removed; shared charges stay with the remaining service. Separately tracked parts are kept."
+                          onRemove={() => removeService(s, i)}>
+                          {inner}
+                        </RemovableServiceRow>
+                      </li>
+                    )
                     : <li key={i}>{inner}</li>
                 })}
               </ul>

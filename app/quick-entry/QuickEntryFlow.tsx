@@ -13,6 +13,7 @@ import { resolveBack } from '@/app/components/back-origin'
 import PhotoInput from '@/app/components/PhotoInput'
 import NavHeader from '@/app/components/NavHeader'
 import { useCustomerLookup } from '@/app/components/useCustomerLookup'
+import RemovableServiceRow from '@/app/components/RemovableServiceRow'
 import { useIdentity } from '@/app/components/IdentityBar'
 import { useSharedInvoiceDiscovery, SharedInvoiceOfferSheet } from '@/app/components/SharedInvoice'
 import { type JobLine, type InterpEntry, linesFromEntries, chooseCandidate, keepAsTyped, choosePart, chooseTires, reopenChoice } from '@/apps/quick-entry/job-lines'
@@ -766,7 +767,7 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
                     ))}
                     {gi === all.length - 1 && (
                       /* "Other" — free-text custom service; no price, no catalog mapping */
-                      <button onClick={addOther} className="rounded-2xl bg-gray-900 border border-dashed border-gray-700 px-3 py-3.5 text-left active:bg-gray-800">
+                      <button data-add-service onClick={addOther} className="rounded-2xl bg-gray-900 border border-dashed border-gray-700 px-3 py-3.5 text-left active:bg-gray-800">
                         <span className="text-white text-sm font-semibold">＋ Other</span>
                         <span className="block text-gray-500 text-xs mt-0.5">What are we doing?</span>
                       </button>
@@ -784,33 +785,37 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
                     const sugg = l.kind === 'custom' ? suggByKey[l.key] : null
                     return (
                     <div key={l.key} className="px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 min-w-0">
-                          {l.kind === 'custom' ? (
-                            // Free-text custom service → smart historical search (supports keyboard mic)
-                            <input value={l.name} onChange={(e) => { setLineName(l.key, e.target.value); searchOther(l.key, e.target.value) }} onBlur={() => { void interpretOther(l.key) }}
-                              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur() } }} enterKeyHint="done" placeholder="What are we doing?" autoFocus={!l.entryText}
-                              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-base" />
-                          ) : (
-                            <p className="text-white text-sm truncate">{l.name}</p>
-                          )}
-                          {/* What was typed + the job-specific area, so a wrong match is easy to spot and fix */}
-                          {!l.pending && (l.detail || l.partSupply || l.tires || (l.entryText && l.entryText.toLowerCase() !== l.name.toLowerCase())) && (
-                            <p className="text-gray-500 text-[11px] break-words">
-                              {l.partSupply ? (l.partSupply === 'shop' ? 'Part · we supply · ' : 'Part · customer’s · ') : ''}
-                              {l.detail ? `Area: ${l.detail}` : ''}{l.detail && l.entryText ? ' · ' : ''}
-                              {l.entryText && l.entryText.toLowerCase() !== l.name.toLowerCase() ? `typed “${l.entryText}”` : ''}
-                            </p>
-                          )}
+                      {/* Swipe-left or the ✕ asks to remove; nothing leaves the selection until the
+                          confirmation's Remove. Local selection only — nothing is saved yet. */}
+                      <RemovableServiceRow serviceName={l.name.trim() || 'this service'} onRemove={() => removeLine(l.key)}
+                        rounded={false} fallbackFocusSelector="[data-add-service]">
+                        <div className="flex items-center gap-2 bg-gray-900">
+                          <div className="flex-1 min-w-0">
+                            {l.kind === 'custom' ? (
+                              // Free-text custom service → smart historical search (supports keyboard mic)
+                              <input value={l.name} onChange={(e) => { setLineName(l.key, e.target.value); searchOther(l.key, e.target.value) }} onBlur={() => { void interpretOther(l.key) }}
+                                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur() } }} enterKeyHint="done" placeholder="What are we doing?" autoFocus={!l.entryText}
+                                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-base" />
+                            ) : (
+                              <p className="text-white text-sm truncate">{l.name}</p>
+                            )}
+                            {/* What was typed + the job-specific area, so a wrong match is easy to spot and fix */}
+                            {!l.pending && (l.detail || l.partSupply || l.tires || (l.entryText && l.entryText.toLowerCase() !== l.name.toLowerCase())) && (
+                              <p className="text-gray-500 text-[11px] break-words">
+                                {l.partSupply ? (l.partSupply === 'shop' ? 'Part · we supply · ' : 'Part · customer’s · ') : ''}
+                                {l.detail ? `Area: ${l.detail}` : ''}{l.detail && l.entryText ? ' · ' : ''}
+                                {l.entryText && l.entryText.toLowerCase() !== l.name.toLowerCase() ? `typed “${l.entryText}”` : ''}
+                              </p>
+                            )}
+                          </div>
+                          {/* Editable price */}
+                          <div className="flex items-center rounded-lg bg-gray-800 border border-gray-700 px-2 w-24 shrink-0">
+                            <span className="text-gray-500 text-sm">$</span>
+                            <input value={l.priceCents ? (l.priceCents / 100).toString() : ''} onChange={(e) => setLinePrice(l.key, e.target.value)}
+                              inputMode="decimal" placeholder="0" className="w-full bg-transparent px-1 py-1.5 text-white text-base text-right focus:outline-none" />
+                          </div>
                         </div>
-                        {/* Editable price */}
-                        <div className="flex items-center rounded-lg bg-gray-800 border border-gray-700 px-2 w-24 shrink-0">
-                          <span className="text-gray-500 text-sm">$</span>
-                          <input value={l.priceCents ? (l.priceCents / 100).toString() : ''} onChange={(e) => setLinePrice(l.key, e.target.value)}
-                            inputMode="decimal" placeholder="0" className="w-full bg-transparent px-1 py-1.5 text-white text-base text-right focus:outline-none" />
-                        </div>
-                        <button onClick={() => removeLine(l.key)} aria-label={`Remove ${l.name}`} className="text-gray-500 text-xl min-w-11 min-h-11 inline-flex items-center justify-center">×</button>
-                      </div>
+                      </RemovableServiceRow>
                       {!l.pending && ((l.catalogId && (l.alts?.length ?? 0) > 0) || l.partSupply || l.tires) ? (
                         <button type="button" onClick={() => updateLine(l.key, (x) => (x.partSupply || x.tires ? { ...keepAsTyped(x), pending: { intent: x.tires ? 'tires' : 'part', question: null, candidates: [], part: { description: x.name } } } : reopenChoice(x)))}
                           className="text-blue-400 text-xs font-semibold min-h-10 px-1 inline-flex items-center">Not right? Change</button>

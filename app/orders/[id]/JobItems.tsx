@@ -38,8 +38,11 @@ export function useJobItems({ orderId, enabled, canEdit = enabled, vehicleLabel,
   /** Open the editor sheets / send estimate edits (manager/admin only — the server enforces it too). */
   canEdit?: boolean
   vehicleLabel: string; customerLabel: string
-  /** A change was confirmed by the server — refetch the Job (services/parts split, totals). */
-  onSaved: () => void
+  /** A change was confirmed by the server — refetch the Job (services/parts split, totals).
+   *  Awaited before the edit resolves, so removal focus lands on settled rows (a transiently
+   *  stale text list would otherwise swallow it). Must catch its own refresh errors — the
+   *  mutation already succeeded and is never retried for a failed refresh. */
+  onSaved: () => void | Promise<void>
 }): JobItems {
   const [view, setView] = useState<EstimateViewData | null>(null)
   const viewRef = useRef<EstimateViewData | null>(null)
@@ -85,7 +88,7 @@ export function useJobItems({ orderId, enabled, canEdit = enabled, vehicleLabel,
       const out = await saveEstimateEdit(orderId, payload)
       if (!out.ok) { setStatus({ kind: 'error', msg: labels.failed, err: out.error }); return false }
       setView(out.view); setStatus({ kind: 'saved', msg: labels.saved })
-      onSavedRef.current()
+      await onSavedRef.current()
       const open = paneRef.current
       if (open && ((open.kind === 'service' && !out.view.services.some((x) => x.id === open.id)) || (open.kind === 'part' && !(out.view.parts ?? []).some((x) => x.id === open.id)))) closeRef.current()
       return true

@@ -2,12 +2,15 @@
 
 /**
  * The tappable item rows shared by the Estimate / Invoice page and the Job page — one look, one
- * editor, the same records. Tap a row to edit it (ItemEditor); swipe left to reveal Remove (SwipeRow,
- * hidden at rest behind an opaque row). Read-only rows (cancelled estimate, no edit access) drop the
- * chevron, tap and swipe.
+ * editor, the same records. Tap a row to edit it (ItemEditor). SERVICE rows: swipe left (or the
+ * compact ✕) asks "Are you sure you want to remove this line?" — nothing is removed until the
+ * confirmation's Remove (RemovableServiceRow). PART rows keep the swipe-to-reveal Remove (SwipeRow,
+ * hidden at rest behind an opaque row; linked-labor parts open their own PartRemoveConfirm).
+ * Read-only rows (cancelled estimate, no edit access) drop the chevron, tap and swipe.
  */
 import type { ReactNode } from 'react'
 import SwipeRow from '@/app/components/SwipeRow'
+import RemovableServiceRow from '@/app/components/RemovableServiceRow'
 import type { PartView, ServiceView } from './save-feedback'
 
 const dollars = (c: number) => (c / 100).toFixed(2)
@@ -16,10 +19,18 @@ export function Chevron() {
   return <svg aria-hidden width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-gray-400"><path d="m9 18 6-6-6-6" /></svg>
 }
 
+/** How a service row removes: the confirmation dialog (service name + accurate consequence),
+ *  run only after the user confirms. `onConfirmed` resolves false when the save failed. */
+export interface ServiceRemoval {
+  serviceName: string
+  consequence?: string
+  onConfirmed: () => void | boolean | Promise<void | boolean>
+}
+
 /** One line: name, a short sub-line, the price (or what's missing), and — when editable — a chevron. */
-export function Row({ id, label, title, badge, sub, price, attention, onOpen, onRemove, removeBusy }: {
+export function Row({ id, label, title, badge, sub, price, attention, onOpen, onRemove, removal, removeBusy }: {
   id: string; label: string; title: string; badge?: ReactNode; sub: ReactNode; price: ReactNode; attention?: string | null
-  onOpen?: () => void; onRemove?: () => void; removeBusy?: boolean
+  onOpen?: () => void; onRemove?: () => void; removal?: ServiceRemoval; removeBusy?: boolean
 }) {
   const body = (
     <>
@@ -39,7 +50,19 @@ export function Row({ id, label, title, badge, sub, price, attention, onOpen, on
       <Chevron />
     </button>
   )
-  // Opaque foreground (bg-gray-900) so the red Remove underneath shows only while swiping.
+  // Service rows: swipe/✕ → confirmation (never a direct removal). Part rows keep SwipeRow.
+  // Opaque foreground (bg-gray-900) so the red underlay shows only while swiping.
+  if (removal) {
+    return (
+      <li>
+        <RemovableServiceRow serviceName={removal.serviceName} consequence={removal.consequence} busy={removeBusy}
+          rounded={false} contentClassName="bg-gray-900" className="pr-2" fallbackFocusSelector="[data-add-service]"
+          onRemove={removal.onConfirmed}>
+          {button}
+        </RemovableServiceRow>
+      </li>
+    )
+  }
   return <li>{onRemove ? <SwipeRow onRemove={onRemove} busy={removeBusy} contentClassName="bg-gray-900" rounded={false}>{button}</SwipeRow> : button}</li>
 }
 
@@ -72,13 +95,20 @@ export function partPrice(p: PartView, opts: { readOnly: boolean }): ReactNode {
 
 export const PART_BADGE = <span className="shrink-0 rounded-md bg-sky-900/50 px-1.5 py-0.5 text-[11px] font-semibold text-sky-200">Part</span>
 
-export function ServiceRow({ s, flat, readOnly, onOpen, onRemove, busy }: {
-  s: ServiceView; flat: boolean; readOnly: boolean; onOpen?: () => void; onRemove?: () => void; busy?: boolean
+export function ServiceRow({ s, flat, readOnly, onOpen, onConfirmedRemove, consequence, busy }: {
+  s: ServiceView; flat: boolean; readOnly: boolean; onOpen?: () => void
+  /** Runs only AFTER the user confirms in the removal dialog; resolve false on failure. */
+  onConfirmedRemove?: () => void | boolean | Promise<void | boolean>
+  /** Accurate removal consequence for this line (what happens to its price / covered labor). */
+  consequence?: string
+  busy?: boolean
 }) {
   return (
     <Row id={`svc:${s.id}`} label={`Edit ${s.title}`} title={s.title} sub={serviceSub(s)}
       attention={readOnly ? null : serviceAttention(s)} price={servicePrice(s, { flat, readOnly })}
-      onOpen={readOnly ? undefined : onOpen} onRemove={readOnly ? undefined : onRemove} removeBusy={busy} />
+      onOpen={readOnly ? undefined : onOpen}
+      removal={readOnly || !onConfirmedRemove ? undefined : { serviceName: s.title, consequence, onConfirmed: onConfirmedRemove }}
+      removeBusy={busy} />
   )
 }
 
