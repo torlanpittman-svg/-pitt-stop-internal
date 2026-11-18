@@ -106,3 +106,12 @@ describe('validatePartDraft (the add-part form; the server re-validates)', () =>
     expect(validatePartDraft(draft({ cost: 'x', price: '' }), false)).toMatchObject({ ok: false, problem: { field: 'price' } })
   })
 })
+
+describe('serviceRemovalConsequence (swipe confirmation + editor Remove share it)', () => {
+  it('names what goes with the line', async () => {
+    const { serviceRemovalConsequence } = await import('./job-items-view')
+    expect(serviceRemovalConsequence([])).toBe('Its charge will also be removed.')
+    expect(serviceRemovalConsequence([{ description: 'Cabin filter' }])).toBe('Its attached part “Cabin filter” and its charges will also be removed.')
+    expect(serviceRemovalConsequence([{ description: 'A' }, { description: 'B' }])).toBe('Its 2 attached parts (“A”, “B”) and their charges will also be removed.')
+  })
+})

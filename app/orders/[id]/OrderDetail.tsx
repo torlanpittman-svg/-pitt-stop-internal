@@ -1254,7 +1254,7 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
     } catch { setAddError('Network error — try again.') } finally { setAddBusy(false) }
   }, [order.id, activeTech, reload, refreshItems])
 
-  // Remove a service (manager/admin; swipe-left or the row's ✕ → confirmation → Remove).
+  // Remove a service (manager/admin; swipe-left, or the row's hover/focus Remove → confirmation → Remove).
   // The tapped index is a position in the DISPLAYED list (the classified split, which can
   // hide part-classified labels) — map it onto the RAW stored list by same-name occurrence
   // ordinal, conservatively (counts must agree, else fail closed and refresh), then send
@@ -1468,12 +1468,13 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
               <ul className="rounded-2xl border border-gray-800 bg-gray-900 divide-y divide-gray-800 overflow-hidden">
                 {services.map((s, i) => {
                   const inner = <div className="px-4 py-3.5 text-white text-base min-w-0 break-words">{s}</div>
-                  // Manager/admin on a retail Job → swipe-left (or the row's ✕) asks to remove; nothing
-                  // is removed until the confirmation's Remove. Employees & dealer Jobs see the plain list.
+                  // Manager/admin on a retail Job → swipe-left asks to remove (mouse/keyboard: the Remove
+                  // button that appears on hover/focus — these plain lines have no editor); nothing is
+                  // removed until the confirmation's Remove. Employees & dealer Jobs see the plain list.
                   return (isManager && !isDealerOrder(order))
                     ? (
                       <li key={i}>
-                        <RemovableServiceRow serviceName={s} rounded={false} contentClassName="bg-gray-900" className="pr-2"
+                        <RemovableServiceRow serviceName={s} rounded={false} contentClassName="bg-gray-900" revealRemove
                           fallbackFocusSelector="[data-add-service]"
                           consequence="Any charges belonging only to this line will also be removed; shared charges stay with the remaining service. Separately tracked parts are kept."
                           onRemove={() => removeService(s, i)}>

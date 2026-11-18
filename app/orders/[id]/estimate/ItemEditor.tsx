@@ -6,7 +6,9 @@
  * Name and price are up front; area, quantity, invoice wording and the catalog match sit under
  * expandable details. Save/Cancel are explicit: nothing is sent until Save, and Save sends only what
  * changed (item-draft.ts). A failed save keeps everything typed and offers Retry. Remove lives here,
- * asks once, and saves immediately — the server-confirmed removal path is unchanged.
+ * asks once, and saves immediately — the server-confirmed removal path is unchanged. For a service
+ * this is THE mouse/keyboard removal (rows carry no remove control; touch can also swipe the row), so
+ * it names the line and shows the same parts/charges warning as the swipe confirmation.
  */
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { EstimateEdit, PartView, ServiceView } from './save-feedback'
@@ -61,14 +63,21 @@ function MoneyInput({ value, onChange, disabled, placeholder, label, big }: { va
   )
 }
 
-function RemoveConfirm({ name, what, busy, onRemove }: { name: string; what: string; busy: boolean; onRemove: () => void }) {
+function RemoveConfirm({ name, what, busy, onRemove, where = 'estimate', consequence }: {
+  name: string; what: string; busy: boolean; onRemove: () => void
+  /** Which screen's record this comes off, for the question's wording. */
+  where?: 'estimate' | 'job'
+  /** What goes with the line (parts / charges) — the same line the swipe confirmation shows. */
+  consequence?: string
+}) {
   const [asking, setAsking] = useState(false)
   if (!asking) {
     return <button type="button" onClick={() => setAsking(true)} disabled={busy} className="mt-4 min-h-11 px-1 text-red-400 text-sm font-semibold active:opacity-70 disabled:opacity-40">Remove {what}</button>
   }
   return (
     <div role="group" aria-label={`Confirm removing ${name}`} className="mt-4 rounded-xl border border-red-900/70 bg-red-950/30 px-4 py-3">
-      <p className="text-red-100 text-sm">Remove “{name}” from this estimate? This saves right away.</p>
+      <p className="text-red-100 text-sm">Remove “{name}” from this {where}? This saves right away.</p>
+      {consequence && <p className="mt-2 text-sm text-amber-300">{consequence}</p>}
       <div className="mt-3 flex gap-2">
         <button type="button" onClick={onRemove} disabled={busy} className={`${BTN} bg-red-600 text-white`}>Remove</button>
         <button type="button" onClick={() => setAsking(false)} disabled={busy} className={`${BTN} border border-gray-600 text-gray-200`}>Keep</button>
@@ -87,9 +96,13 @@ function Actions({ busy, saving, dirty, onCancel, saveLabel, form }: { busy: boo
 }
 
 // ── Service line ─────────────────────────────────────────────────────────────────────────────────
-export function ServiceEditor({ service: s, orderId, vehicleLabel, isFlat, busy, post, startRematch, onDirtyChange, onClose }: {
+export function ServiceEditor({ service: s, orderId, vehicleLabel, isFlat, busy, post, startRematch, onDirtyChange, onClose, removal }: {
   service: ServiceView; orderId: string; vehicleLabel: string; isFlat: boolean; busy: boolean; post: Post
   startRematch?: boolean; onDirtyChange: (dirty: boolean) => void; onClose: (outcome: 'saved' | 'cancelled' | 'removed') => void
+  /** How "Remove item" behaves on the screen that opened this editor, so it matches that screen's
+   *  swipe removal exactly: the warning shown, and (Job screen) the edit sent instead of the
+   *  estimate's plain remove_service. */
+  removal?: { consequence?: string; where?: 'estimate' | 'job'; edit?: EstimateEdit }
 }) {
   const ids = useId()
   const [d, setD] = useState(() => serviceDraftFrom(s))
@@ -177,7 +190,8 @@ export function ServiceEditor({ service: s, orderId, vehicleLabel, isFlat, busy,
         <>
           <Actions form={`${ids}-form`} busy={busy} saving={saving} dirty={dirty} onCancel={() => onClose('cancelled')} saveLabel="Save changes" />
           {/* A confirmed removal closes the editor (EstimateBuilder closes it once the line is gone). */}
-          <RemoveConfirm name={s.title} what="item" busy={busy} onRemove={() => { void post({ action: 'remove_service', serviceId: s.id }) }} />
+          <RemoveConfirm name={s.title} what="item" busy={busy} where={removal?.where} consequence={removal?.consequence}
+            onRemove={() => { void post(removal?.edit ?? { action: 'remove_service', serviceId: s.id }) }} />
         </>
       )}
     </div>

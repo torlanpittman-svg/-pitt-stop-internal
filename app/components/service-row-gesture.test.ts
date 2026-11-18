@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
-  startGesture, moveGesture, endGesture, idleGesture, isTextEntryTarget,
+  startGesture, moveGesture, endGesture, idleGesture, isTextEntryTarget, isEditingTextEntryTarget,
   AXIS_LOCK_PX, CONFIRM_DISTANCE_PX, MAX_PULL_PX,
 } from './service-row-gesture'
 
@@ -127,5 +127,29 @@ describe('isTextEntryTarget', () => {
   it('lets plain elements (e.g. the tap-to-edit button) through', () => {
     expect(isTextEntryTarget(el('BUTTON', { closest: () => null }))).toBe(false)
     expect(isTextEntryTarget(null)).toBe(false)
+  })
+})
+
+describe('isEditingTextEntryTarget (only the FOCUSED field blocks a swipe)', () => {
+  const input = { tagName: 'INPUT' } as unknown as EventTarget
+  const other = { tagName: 'INPUT' } as unknown as EventTarget
+  it('blocks the swipe on the field being edited', () => {
+    expect(isEditingTextEntryTarget(input, input)).toBe(true)
+  })
+  it('lets a swipe start on a field that is not focused (custom Quick Entry line: name + price inputs)', () => {
+    expect(isEditingTextEntryTarget(input, null)).toBe(false)
+    expect(isEditingTextEntryTarget(input, other)).toBe(false)
+    expect(isEditingTextEntryTarget(input, { tagName: 'BODY' })).toBe(false)
+  })
+  it('blocks a touch inside a focused editable region', () => {
+    const region = { tagName: 'DIV' }
+    const child = { tagName: 'SPAN', closest: () => region } as unknown as EventTarget
+    expect(isEditingTextEntryTarget(child, region)).toBe(true)
+    expect(isEditingTextEntryTarget(child, {})).toBe(false)
+  })
+  it('never blocks non-text targets', () => {
+    const btn = { tagName: 'BUTTON', closest: () => null } as unknown as EventTarget
+    expect(isEditingTextEntryTarget(btn, btn)).toBe(false)
+    expect(isEditingTextEntryTarget(null, null)).toBe(false)
   })
 })

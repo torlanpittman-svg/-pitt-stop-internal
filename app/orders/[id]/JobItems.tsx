@@ -10,6 +10,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { describeEdit, saveEstimateEdit, type EstimateEdit, type EstimateViewData, type PartView } from './estimate/save-feedback'
 import { PartEditor, ServiceEditor } from './estimate/ItemEditor'
 import { partSwipeRemove } from './estimate/ItemRows'
+import { groupJobItems, serviceRemovalConsequence } from '@/apps/parts/job-items-view'
 
 type Pane = null | { kind: 'service'; id: string } | { kind: 'part'; id: string; confirmRemove?: boolean }
 const BTN = 'rounded-xl font-semibold text-sm px-4 py-3 min-h-11 active:opacity-80 disabled:opacity-40'
@@ -59,6 +60,7 @@ export function useJobItems({ orderId, enabled, canEdit = enabled, vehicleLabel,
   const postRef = useRef<(e: EstimateEdit, retry?: () => void) => Promise<boolean>>(async () => false)
   const onSavedRef = useRef(onSaved)
   const heading = useRef<HTMLHeadingElement>(null)
+  const returnFocus = useRef<{ opener: HTMLElement | null; rowIndex: number } | null>(null)
 
   useEffect(() => {
     if (!enabled) return
@@ -107,6 +109,12 @@ export function useJobItems({ orderId, enabled, canEdit = enabled, vehicleLabel,
 
   // The sheet adds a history entry so the phone's Back returns to the Job; unsaved changes ask first.
   const openPane = useCallback((p: Exclude<Pane, null>) => {
+    // Remember where the editor was opened from so closing it puts focus back (below).
+    if (!paneRef.current) {
+      const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      const row = opener?.closest('[data-removable-service-row]') ?? null
+      returnFocus.current = { opener, rowIndex: row ? Array.from(document.querySelectorAll('[data-removable-service-row]')).indexOf(row) : -1 }
+    }
     setDiscardAsk(false); setDirty(false)
     if (!paneRef.current) window.history.pushState({ ...window.history.state, jobItemPane: true }, '')
     setPane(p)
@@ -121,6 +129,26 @@ export function useJobItems({ orderId, enabled, canEdit = enabled, vehicleLabel,
     return () => window.removeEventListener('popstate', onPop)
   }, [])
   useEffect(() => { if (pane) heading.current?.focus() }, [pane])
+  // The editor is the mouse/keyboard way to remove a service (rows carry no remove control), so
+  // closing it must not drop focus on the page body. Cancel/Save: back to the control that opened
+  // it. Removed: that control is gone, so land on the service row now in its position (its name
+  // button), or the Add Service control when no row is left. Runs after the list has re-rendered
+  // (post awaits the Job refetch before the pane closes).
+  useEffect(() => {
+    if (pane) return
+    const back = returnFocus.current
+    if (!back) return
+    returnFocus.current = null
+    const raf = requestAnimationFrame(() => {
+      if (back.opener?.isConnected) { back.opener.focus(); return }
+      if (back.rowIndex < 0) return
+      const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-removable-service-row]'))
+      const row = rows[Math.min(back.rowIndex, rows.length - 1)]
+      const target = row ? (row.querySelector<HTMLElement>('button:not([disabled])') ?? row) : document.querySelector<HTMLElement>('[data-add-service]')
+      target?.focus()
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [pane])
 
   const onEditorClose = useCallback((outcome: 'saved' | 'cancelled' | 'removed') => {
     if (outcome === 'cancelled' && retryIsDraft.current) {
@@ -179,7 +207,11 @@ export function useJobItems({ orderId, enabled, canEdit = enabled, vehicleLabel,
             {statusLine && <div className="mb-4">{statusLine}</div>}
             {svc && view && (
               <ServiceEditor key={svc.id} service={svc} orderId={orderId} vehicleLabel={vehicleLabel} isFlat={view.flat} busy={busy} post={post}
-                onDirtyChange={setDirty} onClose={onEditorClose} />
+                onDirtyChange={setDirty} onClose={onEditorClose}
+                // The Job screen's one service removal: the same canonical path and warning as
+                // swiping the row (the attached parts and their charges go with the line).
+                removal={{ where: 'job', edit: { action: 'remove_service_with_parts', serviceId: svc.id },
+                  consequence: serviceRemovalConsequence(groupJobItems(view).services.find((x) => x.id === svc.id)?.parts ?? []) }} />
             )}
             {part && (
               <PartEditor key={part.id} part={part} parts={parts} services={services} busy={busy} post={post}

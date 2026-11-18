@@ -89,6 +89,9 @@ function NameEditor({ label, initial, busy, onSave, onCancel }: {
   )
 }
 
+/** The tappable service/part rows of the estimate list, in document order. */
+const itemRows = () => Array.from(document.querySelectorAll<HTMLElement>('ul[aria-label="Services and parts"] [data-row]'))
+
 export default function EstimateBuilder({ header, initialView }: { header: Header; initialView: View }) {
   const [view, setView] = useState<View>(initialView)
   const viewRef = useRef(view)
@@ -134,6 +137,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   const [menuOpen, setMenuOpen] = useState(false)
   const [vehicleOpen, setVehicleOpen] = useState(false)
   const opener = useRef<string | null>(null)
+  const openerIndex = useRef(-1)
   const paneHeading = useRef<HTMLHeadingElement>(null)
 
   // Every estimate edit is sent at once. "Saved" is shown ONLY after the server confirms the
@@ -185,6 +189,8 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   // unsaved editor changes asks first.
   const openPane = useCallback((p: Pane, from?: string) => {
     opener.current = from ?? null
+    // Its position in the list, in case the row is gone on return (removed in the editor).
+    openerIndex.current = from ? itemRows().findIndex((el) => el.dataset.row === from) : -1
     setMenuOpen(false); setDiscardAsk(false); setEditorDirty(false)
     if (paneRef.current.kind === 'list') window.history.pushState({ ...window.history.state, estimatePane: true }, '')
     setPane(p)
@@ -214,7 +220,14 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
     if (!id) return
     opener.current = null
     const el = document.querySelector<HTMLElement>(`[data-row="${CSS.escape(id)}"]`)
-    el?.focus()
+    if (el) { el.focus(); return }
+    // The item was removed in its editor — the only mouse/keyboard way to remove a service now
+    // that rows carry no remove control — so don't drop focus on the page: land on the item now
+    // in its position (the previous one when it was last), or Add item when the list is empty.
+    if (openerIndex.current < 0) return
+    const rows = itemRows()
+    const next = rows[Math.min(openerIndex.current, rows.length - 1)] ?? document.querySelector<HTMLElement>('[data-row="add"]')
+    next?.focus()
   }, [pane])
   // The ⋯ menu closes on an outside tap.
   useEffect(() => {
@@ -273,6 +286,11 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
 
   const services = view.services
   const parts = view.parts ?? []
+  // What removing a service does HERE (removeEstimateService keeps parts — only installation labor
+  // this line covered goes back to review). One wording for the swipe confirmation and the editor.
+  const serviceRemoveConsequence = (serviceId: string) => parts.some((p) => p.laborServiceId === serviceId)
+    ? 'Its price comes off this estimate. Its attached parts stay — their installation labor goes back to review.'
+    : 'Its price will be removed from this estimate.'
   const issues = view.review?.issues ?? []
   const isFlat = view.flat
   const hasPricedService = services.some((s) => (s.priceCents ?? 0) > 0)
@@ -333,7 +351,8 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
       )}
       {pane.kind === 'service' && paneSvc && (
         <ServiceEditor key={paneSvc.id} service={paneSvc} orderId={header.id} vehicleLabel={header.vehicle} isFlat={isFlat} busy={busy} post={post}
-          startRematch={pane.rematch} onDirtyChange={setEditorDirty} onClose={onEditorClose} />
+          startRematch={pane.rematch} onDirtyChange={setEditorDirty} onClose={onEditorClose}
+          removal={{ consequence: serviceRemoveConsequence(paneSvc.id) }} />
       )}
       {pane.kind === 'part' && panePart && (
         <PartEditor key={panePart.id} part={panePart} parts={parts} services={services} busy={busy} post={post} onDirtyChange={setEditorDirty} onClose={onEditorClose}
@@ -480,9 +499,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
             // Runs only after the removal dialog's Remove; post reports success so a failed
             // save keeps the row (status line + Retry explain). removeEstimateService keeps
             // parts — only installation labor this line covered goes back to review.
-            consequence={parts.some((p) => p.laborServiceId === s.id)
-              ? 'Its price comes off this estimate. Its attached parts stay — their installation labor goes back to review.'
-              : 'Its price will be removed from this estimate.'}
+            consequence={serviceRemoveConsequence(s.id)}
             onConfirmedRemove={() => post({ action: 'remove_service', serviceId: s.id })} />
         ))}
         {parts.map((p) => (

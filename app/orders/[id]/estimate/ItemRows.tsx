@@ -2,9 +2,10 @@
 
 /**
  * The tappable item rows shared by the Estimate / Invoice page and the Job page — one look, one
- * editor, the same records. Tap a row to edit it (ItemEditor). SERVICE rows: swipe left (or the
- * compact ✕) asks "Are you sure you want to remove this line?" — nothing is removed until the
- * confirmation's Remove (RemovableServiceRow). PART rows keep the swipe-to-reveal Remove (SwipeRow,
+ * editor, the same records. Tap a row to edit it (ItemEditor). SERVICE rows: swipe left asks "Are
+ * you sure you want to remove this line?" — nothing is removed until the confirmation's Remove
+ * (RemovableServiceRow); with a mouse or keyboard, open the row and use the editor's Remove item.
+ * There is no per-row remove control, so the price and chevron sit on the right edge. PART rows keep the swipe-to-reveal Remove (SwipeRow,
  * hidden at rest behind an opaque row; linked-labor parts open their own PartRemoveConfirm).
  * Read-only rows (cancelled estimate, no edit access) drop the chevron, tap and swipe.
  */
@@ -50,13 +51,14 @@ export function Row({ id, label, title, badge, sub, price, attention, onOpen, on
       <Chevron />
     </button>
   )
-  // Service rows: swipe/✕ → confirmation (never a direct removal). Part rows keep SwipeRow.
+  // Service rows: swipe → confirmation (never a direct removal); the editor this row opens
+  // carries the mouse/keyboard Remove. Part rows keep SwipeRow.
   // Opaque foreground (bg-gray-900) so the red underlay shows only while swiping.
   if (removal) {
     return (
       <li>
         <RemovableServiceRow serviceName={removal.serviceName} consequence={removal.consequence} busy={removeBusy}
-          rounded={false} contentClassName="bg-gray-900" className="pr-2" fallbackFocusSelector="[data-add-service]"
+          rounded={false} contentClassName="bg-gray-900" fallbackFocusSelector="[data-add-service]"
           onRemove={removal.onConfirmed}>
           {button}
         </RemovableServiceRow>

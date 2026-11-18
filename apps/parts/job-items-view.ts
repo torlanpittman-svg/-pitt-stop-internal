@@ -58,6 +58,17 @@ export function removeServiceMessage(title: string, attached: readonly { descrip
     : `Remove “${title}” and its ${attached.length} attached parts (${names})? All of their prices will be removed from the job total.`
 }
 
+/**
+ * The warning line for the Job screen's service removal (remove_service_with_parts: the attached
+ * parts and their charges go with the line). Neutral on totals — a flat job's total stays fixed.
+ * One wording for the swipe confirmation and the item editor's Remove.
+ */
+export function serviceRemovalConsequence(attached: readonly { description: string }[]): string {
+  return attached.length === 0 ? 'Its charge will also be removed.'
+    : attached.length === 1 ? `Its attached part “${attached[0].description}” and its charges will also be removed.`
+    : `Its ${attached.length} attached parts (${attached.map((x) => `“${x.description}”`).join(', ')}) and their charges will also be removed.`
+}
+
 // ── Add-part draft validation (shared by the Job-screen form; the server re-validates every add) ──
 
 /** "59" / "59.50" → whole cents; blank → null; anything else → 'bad'. */

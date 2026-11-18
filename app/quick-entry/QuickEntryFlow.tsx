@@ -785,10 +785,11 @@ export default function QuickEntryFlow({ mode = 'quick-entry' }: { mode?: 'quick
                     const sugg = l.kind === 'custom' ? suggByKey[l.key] : null
                     return (
                     <div key={l.key} className="px-3 py-2">
-                      {/* Swipe-left or the ✕ asks to remove; nothing leaves the selection until the
-                          confirmation's Remove. Local selection only — nothing is saved yet. */}
+                      {/* Swipe-left asks to remove (mouse/keyboard: a Remove button appears on hover/focus,
+                          just left of the price so the price stays editable); nothing leaves the selection
+                          until the confirmation's Remove. Local selection only — nothing is saved yet. */}
                       <RemovableServiceRow serviceName={l.name.trim() || 'this service'} onRemove={() => removeLine(l.key)}
-                        rounded={false} fallbackFocusSelector="[data-add-service]">
+                        rounded={false} revealRemove revealClassName="right-[6.5rem]" fallbackFocusSelector="[data-add-service]">
                         <div className="flex items-center gap-2 bg-gray-900">
                           <div className="flex-1 min-w-0">
                             {l.kind === 'custom' ? (

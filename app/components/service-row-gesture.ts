@@ -95,3 +95,18 @@ export function isTextEntryTarget(target: EventTarget | null): boolean {
   }
   return false
 }
+
+/**
+ * True when a touch lands in the text field the user is EDITING right now (it holds
+ * focus): a drag there moves the caret / selects text, so the swipe stays out of it.
+ * A field that is not focused has no caret or selection to protect, so a swipe may
+ * start on it — otherwise a row made only of fields (a custom Quick Entry line: name
+ * input + price input) would have nowhere to swipe and, with no per-row remove button,
+ * no touch way to remove it.
+ */
+export function isEditingTextEntryTarget(target: EventTarget | null, activeElement: unknown): boolean {
+  if (!activeElement || !isTextEntryTarget(target)) return false
+  const el = target as { closest?: (sel: string) => unknown }
+  if (target === activeElement) return true
+  return typeof el.closest === 'function' && el.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]') === activeElement
+}

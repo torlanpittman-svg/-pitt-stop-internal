@@ -4,8 +4,9 @@
  * Job screen — Services and Parts, the guided version.
  *
  * One list of services, each showing its name and price, with the parts attached to it (the parts
- * that service installs) nested underneath, "+ Add part to this service" and "Remove service" inside
- * the service. Below it, the job's standalone parts with "+ Add a part". Every add form opens right
+ * that service installs) nested underneath and "+ Add part to this service" inside the service. A
+ * manager removes a service by swiping it left, or from its editor (tap the name → Remove item);
+ * there is no per-row remove control, so prices line up on the right edge. Below it, the job's standalone parts with "+ Add a part". Every add form opens right
  * under the button that was tapped, with focus on "What part?"; every removal asks once and says what
  * will happen; every success is confirmed in a short notice.
  *
@@ -22,7 +23,7 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 
 import type { EstimateViewData, PartView, ServiceView } from './estimate/save-feedback'
 import { partPrice, servicePrice } from './estimate/ItemRows'
 import RemovableServiceRow from '@/app/components/RemovableServiceRow'
-import { groupJobItems, validatePartDraft, INVOICED_NEEDS_MANAGER_MSG, SERVICE_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG, LABOR_STAYS_NOTE, type DraftProblem, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
+import { groupJobItems, serviceRemovalConsequence, validatePartDraft, INVOICED_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG, LABOR_STAYS_NOTE, type DraftProblem, type PartDraft, type PartInput } from '@/apps/parts/job-items-view'
 
 /** One key per add attempt: a retry of the same open form replays instead of charging twice (the server keeps it on the audit event). */
 const newRequestId = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`)
@@ -166,20 +167,6 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
     try { return await p.onRemoveTextService(name, index) }
     finally { inFlight.current = false; setLocalBusy(false) }
   }
-  /** What a confirmed removal will actually do (remove_service_with_parts: the attached parts
-   *  and their charges go with the line). Neutral on totals — a flat job's total stays fixed. */
-  const serviceConsequence = (s: ServiceView & { parts: PartView[] }): string =>
-    s.parts.length === 0 ? 'Its charge will also be removed.'
-      : s.parts.length === 1 ? `Its attached part “${s.parts[0].description}” and its charges will also be removed.`
-      : `Its ${s.parts.length} attached parts (${s.parts.map((x) => `“${x.description}”`).join(', ')}) and their charges will also be removed.`
-  /** The compact ✕ for roles that can't remove: opens the same "manager needed" notice the old link did. */
-  const managerNeededButton = (id: string, title: string) => (
-    <button type="button" disabled={busy} onClick={() => { setError(null); setConfirm({ kind: 'message', id, text: SERVICE_NEEDS_MANAGER_MSG }) }}
-      aria-label={`Remove ${title}`} title={`Remove ${title}`}
-      className="shrink-0 flex items-center justify-center min-h-11 min-w-11 rounded-xl border border-gray-800 bg-gray-900 text-gray-500 active:text-red-300 disabled:opacity-40">
-      <span aria-hidden>✕</span>
-    </button>
-  )
 
   const partCount = grouped.services.reduce((n, s) => n + s.parts.length, 0) + grouped.standalone.length
 
@@ -229,11 +216,11 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
               const attachOpen = adding?.kind === 'service' && adding.serviceId === s.id
               return (
                 <li key={s.id} data-service={s.id} className="px-4 py-3">
-                  {/* Manager: swipe-left (or the ✕) asks "Are you sure you want to remove this line?" —
-                      nothing is removed until the dialog's Remove, and the canonical
-                      remove_service_with_parts path runs (attached parts + charges go too). Other
-                      roles keep the same ✕, which explains a manager is needed. No always-visible
-                      "Remove service" text either way. */}
+                  {/* Manager: swipe-left asks "Are you sure you want to remove this line?" — nothing is
+                      removed until the dialog's Remove, and the canonical remove_service_with_parts
+                      path runs (attached parts + charges go too). Mouse/keyboard: the name opens the
+                      editor, whose Remove item runs the same path with the same warning. Other roles
+                      can't remove a service, so they get no remove control at all. */}
                   {(() => {
                     const header = (
                       <div className="flex items-start justify-between gap-3">
@@ -250,16 +237,11 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                     )
                     return manager ? (
                       <RemovableServiceRow serviceName={s.title} busy={busy} rounded={false} contentClassName="bg-gray-900"
-                        fallbackFocusSelector="[data-add-service]" consequence={serviceConsequence(s)}
+                        fallbackFocusSelector="[data-add-service]" consequence={serviceRemovalConsequence(s.parts)}
                         onRemove={() => removeService(s)}>
                         {header}
                       </RemovableServiceRow>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <div className="min-w-0 flex-1">{header}</div>
-                        {managerNeededButton(s.id, s.title)}
-                      </div>
-                    )
+                    ) : header
                   })()}
 
                   {/* Attached parts: visibly inside the service (indented, with a connector rail). */}
@@ -282,11 +264,6 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                       onSubmit={(f, rid) => void addPart(f, adding as Adding & { kind: 'service' }, rid)} onCancel={() => { setAdding(null); setError(null) }} />
                   )}
 
-                  {confirm?.kind === 'message' && confirm.id === s.id && (
-                    <ConfirmBox label="Manager needed" text={confirm.text} tone="info">
-                      <button type="button" onClick={() => setConfirm(null)} className={`${BTN} border border-gray-600 text-gray-200`}>Got it</button>
-                    </ConfirmBox>
-                  )}
                 </li>
               )
             })}
@@ -302,11 +279,12 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
               )
               return (
               <li key={`u${index}`} data-service={textKey(name)} className="px-4 py-3">
-                {/* Same swipe/✕ → confirmation as mirrored services; the removal targets this exact
-                    occurrence in the Job's text list (identical names stay independent). */}
+                {/* Same swipe → confirmation as mirrored services; the removal targets this exact
+                    occurrence in the Job's text list (identical names stay independent). A text-only
+                    line has no editor, so its Remove button appears on keyboard focus / mouse hover. */}
                 {manager ? (
                   <RemovableServiceRow serviceName={name} busy={busy} rounded={false} contentClassName="bg-gray-900"
-                    fallbackFocusSelector="[data-add-service]"
+                    fallbackFocusSelector="[data-add-service]" revealRemove revealClassName="right-0"
                     // Same legacy-path warning as the plain Job list: the view can be null while
                     // loading/failed even though the server may already hold billing rows for
                     // this name, and the DELETE helper removes exactly that line's own charges.
@@ -314,12 +292,7 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                     onRemove={() => removeTextService(name, index)}>
                     {header}
                   </RemovableServiceRow>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <div className="min-w-0 flex-1">{header}</div>
-                    {managerNeededButton(`text:${name}`, name)}
-                  </div>
-                )}
+                ) : header}
                 {partsVisible && (
                   <div className="mt-1">
                     <button type="button" disabled={busy || attachOpen} onClick={() => { setError(null); setConfirm(null); setAdding({ kind: 'service', serviceId: null, title: name }) }}
@@ -330,11 +303,6 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                 {attachOpen && (
                   <AddPartForm key={`text-${name}`} manager={manager} busy={busy} error={error} attachedTo={name}
                     onSubmit={(f, rid) => void addPart(f, adding as Adding & { kind: 'service' }, rid)} onCancel={() => { setAdding(null); setError(null) }} />
-                )}
-                {confirm?.kind === 'message' && confirm.id === `text:${name}` && (
-                  <ConfirmBox label="Manager needed" text={confirm.text} tone="info">
-                    <button type="button" onClick={() => setConfirm(null)} className={`${BTN} border border-gray-600 text-gray-200`}>Got it</button>
-                  </ConfirmBox>
                 )}
               </li>
               )
