@@ -57,6 +57,13 @@ export function describeEdit(edit: EstimateEdit, view: EstimateViewData): { savi
         : { saving: 'Removing part…', saved: 'Part removed · Saved', failed: 'Couldn’t remove the part — it’s still on the estimate.' }
     }
     case 'part_labor': return { saving: 'Saving labor review…', saved: 'Labor review saved', failed: 'Couldn’t save the labor review.' }
+    case 'part_labor_bulk': {
+      const n = Array.isArray(edit.partIds) ? edit.partIds.length : 0
+      const what = n === 1 ? '1 part' : `${n} parts`
+      return (edit.labor as { action?: string } | undefined)?.action === 'part_only'
+        ? { saving: `Marking ${what} as part only…`, saved: `${what} marked part only · Saved`, failed: 'Couldn’t save the labor review — the list below shows what is actually saved.' }
+        : { saving: `Marking ${what} as covered…`, saved: `${what} marked as covered · Saved`, failed: 'Couldn’t save the labor review — the list below shows what is actually saved.' }
+    }
     case 'convert_to_part': return { saving: 'Converting to a part…', saved: `${name} is now a part · Saved`, failed: `Couldn’t convert ${name} — it’s still a service line, unchanged.` }
     case 'clarify_part': return { saving: 'Adding the part…', saved: 'Part added and linked · Saved', failed: `Couldn’t add the part for ${name} — nothing was changed.` }
     default: return { saving: 'Saving…', saved: 'Saved', failed: 'Couldn’t save your change.' }
@@ -110,6 +117,13 @@ function confirmsEdit(edit: EstimateEdit, view: EstimateViewData): string | null
       const p = (view.parts ?? []).find((x) => x.id === edit.partId)
       const want = ({ add_labor: 'labor_added', included: 'included', part_only: 'part_only', waive: 'waived', reopen: 'needs_review' } as Record<string, string>)[String((edit.labor as { action?: string } | undefined)?.action)]
       return p && p.laborStatus === want ? null : 'The server did not confirm the labor review.'
+    }
+    case 'part_labor_bulk': {
+      // Every selected part that is still on the job must no longer be open. (A part someone else
+      // already reviewed is left as it was — that still counts as reviewed, never as a failure.)
+      const ids = new Set(Array.isArray(edit.partIds) ? (edit.partIds as unknown[]).map(String) : [])
+      const still = (view.parts ?? []).filter((p) => ids.has(p.id) && p.laborStatus === 'needs_review').length
+      return still === 0 ? null : `${still} of the selected ${ids.size === 1 ? 'part' : 'parts'} still ${still === 1 ? 'needs' : 'need'} labor review. Try again.`
     }
     default:
       return null

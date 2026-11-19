@@ -23,6 +23,7 @@ import { classifyPartWording } from '@/apps/quick-entry/service-interpret'
 import { partLineDescription, cleanDetail } from '@/apps/quickbooks/retail-format'
 import { listCatalogChoices } from '@/apps/quick-entry/service-match-db'
 import { validateLaborDecision, effectiveLaborStatus, type LaborDecision } from './labor-review'
+import { coverableServiceIds, coverableServiceWhere, LABOR_LINE_GONE_MSG } from '@/apps/workflow/estimate-review'
 import { INVOICED_NEEDS_MANAGER_MSG, FLAT_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG } from './job-items-view'
 
 /** A removal an employee may not make (route → 403 needsManager). */
@@ -246,15 +247,6 @@ export async function removeEstimatePartWithLabor(
   if (p.status !== 'cancelled') await removeEstimatePart(orderId, partId, actor, opts)
 }
 
-/** Live work services on the estimate that can cover installation (never a part's own row). */
-async function coverableServiceIds(orderId: string): Promise<Set<string>> {
-  const est = await getEstimateRow(orderId)
-  if (!est) return new Set()
-  const rows = await getDb().select({ id: jobServices.id }).from(jobServices)
-    .where(and(eq(jobServices.jobEstimateId, est.id), ne(jobServices.source, 'system'), ne(jobServices.kind, 'part')))
-  return new Set(rows.map((r) => r.id))
-}
-
 /** The catalog's installation-labor service (role 'installation'), or null. */
 export async function installationCatalog() {
   return (await listCatalogChoices()).find((c) => c.role === 'installation') ?? null
@@ -302,6 +294,67 @@ export async function decidePartLabor(orderId: string, partId: string, a: LaborA
     .where(eq(jobParts.id, partId))
   await event(orderId, 'part_labor_review', actor, { partId, part: p.description, status: decision.status, laborServiceId, reason: laborNote })
   if (a.action === 'add_labor') await flagQbSyncNeededIfInvoiced(orderId, 'installation labor was added')
+}
+
+export type BulkLaborAction = { action: 'included'; serviceId: string } | { action: 'part_only' }
+export const BULK_LABOR_MAX = 200
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Record ONE installation-labor decision for several parts at once: "covered by this existing labor
+ * line" or "part only". It records the decision and nothing else — no labor line is added, and no
+ * price, hours, quantity or total is touched.
+ *
+ * ONE statement: every selected part whose review is still open (same rule as effectiveLaborStatus)
+ * gets the decision and its own `part_labor_review` audit row, or nothing is written at all. Parts
+ * already reviewed are left exactly as they are (no rewrite, no second audit row), so a retry or a
+ * double-click is a no-op. Returns the ids actually saved by THIS call.
+ */
+export async function decidePartsLaborBulk(orderId: string, partIds: unknown, a: BulkLaborAction, actor: string | null, role: string | null): Promise<string[]> {
+  const ids = [...new Set(Array.isArray(partIds) ? partIds.filter((x): x is string => typeof x === 'string' && UUID_RE.test(x)) : [])]
+  if (ids.length === 0) throw new Error('Select at least one part.')
+  if (ids.length > BULK_LABOR_MAX) throw new Error(`Select at most ${BULK_LABOR_MAX} parts at a time.`)
+  let decision: LaborDecision
+  if (a?.action === 'included') decision = { status: 'included', serviceId: typeof a.serviceId === 'string' ? a.serviceId : '' }
+  else if (a?.action === 'part_only') decision = { status: 'part_only' }
+  else throw new Error('Unknown labor decision.')
+  const err = validateLaborDecision(decision, { role, coverable: await coverableServiceIds(orderId) })
+  if (err) throw new Error(decision.status === 'included' ? (decision.serviceId ? LABOR_LINE_GONE_MSG : 'Choose a labor line on this invoice that covers installing these parts.') : err)
+  const serviceId = decision.status === 'included' ? decision.serviceId : null
+
+  const res = await getDb().execute(sql`
+    WITH coverable AS (
+      -- the one coverage rule (apps/workflow/estimate-review.ts), evaluated in the same statement as the write
+      SELECT ${jobServices.id} AS id FROM ${jobServices} JOIN job_estimates je ON je.id = ${jobServices.jobEstimateId}
+       WHERE je.service_order_id = ${orderId}::uuid AND ${coverableServiceWhere}
+    ), upd AS (
+      UPDATE job_parts p
+         SET labor_status = ${decision.status}, labor_service_id = ${serviceId}::uuid, labor_note = NULL,
+             labor_decided_by = ${actor}, labor_decided_at = now(), updated_at = now(), updated_by = ${actor}
+       WHERE p.service_order_id = ${orderId}::uuid AND p.status <> 'cancelled'
+         AND p.id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
+         -- still open: never reviewed, or linked to labor that no longer exists
+         AND (p.labor_status NOT IN ('labor_added', 'included', 'part_only', 'waived')
+           OR (p.labor_status IN ('labor_added', 'included')
+             AND (p.labor_service_id IS NULL OR p.labor_service_id NOT IN (SELECT id FROM coverable))))
+         -- the covering line must still be on this job at the moment of the write
+         AND (${serviceId}::uuid IS NULL OR ${serviceId}::uuid IN (SELECT id FROM coverable))
+      RETURNING p.id, p.description
+    ), ev AS (
+      INSERT INTO service_order_events (service_order_id, event_type, employee_name, note)
+      SELECT ${orderId}::uuid, 'part_labor_review', ${actor},
+        json_build_object('partId', upd.id, 'part', upd.description, 'status', ${decision.status}::text,
+          'laborServiceId', ${serviceId}::text, 'reason', NULL, 'bulk', true)::text
+      FROM upd
+      RETURNING id
+    )
+    SELECT id FROM upd
+  `)
+  const saved = rowsOf(res).map((r) => String(r.id))
+  // Nothing written with a covering line chosen: either nothing was open (a retry), or the line stopped
+  // qualifying between the check above and the write — say so instead of reporting a quiet success.
+  if (saved.length === 0 && serviceId && !(await coverableServiceIds(orderId)).has(serviceId)) throw new Error(LABOR_LINE_GONE_MSG)
+  return saved
 }
 
 export interface TireWorkInput {

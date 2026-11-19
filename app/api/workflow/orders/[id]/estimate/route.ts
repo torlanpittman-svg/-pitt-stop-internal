@@ -17,7 +17,7 @@ import {
 } from '@/apps/workflow/estimate-db'
 import { interpretServiceEntry, listCatalogChoices } from '@/apps/quick-entry/service-match-db'
 import { listShortcuts, approveAlias } from '@/apps/quick-entry/shortcuts'
-import { addEstimatePart, updateEstimatePart, removeEstimatePartWithLabor, removeServiceWithParts, decidePartLabor, addTireWork, convertServiceToPart, clarifyServiceWithPart, type LaborAction } from '@/apps/parts/estimate-parts'
+import { addEstimatePart, updateEstimatePart, removeEstimatePartWithLabor, removeServiceWithParts, decidePartLabor, decidePartsLaborBulk, addTireWork, convertServiceToPart, clarifyServiceWithPart, type LaborAction, type BulkLaborAction } from '@/apps/parts/estimate-parts'
 import { assertEstimateReady } from '@/apps/workflow/estimate-review'
 import type { ApprovalState, EstimateStatus } from '@/apps/workflow/estimate'
 
@@ -155,6 +155,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         await decidePartLabor(id, String(body.partId), (body.labor ?? {}) as LaborAction, actor, g.role)
         return NextResponse.json({ ok: true, view: await getEstimateView(id) })
       }
+      case 'part_labor_bulk': {
+        // One decision ("covered by this labor line" / "part only") for several open parts, in one
+        // atomic statement. Records the decision only — no labor line, price or quantity changes.
+        const savedPartIds = await decidePartsLaborBulk(id, body.partIds, (body.labor ?? {}) as BulkLaborAction, actor, g.role)
+        return NextResponse.json({ ok: true, savedPartIds, view: await getEstimateView(id) })
+      }
       case 'convert_to_part': {
         // A part saved as a service line → a real part (same row + price line; price/qty/tax untouched).
         const p = (body.part ?? {}) as Record<string, unknown>
@@ -223,7 +229,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       // Standalone quotes use the dedicated conversion and email routes. All edits share
       // the same lock as send/conversion so a customer cannot receive a half-edited quote.
       const allowed = ['build', 'prepare', 'set_service_price', 'set_work_total', 'itemize', 'accept_total', 'add_service', 'rename_service', 'remove_service', 'remove_service_with_parts',
-        'interpret', 'catalog_list', 'select_match', 'set_detail', 'add_part', 'update_part', 'remove_part', 'part_labor', 'add_tires',
+        'interpret', 'catalog_list', 'select_match', 'set_detail', 'add_part', 'update_part', 'remove_part', 'part_labor', 'part_labor_bulk', 'add_tires',
         'convert_to_part', 'clarify_part']
       if (!allowed.includes(action)) return NextResponse.json({ error: 'Use the estimate actions to send or move this estimate.' }, { status: 400 })
       return await withIntakeLock(id, async () => {
