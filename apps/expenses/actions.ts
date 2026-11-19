@@ -18,15 +18,29 @@ import { errorCode } from './errors'
 import { resolveReceiptPayment } from './payment'
 import { receiptDateWarning, todayBusinessDate } from './checks'
 import { allocateReceipt, isUuid } from './job-expenses'
+import { setReceiptVehicle } from './vehicle-link'
 import { logger } from '@/platform/logger'
 
 const revalidate = () => { revalidatePath('/expenses/review'); revalidatePath('/expenses') }
 
-/** If a vehicle association is being SET (non-empty), it must be a real canonical inventory vehicle.
- *  Clearing the association ('' → null) is always allowed. Returns an error string, or null when OK. */
-async function validateVehicle(fields: ReviewFields): Promise<string | null> {
-  if (fields.inventoryVehicleId === undefined || fields.inventoryVehicleId === null || fields.inventoryVehicleId === '') return null
-  return (await inventoryVehicleExists(fields.inventoryVehicleId)) ? null : 'That vehicle no longer exists — pick a current inventory vehicle or leave it unassigned.'
+/**
+ * The sales-inventory vehicle posted with a review/approve form: undefined = not sent (leave it alone),
+ * null = remove it, otherwise the vehicle id. It is never written as a plain review field — it goes through
+ * vehicle-link.setReceiptVehicle, the ONE assignment path, so every safeguard applies (real vehicle, not on a
+ * customer job, no return standing against it, any match to a vehicle expense undone, audited).
+ */
+function vehicleFrom(f: ReviewForm): string | null | undefined {
+  return f.inventoryVehicleId === undefined ? undefined : (f.inventoryVehicleId.trim() || null)
+}
+/** Apply the posted vehicle BEFORE the review write. Fails closed: if the assignment is refused, nothing else is saved. */
+async function applyVehicle(receiptId: string, vehicleId: string | null | undefined, actor: { name: string; key?: string | null }): Promise<string | null> {
+  if (vehicleId === undefined) return null
+  if (vehicleId && !(await inventoryVehicleExists(vehicleId))) return 'That vehicle no longer exists — pick a current inventory vehicle or leave it unassigned.'
+  const r = await setReceiptVehicle({ receiptId, inventoryVehicleId: vehicleId }, { name: actor.name, key: actor.key ?? null })
+  if (!r.ok) return r.error ?? 'Could not assign the vehicle.'
+  for (const v of [r.inventoryVehicleId, r.previousVehicleId]) if (v) { revalidatePath(`/auto-sales/${v}`); revalidatePath(`/admin/auto-sales/${v}`) }
+  if (!r.already) { revalidatePath('/auto-sales'); revalidatePath('/admin/auto-sales') }
+  return null
 }
 
 /** Shape posted from the review form (all strings; parsed + validated here). */
@@ -57,7 +71,6 @@ function reviewFieldsFrom(f: ReviewForm): ReviewFields {
   if (f.accountRef !== undefined) fields.accountRef = f.accountRef.trim() || null
   if (f.paymentLast4 !== undefined) fields.paymentLast4 = (f.paymentLast4.match(/\d{4}/)?.[0]) ?? null
   if (f.memo !== undefined) fields.memo = f.memo.trim() || null
-  if (f.inventoryVehicleId !== undefined) fields.inventoryVehicleId = f.inventoryVehicleId.trim() || null
   return fields
 }
 
@@ -66,7 +79,7 @@ export async function saveReviewAction(f: ReviewForm): Promise<{ ok: boolean; er
   if (!actor) return { ok: false, error: 'Manager sign-in required.' }
   if (!f.id) return { ok: false, error: 'Missing receipt.' }
   const fields = reviewFieldsFrom(f)
-  const vErr = await validateVehicle(fields)
+  const vErr = await applyVehicle(f.id, vehicleFrom(f), actor)
   if (vErr) return { ok: false, error: vErr }
   const r = await saveReview(f.id, fields, actor.name)
   if (r.ok) revalidate()
@@ -89,7 +102,11 @@ export interface FileForm {
   otherFunding?: string; otherPaymentMethod?: string
   entity?: string; category?: string; categoryMode?: string; funding?: string; paymentMethod?: string
   vendor?: string; receiptDate?: string; subtotal?: string; tax?: string; total?: string
-  memo?: string; filingNote?: string; inventoryVehicleId?: string; duplicate?: boolean
+  memo?: string; filingNote?: string; duplicate?: boolean
+  // Auto Sales inventory vehicle this purchase was for ('' = none). Applied AFTER the save through the one
+  // assignment path (vehicle-link.setReceiptVehicle). vehicleMatchEventId = an expense already entered on that
+  // vehicle that IS this purchase — the receipt is matched to it so it is counted once.
+  inventoryVehicleId?: string; vehicleMatchEventId?: string
   shipping?: string; invoiceNumber?: string; orderNumber?: string; description?: string
   // The customer job this purchase was for (capture started from a job, or picked on the confirm step). On a
   // successful save the WHOLE purchase is pointed at that job — a link to this same receipt, never a second
@@ -104,6 +121,7 @@ export interface FileForm {
 export interface FileResult {
   ok: boolean; error?: string; conflict?: boolean; alreadyFiled?: boolean; status?: 'filed' | 'needs_review'; reasons?: string[]; clarified?: boolean
   jobLinked?: boolean; jobLinkError?: string   // set only when a serviceOrderId was supplied
+  vehicleLinked?: boolean; vehicleLinkError?: string   // set only when inventoryVehicleId was supplied
 }
 
 export async function fileReceiptAction(f: FileForm): Promise<FileResult> {
@@ -152,11 +170,10 @@ export async function fileReceiptAction(f: FileForm): Promise<FileResult> {
   if (f.memo !== undefined) input.memo = f.memo.trim() || null
   if (f.filingNote !== undefined) input.filingNote = f.filingNote.trim() || null
   if (f.serviceOrderId !== undefined && f.serviceOrderId !== '' && !isUuid(f.serviceOrderId)) return { ok: false, error: 'That job could not be found.' }
-  if (f.inventoryVehicleId !== undefined) {
-    input.inventoryVehicleId = f.inventoryVehicleId.trim() || null
-    if (input.inventoryVehicleId && !(await inventoryVehicleExists(input.inventoryVehicleId))) {
-      return { ok: false, error: 'That vehicle no longer exists — pick a current inventory vehicle or leave it off.' }
-    }
+  const vehicleId = f.inventoryVehicleId !== undefined ? (f.inventoryVehicleId.trim() || null) : undefined
+  if (vehicleId) {
+    if (f.serviceOrderId) return { ok: false, error: 'Choose a customer job or a sales-inventory vehicle for this receipt — not both.' }
+    if (!(await inventoryVehicleExists(vehicleId))) return { ok: false, error: 'That vehicle no longer exists — pick a current inventory vehicle or leave it off.' }
   }
   // A date that looks misread/old/future stays flagged unless the person explicitly confirmed it.
   const questionableDate = f.dateConfirmed !== true && receiptDateWarning(input.receiptDate, todayBusinessDate()) !== null
@@ -171,6 +188,16 @@ export async function fileReceiptAction(f: FileForm): Promise<FileResult> {
     if (!link.ok) r.jobLinkError = link.error
     if (link.ok) revalidatePath(`/orders/${f.serviceOrderId}`)
   }
+  // Assign the purchase to the sales-inventory vehicle (or match it to an expense already on that vehicle).
+  // Same rule as the job link: a failure here never un-saves the receipt — it is reported. A repeat submit of
+  // an already-filed receipt may only re-apply this for a manager (an employee cannot re-point a filed receipt).
+  if (r.ok && vehicleId !== undefined && (!r.alreadyFiled || !!(await receiptManager()))) {
+    const link = await setReceiptVehicle({ receiptId: f.id, inventoryVehicleId: vehicleId, matchEventId: f.vehicleMatchEventId || null }, who)
+      .catch(() => ({ ok: false as const, error: 'Could not assign the vehicle.', inventoryVehicleId: undefined, previousVehicleId: undefined }))
+    if (vehicleId) { r.vehicleLinked = link.ok; if (!link.ok) r.vehicleLinkError = link.error }
+    if (link.ok) for (const v of [link.inventoryVehicleId, link.previousVehicleId]) if (v) { revalidatePath(`/auto-sales/${v}`); revalidatePath(`/admin/auto-sales/${v}`) }
+    if (link.ok) { revalidatePath('/auto-sales'); revalidatePath('/admin/auto-sales') }
+  }
   if (r.ok) revalidate()
   return r
 }
@@ -180,7 +207,7 @@ export async function approveReceiptAction(f: ReviewForm): Promise<{ ok: boolean
   if (!actor) return { ok: false, error: 'Manager sign-in required.' }
   if (!f.id) return { ok: false, error: 'Missing receipt.' }
   const fields = reviewFieldsFrom(f)
-  const vErr = await validateVehicle(fields)
+  const vErr = await applyVehicle(f.id, vehicleFrom(f), actor)
   if (vErr) return { ok: false, error: vErr }
   const r = await approveReceipt(f.id, fields, actor.name)
   if (r.ok) revalidate()

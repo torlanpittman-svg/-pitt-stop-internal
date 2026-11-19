@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // lock. authz is mocked (its own fail-closed logic is covered in authz.test.ts).
 vi.mock('./authz', () => ({ receiptManager: vi.fn() }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
+vi.mock('./vehicle-link', () => ({ setReceiptVehicle: vi.fn(async () => ({ ok: true, inventoryVehicleId: 'veh-123', previousVehicleId: null })) }))
 vi.mock('@/platform/blob', () => ({ getPrivateBlob: vi.fn(async () => ({ bytes: Buffer.from([1]), contentType: 'image/jpeg', size: 1 })) }))
 vi.mock('./ai', () => ({ extractExpense: vi.fn(async () => ({ status: 'extracted', model: 'gpt-4o', raw: {}, extraction: { vendor: 'V', date: null, subtotalCents: null, taxCents: null, totalCents: 100, categoryLabel: null, categoryKey: 'other', paymentMethod: null, paymentLast4: null, receiptNumber: null, present: {} } })) }))
 vi.mock('./db', () => ({
@@ -23,6 +24,7 @@ vi.mock('./db', () => ({
 import { receiptManager } from './authz'
 import { approveReceiptAction, rejectReceiptAction, saveReviewAction, retryExtractionAction } from './actions'
 import * as db from './db'
+import { setReceiptVehicle } from './vehicle-link'
 
 const asMock = <T>(fn: T) => fn as unknown as ReturnType<typeof vi.fn>
 const manager = { key: 'darryl', name: 'Darryl', role: 'manager' }
@@ -30,6 +32,7 @@ const manager = { key: 'darryl', name: 'Darryl', role: 'manager' }
 beforeEach(() => {
   vi.clearAllMocks()
   asMock(db.inventoryVehicleExists).mockResolvedValue(true)
+  asMock(setReceiptVehicle).mockResolvedValue({ ok: true, inventoryVehicleId: 'veh-123', previousVehicleId: null })
   asMock(db.consumeRateLimit).mockResolvedValue({ ok: true })
   asMock(db.claimRetryExtraction).mockResolvedValue({ ok: true, row: { id: 'r1', storage: 'blob_private', storageRef: 'business-receipts/x.jpg', contentType: 'image/jpeg' }, token: 'tok-1' })
 })
@@ -95,8 +98,28 @@ describe('vehicle association validation', () => {
     asMock(db.inventoryVehicleExists).mockResolvedValue(true)
     const r = await approveReceiptAction({ id: 'r1', entity: 'auto_sales', total: '100.00', receiptDate: '2026-09-14', inventoryVehicleId: 'veh-123' })
     expect(r.ok).toBe(true)
+    // The vehicle goes through the ONE assignment path (with its safeguards), never as a plain review field.
+    expect(asMock(setReceiptVehicle)).toHaveBeenCalledWith({ receiptId: 'r1', inventoryVehicleId: 'veh-123' }, { name: 'Darryl', key: 'darryl' })
     const [, fields] = asMock(db.approveReceipt).mock.calls[0]
-    expect(fields.inventoryVehicleId).toBe('veh-123')
+    expect('inventoryVehicleId' in fields).toBe(false)
+  })
+
+  it('approve and save-review cannot bypass the assignment safeguards: a refused assignment saves nothing', async () => {
+    asMock(receiptManager).mockResolvedValue(manager)
+    asMock(setReceiptVehicle).mockResolvedValue({ ok: false, error: 'A return or refund is recorded against this purchase on the vehicle.' })
+    const a = await approveReceiptAction({ id: 'r1', entity: 'auto_sales', total: '100.00', inventoryVehicleId: 'veh-999' })
+    expect(a).toMatchObject({ ok: false, error: expect.stringMatching(/return or refund/i) })
+    expect(asMock(db.approveReceipt)).not.toHaveBeenCalled()
+    const s = await saveReviewAction({ id: 'r1', inventoryVehicleId: 'veh-999' })
+    expect(s.ok).toBe(false)
+    expect(asMock(db.saveReview)).not.toHaveBeenCalled()
+  })
+
+  it('an employee cannot use approve/save-review to assign a vehicle', async () => {
+    asMock(receiptManager).mockResolvedValue(null)
+    expect((await saveReviewAction({ id: 'r1', inventoryVehicleId: 'veh-123' })).ok).toBe(false)
+    expect((await approveReceiptAction({ id: 'r1', inventoryVehicleId: 'veh-123' })).ok).toBe(false)
+    expect(asMock(setReceiptVehicle)).not.toHaveBeenCalled()
   })
 
   it('a general expense with no vehicle never triggers the existence check', async () => {
@@ -104,14 +127,17 @@ describe('vehicle association validation', () => {
     const r = await saveReviewAction({ id: 'r1', entity: 'detail', total: '10.00' })
     expect(r.ok).toBe(true)
     expect(asMock(db.inventoryVehicleExists)).not.toHaveBeenCalled()
+    expect(asMock(setReceiptVehicle)).not.toHaveBeenCalled()   // not sent → the assignment is left alone
   })
 
   it('clearing the association (empty string) is allowed without an existence check', async () => {
     asMock(receiptManager).mockResolvedValue(manager)
     await saveReviewAction({ id: 'r1', inventoryVehicleId: '' })
     expect(asMock(db.inventoryVehicleExists)).not.toHaveBeenCalled()
+    // Removal goes through the same path too (it is refused there while a return stands against the receipt).
+    expect(asMock(setReceiptVehicle)).toHaveBeenCalledWith({ receiptId: 'r1', inventoryVehicleId: null }, { name: 'Darryl', key: 'darryl' })
     const [, fields] = asMock(db.saveReview).mock.calls[0]
-    expect(fields.inventoryVehicleId).toBeNull()
+    expect('inventoryVehicleId' in fields).toBe(false)
   })
 })
 

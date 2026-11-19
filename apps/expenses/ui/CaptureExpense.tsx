@@ -21,12 +21,13 @@ import {
 import { fileReceiptAction } from '@/apps/expenses/actions'
 import { amountsWarning, receiptDateWarning, todayBusinessDate } from '@/apps/expenses/checks'
 import JobPicker, { type PickedJob } from './JobPicker'
+import VehiclePicker, { type PickedVehicle, type VehicleOption } from './VehiclePicker'
 import {
   OTHER_PAYMENT_MAX_LENGTH, OTHER_PAYMENT_FUNDINGS, OTHER_PAYMENT_METHODS, RECEIPT_PAYMENT_CHOICES,
   resolveReceiptPayment, autoSelectPayment,
 } from '@/apps/expenses/payment'
 
-export interface VehicleOption { id: string; label: string }
+export type { VehicleOption }
 
 // The server preserves the ORIGINAL bytes as evidence, so we never re-encode the file we send. The platform
 // caps request bodies (~4.5 MB); reject an oversized ORIGINAL up front (never silently shrink the only copy).
@@ -120,11 +121,11 @@ export default function CaptureExpense({ vehicles = [], job: startJob = null }: 
   const [date, setDate] = useState(''); const dateT = useRef(false)
   const [total, setTotal] = useState(''); const totalT = useRef(false)
   const [showExtras, setShowExtras] = useState(false)
-  const [vehicleId, setVehicleId] = useState('')
+  const [vehicle, setVehicle] = useState<PickedVehicle | null>(null)
   const [note, setNote] = useState('')
 
   const [saveErr, setSaveErr] = useState<string | null>(null)
-  const [result, setResult] = useState<{ status: string; reasons: string[]; jobLinked?: boolean; jobLinkError?: string } | null>(null)
+  const [result, setResult] = useState<{ status: string; reasons: string[]; jobLinked?: boolean; jobLinkError?: string; vehicleLinked?: boolean; vehicleLinkError?: string } | null>(null)
   const [resume, setResume] = useState<{ captureId: string; receiptId: string; fileToken?: string } | null>(null)
 
   // On mount (client only), offer to resume an in-progress capture whose photo is already saved. Deliberately
@@ -153,7 +154,7 @@ export default function CaptureExpense({ vehicles = [], job: startJob = null }: 
     setSaveState('uploading'); setReadState('idle'); setSaved(null); setPossibleDup(false); setDupChoice('')
     setEntity(startJob ? 'detail' : ''); setCategoryMode('single'); setCategoryKey(''); setPaymentChoice(''); setOtherPayment(''); setOtherFunding(''); setOtherPaymentMethod(''); paymentTouched.current = false; setPaymentAuto(false)
     setVendor(''); setDate(''); setTotal(''); vendorT.current = false; dateT.current = false; totalT.current = false
-    setShowExtras(false); setVehicleId(''); setNote(''); setSaveErr(null); setResult(null)
+    setShowExtras(false); setVehicle(null); setNote(''); setSaveErr(null); setResult(null)
     captureId.current = ""; setReadAttempts(0)
     if (camRef.current) camRef.current.value = ''
     if (upRef.current) upRef.current.value = ''
@@ -269,20 +270,23 @@ export default function CaptureExpense({ vehicles = [], job: startJob = null }: 
     if (possibleDup && !dupChoice) { setSaveErr('Tell us if this is the same purchase or a different one.'); return }
     if (!saved?.receiptId) { setSaveErr(saveState === 'duplicate' ? 'This receipt was already captured.' : 'The receipt hasn’t saved yet — one moment.'); return }
     if (receiptDateWarning(date, todayBusinessDate()) && !dateConfirmed) { setSaveErr('Check the date above — fix it, or confirm it is right.'); return }
+    if (vehicle && job) { setSaveErr('Choose a customer job or a sales vehicle for this receipt — not both.'); return }
+    if (vehicle && vehicle.matchEventId === undefined) { setSaveErr('Tell us whether this purchase is already entered on the vehicle.'); return }
     setSaveErr(null); setStep('saving')
     const res = await fileReceiptAction({
       id: saved.receiptId, token: saved.fileToken,
       entity, category: categoryKey, categoryMode, paymentChoice, otherPayment,
       otherFunding: otherFunding || undefined, otherPaymentMethod: otherPaymentMethod || undefined,
       vendor, receiptDate: date, total,
-      filingNote: note || undefined, inventoryVehicleId: vehicleId || undefined,
+      filingNote: note || undefined,
+      inventoryVehicleId: vehicle?.id || undefined, vehicleMatchEventId: vehicle?.matchEventId || undefined,
       serviceOrderId: job?.id, dateConfirmed: dateConfirmed || undefined,
       description: description.trim() || undefined,
       duplicate: possibleDup && dupChoice === 'same',   // flag as a duplicate → manager resolves, CFO won't count it
     })
     if (!res.ok) { setSaveErr(res.error || 'Could not save — try again.'); setStep('confirm'); return }
     clearResume()
-    setResult({ status: res.status ?? 'needs_review', reasons: res.reasons ?? [], jobLinked: res.jobLinked, jobLinkError: res.jobLinkError })
+    setResult({ status: res.status ?? 'needs_review', reasons: res.reasons ?? [], jobLinked: res.jobLinked, jobLinkError: res.jobLinkError, vehicleLinked: res.vehicleLinked, vehicleLinkError: res.vehicleLinkError })
   }
 
   // ── IDLE ──
@@ -341,6 +345,8 @@ export default function CaptureExpense({ vehicles = [], job: startJob = null }: 
           </>
         )}
         {job && result.jobLinked && <p className="text-indigo-200 text-sm break-words">Attached to {job.label}. The customer’s invoice was not changed.</p>}
+        {vehicle && result.vehicleLinked && <p className="text-indigo-200 text-sm break-words">{vehicle.matchEventId ? `Attached to the expense already on ${vehicle.label} — counted once.` : `Added to ${vehicle.label}’s expenses${filed ? '' : ' as pending until a manager files it'}.`}</p>}
+        {vehicle && result.vehicleLinked === false && <p role="alert" className="text-amber-300 text-sm">The receipt is saved, but it could not be assigned to the vehicle{result.vehicleLinkError ? ` (${result.vehicleLinkError})` : ''}. A manager can assign it from Receipts.</p>}
         {job && result.jobLinked === false && <p role="alert" className="text-amber-300 text-sm">The receipt is saved, but it could not be attached to the job{result.jobLinkError ? ` (${result.jobLinkError})` : ''}. A manager can attach it from the job’s Expenses section.</p>}
         {startJob && <a href={`/orders/${startJob.id}`} className="block w-full bg-indigo-600 active:bg-indigo-700 text-white text-base font-bold py-4 rounded-2xl mt-2">Back to the job</a>}
         <button type="button" onClick={resetAll} className={startJob ? 'w-full border border-gray-700 text-gray-200 text-base font-semibold py-3 rounded-2xl' : 'w-full bg-indigo-600 active:bg-indigo-700 text-white text-base font-bold py-4 rounded-2xl mt-2'}>Capture Another</button>
@@ -527,23 +533,26 @@ export default function CaptureExpense({ vehicles = [], job: startJob = null }: 
         {readLine && <p className="text-gray-500 text-xs break-words">Read from the receipt: {readLine}. Shipping and tax are already inside the total.</p>}
         {sumWarn && <p role="alert" className="text-amber-300 text-sm">{sumWarn}</p>}
 
+        {/* Auto Sales vehicle — asked right here (never tucked away). Hidden only when this is a customer-job expense. */}
+        {!job && (
+          <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-3 space-y-2">
+            <p className="text-sm text-gray-200 font-semibold">Assign to Auto Sales Vehicle <span className="text-gray-500 font-normal">(optional)</span></p>
+            <p className="text-xs text-gray-500">Only for a car we are selling. The receipt then shows under that vehicle’s expenses.</p>
+            <VehiclePicker vehicles={vehicles} value={vehicle} onChange={(v) => { setVehicle(v); setSaveErr(null) }} total={total} date={date} receiptId={saved?.receiptId} disabled={saving} />
+          </div>
+        )}
+
         {!showExtras ? (
-          <button type="button" onClick={() => setShowExtras(true)} className="text-indigo-300 text-sm py-2">{job ? '+ Add a description or note (optional)' : '+ Add a customer job, vehicle or note (optional)'}</button>
+          <button type="button" onClick={() => setShowExtras(true)} className="text-indigo-300 text-sm py-2">{job || vehicle ? '+ Add a description or note (optional)' : '+ Add a customer job or note (optional)'}</button>
         ) : (
           <div className="space-y-3 rounded-xl border border-gray-800 bg-gray-900/60 p-3">
-            {!startJob && (
+            {!startJob && !vehicle && (
               <div className="text-xs text-gray-500">Customer job (optional — if this was bought for a customer’s car)
                 <div className="mt-1"><JobPicker value={job} onChange={setJob} disabled={saving} /></div>
               </div>
             )}
             <label className="block text-xs text-gray-500">What was it? (optional)
               <input value={description} onChange={(e) => setDescription(e.target.value)} disabled={saving} maxLength={300} placeholder={readExtras.description || 'e.g. seat cushion foam'} className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />
-            </label>
-            <label className={job ? 'hidden' : 'block text-xs text-gray-500'}>Sales-inventory vehicle (optional — only for a car we are selling)
-              <select value={vehicleId} onChange={(e) => setVehicleId(e.target.value)} disabled={saving} className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white">
-                <option value="">Not for a specific vehicle</option>
-                {vehicles.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
-              </select>
             </label>
             <label className="block text-xs text-gray-500">Note (optional)
               <input value={note} onChange={(e) => setNote(e.target.value)} disabled={saving} placeholder="Anything a manager should know" className="mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-base text-white" />

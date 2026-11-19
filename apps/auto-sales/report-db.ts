@@ -12,6 +12,7 @@ import { desc, eq, and, inArray } from 'drizzle-orm'
 import { getDb } from '@/platform/db'
 import { vehicles } from '@/apps/workflow/schema'
 import { inventoryVehicles, vehicleFinancialEvents, autoSalesReportSnapshots } from './schema'
+import { withAssignedReceipts } from './receipt-expenses'
 import { buildMonthlyReport, type MonthlyReport, type ReportInvRow, type ReportEvent } from './report'
 
 /** Reporting timezone (business timezone). Matches the shop convention (SHOP_TIMEZONE, default Central).
@@ -42,7 +43,9 @@ export async function loadMonthlyReport(month: string, tz = reportingTimezone(),
   }))
   const eventsByVehicle = new Map<string, ReportEvent[]>()
   if (invRows.length) {
-    const events = await db.select().from(vehicleFinancialEvents).where(inArray(vehicleFinancialEvents.inventoryVehicleId, invRows.map((r) => r.id)))
+    const ledger = await db.select().from(vehicleFinancialEvents).where(inArray(vehicleFinancialEvents.inventoryVehicleId, invRows.map((r) => r.id)))
+    // Receipts assigned to a vehicle on the Receipts page are part of its cost (same merge the folder uses).
+    const { events } = await withAssignedReceipts(invRows.map((r) => r.id), ledger)
     for (const e of events) {
       const a = eventsByVehicle.get(e.inventoryVehicleId) ?? []
       a.push({ id: e.id, economicCategory: e.economicCategory, amountCents: e.amountCents, status: e.status, reversesEventId: e.reversesEventId, eventDate: e.eventDate, evidence: e.evidence })

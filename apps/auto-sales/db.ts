@@ -13,6 +13,8 @@ import { generateStockNumber } from './stock'
 import { costRelevance, defaultCashflow, refundKindDef, labelFor, isRemovableVehicleExpense, type EconomicCategory, type FinancialCompleteness } from './types'
 import { scoreReturnMatch, type NormalizedLine, type PriorPurchase, type ReturnQuery, type ReturnMatchResult } from './returns'
 import type { ReceiptExtraction } from './ai/receipt'
+import { withAssignedReceipts, isReceiptEvent, receiptMatchedToEvent } from './receipt-expenses'
+import { receiptImagePath } from '@/apps/expenses/view'
 
 const iso = (d: Date) => d.toISOString().slice(0, 10)
 
@@ -189,6 +191,8 @@ export async function reverseEvent(eventId: string, actor: string | null): Promi
   const db = getDb()
   const [orig] = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.id, eventId)).limit(1)
   if (!orig) return
+  // A line with a Receipts-page receipt matched to it is never undone on its own (see removeVehicleExpense).
+  if (await receiptMatchedToEvent(orig.id)) return
   try {
     await db.insert(vehicleFinancialEvents).values({
       inventoryVehicleId: orig.inventoryVehicleId, economicCategory: 'adjustment', cashflowCategory: 'non_cash',
@@ -233,6 +237,13 @@ export async function removeVehicleExpense(input: { eventId: string; actor: stri
   // Accounting-link guard — never break a reconciled/linked record or touch QuickBooks.
   if (orig.status === 'reconciled' || orig.finTransactionId) {
     return { ok: false, error: 'This expense is linked to a reconciled bank/accounting record, so it can’t be removed here. Ask the accountant to unlink it first — no QuickBooks record is changed.' }
+  }
+  // Receipt-match guard — this expense is the ONE record counting for a purchase whose receipt (Receipts page)
+  // was matched to it. Removing it alone would make the receipt start counting in its place, so the vehicle
+  // total would not change and the "removed" purchase would still be on the vehicle. Resolve the receipt first.
+  const matched = await receiptMatchedToEvent(orig.id)
+  if (matched) {
+    return { ok: false, error: `A receipt from the Receipts page${matched.vendor ? ` (${matched.vendor})` : ''} is attached to this expense. Open that receipt in Receipts and remove it from the vehicle first — then this expense can be removed.` }
   }
   // Fast path: if a reversal already exists, treat repeat requests as a no-op success (avoids a doomed insert).
   const [existing] = await db.select({ id: vehicleFinancialEvents.id }).from(vehicleFinancialEvents)
@@ -380,7 +391,10 @@ export interface ReturnableExpense { id: string; economicCategory: string; vendo
 /** Expenses eligible to return (verified cost_add events) with how much remains returnable. */
 export async function getReturnableExpenses(inventoryVehicleId: string): Promise<ReturnableExpense[]> {
   const db = getDb()
-  const events = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.inventoryVehicleId, inventoryVehicleId))
+  const ledger = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.inventoryVehicleId, inventoryVehicleId))
+  // Receipts assigned on the Receipts page are purchases on this vehicle too (their line id = the receipt id),
+  // so a return can be recorded against them and is netted by the same original_event_id math.
+  const { events } = await withAssignedReceipts([inventoryVehicleId], ledger)
   const reversedTargets = new Set(events.filter((e) => e.reversesEventId).map((e) => e.reversesEventId))
   const active = events.filter((e) => e.status !== 'void' && !e.reversesEventId && !reversedTargets.has(e.id))
   const returnsByOriginal = new Map<string, number>()
@@ -399,8 +413,15 @@ export interface ReturnInput {
  *  returning more than economically remains unless allowExceed is set (audited via memo). Never deletes. */
 export async function addReturnRefund(input: ReturnInput): Promise<{ ok: boolean; error?: string; eventId?: string }> {
   const db = getDb()
-  const [orig] = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.id, input.originalEventId)).limit(1)
-  if (!orig) return { ok: false, error: 'Original expense not found' }
+  let [orig] = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.id, input.originalEventId)).limit(1)
+  if (!orig) {
+    // The purchase may be a receipt assigned to this vehicle on the Receipts page (line id = receipt id).
+    const ledger = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.inventoryVehicleId, input.inventoryVehicleId))
+    const merged = await withAssignedReceipts([input.inventoryVehicleId], ledger)
+    orig = merged.events.find((e) => e.id === input.originalEventId && isReceiptEvent(e)) as typeof orig
+  }
+  if (!orig || orig.inventoryVehicleId !== input.inventoryVehicleId) return { ok: false, error: 'Original expense not found' }
+  const fromReceipt = isReceiptEvent(orig)
   const returnable = await getReturnableExpenses(input.inventoryVehicleId)
   const remaining = returnable.find((r) => r.id === input.originalEventId)?.remainingCents ?? 0
   if (input.amountCents > remaining && !input.allowExceed) return { ok: false, error: `Exceeds remaining ($${(remaining / 100).toFixed(2)}). Confirm an explicit over-return to proceed.` }
@@ -411,7 +432,8 @@ export async function addReturnRefund(input: ReturnInput): Promise<{ ok: boolean
     amountCents: input.amountCents, eventDate: input.eventDate, vendor: orig.vendor, originalEventId: orig.id,
     refundStatus: input.refundStatus, refundMethod: input.refundMethod, refundDestinationAccount: input.destinationAccount ?? null,
     settledAt: input.refundStatus === 'settled' ? input.eventDate : null, status: 'verified', source: 'manual',
-    evidence: (input.evidence ?? null) as any,
+    // A return against a Receipts-page purchase names that receipt, so it is traceable from both sides.
+    evidence: (fromReceipt ? { ...((input.evidence as object | null) ?? {}), originalReceiptId: orig.id } : (input.evidence ?? null)) as any,
     memo: input.memo ?? `${input.allowExceed && input.amountCents > remaining ? 'OVER-RETURN — ' : ''}${input.refundMethod} against ${orig.economicCategory}`, createdBy: input.actor,
   }).returning({ id: vehicleFinancialEvents.id })
   return { ok: true, eventId: row.id }
@@ -657,7 +679,8 @@ export async function getInventoryList(): Promise<InventoryRow[]> {
     .orderBy(desc(inventoryVehicles.createdAt))
   if (rows.length === 0) return []
   const ids = rows.map((r) => r.inv.id)
-  const events = await db.select().from(vehicleFinancialEvents).where(inArray(vehicleFinancialEvents.inventoryVehicleId, ids))
+  const ledger = await db.select().from(vehicleFinancialEvents).where(inArray(vehicleFinancialEvents.inventoryVehicleId, ids))
+  const { events } = await withAssignedReceipts(ids, ledger)
   const byVeh = new Map<string, (typeof events)>()
   for (const e of events) { const a = byVeh.get(e.inventoryVehicleId) ?? []; a.push(e); byVeh.set(e.inventoryVehicleId, a) }
   const today = new Date()
@@ -677,15 +700,21 @@ export interface VehicleFolder {
   events: (typeof vehicleFinancialEvents.$inferSelect)[]; summary: VehicleFinancialSummary; result: VehicleResult
   returnable: ReturnableExpense[]; daysOnLot: number | null
   /** eventId → receipt attachment (ordinary-sensitivity docs only get a viewable url). */
-  attachments: Record<string, { documentId: string; url: string | null; docType: string }>
+  attachments: Record<string, { documentId: string; url: string | null; docType: string; managerOnly?: boolean }>
+  /** Cost lines that ARE a receipt assigned on the Receipts page: line id (= receipt id) → true. */
+  receiptLineIds: string[]
+  /** Ledger line id → the receipt a person matched to it (same purchase, counted once as the ledger line). */
+  matchedReceiptIds: Record<string, string>
 }
 export async function getVehicleFolder(id: string): Promise<VehicleFolder | null> {
   const db = getDb()
   const [row] = await db.select({ inv: inventoryVehicles, v: vehicles }).from(inventoryVehicles)
     .innerJoin(vehicles, eq(inventoryVehicles.vehicleId, vehicles.id)).where(eq(inventoryVehicles.id, id)).limit(1)
   if (!row) return null
-  const events = await db.select().from(vehicleFinancialEvents)
+  const ledger = await db.select().from(vehicleFinancialEvents)
     .where(eq(vehicleFinancialEvents.inventoryVehicleId, id)).orderBy(vehicleFinancialEvents.eventDate, vehicleFinancialEvents.createdAt)
+  // Every expense together: the vehicle's own ledger + receipts assigned to it on the Receipts page.
+  const { events, receiptLines, matchedReceipts } = await withAssignedReceipts([id], ledger)
   const daysOnLot = row.inv.acquiredAt ? Math.max(0, Math.round((Date.now() - new Date(row.inv.acquiredAt + 'T00:00:00Z').getTime()) / 86400_000)) : null
   const summary = computeSummary(events, row.inv.financialCompleteness as FinancialCompleteness)
   // Attachments: documents linked to this vehicle's events. Only ordinary docs expose a direct url;
@@ -693,7 +722,16 @@ export async function getVehicleFolder(id: string): Promise<VehicleFolder | null
   const docs = await db.select().from(vehicleDocuments).where(eq(vehicleDocuments.inventoryVehicleId, id))
   const attachments: VehicleFolder['attachments'] = {}
   for (const d of docs) if (d.linkedEventId) attachments[d.linkedEventId] = { documentId: d.id, url: d.sensitivity === 'ordinary' && d.storage === 'blob_public' ? d.storageRef : null, docType: d.docType }
-  return { inv: row.inv, vehicle: row.v, events, summary, result: computeResult(row.inv, summary), returnable: await getReturnableExpenses(id), daysOnLot, attachments }
+  // Receipts-page documents are PRIVATE (manager-only gated route) — the view only links them for a manager.
+  const receiptDoc = (r: { id: string; storage: string; storageRef: string | null }) =>
+    ({ documentId: r.id, url: r.storage !== 'none' && r.storageRef ? receiptImagePath(r.id) : null, docType: 'receipt', managerOnly: true })
+  for (const [lineId, r] of receiptLines) attachments[lineId] = receiptDoc(r)
+  const matchedReceiptIds: Record<string, string> = {}
+  for (const [eventId, r] of matchedReceipts) { matchedReceiptIds[eventId] = r.id; if (!attachments[eventId]) attachments[eventId] = receiptDoc(r) }
+  return {
+    inv: row.inv, vehicle: row.v, events, summary, result: computeResult(row.inv, summary), returnable: await getReturnableExpenses(id), daysOnLot, attachments,
+    receiptLineIds: [...receiptLines.keys()], matchedReceiptIds,
+  }
 }
 
 // ── B2: Receipt / document capture ──────────────────────────────────────────

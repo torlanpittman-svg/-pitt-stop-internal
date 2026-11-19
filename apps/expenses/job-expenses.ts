@@ -292,6 +292,8 @@ export async function allocateReceipt(input: AllocateInput, actor: Actor): Promi
   const receipt = await getReceipt(input.receiptId)
   if (!receipt) return { ok: false, error: 'Receipt not found.' }
   if (receipt.status === 'rejected') return { ok: false, error: 'A rejected receipt cannot be assigned. Reopen it first.' }
+  // One purchase belongs to a customer job OR to a sales-inventory vehicle — never both.
+  if (input.target === 'job' && receipt.inventoryVehicleId) return { ok: false, error: 'This receipt is assigned to a sales-inventory vehicle. Remove that assignment before attaching it to a customer job.' }
   const targetErr = await validateTarget(input)
   if (targetErr) return { ok: false, error: targetErr }
 

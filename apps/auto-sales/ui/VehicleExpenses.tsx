@@ -12,6 +12,7 @@
  */
 import { useState } from 'react'
 import { removeVehicleExpenseAction } from '@/apps/auto-sales/actions'
+import { unassignReceiptVehicleAction } from '@/apps/expenses/vehicle-actions'
 
 const money = (c: number) => `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -24,6 +25,8 @@ export type ExpenseRow = {
   receiptUrl: string | null
   hasReceipt: boolean
   accountingLocked: boolean
+  receiptId?: string | null    // set when this line IS a receipt assigned on the Receipts page
+  lockReason?: string | null   // why Remove is unavailable (defaults to the accounting-link explanation)
   verified: boolean            // false = pending/unverified — attached, but not yet in verified "Added costs"
 }
 
@@ -54,7 +57,9 @@ export default function VehicleExpenses({ inventoryVehicleId, vehicleLabel, canR
 
   async function remove(id: string) {
     setBusyId(id); setError(null)
-    const r = await removeVehicleExpenseAction({ inventoryVehicleId, eventId: id })
+    // A Receipts-page receipt is un-assigned (it stays in Receipts); a typed expense gets a correcting entry.
+    const row = expenses.find((e) => e.id === id)
+    const r = row?.receiptId ? await unassignReceiptVehicleAction({ receiptId: row.receiptId }) : await removeVehicleExpenseAction({ inventoryVehicleId, eventId: id })
     if (r.ok) { window.location.reload(); return }   // reloads with the expense netted out + History showing the removal
     setBusyId(null)
     setError({ id, msg: r.error ?? 'Could not remove this expense.' })
@@ -100,6 +105,7 @@ export default function VehicleExpenses({ inventoryVehicleId, vehicleLabel, canR
               >
                 <div className="min-w-0">
                   <span className="text-gray-200 text-sm">{e.categoryLabel}</span>
+                  {e.receiptId && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full border border-indigo-900/60 bg-indigo-950/30 text-indigo-300" title="Assigned to this vehicle from the Receipts page">Receipts</span>}
                   {!e.verified && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full border bg-amber-950/40 text-amber-300 border-amber-900/60" title="Not yet verified — attached, but not counted in verified “Added costs”">pending</span>}
                   {e.hasReceipt && (e.receiptUrl
                     ? <a href={e.receiptUrl} target="_blank" rel="noopener" className="text-indigo-300 no-underline ml-1" title="View receipt">📎</a>
@@ -113,7 +119,7 @@ export default function VehicleExpenses({ inventoryVehicleId, vehicleLabel, canR
                       className="text-gray-500 hover:text-red-400 text-[11px] underline">Remove</button>
                   )}
                   {canRemove && e.accountingLocked && (
-                    <span className="text-amber-400/80 text-[11px]" title="Linked to a reconciled bank/accounting record — ask the accountant to unlink it first.">🔒 linked</span>
+                    <span className="text-amber-400/80 text-[11px]" title={e.lockReason ?? 'Linked to a reconciled bank/accounting record — ask the accountant to unlink it first.'}>🔒 linked</span>
                   )}
                 </div>
               </div>
@@ -123,7 +129,9 @@ export default function VehicleExpenses({ inventoryVehicleId, vehicleLabel, canR
                   <p className="text-gray-300 text-xs">
                     Remove <span className="text-white font-semibold">{e.categoryLabel}{e.vendor ? ` · ${e.vendor}` : ''} · {money(e.amountCents)}</span> from <span className="text-white font-semibold">{vehicleLabel}</span>?
                   </p>
-                  <p className="text-gray-500 text-[11px] mt-0.5">Corrects a mistaken attachment. The receipt is kept and it stays in History; this is not a refund and changes no accounting.</p>
+                  <p className="text-gray-500 text-[11px] mt-0.5">{e.receiptId
+                    ? 'Takes this receipt off the vehicle. The receipt itself stays in Receipts; this is not a refund and changes no accounting.'
+                    : 'Corrects a mistaken attachment. The receipt is kept and it stays in History; this is not a refund and changes no accounting.'}</p>
                   {error?.id === e.id && <p className="text-red-400 text-xs mt-1">{error.msg}</p>}
                   <div className="flex gap-2 mt-2">
                     <button disabled={busy} onClick={cancel} className="flex-1 bg-gray-800 text-gray-200 py-2.5 rounded-xl text-sm disabled:opacity-50">Cancel</button>

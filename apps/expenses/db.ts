@@ -204,18 +204,24 @@ export async function inventoryVehicleExists(id: string): Promise<boolean> {
   return !!row
 }
 
-export interface VehiclePickerOption { id: string; label: string }
-/** Active inventory vehicles for the review-screen vehicle selector (id + a short human label). */
+export interface VehiclePickerOption {
+  id: string; label: string
+  stock: string | null; vin: string | null; year: string | null; make: string | null; model: string | null
+  sold: boolean
+}
+/** EVERY inventory vehicle (active and sold) for the Receipts vehicle picker — searchable by stock #, VIN,
+ *  year, make and model. Active vehicles first, newest first. */
 export async function listInventoryVehiclesForPicker(): Promise<VehiclePickerOption[]> {
   const rows = await getDb()
-    .select({ id: inventoryVehicles.id, stock: inventoryVehicles.stockNumber, year: vehicles.year, make: vehicles.make, model: vehicles.model, vin: vehicles.vin })
+    .select({ id: inventoryVehicles.id, stock: inventoryVehicles.stockNumber, status: inventoryVehicles.status, year: vehicles.year, make: vehicles.make, model: vehicles.model, vin: vehicles.vin })
     .from(inventoryVehicles).innerJoin(vehicles, eq(inventoryVehicles.vehicleId, vehicles.id))
     .orderBy(desc(inventoryVehicles.createdAt))
   return rows.map((r) => {
     const ymm = [r.year, r.make, r.model].filter(Boolean).join(' ')
     const tail = r.vin ? ` · ${r.vin.slice(-6)}` : ''
-    return { id: r.id, label: `${r.stock ? r.stock + ' — ' : ''}${ymm || 'Vehicle'}${tail}` }
-  })
+    const sold = ['sold', 'delivered', 'wholesaled'].includes(r.status)
+    return { id: r.id, label: `${r.stock ? r.stock + ' — ' : ''}${ymm || 'Vehicle'}${tail}`, stock: r.stock, vin: r.vin, year: r.year, make: r.make, model: r.model, sold }
+  }).sort((a, b) => Number(a.sold) - Number(b.sold))
 }
 
 // ── Read models ────────────────────────────────────────────────────────────────
@@ -263,7 +269,7 @@ export interface ReviewFields {
   subtotalCents?: number | null; taxCents?: number | null; totalCents?: number | null
   shippingCents?: number | null; invoiceNumber?: string | null; orderNumber?: string | null; description?: string | null
   paymentMethod?: PaymentMethod | null; accountRef?: string | null; paymentLast4?: string | null
-  memo?: string | null; inventoryVehicleId?: string | null
+  memo?: string | null
 }
 /** Only keep the review fields that are set + valid — never silently coerces (undefined = "unchanged"). */
 function sanitizeReview(f: ReviewFields): Record<string, unknown> {
@@ -283,7 +289,7 @@ function sanitizeReview(f: ReviewFields): Record<string, unknown> {
   if (f.accountRef !== undefined) set.accountRef = f.accountRef || null
   if (f.paymentLast4 !== undefined) set.paymentLast4 = f.paymentLast4 || null
   if (f.memo !== undefined) set.memo = f.memo || null
-  if (f.inventoryVehicleId !== undefined) set.inventoryVehicleId = f.inventoryVehicleId || null
+  // The sales-inventory vehicle is NOT a review field: it is assigned only through vehicle-link.setReceiptVehicle.
   return set
 }
 
@@ -364,7 +370,6 @@ export interface FileReceiptInput {
   description?: string | null
   memo?: string | null                // undefined = leave unchanged
   filingNote?: string | null
-  inventoryVehicleId?: string | null  // undefined = unchanged; '' handled by the caller → null
 }
 export interface FileReceiptResult {
   ok: boolean; error?: string; conflict?: boolean; alreadyFiled?: boolean
@@ -425,7 +430,6 @@ export async function fileReceipt(id: string, input: FileReceiptInput, actor: Fi
   // The card ending is stored ONLY for a card source (distinguishes the two AMB Mastercards); a check/cash/
   // personal/other choice clears it. Kept as a string so leading zeros in 0022/0320 survive.
   if (input.paymentLast4 !== undefined) set.paymentLast4 = input.paymentLast4 || null
-  if (input.inventoryVehicleId !== undefined) set.inventoryVehicleId = input.inventoryVehicleId || null
 
   if (decision.status === 'filed') {
     set.status = 'filed'; set.filedBy = actor.name; set.filedByKey = actor.key; set.filedAt = now

@@ -32,8 +32,11 @@ const card = 'rounded-2xl bg-gray-900 border border-gray-800 p-4'
 export default async function VehicleFolderView({ id, admin, reverseAction }: { id: string; admin: boolean; reverseAction?: (fd: FormData) => Promise<void> }) {
   const [folder, cutover, manager] = await Promise.all([getVehicleFolder(id), autoSalesCutoverDate(), authorizedManager()])
   if (!folder) notFound()
-  const { inv, vehicle, events, summary, result, returnable, daysOnLot, attachments } = folder
+  const { inv, vehicle, events, summary, result, returnable, daysOnLot, attachments, matchedReceiptIds } = folder
   const isManager = !!manager
+  const receiptLines = new Set(folder.receiptLineIds)
+  // Receipts-page documents are private: only a manager gets a working link (others see “receipt on file”).
+  const docUrl = (eventId: string) => { const a = attachments[eventId]; return a && (!a.managerOnly || isManager) ? a.url : null }
   // Canonical cost basis (ONE calc service) — drives the acquisition-price line, the sale confirmation
   // and the monthly report identically.
   const basis = computeCostBasis(events)
@@ -66,8 +69,12 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
     .map((e) => ({
       id: e.id, categoryLabel: labelFor(e.economicCategory), date: e.eventDate,
       vendor: e.vendor ?? (e.memo ? e.memo.slice(0, 48) : null), amountCents: e.amountCents,
-      receiptUrl: attachments[e.id]?.url ?? null, hasReceipt: Boolean(attachments[e.id]),
-      accountingLocked: e.status === 'reconciled' || Boolean(e.finTransactionId),
+      receiptUrl: docUrl(e.id), hasReceipt: Boolean(attachments[e.id]) || receiptLines.has(e.id),
+      // A line that IS a receipt assigned on the Receipts page: Remove un-assigns the receipt (nothing is reversed).
+      receiptId: receiptLines.has(e.id) ? e.id : null,
+      // A typed expense with a Receipts-page receipt matched to it stays put until that match is undone in Receipts.
+      accountingLocked: e.status === 'reconciled' || Boolean(e.finTransactionId) || Boolean(matchedReceiptIds[e.id]),
+      lockReason: matchedReceiptIds[e.id] ? 'A receipt from the Receipts page is attached to this expense. Remove the vehicle from that receipt first.' : null,
       verified: e.status === 'verified' || e.status === 'reconciled',
     }))
   const expensesTotalCents = expenseRows.reduce((t, r) => t + r.amountCents, 0)
@@ -266,15 +273,15 @@ export default async function VehicleFolderView({ id, admin, reverseAction }: { 
                 <div className="min-w-0">
                   <span className="text-gray-200">{labelFor(e.economicCategory)}</span>
                   {e.reversesEventId && <span className="text-amber-400 text-xs no-underline"> ↩</span>}
-                  {attachments[e.id] && (attachments[e.id].url
-                    ? <a href={attachments[e.id].url!} target="_blank" rel="noopener" className="text-indigo-300 no-underline ml-1" title="View receipt">📎</a>
+                  {attachments[e.id] && (docUrl(e.id)
+                    ? <a href={docUrl(e.id)!} target="_blank" rel="noopener" className="text-indigo-300 no-underline ml-1" title="View receipt">📎</a>
                     : <span className="ml-1" title="receipt on file">📎</span>)}
-                  <span className="block text-gray-600 text-xs">{e.eventDate}{e.vendor ? ` · ${e.vendor}` : ''}{paySrc ? ` · ${paySrc}` : ''}</span>
+                  <span className="block text-gray-600 text-xs">{e.eventDate}{e.vendor ? ` · ${e.vendor}` : ''}{paySrc ? ` · ${paySrc}` : ''}{receiptLines.has(e.id) ? ' · from Receipts' : ''}</span>
                   {e.economicCategory === 'adjustment' && e.memo && <span className="block text-amber-400/70 text-[11px] no-underline">{e.memo}</span>}
                 </div>
                 <div className="text-right shrink-0">
                   <span className="text-gray-200 tabular-nums">{money(e.amountCents)}</span>
-                  {reverseAction && !voided && !['acquisition', 'sale', 'return', 'refund', 'vendor_credit'].includes(e.economicCategory) && <form action={reverseAction} className="inline"><input type="hidden" name="inventoryVehicleId" value={inv.id} /><input type="hidden" name="eventId" value={e.id} /><button className="text-gray-600 text-[11px] underline ml-2">undo</button></form>}
+                  {reverseAction && !voided && !receiptLines.has(e.id) && !matchedReceiptIds[e.id] && !['acquisition', 'sale', 'return', 'refund', 'vendor_credit'].includes(e.economicCategory) && <form action={reverseAction} className="inline"><input type="hidden" name="inventoryVehicleId" value={inv.id} /><input type="hidden" name="eventId" value={e.id} /><button className="text-gray-600 text-[11px] underline ml-2">undo</button></form>}
                 </div>
               </div>
             )

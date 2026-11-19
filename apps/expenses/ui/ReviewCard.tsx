@@ -22,6 +22,9 @@ import { amountsWarning, receiptDateWarning, todayBusinessDate } from '@/apps/ex
 import { summarizeAllocations } from '@/apps/expenses/allocations'
 import type { ReceiptAllocationView } from '@/apps/expenses/job-expenses'
 import JobPicker, { type PickedJob } from './JobPicker'
+import VehiclePicker, { type PickedVehicle, type VehicleOption } from './VehiclePicker'
+import { assignReceiptVehicleAction, unassignReceiptVehicleAction } from '@/apps/expenses/vehicle-actions'
+import type { ReceiptVehicleView } from '@/apps/expenses/vehicle-link'
 import type { ReviewCardData } from '@/apps/expenses/view'
 import {
   OTHER_PAYMENT_MAX_LENGTH, OTHER_PAYMENT_FUNDINGS, OTHER_PAYMENT_METHODS, RECEIPT_PAYMENT_CHOICES,
@@ -29,11 +32,11 @@ import {
 } from '@/apps/expenses/payment'
 
 export type { ReviewCardData }
-export interface VehicleOption { id: string; label: string }
+export type { VehicleOption }
 const box = 'bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-base text-white w-full'
 const lbl = 'text-xs text-gray-500'
 
-export default function ReviewCard({ r, vehicles = [], allocations = [] }: { r: ReviewCardData; vehicles?: VehicleOption[]; allocations?: ReceiptAllocationView[] }) {
+export default function ReviewCard({ r, vehicles = [], allocations = [], vehicle = null }: { r: ReviewCardData; vehicles?: VehicleOption[]; allocations?: ReceiptAllocationView[]; vehicle?: ReceiptVehicleView | null }) {
   const router = useRouter()
   const [entity, setEntity] = useState(r.entity)
   const [category, setCategory] = useState(r.category)
@@ -50,7 +53,8 @@ export default function ReviewCard({ r, vehicles = [], allocations = [] }: { r: 
   const storedOther = otherPaymentDescription(r) !== null
   const [otherFunding, setOtherFunding] = useState(storedOther ? otherPaymentFunding(r) : '')
   const [otherPaymentMethod, setOtherPaymentMethod] = useState(storedOther && r.funding === 'business' ? (r.paymentMethod ?? '') : '')
-  const [inventoryVehicleId, setInventoryVehicleId] = useState(r.inventoryVehicleId ?? '')
+  // Auto Sales vehicle this purchase belongs to — saved by its own action (works on a filed receipt too).
+  const [pickVehicle, setPickVehicle] = useState<PickedVehicle | null>(null)
   const [memo, setMemo] = useState(r.memo ?? '')
   const [shipping, setShipping] = useState(centsToDollars(r.shippingCents))
   const [invoiceNumber, setInvoiceNumber] = useState(r.invoiceNumber ?? '')
@@ -97,7 +101,7 @@ export default function ReviewCard({ r, vehicles = [], allocations = [] }: { r: 
     id: r.id, entity, category, categoryMode: 'single', funding, paymentMethod: paymentMethod || undefined,
     paymentChoice: paymentChoice || undefined, otherPayment,
     otherFunding: otherFunding || undefined, otherPaymentMethod: otherPaymentMethod || undefined,
-    vendor, receiptDate, subtotal, tax, total, memo, inventoryVehicleId,
+    vendor, receiptDate, subtotal, tax, total, memo,
     shipping, invoiceNumber, orderNumber, description,
     // The manager is looking at the date (any warning is shown right under it) — their filing confirms it.
     dateConfirmed: true,
@@ -111,6 +115,15 @@ export default function ReviewCard({ r, vehicles = [], allocations = [] }: { r: 
     if (res.ok) { setPickJob(null); setAssignAmount('') }
     return res
   }, target === 'job' ? 'Attached to the job.' : 'Marked as overhead.')
+  const onJob = allocations.some((a) => a.target === 'job')
+  const assignVehicle = () => run(async () => {
+    if (!pickVehicle) return { ok: false, error: 'Choose a vehicle.' }
+    if (pickVehicle.matchEventId === undefined) return { ok: false, error: 'Say whether this purchase is already entered on the vehicle.' }
+    const res = await assignReceiptVehicleAction({ receiptId: r.id, inventoryVehicleId: pickVehicle.id, matchEventId: pickVehicle.matchEventId })
+    if (res.ok) setPickVehicle(null)
+    return res
+  }, 'Assigned to the vehicle.')
+  const removeVehicle = () => { if (window.confirm(`Remove this receipt from ${vehicle?.vehicleLabel ?? 'the vehicle'}? The receipt stays in Receipts.`)) run(() => unassignReceiptVehicleAction({ receiptId: r.id }), 'Removed from the vehicle.') }
   // Manager files via the SAME operational path as the employee (categoryMode 'single' with the chosen key).
   const fileNow = () => run(() => fileReceiptAction(formFields()), 'Filed.')
   // Manager ACKNOWLEDGES a still-outstanding exception (reimbursement/unpaid/allocation): reviewed, leaves
@@ -268,18 +281,37 @@ export default function ReviewCard({ r, vehicles = [], allocations = [] }: { r: 
             </div>
           )}
 
-          <details className="rounded-xl border border-gray-800 bg-gray-900/60">
-            <summary className="px-3 py-2 text-gray-400 text-sm cursor-pointer list-none">Sales-inventory vehicle &amp; note ▾</summary>
-            <div className="px-3 pb-3 grid grid-cols-1 gap-3">
-              <label className={lbl}>Vehicle (optional — for an inventory-vehicle expense)<br />
-                <select value={inventoryVehicleId} onChange={(e) => setInventoryVehicleId(e.target.value)} disabled={decided} className={box}>
-                  <option value="">Not a vehicle expense</option>
-                  {vehicles.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
-                  {inventoryVehicleId && !vehicles.some((v) => v.id === inventoryVehicleId) && <option value={inventoryVehicleId}>Current (unavailable)</option>}
-                </select></label>
-              <label className={lbl}>Manager note<br /><input value={memo} onChange={(e) => setMemo(e.target.value)} disabled={decided} className={box} /></label>
+          {/* Which Auto Sales inventory vehicle this purchase was for. The receipt stays ONE expense — it simply
+              shows under that vehicle. Always visible; works on filed receipts (no reopen needed). */}
+          {r.status !== 'rejected' && (
+            <div className="rounded-xl border border-gray-800 bg-gray-900/60 px-3 py-3 space-y-2">
+              <p className="text-gray-200 text-sm font-semibold">Assign to Auto Sales Vehicle</p>
+              {vehicle ? (
+                <>
+                  <div className="flex items-start gap-2 text-sm">
+                    <span className="flex-1 min-w-0 break-words"><a href={`/auto-sales/${vehicle.inventoryVehicleId}`} className="underline text-indigo-300">{vehicle.vehicleLabel}</a></span>
+                    <button type="button" disabled={busy} onClick={removeVehicle} className="shrink-0 text-gray-400 text-xs underline py-1 min-h-11 disabled:opacity-50">Remove</button>
+                  </div>
+                  <p className="text-gray-500 text-xs">{vehicle.matchedLabel
+                    ? `Counted once, as the expense already on the vehicle: ${vehicle.matchedLabel}.`
+                    : (r.status === 'filed' || r.status === 'approved') ? 'Shows under this vehicle’s expenses and counts in its total.' : 'Shows under this vehicle as pending — it counts in the total once the receipt is filed.'}</p>
+                  {vehicle.hasReturns && <p className="text-amber-300 text-xs">A return is recorded against this purchase on the vehicle, so it cannot be moved until that return is reversed there.</p>}
+                  {entity !== 'auto_sales' && <p className="text-amber-300 text-xs">This receipt’s business is not Auto Sales. The vehicle assignment does not change the business.</p>}
+                  {!vehicle.hasReturns && <p className="text-gray-400 text-xs pt-1">Move it to a different vehicle:</p>}
+                </>
+              ) : (
+                <p className="text-gray-500 text-xs">{onJob ? 'This receipt is attached to a customer job. Remove it from the job to assign it to a sales vehicle.' : 'Not assigned to a vehicle. Search by stock #, VIN, year, make or model.'}</p>
+              )}
+              {!onJob && !vehicle?.hasReturns && (
+                <>
+                  <VehiclePicker vehicles={vehicles.filter((v) => v.id !== vehicle?.inventoryVehicleId)} value={pickVehicle} onChange={setPickVehicle} total={total} date={receiptDate} receiptId={r.id} disabled={busy} />
+                  {pickVehicle && <button type="button" onClick={assignVehicle} disabled={busy || pickVehicle.matchEventId === undefined} className="w-full bg-indigo-600 text-white text-sm font-semibold py-3 rounded-xl disabled:opacity-50">{vehicle ? 'Move to this vehicle' : 'Assign to this vehicle'}</button>}
+                </>
+              )}
             </div>
-          </details>
+          )}
+
+          <label className={lbl}>Manager note<br /><input value={memo} onChange={(e) => setMemo(e.target.value)} disabled={decided} className={box} /></label>
 
           {/* Diagnostic: what does the reader see in the stored document right now? Saves nothing. */}
           {r.imageUrl && (

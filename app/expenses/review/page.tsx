@@ -15,6 +15,7 @@ import { toReviewCard } from '@/apps/expenses/view'
 import { currentReportMonth } from '@/apps/auto-sales/report-db'
 import { EXPENSE_CATEGORIES, BUSINESS_ENTITIES, formatMoney, isReceiptStatus, isBusinessMonth, type ReceiptStatus } from '@/apps/expenses/types'
 import ReviewCard from '@/apps/expenses/ui/ReviewCard'
+import { receiptVehicleViews } from '@/apps/expenses/vehicle-link'
 import { allocationViewsFor } from '@/apps/expenses/job-expenses'
 
 export const dynamic = 'force-dynamic'
@@ -38,7 +39,7 @@ export default async function ReviewQueuePage({ searchParams }: { searchParams: 
     : listReceipts([view])
   const [rows, counts, report, vehicles] = await Promise.all([rowsPromise, queueCounts(), monthlyExpenseReport(month), listInventoryVehiclesForPicker()])
 
-  const allocations = await allocationViewsFor(rows.map((r) => r.id))
+  const [allocations, vehicleViews] = await Promise.all([allocationViewsFor(rows.map((r) => r.id)), receiptVehicleViews(rows.map((r) => r.id))])
 
   const TABS: { key: ReceiptStatus | 'open' | 'outstanding'; label: string; n?: number }[] = [
     { key: 'open', label: 'Needs attention', n: counts.backlog + counts.processing + counts.processing_failed },
@@ -117,7 +118,7 @@ export default async function ReviewQueuePage({ searchParams }: { searchParams: 
 
       {rows.length === 0
         ? <p className="text-gray-500 text-sm text-center py-12">Nothing here.</p>
-        : <div className="space-y-4">{rows.map((r) => <ReviewCard key={r.id} r={toReviewCard(r)} vehicles={vehicles} allocations={allocations.get(r.id) ?? []} />)}</div>}
+        : <div className="space-y-4">{rows.map((r) => <ReviewCard key={r.id} r={toReviewCard(r)} vehicles={vehicles} allocations={allocations.get(r.id) ?? []} vehicle={vehicleViews.get(r.id) ?? null} />)}</div>}
     </main>
   )
 }

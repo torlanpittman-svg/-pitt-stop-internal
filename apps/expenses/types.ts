@@ -382,6 +382,7 @@ export function decideFiling(a: FilingAnswers): FilingOutcome {
 // ── Append-only audit entry. Stored as a JSONB array on the row; NEVER rewritten, only appended. ──
 export type AuditAction = 'uploaded' | 'extracted' | 'extraction_failed' | 'reviewed' | 'filed' | 'flagged' | 'clarified' | 'approved' | 'rejected' | 'reopened' | 'retried'
   | 'allocated' | 'allocation_removed' | 'allocation_changed'
+  | 'vehicle_assigned' | 'vehicle_removed'
 export interface AuditEntry {
   action: AuditAction
   actor: string | null

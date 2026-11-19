@@ -59,7 +59,7 @@ beforeAll(async () => {
   // Prerequisite tables the receipt migrations/joins reference (minimal, real).
   await client.exec(`
     CREATE TABLE vehicles(id uuid primary key default gen_random_uuid(), year text, make text, model text, vin text, created_at timestamptz default now());
-    CREATE TABLE inventory_vehicles(id uuid primary key default gen_random_uuid(), vehicle_id uuid references vehicles(id), stock_number text, created_at timestamptz default now());
+    CREATE TABLE inventory_vehicles(id uuid primary key default gen_random_uuid(), vehicle_id uuid references vehicles(id), stock_number text, status varchar(20) not null default 'acquired', created_at timestamptz default now());
     CREATE TABLE service_orders(id uuid primary key default gen_random_uuid(), order_number varchar(20) not null unique, vehicle_id uuid references vehicles(id), status varchar(24) not null default 'arrived', customer_name varchar(200), created_at timestamptz default now());
     CREATE TABLE job_parts(id uuid primary key default gen_random_uuid(), service_order_id uuid not null references service_orders(id), description text not null, quantity numeric(10,2) not null default 1, unit_cost_cents integer, sell_price_cents integer, supply varchar(12) not null default 'shop', status varchar(24) not null default 'needed');
   `)
