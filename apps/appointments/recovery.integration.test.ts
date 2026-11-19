@@ -886,3 +886,15 @@ describe('rebooking link survives an import made under a different secret', () =
     expect((await getRecoveryByToken(recoveryToken(rec.id)))?.id).toBe(rec.id)
   })
 })
+
+describe('controlled test records', () => {
+  it('a "ZZ" test cancellation runs the real sequence but never appears in recovery reporting', async () => {
+    const { appt } = await bookAndCancel(LIVE, { by: 'customer' }, { firstName: 'ZZ Pitt Stop Test', lastName: 'Recovery' })
+    await runAt(appt.id, 'recovery_1')
+    expect(sent.length).toBe(1)
+    const range = { from: new Date(Date.now() - 86_400_000), to: new Date(Date.now() + 86_400_000) }
+    expect(await recoveryReport(range)).toMatchObject({ eligible: 0, contacted: 0, emailsSent: 0, awaitingReview: 0 })
+    // It is still visible to managers in the queue, with its history intact.
+    expect((await listRecoveries('running')).length).toBe(1)
+  })
+})

@@ -907,6 +907,9 @@ export interface RecoveryReport {
   recoveredRevenueCents: number
 }
 
+/** The existing convention for controlled production test records: the customer's first name starts with "ZZ". */
+export const NOT_TEST = sql`a.first_name NOT ILIKE 'ZZ%'`
+
 /** The report for the trailing N days (cancellations made in that window). */
 export async function recoveryReportLastDays(days: number, now: Date = new Date()): Promise<RecoveryReport> {
   return recoveryReport({ from: new Date(now.getTime() - days * 86_400_000), to: now })
@@ -922,10 +925,13 @@ export async function recoveryReport(range: { from: Date; to: Date }): Promise<R
         je.total_cents, COALESCE(NULLIF(je.total_cents, 0), so.approved_price_cents) AS quoted_cents,
         (je.qb_payment_status = 'paid' OR je.qb_payment_balance_state = 'paid') AS paid
       FROM appointment_recoveries r
+      JOIN appointments a ON a.id = r.appointment_id
       LEFT JOIN appointments b ON b.id = r.rebooked_appointment_id
       LEFT JOIN service_orders so ON so.id = b.service_order_id
       LEFT JOIN LATERAL (SELECT e.total_cents, e.qb_payment_status, e.qb_payment_balance_state FROM job_estimates e WHERE e.service_order_id = so.id ORDER BY e.created_at DESC LIMIT 1) je ON true
       WHERE r.cancelled_at >= ${iso(range.from)}::timestamptz AND r.cancelled_at <= ${iso(range.to)}::timestamptz
+        -- Controlled test records (the shop's existing convention: first name starts with "ZZ") never count.
+        AND ${NOT_TEST}
     ), mail AS (
       SELECT n.appointment_id, count(*) FILTER (WHERE n.status = 'sent') AS sent, count(*) FILTER (WHERE n.status = 'uncertain') AS uncertain,
         count(*) FILTER (WHERE n.status = 'failed') AS failed
