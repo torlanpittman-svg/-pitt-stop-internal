@@ -311,7 +311,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * double-click is a no-op. Returns the ids actually saved by THIS call.
  */
 export async function decidePartsLaborBulk(orderId: string, partIds: unknown, a: BulkLaborAction, actor: string | null, role: string | null): Promise<string[]> {
-  const ids = [...new Set(Array.isArray(partIds) ? partIds.filter((x): x is string => typeof x === 'string' && UUID_RE.test(x)) : [])]
+  const ids = [...new Set(Array.isArray(partIds) ? partIds.filter((x): x is string => typeof x === 'string' && UUID_RE.test(x)).map((x) => x.toLowerCase()) : [])]
   if (ids.length === 0) throw new Error('Select at least one part.')
   if (ids.length > BULK_LABOR_MAX) throw new Error(`Select at most ${BULK_LABOR_MAX} parts at a time.`)
   let decision: LaborDecision
@@ -537,6 +537,7 @@ export async function clarifyServiceWithPart(orderId: string, serviceId: string,
   const entryText = (input.entryText ?? svc.entryText ?? svc.title)?.slice(0, 300) ?? null
   // "Already included on this line" must be a valid labor decision (manager rule is enforced for waivers,
   // not for linking) — this also proves the clarified line is a legitimate cover for the part.
+  if (!(await coverableServiceIds(orderId)).has(svc.id)) throw new Error('That line was declined, so it can’t cover installing a part. Refresh to see the current list.')
   const err = validateLaborDecision({ status: 'included', serviceId: svc.id }, { role, coverable: new Set([svc.id]) })
   if (err) throw new Error(err)
   const lineDesc = partLineDescription({ description, fitment, partNumber })
@@ -551,7 +552,7 @@ export async function clarifyServiceWithPart(orderId: string, serviceId: string,
   const res = await db.execute(sql`
     WITH svc AS (
       SELECT id FROM job_services
-       WHERE id = ${svc.id}::uuid AND job_estimate_id = ${est.id}::uuid AND source <> 'system' AND kind = 'service'
+       WHERE id = ${svc.id}::uuid AND job_estimate_id = ${est.id}::uuid AND kind = 'service' AND ${coverableServiceWhere}
     ), claim AS (
       INSERT INTO job_parts (service_order_id, description, part_number, supplier, fitment, supply, quantity,
         unit_cost_cents, sell_price_cents, job_service_id, job_line_item_id, labor_service_id, clarifies_service_id,
@@ -668,7 +669,7 @@ async function mirrorTextService(orderId: string, title: string, actor: string |
   const db = getDb()
   const findRow = async (estimateId: string) => {
     const rows = await db.select({ id: jobServices.id, title: jobServices.title }).from(jobServices)
-      .where(and(eq(jobServices.jobEstimateId, estimateId), ne(jobServices.source, 'system'), ne(jobServices.kind, 'part')))
+      .where(and(eq(jobServices.jobEstimateId, estimateId), coverableServiceWhere))   // the one coverage rule: never a declined line
     return rows.find((r) => r.title.trim().toLowerCase() === key) ?? null
   }
   // Already mirrored (the row simply wasn't in the client's view yet): nothing to prepare.
@@ -875,7 +876,7 @@ export async function addPartForJobOnce(
        WHERE je.id = ${estimateId}::uuid AND so.id = ${orderId}::uuid AND so.status <> 'cancelled'
          AND (${isManager}::boolean OR NOT (je.price_mode = 'explicit_pretax' AND je.explicit_total_cents IS NOT NULL))
          AND (${attachId}::uuid IS NULL OR EXISTS (
-           SELECT 1 FROM job_services s WHERE s.id = ${attachId}::uuid AND s.job_estimate_id = je.id AND s.source <> 'system' AND s.kind <> 'part'))
+           SELECT 1 FROM job_services WHERE job_services.id = ${attachId}::uuid AND job_services.job_estimate_id = je.id AND ${coverableServiceWhere}))
     ), claim AS (
       INSERT INTO job_parts (id, service_order_id, description, part_number, supplier, fitment, supply, quantity,
         unit_cost_cents, sell_price_cents, job_service_id, job_line_item_id, labor_service_id,

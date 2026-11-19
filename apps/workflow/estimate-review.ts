@@ -34,7 +34,7 @@ export async function coverableServiceIds(orderId: string): Promise<Set<string>>
   return new Set(rows.map((r) => r.id))
 }
 
-export const LABOR_LINE_GONE_MSG = 'That labor line is no longer available on this invoice (it was removed or declined). No parts were changed — refresh and choose another line.'
+export const LABOR_LINE_GONE_MSG = 'That labor line is no longer available on this invoice (it was removed or declined). This request changed nothing — choose another line.'
 
 export interface EstimateReviewState {
   services: ReadinessService[]

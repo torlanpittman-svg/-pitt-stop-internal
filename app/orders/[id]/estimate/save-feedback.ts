@@ -31,7 +31,7 @@ export interface EstimateViewData {
 }
 export type EstimateEdit = Record<string, unknown> & { action: string }
 /** `message` (when present) is the confirmed outcome wording to show instead of the generic "saved" label. */
-export type SaveOutcome = { ok: true; view: EstimateViewData; message?: string } | { ok: false; error: string }
+export type SaveOutcome = { ok: true; view: EstimateViewData; message?: string } | { ok: false; error: string; view?: EstimateViewData }
 
 const clean = (s: unknown) => String(s ?? '').replace(/\s+/g, ' ').trim()
 const quote = (s: string) => `“${s}”`
@@ -149,9 +149,9 @@ export interface BulkLaborOutcome {
  * decision, so it is confirmed again rather than failing or over/under-counting.
  */
 export function bulkLaborOutcome(edit: EstimateEdit, view: EstimateViewData): BulkLaborOutcome {
-  const ids = [...new Set(Array.isArray(edit.partIds) ? (edit.partIds as unknown[]).map(String) : [])]
+  const ids = [...new Set(Array.isArray(edit.partIds) ? (edit.partIds as unknown[]).map((x) => String(x).toLowerCase()) : [])]
   const lab = (edit.labor ?? {}) as { action?: unknown; serviceId?: unknown }
-  const byId = new Map((view.parts ?? []).map((p) => [p.id, p]))
+  const byId = new Map((view.parts ?? []).map((p) => [p.id.toLowerCase(), p]))
   const out: BulkLaborOutcome = { selected: ids.length, confirmed: 0, unchanged: 0, missing: 0, open: 0 }
   for (const id of ids) {
     const p = byId.get(id)
@@ -184,7 +184,8 @@ export function interpretSave(edit: EstimateEdit, res: { ok: boolean; status: nu
   }
   if (!d.view || !Array.isArray(d.view.services)) return { ok: false, error: 'The server didn’t confirm the change.' }
   const mismatch = confirmsEdit(edit, d.view)
-  if (mismatch) return { ok: false, error: mismatch }
+  // A labor review the reply doesn't confirm still carries the server's current state — hand it back so the page shows it.
+  if (mismatch) return edit.action === 'part_labor_bulk' || edit.action === 'part_labor' ? { ok: false, error: mismatch, view: d.view } : { ok: false, error: mismatch }
   if (edit.action === 'part_labor_bulk') return { ok: true, view: d.view, message: bulkLaborMessage(edit, bulkLaborOutcome(edit, d.view)) }
   return { ok: true, view: d.view }
 }

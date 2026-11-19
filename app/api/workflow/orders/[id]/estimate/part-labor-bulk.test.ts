@@ -50,7 +50,7 @@ import { getFullEstimate } from '@/apps/workflow/estimate-db'
 import { getOrderWithContext } from '@/apps/workflow/db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { loadEstimateReview, assertEstimateReady } from '@/apps/workflow/estimate-review'
-import { addEstimatePart, decidePartLabor } from '@/apps/parts/estimate-parts'
+import { addEstimatePart, decidePartLabor, addPartForJobOnce } from '@/apps/parts/estimate-parts'
 import { interpretSave, bulkLaborOutcome, type EstimateViewData } from '@/app/orders/[id]/estimate/save-feedback'
 import { laborLineChoices, coverChoices, validCoverId } from '@/app/orders/[id]/estimate/PartsReview'
 import { jobParts, jobServices, jobLineItems, jobEstimates, serviceOrderEvents } from '@/drizzle/schema'
@@ -238,7 +238,8 @@ describe('bulk labor review on the engine job (14 parts waiting)', () => {
     const job = await seedEngineJob()
     const stale = (await call(job.orderId, { action: 'prepare' })).body       // a reply that changed nothing
     const out = interpretSave(cover(job.partIds.slice(0, 3), job.laborId), { ok: true, status: 200 }, { ok: true, view: stale.view })
-    expect(out).toEqual({ ok: false, error: '3 of the selected parts still need labor review. Try again.' })
+    // …and the reply's view is handed back, so the page shows the server's state rather than a stale list.
+    expect(out).toEqual({ ok: false, error: '3 of the selected parts still need labor review. Try again.', view: stale.view })
   })
 
   it('a covering line must be a real work line on THIS job; bad requests write nothing', async () => {
@@ -371,7 +372,7 @@ describe('the one-part "Already included" picker', () => {
     const edit = { action: 'part_labor', partId: job.partIds[0], labor: { action: 'included', serviceId: job.weldId } }
     const r = await call(job.orderId, edit)
     expect(r.status).toBe(500)
-    expect(r.body.error).toMatch(/Choose a labor line on this estimate/)
+    expect(r.body.error).toMatch(/Choose a labor line on this estimate that covers installing this part/)
     expect(interpretSave(edit, { ok: false, status: 500 }, r.body)).toMatchObject({ ok: false })
     expect((await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, job.orderId))).sort((a, b) => a.id.localeCompare(b.id))).toEqual(partsBefore.sort((a, b) => a.id.localeCompare(b.id)))
     expect(await laborEvents(job.orderId)).toEqual(auditBefore)
@@ -402,7 +403,7 @@ describe('a declined labor line covers nothing', () => {
     const r = await call(job.orderId, edit)
     expect(r.status).toBe(500)
     expect(r.body.ok).toBe(false)
-    expect(r.body.error).toBe('That labor line is no longer available on this invoice (it was removed or declined). No parts were changed — refresh and choose another line.')
+    expect(r.body.error).toBe('That labor line is no longer available on this invoice (it was removed or declined). This request changed nothing — choose another line.')
     expect(interpretSave(edit, { ok: false, status: 500 }, r.body)).toEqual({ ok: false, error: r.body.error })
     expect(await partRows(job.orderId)).toEqual(partsBefore)                 // not one part row touched
     expect(await laborEvents(job.orderId)).toEqual(auditBefore)              // no review audit rows written
@@ -420,6 +421,7 @@ describe('a declined labor line covers nothing', () => {
     // The one-part "Already included" path applies the same rule.
     const single = await call(job.orderId, { action: 'part_labor', partId: selection[0], labor: { action: 'included', serviceId: job.laborId } })
     expect(single.status).toBe(500)
+    expect(single.body.error).toMatch(/Choose a labor line on this estimate that covers installing this part/)
     expect(await partRows(job.orderId)).toEqual(partsBefore)
     expect(await laborEvents(job.orderId)).toEqual(auditBefore)
   })
@@ -465,6 +467,47 @@ describe('a declined labor line covers nothing', () => {
     expect(r.body.error).toMatch(/no longer available on this invoice/)
     expect(await partRows(job.orderId)).toEqual(partsBefore)
     expect((await laborEvents(job.orderId)).filter((e) => e.bulk)).toHaveLength(0)
+  })
+})
+
+describe('every other way of linking a part to a line applies the same rule', () => {
+  const liveParts = async (orderId: string) => (await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, orderId))).filter((p) => p.status !== 'cancelled')
+
+  it('"clarify — it’s the labor, add the part" on a declined line is refused and writes nothing', async () => {
+    const job = await seedEngineJob()
+    await call(job.orderId, { action: 'set_approval', serviceId: job.weldId, state: 'declined' })
+    const before = { parts: (await liveParts(job.orderId)).length, audit: await laborEvents(job.orderId), money: await moneySnapshot(job.orderId) }
+    const r = await call(job.orderId, { action: 'clarify_part', serviceId: job.weldId, part: { description: 'EGR valve', supply: 'shop', quantity: 1, sellPriceCents: 5000 } })
+    expect(r.status).toBe(500)
+    expect(r.body.error).toMatch(/was declined, so it can’t cover installing a part/)
+    expect((await liveParts(job.orderId)).length).toBe(before.parts)
+    expect(await laborEvents(job.orderId)).toEqual(before.audit)
+    expect(await moneySnapshot(job.orderId)).toEqual(before.money)
+  })
+
+  it('adding a part attached to a declined service — by id or by its title — never records it as covered', async () => {
+    const job = await seedEngineJob()
+    await call(job.orderId, { action: 'set_approval', serviceId: job.weldId, state: 'declined' })
+    const before = { parts: (await liveParts(job.orderId)).length, audit: await laborEvents(job.orderId) }
+    const part = { description: 'Weld rod', supply: 'shop' as const, quantity: 1, sellPriceCents: 500 }
+    for (const target of [job.weldId, { title: 'EGR valve weld' }] as Parameters<typeof addPartForJobOnce>[4][]) {
+      await expect(addPartForJobOnce(job.orderId, part, 'Mgr', 'manager', target)).rejects.toThrow(/no longer on this job/)
+    }
+    expect((await liveParts(job.orderId)).length).toBe(before.parts)
+    expect(await laborEvents(job.orderId)).toEqual(before.audit)
+    // …while a live line still works exactly as before.
+    const ok = await addPartForJobOnce(job.orderId, part, 'Mgr', 'manager', job.laborId)
+    const saved = (await liveParts(job.orderId)).find((p) => p.description === 'Weld rod')
+    expect(ok).toBeTruthy()
+    expect(saved).toMatchObject({ laborStatus: 'included', laborServiceId: job.laborId })
+  })
+
+  it('part ids are matched case-insensitively end to end (a hand-built request cannot make the feedback wrong)', async () => {
+    const job = await seedEngineJob()
+    const edit = cover(job.partIds.slice(0, 2).map((id) => id.toUpperCase()), job.laborId)
+    const r = await call(job.orderId, edit)
+    expect(r.body.savedPartIds).toHaveLength(2)
+    expect(interpretSave(edit, { ok: true, status: 200 }, r.body)).toMatchObject({ ok: true, message: '2 parts marked as covered · Saved' })
   })
 })
 

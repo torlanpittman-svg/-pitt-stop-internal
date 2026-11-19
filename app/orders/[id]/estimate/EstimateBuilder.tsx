@@ -94,6 +94,7 @@ const itemRows = () => Array.from(document.querySelectorAll<HTMLElement>('ul[ari
 
 export default function EstimateBuilder({ header, initialView }: { header: Header; initialView: View }) {
   const [view, setView] = useState<View>(initialView)
+  const [reviewNote, setReviewNote] = useState<string | null>(null)   // last confirmed bulk labor-review outcome, shown in full
   const viewRef = useRef(view)
   const [editingBusy, setBusy] = useState(false)
   const [actionBusy, setActionBusy] = useState(false)
@@ -149,7 +150,19 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
     setBusy(true); setErr(null); setSaveState('saving'); setSaveMsg(labels.saving)
     try {
       const out = await saveEstimateEdit(header.id, payload)
-      if (!out.ok) { setErr(out.error); setSaveMsg(labels.failed); setSaveState('error'); return false }
+      if (!out.ok) {
+        setErr(out.error); setSaveMsg(labels.failed); setSaveState('error')
+        // A labor review that didn't save: show what IS saved now (a part reviewed elsewhere, a labor line since
+        // declined or removed) instead of leaving the stale list and choices on screen.
+        if (payload.action === 'part_labor_bulk' || payload.action === 'part_labor') {
+          setReviewNote(null)
+          const current = out.view ?? await fetch(`/api/workflow/orders/${header.id}/estimate`).then((r) => (r.ok ? r.json() : null)).then((d) => (d?.view && Array.isArray(d.view.services) ? d.view as EstimateViewData : null)).catch(() => null)
+          if (current) setView(current)
+        }
+        return false
+      }
+      // The confirmed outcome of a bulk labor review stays readable in the review pane (the header badge is short-lived and truncates).
+      setReviewNote(payload.action === 'part_labor_bulk' ? out.message ?? null : null)
       setView(out.view); setSaveMsg(out.message ?? labels.saved); setSaveState('saved'); setSavedOnce(true)
       // An item that's now gone (removed, converted to a part) closes its editor.
       const open = paneRef.current
@@ -300,6 +313,8 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
   const totalEditable = isFlat || !hasPricedService
   const editorPane = pane.kind === 'service' || pane.kind === 'part' || pane.kind === 'customer'
 
+  const reviewNoteEl = reviewNote && <p role="status" className="mb-3 rounded-xl border border-gray-700 bg-gray-900/60 px-3 py-2 text-sm text-gray-100 break-words">{reviewNote}</p>
+
   // ── Header pieces ──────────────────────────────────────────────────────────────────────────────
   const saveBadge = (
     <span role="status" aria-live="polite" className="min-h-5 text-xs">
@@ -360,8 +375,9 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
       )}
       {pane.kind === 'review' && (
         issues.length === 0
-          ? <p className="text-green-400 text-sm">Nothing needs review. <button type="button" onClick={closePane} className="ml-1 min-h-11 font-semibold text-blue-400">Back to estimate</button></p>
+          ? <>{reviewNoteEl}<p className="text-green-400 text-sm">Nothing needs review. <button type="button" onClick={closePane} className="ml-1 min-h-11 font-semibold text-blue-400">Back to estimate</button></p></>
           : <>
+              {reviewNoteEl}
               <p className="mb-3 text-gray-400 text-sm">Drafts keep saving. Sending or invoicing waits until these are resolved. Each choice saves right away.</p>
               <ReviewNotices issues={issues} services={services} parts={parts} busy={busy} post={post} onChooseOdor={(id) => setPane({ kind: 'service', id, rematch: true })} />
             </>
