@@ -537,7 +537,6 @@ export async function clarifyServiceWithPart(orderId: string, serviceId: string,
   const entryText = (input.entryText ?? svc.entryText ?? svc.title)?.slice(0, 300) ?? null
   // "Already included on this line" must be a valid labor decision (manager rule is enforced for waivers,
   // not for linking) — this also proves the clarified line is a legitimate cover for the part.
-  if (!(await coverableServiceIds(orderId)).has(svc.id)) throw new Error('That line was declined, so it can’t cover installing a part. Refresh to see the current list.')
   const err = validateLaborDecision({ status: 'included', serviceId: svc.id }, { role, coverable: new Set([svc.id]) })
   if (err) throw new Error(err)
   const lineDesc = partLineDescription({ description, fitment, partNumber })
@@ -610,8 +609,12 @@ export async function clarifyServiceWithPart(orderId: string, serviceId: string,
     ? await db.select().from(jobParts).where(eq(jobParts.id, wonId)).limit(1)
     : await db.select().from(jobParts)
         .where(and(eq(jobParts.serviceOrderId, orderId), eq(jobParts.clarifiesServiceId, svc.id), eq(jobParts.description, description), eq(jobParts.supply, supply), ne(jobParts.status, 'cancelled'))).limit(1)
-  // No claim and no prior part → the service line wasn't a live service of this order after all.
-  if (!saved) throw new Error('That line is no longer a service on this estimate. Refresh to see the current list.')
+  // No claim and no prior part → the line can't take a part: the statement's own rule refused it. (Checked only
+  // here, after the saved-part lookup, so a retry of an already-saved clarify still returns that part and finishes.)
+  if (!saved) {
+    if (svc.approvalState === 'declined' || !(await coverableServiceIds(orderId)).has(svc.id)) throw new Error('That line was declined, so it can’t cover installing a part. Refresh to see the current list.')
+    throw new Error('That line is no longer a service on this estimate. Refresh to see the current list.')
+  }
 
   // Finalize derived pricing + QB-sync on BOTH the first-write and the retry/duplicate path, using the
   // SAVED part (not stale request values). Idempotent (recompute is derived from the lines), so a

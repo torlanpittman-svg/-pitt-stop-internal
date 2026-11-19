@@ -157,7 +157,12 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
         if (payload.action === 'part_labor_bulk' || payload.action === 'part_labor') {
           setReviewNote(null)
           const current = out.view ?? await fetch(`/api/workflow/orders/${header.id}/estimate`).then((r) => (r.ok ? r.json() : null)).then((d) => (d?.view && Array.isArray(d.view.services) ? d.view as EstimateViewData : null)).catch(() => null)
-          if (current) setView(current)
+          if (current) {
+            setView(current)
+            // Same rule as a successful save: an item that is no longer there closes its editor.
+            const open = paneRef.current
+            if ((open.kind === 'service' && !current.services.some((x) => x.id === open.id)) || (open.kind === 'part' && !(current.parts ?? []).some((x) => x.id === open.id))) closePaneRef.current()
+          }
         }
         return false
       }

@@ -502,6 +502,30 @@ describe('every other way of linking a part to a line applies the same rule', ()
     expect(saved).toMatchObject({ laborStatus: 'included', laborServiceId: job.laborId })
   })
 
+  it('the rule is also enforced inside the part-add statement itself (the pre-check alone is not the guard)', async () => {
+    const job = await seedEngineJob()
+    await call(job.orderId, { action: 'set_approval', serviceId: job.weldId, state: 'declined' })
+    const before = (await liveParts(job.orderId)).length
+    stale.passOnce = job.weldId                                   // the pre-write check still thinks the line is available
+    await expect(addPartForJobOnce(job.orderId, { description: 'Weld rod', supply: 'shop', quantity: 1, sellPriceCents: 500 }, 'Mgr', 'manager', job.weldId)).rejects.toThrow(/no longer on this job/)
+    expect(stale.passOnce).toBeNull()
+    expect((await liveParts(job.orderId)).length).toBe(before)
+  })
+
+  it('a clarify that already saved is still returned on retry after the line is declined (no duplicate, no false failure)', async () => {
+    const job = await seedEngineJob()
+    const req = { action: 'clarify_part', serviceId: job.weldId, part: { description: 'EGR valve', supply: 'shop', quantity: 1, sellPriceCents: 5000 } }
+    expect((await call(job.orderId, req)).status).toBe(200)        // saved; the reply is lost
+    await call(job.orderId, { action: 'set_approval', serviceId: job.weldId, state: 'declined' })
+    const before = { parts: (await liveParts(job.orderId)).length, audit: (await laborEvents(job.orderId)).length }
+    const retry = await call(job.orderId, req)
+    expect(retry.status).toBe(200)
+    expect((await liveParts(job.orderId)).length).toBe(before.parts)
+    expect((await laborEvents(job.orderId)).length).toBe(before.audit)
+    // …and the part is shown as needing review, because its covering line is now declined.
+    expect(retry.body.view.parts!.find((p) => p.description === 'EGR valve')?.laborStatus).toBe('needs_review')
+  })
+
   it('part ids are matched case-insensitively end to end (a hand-built request cannot make the feedback wrong)', async () => {
     const job = await seedEngineJob()
     const edit = cover(job.partIds.slice(0, 2).map((id) => id.toUpperCase()), job.laborId)
