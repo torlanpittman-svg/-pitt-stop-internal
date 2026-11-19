@@ -12,6 +12,7 @@ import { authorizedManagerStrict } from '@/apps/auth/employee-guard'
 import { getBookingConfig } from '@/apps/appointments/db'
 import { formatTimeLabel } from '@/apps/appointments/policy'
 import { transactionalEmailProvider } from '@/apps/appointments/notify'
+import { checkRecoveryStream } from '@/apps/appointments/postmark-sync'
 import { listRecoveries, listCandidates, type QueueItem, type QueueView, type Candidate, type ValueEstimate, type RecoveryEmailState } from '@/apps/appointments/recovery'
 import { money, shortDate } from '@/app/lib/format'
 import { RecoveryControls, EnrollButton } from './RecoveryControls'
@@ -64,6 +65,7 @@ export default async function LeadRecoveryPage({ searchParams }: { searchParams:
     view === 'candidates' ? listCandidates({ cfg }) : Promise.resolve([] as Candidate[]),
   ])
   const email = transactionalEmailProvider()
+  const stream = email.live ? await checkRecoveryStream() : null
   const [d1, d2, d3] = cfg.recoveryDelayHours
 
   return (
@@ -77,6 +79,9 @@ export default async function LeadRecoveryPage({ searchParams }: { searchParams:
             ? <span className="text-emerald-300">ON — {cfg.recoveryAutoStart ? 'start automatically when a customer cancels' : 'a manager starts each one'}; emails at {d1} h, {d2} h and {d3} h, sent {cfg.recoverySendStartHour}:00–{cfg.recoverySendEndHour}:00</span>
             : <span className="text-amber-300">OFF — nothing is sent, automatically or by hand (turn on in Booking settings)</span>}
           {' · '}Provider: {email.live ? email.name : <span className="text-amber-300">none set up</span>}
+          {stream && <>{' · '}Postmark stream “{stream.stream}”: {stream.ok
+            ? <span className="text-emerald-300">ready (broadcast)</span>
+            : <span className="text-red-300">NOT ready — {stream.problem} Recovery emails would fail until this is fixed.</span>}</>}
         </p>
 
         <nav className="mt-6 flex gap-1 overflow-x-auto border-b border-gray-900" aria-label="Lead Recovery views">

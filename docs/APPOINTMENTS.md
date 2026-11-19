@@ -241,6 +241,12 @@ is held and the sequence paused (it is a kill switch; turning it back on release
   bounced address is then rejected at send (ErrorCode 406/300) and the sequence stops. Any other rejection (e.g. the
   stream does not exist) fails that email but is treated as a setup fault, not an undeliverable customer.
   **Before switching emails on, confirm in Postmark that the server has a broadcast stream with ID `broadcast`.**
+- **Postmark unsubscribe sync** (`apps/appointments/postmark-sync.ts`): every recovery run first PULLS the broadcast
+  stream's suppression list (`GET /message-streams/{id}/suppressions/dump`, existing server token — no webhook, no new
+  secret). Each suppressed address → `marketing_preferences.email_eligible = false` for every customer with that
+  address, an append-only `opt_out` consent event (source `email_provider`), and any open sequence stopped. SMS
+  consent untouched; idempotent; one-way (a manager re-enables). The same module's `checkRecoveryStream()` confirms
+  the stream exists and is a live broadcast stream — shown on the Lead Recovery page and logged by the recovery cron.
 - **Schedule:** the GitHub "hourly" job is live but GitHub runs it only ~3×/day (measured 2026-11-19). `vercel.json`
   therefore adds 13 once-a-day Vercel crons, one per hour 13:00–01:00 UTC (the 8 AM–7 PM Central window in both CST
   and CDT), each hitting `/api/cron/recovery-follow-ups/<slot>` — recovery kinds only. Vercel Hobby fires each some

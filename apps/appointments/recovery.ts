@@ -699,10 +699,14 @@ export async function recordRecoveryDelivery(n: { id: string; kind: string; appo
 }
 
 /** Cron pass: catch customers who booked again without the link, before anything is sent. */
-export async function reconcileRecoveries(opts: { cfg?: BookingConfig; now?: Date } = {}): Promise<{ enabled: boolean; rebooked: number; recovered: number }> {
+export async function reconcileRecoveries(opts: { cfg?: BookingConfig; now?: Date } = {}): Promise<{ enabled: boolean; rebooked: number; recovered: number; suppressions: unknown }> {
   const cfg = opts.cfg ?? await getBookingConfig()
   const recovered = await recoverInterruptedEmails({ now: opts.now })
-  return { enabled: cfg.recoveryEmailsEnabled, rebooked: await detectRebookings({ cfg }), recovered }
+  // Unsubscribes / bounces / complaints recorded by Postmark on the broadcast stream → our email preferences, BEFORE
+  // anything is dispatched. A Postmark outage never blocks the run: the send-time gate and Postmark itself still hold.
+  const suppressions = await (await import('./postmark-sync')).syncPostmarkSuppressions()
+    .catch((err) => ({ enabled: true, problem: err instanceof Error ? err.name : 'error' }))
+  return { enabled: cfg.recoveryEmailsEnabled, rebooked: await detectRebookings({ cfg }), recovered, suppressions }
 }
 
 /** Called by the dispatcher immediately before the provider call. */

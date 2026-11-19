@@ -17,6 +17,7 @@
 import { NextResponse } from 'next/server'
 import { dispatchDue } from '@/apps/appointments/notify'
 import { reconcileRecoveries } from '@/apps/appointments/recovery'
+import { checkRecoveryStream } from '@/apps/appointments/postmark-sync'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
@@ -31,8 +32,10 @@ export async function GET(req: Request) {
   try {
     const reconciled = await reconcileRecoveries()
     const tally = await dispatchDue({ only: 'recovery', limit: 50 })
+    // Read-only health check of the Postmark stream recovery emails use (ID + type only; sends nothing).
+    const stream = await checkRecoveryStream()
     // Counts only — never customer details.
-    logger.info('cron:recovery-follow-ups', 'dispatched', { ...reconciled, ...tally })
+    logger.info('cron:recovery-follow-ups', 'dispatched', { ...reconciled, ...tally, stream })
     return NextResponse.json({ ok: true, ...reconciled, ...tally })
   } catch (err) {
     logger.error('cron:recovery-follow-ups', 'failed', { error: err instanceof Error ? err.message : String(err) })

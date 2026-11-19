@@ -19,6 +19,7 @@ import {
   recordManagerEmailConsent, hasEmailConsent, reconcileRecoveries, recoverInterruptedEmails, refreshRecoveredPayments,
 } from './recovery'
 import { recoveryToken } from './tokens'
+import { checkRecoveryStream, syncPostmarkSuppressions } from './postmark-sync'
 import { EMAIL_CONSENT_TEXT, EMAIL_CONSENT_VERSION } from './email-consent'
 import { DEFAULT_BOOKING_CONFIG, zonedToUtc, type BookingConfig } from './policy'
 import { fakeVpic } from './test-vpic'
@@ -795,5 +796,76 @@ describe('historical import (scripts/recovery-backfill.ts)', () => {
   it('never imports a Pitt Stop cancellation', async () => {
     const { appt, cfg } = await bookAndCancel(LIVE, { by: 'staff', initiator: 'shop' })
     expect((await enrollCancellation(appt, 'shop', { actor: 'backfill', historical: true, cfg })).recoveryId).toBeNull()
+  })
+})
+
+describe('Postmark broadcast stream — suppression sync and stream check', () => {
+  const PM = { APPOINTMENT_EMAIL_PROVIDER: 'postmark', POSTMARK_SERVER_TOKEN: 'test-token' } as unknown as NodeJS.ProcessEnv
+  const urls: string[] = []
+  const pmFetch = (routes: Record<string, [number, unknown]>) => (async (u: unknown, init?: { headers?: Record<string, string> }) => {
+    urls.push(String(u)); expect(init?.headers?.['X-Postmark-Server-Token']).toBe('test-token')
+    const hit = Object.entries(routes).find(([k]) => String(u).endsWith(k))
+    return new Response(JSON.stringify(hit ? hit[1][1] : { Message: 'not found' }), { status: hit ? hit[1][0] : 404 })
+  }) as unknown as typeof fetch
+  const dump = (list: unknown[]) => pmFetch({ '/message-streams/broadcast/suppressions/dump': [200, { Suppressions: list }] })
+
+  it('an unsubscribe made through Postmark’s own link blocks marketing email here, is logged, and stops the sequence at once', async () => {
+    const { appt } = await bookAndCancel()
+    await runAt(appt.id, 'recovery_1')
+    const res = await syncPostmarkSuppressions({ env: PM, fetchImpl: dump([{ EmailAddress: 'Fictional.Canceller@Example.com', SuppressionReason: 'ManualSuppression', Origin: 'Recipient', CreatedAt: '2026-11-20T10:00:00Z' }]) })
+    expect(res).toMatchObject({ enabled: true, seen: 1, customersBlocked: 1, sequencesStopped: 1 })
+    expect(await count('marketing_preferences', `customer_id = '${appt.customerId}' AND email_eligible = false AND unsubscribe_reason = 'postmark:ManualSuppression'`)).toBe(1)
+    expect(await count('marketing_consent_events', `customer_id = '${appt.customerId}' AND channel = 'email' AND event = 'opt_out' AND source = 'email_provider'`)).toBe(1)
+    expect(await getRecoveryForAppointment(appt.id)).toMatchObject({ status: 'stopped', reason: REASONS.optedOut })
+    await runAt(appt.id, 'recovery_3')
+    expect(sent.length).toBe(1)   // only the email sent before the unsubscribe
+    // SMS consent is not touched by an email unsubscribe.
+    expect(await count('marketing_preferences', `customer_id = '${appt.customerId}' AND unsubscribed_at IS NOT NULL`)).toBe(0)
+    // Re-running changes nothing.
+    const again = await syncPostmarkSuppressions({ env: PM, fetchImpl: dump([{ EmailAddress: 'fictional.canceller@example.com', SuppressionReason: 'ManualSuppression', Origin: 'Recipient' }]) })
+    expect(again).toMatchObject({ seen: 1, customersBlocked: 0, sequencesStopped: 0 })
+    expect(await count('marketing_consent_events', `customer_id = '${appt.customerId}' AND event = 'opt_out'`)).toBe(1)
+  })
+
+  it('after the sync nobody can restart or manually send, and a new cancellation by that customer is never auto-started', async () => {
+    const { appt } = await bookAndCancel()
+    await syncPostmarkSuppressions({ env: PM, fetchImpl: dump([{ EmailAddress: 'fictional.canceller@example.com', SuppressionReason: 'SpamComplaint', Origin: 'Recipient' }]) })
+    const again = await bookAndCancel(LIVE, { by: 'customer' }, { time: '09:30' })
+    const rec = (await getRecoveryForAppointment(again.appt.id))!
+    expect(rec).toMatchObject({ status: 'review', reason: REASONS.optedOut })
+    await expect(startSequence(rec.id, 'Manager Mia')).rejects.toThrow(REASONS.optedOut)
+    await expect(recordManagerEmailConsent(rec.id, 'Manager Mia')).rejects.toThrow(/unsubscribed/)
+    expect(await emails(again.appt.id)).toEqual([])
+    expect((await getRecoveryForAppointment(appt.id))!.status).toBe('stopped')
+  })
+
+  it('a hard bounce stops the sequence as undeliverable', async () => {
+    const { appt } = await bookAndCancel()
+    await syncPostmarkSuppressions({ env: PM, fetchImpl: dump([{ EmailAddress: 'fictional.canceller@example.com', SuppressionReason: 'HardBounce', Origin: 'Recipient' }]) })
+    expect(await getRecoveryForAppointment(appt.id)).toMatchObject({ status: 'stopped', reason: REASONS.undeliverable })
+  })
+
+  it('runs as part of every recovery pass, before dispatch — and a Postmark outage never breaks the pass', async () => {
+    const { appt } = await bookAndCancel()
+    const res = await reconcileRecoveries()   // Postmark not configured in tests → reported as disabled, nothing fetched
+    expect(res.suppressions).toMatchObject({ enabled: false })
+    expect(await syncPostmarkSuppressions({ env: PM, fetchImpl: pmFetch({}) })).toMatchObject({ enabled: true, seen: 0, problem: 'Postmark answered 404' })
+    expect((await getRecoveryForAppointment(appt.id))!.status).toBe('active')
+  })
+
+  it('an address with no customer record, or junk in the list, is ignored safely', async () => {
+    const res = await syncPostmarkSuppressions({ env: PM, fetchImpl: dump([{ EmailAddress: 'nobody.here@example.com', SuppressionReason: 'HardBounce' }, { EmailAddress: '' }, {}]) })
+    expect(res).toMatchObject({ seen: 1, customersBlocked: 0, sequencesStopped: 0 })
+  })
+
+  it('stream check: ready only for a live broadcast stream; never throws; says why otherwise', async () => {
+    const stream = (body: unknown, status = 200) => checkRecoveryStream({ env: PM, fetchImpl: pmFetch({ '/message-streams/broadcast': [status, body] }) })
+    expect(await stream({ ID: 'broadcast', MessageStreamType: 'Broadcasts', ArchivedAt: null, SubscriptionManagementConfiguration: { UnsubscribeHandlingType: 'Postmark' } }))
+      .toEqual({ configured: true, stream: 'broadcast', ok: true, type: 'Broadcasts', unsubscribeHandling: 'Postmark', archived: false })
+    expect(await stream({ ID: 'broadcast', MessageStreamType: 'Transactional' })).toMatchObject({ ok: false, problem: expect.stringContaining('not a broadcast stream') })
+    expect(await stream({ ID: 'broadcast', MessageStreamType: 'Broadcasts', ArchivedAt: '2026-01-01' })).toMatchObject({ ok: false, problem: 'The stream is archived.' })
+    expect(await stream({ Message: 'no such stream' }, 404)).toMatchObject({ ok: false, problem: expect.stringContaining('404') })
+    expect(await checkRecoveryStream({ env: {} as NodeJS.ProcessEnv })).toMatchObject({ configured: false, ok: false })
+    expect(await checkRecoveryStream({ env: PM, fetchImpl: (async () => { throw new TypeError('down') }) as unknown as typeof fetch })).toMatchObject({ ok: false })
   })
 })
