@@ -297,12 +297,13 @@ export default function ReviewCard({ r, vehicles = [], allocations = [], vehicle
                     : (r.status === 'filed' || r.status === 'approved') ? 'Shows under this vehicle’s expenses and counts in its total.' : 'Shows under this vehicle as pending — it counts in the total once the receipt is filed.'}</p>
                   {vehicle.hasReturns && <p className="text-amber-300 text-xs">A return is recorded against this purchase on the vehicle, so it cannot be moved until that return is reversed there.</p>}
                   {entity !== 'auto_sales' && <p className="text-amber-300 text-xs">This receipt’s business is not Auto Sales. The vehicle assignment does not change the business.</p>}
-                  {!vehicle.hasReturns && <p className="text-gray-400 text-xs pt-1">Move it to a different vehicle:</p>}
+                  {vehicle.matchedLabel && <p className="text-gray-400 text-xs">To move it, remove it from this vehicle first — the expense already entered there stays and keeps counting once.</p>}
+                  {!vehicle.hasReturns && !vehicle.matchedLabel && <p className="text-gray-400 text-xs pt-1">Move it to a different vehicle:</p>}
                 </>
               ) : (
                 <p className="text-gray-500 text-xs">{onJob ? 'This receipt is attached to a customer job. Remove it from the job to assign it to a sales vehicle.' : 'Not assigned to a vehicle. Search by stock #, VIN, year, make or model.'}</p>
               )}
-              {!onJob && !vehicle?.hasReturns && (
+              {!onJob && !vehicle?.hasReturns && !vehicle?.matchedLabel && (
                 <>
                   <VehiclePicker vehicles={vehicles.filter((v) => v.id !== vehicle?.inventoryVehicleId)} value={pickVehicle} onChange={setPickVehicle} total={total} date={receiptDate} receiptId={r.id} disabled={busy} />
                   {pickVehicle && <button type="button" onClick={assignVehicle} disabled={busy || pickVehicle.matchEventId === undefined} className="w-full bg-indigo-600 text-white text-sm font-semibold py-3 rounded-xl disabled:opacity-50">{vehicle ? 'Move to this vehicle' : 'Assign to this vehicle'}</button>}

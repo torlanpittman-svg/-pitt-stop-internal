@@ -25,7 +25,8 @@ import { inventoryVehicles, vehicleFinancialEvents } from '@/apps/auto-sales/sch
 import { isRemovableVehicleExpense, labelFor } from '@/apps/auto-sales/types'
 import { liveLedgerIds } from '@/apps/auto-sales/receipt-expenses'
 import { purchaseLinks } from '@/apps/finance/schema'
-import { decideLink, clearLink } from '@/apps/finance/purchase-links'
+import { decideLink, clearLink, vehicleMatchAtRisk, type VehicleMatchRisk } from '@/apps/finance/purchase-links'
+import { removeVehicleExpense } from '@/apps/auto-sales/db'
 import { businessReceipts, expenseAllocations } from './schema'
 import { appendReceiptAudit, getReceipt } from './db'
 import { auditEntry } from './types'
@@ -37,7 +38,7 @@ const dayGap = (a: string, b: string) => Math.abs(Date.parse(`${a}T00:00:00Z`) -
 
 export interface Actor { name: string | null; key?: string | null }
 
-async function vehicleLabel(inventoryVehicleId: string): Promise<string | null> {
+export async function vehicleLabel(inventoryVehicleId: string): Promise<string | null> {
   const [v] = await getDb().select({ stock: inventoryVehicles.stockNumber, year: vehicles.year, make: vehicles.make, model: vehicles.model })
     .from(inventoryVehicles).innerJoin(vehicles, eq(inventoryVehicles.vehicleId, vehicles.id)).where(eq(inventoryVehicles.id, inventoryVehicleId)).limit(1)
   if (!v) return null
@@ -139,8 +140,18 @@ export async function setReceiptVehicle(input: SetVehicleInput, actor: Actor): P
   const nextMatch = nextVehicle ? (input.matchEventId || null) : null
   const curVehicle = receipt.inventoryVehicleId ?? null
   const curLink = await confirmedMatch(receipt.id)
-  const curMatch = curVehicle ? (curLink?.eventId ?? null) : null
+  // "Matched" only while the match is doing its job: the expense is a live line on the vehicle the receipt is on.
+  const atRisk = curLink ? await vehicleMatchAtRisk({ id: curLink.id, kind: 'receipt_vehicle_event', aId: receipt.id, bId: curLink.eventId, status: 'confirmed' }) : null
+  const curMatch = atRisk ? atRisk.eventId : null
   if (nextVehicle === curVehicle && nextMatch === curMatch) return { ok: true, already: true, inventoryVehicleId: curVehicle, previousVehicleId: curVehicle }
+
+  // A matched receipt is counted as the expense already typed on its vehicle. The only change allowed from
+  // here is taking it off the vehicle (the typed expense keeps counting, once). Moving it to another vehicle,
+  // re-matching it, or un-matching it in place would count the purchase twice — that needs an explicit
+  // resolution (resolveVehicleMatch), never a side effect of an assignment.
+  if (curMatch && nextVehicle) {
+    return { ok: false, error: 'This receipt is counted as an expense already entered on its vehicle. Remove the receipt from that vehicle first (the entered expense stays and keeps counting once), or resolve the match on the Finance reconcile page.' }
+  }
 
   let label: string | null = null
   if (nextVehicle) {
@@ -169,24 +180,104 @@ export async function setReceiptVehicle(input: SetVehicleInput, actor: Actor): P
     if (taken && taken.aId !== receipt.id) return { ok: false, error: 'Another receipt is already matched to that vehicle expense.' }
   }
 
-  // 1) Match first (a match without the assignment changes nothing; the reverse could briefly show two lines).
-  if (curLink && curLink.eventId !== nextMatch) await clearLink(curLink.id, actor.name)
-  if (nextMatch && curLink?.eventId !== nextMatch) {
-    const linked = await decideLink({ kind: 'receipt_vehicle_event', aId: receipt.id, bId: nextMatch, status: 'confirmed', actor: actor.name, amountCents: receipt.totalCents, note: 'Matched when the receipt was assigned to the vehicle' })
-    if (!linked.ok) {
-      if (curLink) await decideLink({ kind: 'receipt_vehicle_event', aId: receipt.id, bId: curLink.eventId, status: 'confirmed', actor: actor.name, amountCents: receipt.totalCents }).catch(() => null)
-      return { ok: false, error: linked.error === 'One of these is already matched to a different record. Undo that match first.' ? 'Another receipt is already matched to that vehicle expense.' : (linked.error ?? 'Could not match the receipt to that expense.') }
-    }
-  }
-  // 2) The assignment itself — only while the row still holds the value we read (no lost update).
-  if (nextVehicle !== curVehicle) {
-    const done = await db.update(businessReceipts).set({ inventoryVehicleId: nextVehicle, updatedAt: new Date() })
-      .where(and(eq(businessReceipts.id, receipt.id), curVehicle ? eq(businessReceipts.inventoryVehicleId, curVehicle) : isNull(businessReceipts.inventoryVehicleId)))
-      .returning({ id: businessReceipts.id })
+  // Order matters (no transactions): at no point may the receipt and a matched expense both count.
+  if (!nextVehicle) {
+    // Taking it off the vehicle: clear the assignment FIRST (the receipt stops counting; a matched expense keeps
+    // counting, once), then retire the match — which is no longer protecting anything.
+    const done = await db.update(businessReceipts).set({ inventoryVehicleId: null, updatedAt: new Date() })
+      .where(and(eq(businessReceipts.id, receipt.id), eq(businessReceipts.inventoryVehicleId, curVehicle as string))).returning({ id: businessReceipts.id })
     if (done.length === 0) return { ok: false, error: 'This receipt was just changed by someone else — refresh and try again.' }
+    if (curLink) await clearLink(curLink.id, actor.name, { vehicleSplit: 'assignment_change' })
+  } else {
+    // Assigning (curMatch is null here): a leftover match to a removed expense is retired, a new match is saved
+    // BEFORE the assignment (a match without the assignment changes nothing), then the assignment itself.
+    if (curLink && curLink.eventId !== nextMatch) await clearLink(curLink.id, actor.name, { vehicleSplit: 'assignment_change' })
+    if (nextMatch && curLink?.eventId !== nextMatch) {
+      const linked = await decideLink({ kind: 'receipt_vehicle_event', aId: receipt.id, bId: nextMatch, status: 'confirmed', actor: actor.name, amountCents: receipt.totalCents, note: 'Matched when the receipt was assigned to the vehicle' })
+      if (!linked.ok) return { ok: false, error: linked.error === 'One of these is already matched to a different record. Undo that match first.' ? 'Another receipt is already matched to that vehicle expense.' : (linked.error ?? 'Could not match the receipt to that expense.') }
+    }
+    if (nextVehicle !== curVehicle) {
+      const done = await db.update(businessReceipts).set({ inventoryVehicleId: nextVehicle, updatedAt: new Date() })
+        .where(and(eq(businessReceipts.id, receipt.id), curVehicle ? eq(businessReceipts.inventoryVehicleId, curVehicle) : isNull(businessReceipts.inventoryVehicleId)))
+        .returning({ id: businessReceipts.id })
+      if (done.length === 0) return { ok: false, error: 'This receipt was just changed by someone else — refresh and try again.' }
+    }
   }
   const before = curVehicle ? `${(await vehicleLabel(curVehicle)) ?? curVehicle}${curMatch ? ' (matched to an existing vehicle expense)' : ''}` : null
   const after = nextVehicle ? `${label}${nextMatch ? ' (matched to an existing vehicle expense)' : ''}` : null
   await appendReceiptAudit(receipt.id, auditEntry(nextVehicle ? 'vehicle_assigned' : 'vehicle_removed', actor.name, { inventoryVehicle: { from: before, to: after } }))
   return { ok: true, inventoryVehicleId: nextVehicle, previousVehicleId: curVehicle }
+}
+
+// ── Resolving a match that is keeping ONE purchase from counting twice on a vehicle ──────────────────
+export const MATCH_RESOLUTIONS = ['keep_matched', 'different_purchases', 'remove_duplicate'] as const
+export type MatchResolution = (typeof MATCH_RESOLUTIONS)[number]
+export function isMatchResolution(v: unknown): v is MatchResolution { return typeof v === 'string' && (MATCH_RESOLUTIONS as readonly string[]).includes(v) }
+export interface ResolveResult { ok: boolean; error?: string; resolution?: MatchResolution; inventoryVehicleId?: string }
+
+/** What the reconcile page shows before asking: the vehicle, both amounts, and what each choice does. */
+export interface VehicleMatchRiskView extends VehicleMatchRisk { vehicleLabel: string; canRemoveDuplicate: boolean; removeBlockedWhy: string | null }
+export async function describeVehicleMatchRisk(risk: VehicleMatchRisk): Promise<VehicleMatchRiskView> {
+  const why = await duplicateRemovalBlocked(risk)
+  return { ...risk, vehicleLabel: (await vehicleLabel(risk.inventoryVehicleId)) ?? 'the vehicle', canRemoveDuplicate: !why, removeBlockedWhy: why }
+}
+
+/** Why the typed vehicle expense cannot be removed as the duplicate (null = it can). */
+async function duplicateRemovalBlocked(risk: VehicleMatchRisk): Promise<string | null> {
+  const ledger = await getDb().select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.inventoryVehicleId, risk.inventoryVehicleId))
+  const ev = ledger.find((e) => e.id === risk.eventId)
+  if (!ev) return 'That vehicle expense no longer exists.'
+  if (!isRemovableVehicleExpense(ev.economicCategory)) return 'That entry is not a removable vehicle expense.'
+  if (ev.status === 'reconciled' || ev.finTransactionId) return 'The vehicle expense is linked to a reconciled bank/accounting record — ask the accountant to unlink it first.'
+  const live = liveLedgerIds(ledger)
+  if (ledger.some((e) => e.originalEventId === ev.id && live.has(e.id))) return 'A return or refund is recorded against the vehicle expense. Reverse that return on the vehicle first.'
+  return null
+}
+
+/**
+ * A person's explicit answer to "this receipt and this vehicle expense are matched on the same vehicle — what
+ * now?". The ONLY way such a match is separated (purchase-links refuses a plain undo / "not the same").
+ *
+ *   keep_matched        — nothing changes; the purchase keeps counting once.
+ *   different_purchases — confirmed as two real purchases: the match is retired and the pair is recorded as
+ *                         "not the same" (so it is never suggested or flagged again). BOTH now count.
+ *   remove_duplicate    — the TYPED vehicle expense is the redundant copy: it is reversed through the existing
+ *                         correction (removeVehicleExpense — append-only, original kept in History) and the
+ *                         receipt carries the purchase from then on. Still counted once.
+ *
+ * Nothing is deleted. Recorded in fin_events (the match), the vehicle ledger (the correction) and the receipt's
+ * audit trail. No QuickBooks call, no money movement.
+ */
+export async function resolveVehicleMatch(linkId: string, resolution: MatchResolution, actor: Actor): Promise<ResolveResult> {
+  if (!isMatchResolution(resolution)) return { ok: false, error: 'Choose how to resolve this match.' }
+  if (!isUuid(linkId)) return { ok: false, error: 'Match not found.' }
+  const db = getDb()
+  const [link] = await db.select().from(purchaseLinks).where(eq(purchaseLinks.id, linkId)).limit(1)
+  if (!link || link.kind !== 'receipt_vehicle_event') return { ok: false, error: 'Match not found.' }
+  if (link.status !== 'confirmed') return { ok: false, error: 'That match was already changed — refresh and try again.' }
+  const risk = await vehicleMatchAtRisk(link)
+  if (!risk) return { ok: false, error: 'This match no longer involves a receipt and an expense on the same vehicle — refresh and use the normal undo.' }
+  if (resolution === 'keep_matched') return { ok: true, resolution, inventoryVehicleId: risk.inventoryVehicleId }
+
+  const label = (await vehicleLabel(risk.inventoryVehicleId)) ?? 'the vehicle'
+  if (resolution === 'different_purchases') {
+    const r = await decideLink({ kind: 'receipt_vehicle_event', aId: risk.receiptId, bId: risk.eventId, status: 'dismissed', actor: actor.name, vehicleSplit: 'different_purchases',
+      note: 'Confirmed as two different purchases — both count on the vehicle' })
+    if (!r.ok) return { ok: false, error: r.error ?? 'Could not record the decision.' }
+    await appendReceiptAudit(risk.receiptId, auditEntry('vehicle_match_resolved', actor.name, { vehicleMatch: { from: 'counted once with an expense already on the vehicle', to: 'a different purchase — counts on its own' } },
+      `Different purchases on ${label}: this receipt (${money(risk.receiptCents)}) and the entered vehicle expense (${money(risk.eventCents)}) both count.`))
+    return { ok: true, resolution, inventoryVehicleId: risk.inventoryVehicleId }
+  }
+
+  // remove_duplicate
+  const blocked = await duplicateRemovalBlocked(risk)
+  if (blocked) return { ok: false, error: blocked }
+  // The match stays in place while the typed expense is reversed, so there is never a moment with two lines:
+  // before → the typed expense counts; after → it is reversed and the receipt counts.
+  const removed = await removeVehicleExpense({ eventId: risk.eventId, actor: actor.name, duplicateOfReceiptId: risk.receiptId })
+  if (!removed.ok) return { ok: false, error: removed.error ?? 'Could not remove the vehicle expense.' }
+  await clearLink(link.id, actor.name, { vehicleSplit: 'duplicate_removed' })
+  await appendReceiptAudit(risk.receiptId, auditEntry('vehicle_match_resolved', actor.name, { vehicleMatch: { from: 'counted once with an expense already on the vehicle', to: 'counts on its own — the duplicate vehicle expense was removed' } },
+    `Duplicate removed on ${label}: the entered vehicle expense (${money(risk.eventCents)}) was reversed; this receipt (${money(risk.receiptCents)}) now carries the purchase.`))
+  return { ok: true, resolution, inventoryVehicleId: risk.inventoryVehicleId }
 }

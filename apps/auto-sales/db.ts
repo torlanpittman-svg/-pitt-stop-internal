@@ -226,7 +226,7 @@ export type RemoveExpenseResult = { ok: boolean; error?: string; alreadyRemoved?
  * active reversal per original exist. The pre-check below is a fast path for the common repeat; the index
  * is the real guarantee — a racing second insert violates it and is caught as an already-removed no-op.
  */
-export async function removeVehicleExpense(input: { eventId: string; actor: string | null }): Promise<RemoveExpenseResult> {
+export async function removeVehicleExpense(input: { eventId: string; actor: string | null; duplicateOfReceiptId?: string | null }): Promise<RemoveExpenseResult> {
   const db = getDb()
   const [orig] = await db.select().from(vehicleFinancialEvents).where(eq(vehicleFinancialEvents.id, input.eventId)).limit(1)
   if (!orig) return { ok: false, error: 'That expense no longer exists.' }
@@ -241,8 +241,12 @@ export async function removeVehicleExpense(input: { eventId: string; actor: stri
   // Receipt-match guard — this expense is the ONE record counting for a purchase whose receipt (Receipts page)
   // was matched to it. Removing it alone would make the receipt start counting in its place, so the vehicle
   // total would not change and the "removed" purchase would still be on the vehicle. Resolve the receipt first.
+  // The one exception: the reconcile "remove the duplicate entry" resolution, which names that very receipt —
+  // the receipt then carries the purchase on the vehicle, so it still counts exactly once.
   const matched = await receiptMatchedToEvent(orig.id)
-  if (matched) {
+  const asDuplicate = !!matched && !!input.duplicateOfReceiptId && matched.receiptId === input.duplicateOfReceiptId
+  if (input.duplicateOfReceiptId && !asDuplicate) return { ok: false, error: 'That receipt is not matched to this vehicle expense.' }
+  if (matched && !asDuplicate) {
     return { ok: false, error: `A receipt from the Receipts page${matched.vendor ? ` (${matched.vendor})` : ''} is attached to this expense. Open that receipt in Receipts and remove it from the vehicle first — then this expense can be removed.` }
   }
   // Fast path: if a reversal already exists, treat repeat requests as a no-op success (avoids a doomed insert).
@@ -253,10 +257,12 @@ export async function removeVehicleExpense(input: { eventId: string; actor: stri
     await db.insert(vehicleFinancialEvents).values({
       inventoryVehicleId: orig.inventoryVehicleId, economicCategory: 'adjustment', cashflowCategory: 'non_cash',
       amountCents: orig.amountCents, eventDate: iso(new Date()), reversesEventId: orig.id, status: 'verified', source: 'manual',
-      memo: `Removed from vehicle — attached by mistake (${labelFor(orig.economicCategory)}${orig.vendor ? ` · ${orig.vendor}` : ''})`,
+      memo: asDuplicate
+        ? `Removed from vehicle — duplicate of a receipt filed in Receipts (${labelFor(orig.economicCategory)}${orig.vendor ? ` · ${orig.vendor}` : ''})`
+        : `Removed from vehicle — attached by mistake (${labelFor(orig.economicCategory)}${orig.vendor ? ` · ${orig.vendor}` : ''})`,
       evidence: {
         removal: {
-          reason: 'mistaken_vehicle_attachment', removedBy: input.actor, removedAt: new Date().toISOString(),
+          reason: asDuplicate ? 'duplicate_of_receipt' : 'mistaken_vehicle_attachment', duplicateOfReceiptId: asDuplicate ? input.duplicateOfReceiptId : null, removedBy: input.actor, removedAt: new Date().toISOString(),
           formerVehicleId: orig.inventoryVehicleId, originalEventId: orig.id,
           originalCategory: orig.economicCategory, originalAmountCents: orig.amountCents,
           originalVendor: orig.vendor ?? null, documentId: orig.documentId ?? null,

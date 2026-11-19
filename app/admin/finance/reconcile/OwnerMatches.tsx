@@ -4,6 +4,7 @@
  * matches to confirm, and the matches already confirmed. The forms post to the server actions passed in.
  */
 import type { OwnerReconciliation, RecordView, BillState } from '@/apps/finance/reconcile-links'
+import type { VehicleMatchRiskView } from '@/apps/expenses/vehicle-link'
 
 const money = (c: number | null | undefined) => (c == null ? '—' : `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
 const card = 'rounded-2xl bg-gray-900 border border-gray-800 p-4'
@@ -22,7 +23,36 @@ function Rec({ r }: { r: RecordView }) {
 }
 type Action = (fd: FormData) => Promise<void>
 
-export default function OwnerMatches({ data, decide, clear }: { data: OwnerReconciliation; decide: Action; clear: Action }) {
+/**
+ * A receipt and a typed vehicle expense matched on the SAME vehicle: today they count once. There is no plain
+ * "undo" for this — the owner picks one of three explicit outcomes (the server refuses anything else).
+ */
+function VehicleMatchResolve({ linkId, risk, resolve }: { linkId: string; risk: VehicleMatchRiskView; resolve: Action }) {
+  const differ = risk.receiptCents != null && risk.receiptCents !== risk.eventCents
+  return (
+    <details className="mt-1 rounded-xl border border-amber-900/50 bg-amber-950/15">
+      <summary className="px-3 py-2 text-amber-200 text-xs cursor-pointer min-h-11 flex items-center">Change this match… (it keeps this purchase counted once on {risk.vehicleLabel})</summary>
+      <div className="px-3 pb-3 space-y-2">
+        <p className="text-amber-100 text-sm">Both records are on <span className="font-semibold">{risk.vehicleLabel}</span>. While they are matched, the vehicle counts this purchase <span className="font-semibold">once</span> ({money(risk.eventCents)}). Undoing the match on its own would count it twice — {money(risk.eventCents)} + {money(risk.receiptCents)} — in the vehicle’s investment and profit.</p>
+        <form action={resolve}><input type="hidden" name="id" value={linkId} /><input type="hidden" name="resolution" value="keep_matched" />
+          <button className={`${btn} w-full bg-indigo-600 text-white`}>Keep matched — count it once</button></form>
+        <form action={resolve}><input type="hidden" name="id" value={linkId} /><input type="hidden" name="resolution" value="different_purchases" />
+          <button className={`${btn} w-full border border-gray-700 text-gray-200`}>They are two different purchases — count both</button>
+          <p className="text-gray-500 text-xs mt-1">The vehicle’s investment goes up by {money(risk.receiptCents)}. Recorded as “not the same purchase”, so it is not asked again.</p></form>
+        {risk.canRemoveDuplicate ? (
+          <form action={resolve}><input type="hidden" name="id" value={linkId} /><input type="hidden" name="resolution" value="remove_duplicate" />
+            <button className={`${btn} w-full border border-gray-700 text-gray-200`}>Remove the duplicate vehicle entry — keep the receipt</button>
+            <p className="text-gray-500 text-xs mt-1">The expense typed on the vehicle is reversed with a correcting entry (it stays in the vehicle’s History) and the receipt carries the purchase. Still counted once{differ ? ` — at the receipt’s amount, ${money(risk.receiptCents)} instead of ${money(risk.eventCents)}` : ''}.</p></form>
+        ) : (
+          <p className="text-gray-500 text-xs">The duplicate vehicle entry cannot be removed here: {risk.removeBlockedWhy}</p>
+        )}
+        <p className="text-gray-600 text-xs">Nothing is deleted. Every choice is recorded. No QuickBooks record is changed.</p>
+      </div>
+    </details>
+  )
+}
+
+export default function OwnerMatches({ data, decide, clear, resolve, vehicleRisks = {} }: { data: OwnerReconciliation; decide: Action; clear: Action; resolve?: Action; vehicleRisks?: Record<string, VehicleMatchRiskView> }) {
   const L = data.ledger
   const single = Object.entries(L.singleSourceBySource).filter(([, v]) => v.count > 0)
   return (
@@ -121,9 +151,11 @@ export default function OwnerMatches({ data, decide, clear }: { data: OwnerRecon
               <li key={`${c.kind}|${c.a.id}|${c.b.id}`} className="py-3 space-y-1">
                 <p className="text-xs text-gray-400">{c.kindLabel} · confirmed by {c.decidedBy ?? 'unknown'}{c.decidedAt ? ` on ${c.decidedAt.slice(0, 10)}` : ''}</p>
                 <Rec r={c.a} /><Rec r={c.b} />
-                {c.linkId
-                  ? <form action={clear}><input type="hidden" name="id" value={c.linkId} /><button className="text-gray-400 text-xs underline py-2 min-h-11">Undo this match</button></form>
-                  : <p className="text-gray-600 text-xs">Receipt-to-bank matches are undone on the Finance page.</p>}
+                {c.linkId && vehicleRisks[c.linkId] && resolve
+                  ? <VehicleMatchResolve linkId={c.linkId} risk={vehicleRisks[c.linkId]} resolve={resolve} />
+                  : c.linkId
+                    ? <form action={clear}><input type="hidden" name="id" value={c.linkId} /><button className="text-gray-400 text-xs underline py-2 min-h-11">Undo this match</button></form>
+                    : <p className="text-gray-600 text-xs">Receipt-to-bank matches are undone on the Finance page.</p>}
               </li>
             ))}
           </ul>

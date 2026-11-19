@@ -11,7 +11,8 @@ import { getReconciliation } from '@/apps/expenses/reconcile'
 import { todayBusinessDate } from '@/apps/expenses/checks'
 import ReconcileView from '@/apps/expenses/ui/ReconcileView'
 import { getOwnerReconciliation } from '@/apps/finance/reconcile-links'
-import { clearLink, decideLink, isLinkKind } from '@/apps/finance/purchase-links'
+import { clearLink, decideLink, isLinkKind, vehicleMatchRiskById } from '@/apps/finance/purchase-links'
+import { describeVehicleMatchRisk, isMatchResolution, resolveVehicleMatch, type VehicleMatchRiskView } from '@/apps/expenses/vehicle-link'
 import OwnerMatches from './OwnerMatches'
 
 export const dynamic = 'force-dynamic'
@@ -29,8 +30,20 @@ async function decideAction(fd: FormData) {
 async function clearAction(fd: FormData) {
   'use server'
   const id = String(fd.get('id') ?? '')
+  // A match that keeps one purchase from counting twice on a vehicle is REFUSED here (server-side, whatever
+  // posted the form) — it can only be changed through resolveAction below, with an explicit choice.
   if (id) await clearLink(id, 'admin')
   revalidatePath('/admin/finance/reconcile')
+}
+/** The owner's explicit answer for a receipt ↔ vehicle-expense match on one vehicle: keep it, confirm two
+ *  different purchases (both count), or remove the duplicate typed vehicle expense (existing correction). */
+async function resolveAction(fd: FormData) {
+  'use server'
+  const id = String(fd.get('id') ?? ''), resolution = String(fd.get('resolution') ?? '')
+  if (!id || !isMatchResolution(resolution)) return
+  const r = await resolveVehicleMatch(id, resolution, { name: 'admin' })
+  revalidatePath('/admin/finance/reconcile')
+  if (r.ok && r.inventoryVehicleId) { revalidatePath(`/auto-sales/${r.inventoryVehicleId}`); revalidatePath(`/admin/auto-sales/${r.inventoryVehicleId}`); revalidatePath('/auto-sales'); revalidatePath('/admin/auto-sales'); revalidatePath('/expenses/review') }
 }
 
 export default async function AdminReconcilePage({ searchParams }: { searchParams: Promise<{ days?: string }> }) {
@@ -38,9 +51,16 @@ export default async function AdminReconcilePage({ searchParams }: { searchParam
   const days = sp.days === '30' ? 30 : sp.days === '90' ? 90 : 60
   const today = todayBusinessDate()
   const [data, owner] = await Promise.all([getReconciliation({ today, days, includeBank: true }), getOwnerReconciliation({ today, days })])
+  // Which confirmed matches are the only thing keeping ONE purchase from counting twice on a vehicle.
+  const vehicleRisks: Record<string, VehicleMatchRiskView> = {}
+  for (const c of owner.confirmed) {
+    if (c.kind !== 'receipt_vehicle_event' || !c.linkId) continue
+    const risk = await vehicleMatchRiskById(c.linkId)
+    if (risk) vehicleRisks[c.linkId] = await describeVehicleMatchRisk(risk)
+  }
   return (
     <ReconcileView data={data} basePath="/admin/finance/reconcile" backHref="/admin/finance" backLabel="Finance">
-      <OwnerMatches data={owner} decide={decideAction} clear={clearAction} />
+      <OwnerMatches data={owner} decide={decideAction} clear={clearAction} resolve={resolveAction} vehicleRisks={vehicleRisks} />
     </ReconcileView>
   )
 }

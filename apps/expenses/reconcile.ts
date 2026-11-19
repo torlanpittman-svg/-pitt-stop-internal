@@ -268,10 +268,12 @@ export async function getReconciliation(opts: { today: string; days?: number; in
   if (vehicleReceipts.length) {
     const events = await db.select({
       id: vehicleFinancialEvents.id, inventoryVehicleId: vehicleFinancialEvents.inventoryVehicleId, amountCents: vehicleFinancialEvents.amountCents,
-      eventDate: vehicleFinancialEvents.eventDate, vendor: vehicleFinancialEvents.vendor, status: vehicleFinancialEvents.status,
+      eventDate: vehicleFinancialEvents.eventDate, vendor: vehicleFinancialEvents.vendor, status: vehicleFinancialEvents.status, reversesEventId: vehicleFinancialEvents.reversesEventId,
     }).from(vehicleFinancialEvents).where(inArray(vehicleFinancialEvents.inventoryVehicleId, [...new Set(vehicleReceipts.map((r) => r.inventoryVehicleId as string))]))
+    // Only LIVE lines: a line that was removed/corrected (reversed) and the correcting entry itself no longer count.
+    const reversedIds = new Set(events.filter((e) => e.reversesEventId && e.status !== 'void').map((e) => e.reversesEventId as string))
     for (const r of vehicleReceipts) {
-      const hit = events.find((e) => e.inventoryVehicleId === r.inventoryVehicleId && e.status !== 'void' && e.amountCents === r.totalCents
+      const hit = events.find((e) => e.inventoryVehicleId === r.inventoryVehicleId && e.status !== 'void' && !e.reversesEventId && !reversedIds.has(e.id) && e.amountCents === r.totalCents
         && (!r.receiptDate || !e.eventDate || Math.abs(dayGap(r.receiptDate, e.eventDate)) <= 3))
       if (hit && !decidedPair.has(`receipt_vehicle_event|${r.id}|${hit.id}`)) dups.push({
         id: `${r.id}:veh:${hit.id}`, title: `${receiptTitle(r)} ${money(r.totalCents)}`, detail: `Also entered on the vehicle’s own ledger (${hit.vendor ?? 'same amount'}, ${hit.eventDate ?? 'no date'})`,

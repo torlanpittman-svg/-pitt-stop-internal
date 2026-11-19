@@ -22,7 +22,9 @@ vi.mock('@/platform/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), er
 
 import { createReceipt, fileReceipt, getReceipt, rejectReceipt, monthlyExpenseReport, listInventoryVehiclesForPicker } from './db'
 import { allocateReceipt } from './job-expenses'
-import { setReceiptVehicle, vehicleExpenseCandidates, receiptVehicleViews } from './vehicle-link'
+import { setReceiptVehicle, vehicleExpenseCandidates, receiptVehicleViews, resolveVehicleMatch, describeVehicleMatchRisk } from './vehicle-link'
+import { clearLink, decideLink, vehicleMatchRiskById } from '@/apps/finance/purchase-links'
+import { getOwnerReconciliation } from '@/apps/finance/reconcile-links'
 import { getReconciliation } from './reconcile'
 import { createAcquisition, addExpenseEvent, addReturnRefund, getVehicleFolder, getInventoryList, getReturnableExpenses, removeVehicleExpense, reverseEvent, recordSale } from '@/apps/auto-sales/db'
 import { loadMonthlyReport } from '@/apps/auto-sales/report-db'
@@ -310,5 +312,170 @@ describe('a purchase belongs to a customer job OR a sales vehicle', () => {
   it('refuses a vehicle that does not exist', async () => {
     const id = await receipt(1_000)
     expect((await setReceiptVehicle({ receiptId: id, inventoryVehicleId: '00000000-0000-4000-8000-000000000000' }, actor)).ok).toBe(false)
+  })
+})
+
+describe('undoing a match that keeps one purchase from counting twice on a vehicle (Finance reconcile)', () => {
+  const linkOf = async (receiptId: string) => ((await db.execute(sql.raw(`SELECT id FROM purchase_links WHERE a_id = '${receiptId}' AND status = 'confirmed'`))) as unknown as { rows: { id: string }[] }).rows[0]?.id
+  const linkStatuses = async (receiptId: string) => ((await db.execute(sql.raw(`SELECT status FROM purchase_links WHERE a_id = '${receiptId}' ORDER BY decided_at, status`))) as unknown as { rows: { status: string }[] }).rows.map((r) => r.status).sort()
+  const auditActions = async (receiptId: string) => ((await getReceipt(receiptId))!.auditLog as { action: string }[]).map((x) => x.action)
+  const ownerView = () => getOwnerReconciliation({ today: '2026-11-19', days: 60 })
+  /** A vehicle with one typed expense and a filed receipt matched to it (counted once). */
+  async function matched(acq: number, typedCents: number, receiptCents = typedCents, ymm: [string, string, string] = ['2019', 'Subaru', 'Outback']) {
+    const a = await vehicle(acq, ymm)
+    const manual = await addExpenseEvent({ inventoryVehicleId: a, economicCategory: 'part', amountCents: typedCents, eventDate: '2026-11-10', vendor: 'NAPA', actor: 'Tony' })
+    const id = await receipt(receiptCents)
+    expect((await setReceiptVehicle({ receiptId: id, inventoryVehicleId: a, matchEventId: manual }, actor)).ok).toBe(true)
+    return { a, manual, id, linkId: (await linkOf(id))! }
+  }
+
+  it('a plain undo, a "not the same", and every assignment shortcut are REFUSED — nothing is separated silently', async () => {
+    const { a, manual, id, linkId } = await matched(100_000, 5_000)
+    const b = await vehicle(50_000, ['2010', 'Ford', 'Focus'])
+    const before = { events: await count('vehicle_financial_events'), finEvents: await count('fin_events'), totals: await receiptTotals() }
+    expect(await invested(a)).toBe(105_000)
+    expect(await vehicleMatchRiskById(linkId)).toMatchObject({ receiptId: id, eventId: manual, inventoryVehicleId: a, receiptCents: 5_000, eventCents: 5_000 })
+
+    // Finance reconcile "Undo this match" (and any direct call to it)
+    expect(await clearLink(linkId, 'admin')).toMatchObject({ ok: false, needsResolution: true, error: expect.stringMatching(/count the purchase twice/i) })
+    // Finance reconcile "Not the same" posted for the same pair
+    expect(await decideLink({ kind: 'receipt_vehicle_event', aId: id, bId: manual, status: 'dismissed', actor: 'admin' })).toMatchObject({ ok: false, needsResolution: true })
+    // Receipts-side shortcuts: un-match in place, re-point to another vehicle
+    expect((await setReceiptVehicle({ receiptId: id, inventoryVehicleId: a, matchEventId: null }, actor)).ok).toBe(false)
+    expect((await setReceiptVehicle({ receiptId: id, inventoryVehicleId: b }, actor)).ok).toBe(false)
+    // An unknown / missing resolution is not a resolution
+    expect((await resolveVehicleMatch(linkId, 'whatever' as never, actor)).ok).toBe(false)
+
+    expect(await linkStatuses(id)).toEqual(['confirmed'])
+    expect(await invested(a)).toBe(105_000)
+    expect(await invested(b)).toBe(50_000)
+    expect(await lines(a)).toHaveLength(0)
+    expect(await count('vehicle_financial_events')).toBe(before.events)
+    expect(await count('fin_events')).toBe(before.finEvents)            // a refused undo writes no audit of a change
+    expect(await receiptTotals()).toEqual(before.totals)
+    expect((await getReceipt(id))!.inventoryVehicleId).toBe(a)
+  })
+
+  it('Keep matched: nothing changes and the purchase keeps counting once', async () => {
+    const { a, id, linkId } = await matched(200_000, 6_000)
+    const before = { events: await count('vehicle_financial_events'), finEvents: await count('fin_events'), audit: await auditActions(id) }
+    expect(await resolveVehicleMatch(linkId, 'keep_matched', actor)).toMatchObject({ ok: true, resolution: 'keep_matched' })
+    expect(await invested(a)).toBe(206_000)
+    expect(await linkStatuses(id)).toEqual(['confirmed'])
+    expect(await count('vehicle_financial_events')).toBe(before.events)
+    expect(await count('fin_events')).toBe(before.finEvents)
+    expect(await auditActions(id)).toEqual(before.audit)
+    expect((await ownerView()).confirmed.some((c) => c.linkId === linkId)).toBe(true)
+  })
+
+  it('Different purchases: only an explicit confirmation lets both count — recorded, and never suggested again', async () => {
+    const { a, manual, id, linkId } = await matched(300_000, 7_000)
+    const cfoBefore = await receiptTotals()
+    const eventsBefore = await count('vehicle_financial_events')
+    expect(await resolveVehicleMatch(linkId, 'different_purchases', actor)).toMatchObject({ ok: true, resolution: 'different_purchases' })
+
+    const folder = (await getVehicleFolder(a))!
+    expect(folder.summary.knownInvestmentCents).toBe(314_000)             // 300,000 + typed 7,000 + receipt 7,000
+    expect(folder.events.filter(isReceiptEvent).map((e) => e.id)).toEqual([id])
+    expect(folder.events.find((e) => e.id === manual)).toMatchObject({ amountCents: 7_000, status: 'verified' })   // typed expense untouched
+    expect(await count('vehicle_financial_events')).toBe(eventsBefore)     // no ledger row written or removed
+    expect(await receiptTotals()).toEqual(cfoBefore)                       // receipt totals (CFO) unchanged
+    // History kept: the confirmed row is cleared, a "not the same" decision is the live one.
+    expect(await linkStatuses(id)).toEqual(['cleared', 'dismissed'])
+    expect(await auditActions(id)).toContain('vehicle_match_resolved')
+    expect(await count('fin_events', `entity = 'purchase_link' AND action = 'dismiss' AND after->>'vehicleSplit' = 'different_purchases'`)).toBeGreaterThanOrEqual(1)
+    // Finance reconcile reflects it: not a confirmed match, not re-suggested, not flagged as a possible double entry.
+    const o = await ownerView()
+    expect(o.confirmed.some((c) => c.a.id === id)).toBe(false)
+    expect(o.suggestions.some((x) => x.a.id === id && x.b.id === manual)).toBe(false)
+    expect(JSON.stringify(await getReconciliation({ today: '2026-11-19', includeBank: false }))).not.toContain(`${id}:veh:${manual}`)
+    // Refunds/returns keep working against either purchase.
+    expect((await addReturnRefund({ inventoryVehicleId: a, originalEventId: id, econ: 'refund', refundMethod: 'card', cash: true, amountCents: 1_000, eventDate: '2026-11-14', refundStatus: 'pending', actor: 'Torlan' })).ok).toBe(true)
+    expect((await addReturnRefund({ inventoryVehicleId: a, originalEventId: manual, econ: 'refund', refundMethod: 'card', cash: true, amountCents: 2_000, eventDate: '2026-11-14', refundStatus: 'pending', actor: 'Torlan' })).ok).toBe(true)
+    expect(await invested(a)).toBe(311_000)
+  })
+
+  it('Remove duplicate entry: the typed expense is reversed (kept in history), the receipt carries the purchase — still once', async () => {
+    const { a, manual, id, linkId } = await matched(400_000, 8_000, 8_250)   // receipt shows the true total
+    const cfoBefore = await receiptTotals()
+    expect(await invested(a)).toBe(408_000)
+    expect(await describeVehicleMatchRisk((await vehicleMatchRiskById(linkId))!)).toMatchObject({ canRemoveDuplicate: true, removeBlockedWhy: null })
+    expect(await resolveVehicleMatch(linkId, 'remove_duplicate', actor)).toMatchObject({ ok: true, resolution: 'remove_duplicate' })
+
+    const folder = (await getVehicleFolder(a))!
+    expect(folder.summary.knownInvestmentCents).toBe(408_250)             // once, at the receipt's amount
+    expect(folder.events.filter(isReceiptEvent).map((e) => e.id)).toEqual([id])
+    // Existing correction workflow: original row untouched + ONE appended reversing adjustment with an audit.
+    const orig = folder.events.find((e) => e.id === manual)!
+    expect(orig).toMatchObject({ amountCents: 8_000, status: 'verified', createdBy: 'Tony' })
+    const reversals = folder.events.filter((e) => e.reversesEventId === manual)
+    expect(reversals).toHaveLength(1)
+    expect(reversals[0]).toMatchObject({ economicCategory: 'adjustment', amountCents: 8_000, createdBy: 'Torlan' })
+    expect((reversals[0].evidence as { removal: Record<string, unknown> }).removal).toMatchObject({ reason: 'duplicate_of_receipt', duplicateOfReceiptId: id, originalEventId: manual, removedBy: 'Torlan' })
+    expect(await receiptTotals()).toEqual(cfoBefore)
+    expect(await linkStatuses(id)).toEqual(['cleared'])
+    expect(await auditActions(id)).toContain('vehicle_match_resolved')
+    expect(await count('fin_events', `entity = 'purchase_link' AND action = 'clear' AND after->>'vehicleSplit' = 'duplicate_removed'`)).toBeGreaterThanOrEqual(1)
+    // Finance reconcile: no confirmed match left, the removed line is neither suggested nor flagged.
+    const o = await ownerView()
+    expect(o.confirmed.some((c) => c.a.id === id)).toBe(false)
+    expect(o.suggestions.some((x) => x.a.id === id)).toBe(false)
+    expect(JSON.stringify(await getReconciliation({ today: '2026-11-19', includeBank: false }))).not.toContain(`${id}:veh:${manual}`)
+    // Repeating it cannot remove anything else, and returns work against the receipt-backed line.
+    expect((await resolveVehicleMatch(linkId, 'remove_duplicate', actor)).ok).toBe(false)
+    expect(await invested(a)).toBe(408_250)
+    expect((await addReturnRefund({ inventoryVehicleId: a, originalEventId: id, econ: 'refund', refundMethod: 'card', cash: true, amountCents: 250, eventDate: '2026-11-14', refundStatus: 'pending', actor: 'Torlan' })).ok).toBe(true)
+    expect(await invested(a)).toBe(408_000)
+  })
+
+  it('profit on a sold vehicle follows each resolution exactly', async () => {
+    const { a, linkId } = await matched(500_000, 10_000)
+    await recordSale({ inventoryVehicleId: a, saleDate: '2026-11-15', salePriceCents: 700_000, proceedsReceived: 'yes', actor: 'Torlan' })
+    const profit = async () => (await getVehicleFolder(a))!.result.indicativeProfitCents
+    expect(await profit()).toBe(190_000)
+    await clearLink(linkId, 'admin')                                      // refused → unchanged
+    expect(await profit()).toBe(190_000)
+    await resolveVehicleMatch(linkId, 'different_purchases', actor)
+    expect(await profit()).toBe(180_000)
+  })
+
+  it('Remove duplicate is refused when the typed expense has a return against it (the return is never orphaned)', async () => {
+    const a = await vehicle(100_000, ['2015', 'GMC', 'Sierra'])
+    const manual = await addExpenseEvent({ inventoryVehicleId: a, economicCategory: 'part', amountCents: 9_000, eventDate: '2026-11-10', vendor: 'NAPA', actor: 'Tony' })
+    await addReturnRefund({ inventoryVehicleId: a, originalEventId: manual, econ: 'refund', refundMethod: 'card', cash: true, amountCents: 1_000, eventDate: '2026-11-12', refundStatus: 'pending', actor: 'Torlan' })
+    const id = await receipt(9_000)
+    await setReceiptVehicle({ receiptId: id, inventoryVehicleId: a, matchEventId: manual }, actor)
+    const linkId = (await linkOf(id))!
+    expect(await describeVehicleMatchRisk((await vehicleMatchRiskById(linkId))!)).toMatchObject({ canRemoveDuplicate: false })
+    expect(await resolveVehicleMatch(linkId, 'remove_duplicate', actor)).toMatchObject({ ok: false, error: expect.stringMatching(/return or refund/i) })
+    expect(await invested(a)).toBe(108_000)
+    expect(await linkStatuses(id)).toEqual(['confirmed'])
+  })
+
+  it('matches that are NOT protecting a vehicle total still undo normally', async () => {
+    // receipt not assigned to any vehicle, matched to a vehicle expense by the owner on the reconcile page
+    const a = await vehicle(100_000, ['2014', 'Hyundai', 'Sonata'])
+    const manual = await addExpenseEvent({ inventoryVehicleId: a, economicCategory: 'part', amountCents: 1_500, eventDate: '2026-11-10', vendor: 'NAPA', actor: 'Tony' })
+    const id = await receipt(1_500)
+    const made = await decideLink({ kind: 'receipt_vehicle_event', aId: id, bId: manual, status: 'confirmed', actor: 'admin' })
+    expect(made.ok).toBe(true)
+    expect(await vehicleMatchRiskById(made.id!)).toBeNull()
+    expect((await clearLink(made.id!, 'admin')).ok).toBe(true)
+    expect(await invested(a)).toBe(101_500)
+    // …and taking a matched receipt off its vehicle (Receipts → Remove) still works and still counts once.
+    const m = await matched(100_000, 2_000)
+    expect((await setReceiptVehicle({ receiptId: m.id, inventoryVehicleId: null }, actor)).ok).toBe(true)
+    expect(await invested(m.a)).toBe(102_000)
+    expect(await linkStatuses(m.id)).toEqual(['cleared'])
+  })
+
+  it('the reconcile page cannot match a receipt that has a return recorded against its own vehicle line', async () => {
+    const a = await vehicle(100_000, ['2016', 'Mazda', 'CX-5'])
+    const manual = await addExpenseEvent({ inventoryVehicleId: a, economicCategory: 'part', amountCents: 4_000, eventDate: '2026-11-10', vendor: 'NAPA', actor: 'Tony' })
+    const id = await receipt(4_000)
+    await setReceiptVehicle({ receiptId: id, inventoryVehicleId: a }, actor)
+    await addReturnRefund({ inventoryVehicleId: a, originalEventId: id, econ: 'refund', refundMethod: 'card', cash: true, amountCents: 500, eventDate: '2026-11-12', refundStatus: 'pending', actor: 'Torlan' })
+    expect((await decideLink({ kind: 'receipt_vehicle_event', aId: id, bId: manual, status: 'confirmed', actor: 'admin' })).ok).toBe(false)
+    expect(await invested(a)).toBe(107_500)
   })
 })
