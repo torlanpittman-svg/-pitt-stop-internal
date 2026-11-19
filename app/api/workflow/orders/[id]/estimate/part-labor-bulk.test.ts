@@ -51,8 +51,8 @@ import { getOrderWithContext } from '@/apps/workflow/db'
 import { buildInvoiceDraft } from '@/apps/workflow/invoice-draft'
 import { loadEstimateReview, assertEstimateReady } from '@/apps/workflow/estimate-review'
 import { addEstimatePart, decidePartLabor } from '@/apps/parts/estimate-parts'
-import { interpretSave, type EstimateViewData } from '@/app/orders/[id]/estimate/save-feedback'
-import { laborLineChoices } from '@/app/orders/[id]/estimate/PartsReview'
+import { interpretSave, bulkLaborOutcome, type EstimateViewData } from '@/app/orders/[id]/estimate/save-feedback'
+import { laborLineChoices, coverChoices, validCoverId } from '@/app/orders/[id]/estimate/PartsReview'
 import { jobParts, jobServices, jobLineItems, jobEstimates, serviceOrderEvents } from '@/drizzle/schema'
 import { POST } from './route'
 
@@ -268,6 +268,113 @@ describe('bulk labor review on the engine job (14 parts waiting)', () => {
     const r = await call(job.orderId, cover(job.partIds, job.laborId))
     expect(r.body.savedPartIds).toHaveLength(14)
     expect(r.body.view.review?.ready).toBe(true)
+  })
+})
+
+describe('bulk save feedback reports only what the server confirmed', () => {
+  /** What the page would show for this request + this server reply. */
+  const shown = (edit: ReturnType<typeof cover> | ReturnType<typeof partOnly>, r: { status: number; body: Body }) => interpretSave(edit, { ok: r.status === 200, status: r.status }, r.body)
+  const bulkRows = async (orderId: string) => (await laborEvents(orderId)).filter((e) => e.bulk)
+
+  it('two selected, one removed before the save: "1 part", never "2 parts"', async () => {
+    const job = await seedEngineJob()
+    const [kept, gone] = job.partIds
+    await call(job.orderId, { action: 'remove_part', partId: gone, labor: { action: 'keep' } })     // cancelled on another screen
+    const edit = cover([kept, gone], job.laborId)
+    const r = await call(job.orderId, edit)
+    expect(r.body.savedPartIds).toEqual([kept])
+    expect(bulkLaborOutcome(edit, r.body.view)).toEqual({ selected: 2, confirmed: 1, unchanged: 0, missing: 1, open: 0 })
+    expect(shown(edit, r)).toMatchObject({ ok: true, message: '1 part marked as covered · 1 part no longer on the invoice · Saved' })
+    expect(await bulkRows(job.orderId)).toHaveLength(1)
+    const [cancelled] = await db.select().from(jobParts).where(eq(jobParts.id, gone))
+    expect(cancelled).toMatchObject({ status: 'cancelled', laborStatus: 'needs_review', laborServiceId: null })   // never written
+  })
+
+  it('a selected part another manager reviewed differently is reported as left unchanged, not as covered', async () => {
+    const job = await seedEngineJob()
+    const [mine, waived, otherLine] = job.partIds
+    await decidePartLabor(job.orderId, waived, { action: 'waive', reason: 'customer installs it' }, 'Other Mgr', 'manager')
+    await decidePartLabor(job.orderId, otherLine, { action: 'included', serviceId: job.weldId }, 'Other Mgr', 'manager')
+    const before = await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, job.orderId))
+    const edit = cover([mine, waived, otherLine], job.laborId)
+    const r = await call(job.orderId, edit)
+    expect(bulkLaborOutcome(edit, r.body.view)).toEqual({ selected: 3, confirmed: 1, unchanged: 2, missing: 0, open: 0 })
+    expect(shown(edit, r)).toMatchObject({ ok: true, message: '1 part marked as covered · 2 parts already reviewed — left unchanged · Saved' })
+    for (const id of [waived, otherLine]) expect((await db.select().from(jobParts).where(eq(jobParts.id, id)))[0]).toEqual(before.find((p) => p.id === id))
+    expect(await bulkRows(job.orderId)).toHaveLength(1)
+  })
+
+  it('identical retry after a save whose response was lost: confirmed again, no new audit row, no false failure', async () => {
+    const job = await seedEngineJob()
+    const edit = cover(job.partIds, job.laborId)
+    await call(job.orderId, edit)                                  // saved; the reply never reached the page
+    const rowsAfterFirst = await bulkRows(job.orderId)
+    const partsAfterFirst = await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, job.orderId))
+    const retry = await call(job.orderId, edit)
+    expect(retry.status).toBe(200)
+    expect(retry.body.savedPartIds).toEqual([])                    // this request wrote nothing…
+    expect(shown(edit, retry)).toMatchObject({ ok: true, message: '14 parts marked as covered · Saved' })   // …and the persisted outcome is confirmed
+    expect(await bulkRows(job.orderId)).toEqual(rowsAfterFirst)
+    expect((await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, job.orderId))).sort((a, b) => a.id.localeCompare(b.id)))
+      .toEqual(partsAfterFirst.sort((a, b) => a.id.localeCompare(b.id)))                                    // not even a timestamp moved
+  })
+
+  it('bulk "Part only" is counted the same way — and a "covered" request never claims parts that are part only', async () => {
+    const job = await seedEngineJob()
+    const [a, b, gone, linked] = job.partIds
+    await call(job.orderId, { action: 'remove_part', partId: gone, labor: { action: 'keep' } })
+    await decidePartLabor(job.orderId, linked, { action: 'included', serviceId: job.laborId }, 'Other Mgr', 'manager')
+    const edit = partOnly([a, b, gone, linked])
+    const r = await call(job.orderId, edit)
+    expect(bulkLaborOutcome(edit, r.body.view)).toEqual({ selected: 4, confirmed: 2, unchanged: 1, missing: 1, open: 0 })
+    expect(shown(edit, r)).toMatchObject({ ok: true, message: '2 parts marked part only · 1 part already reviewed — left unchanged · 1 part no longer on the invoice · Saved' })
+    const retry = await call(job.orderId, edit)
+    expect(retry.body.savedPartIds).toEqual([])
+    expect(shown(edit, retry)).toMatchObject({ ok: true, message: '2 parts marked part only · 1 part already reviewed — left unchanged · 1 part no longer on the invoice · Saved' })
+    expect(await bulkRows(job.orderId)).toHaveLength(2)
+    // The same parts sent as "covered" afterwards: nothing is covered, and the page says so.
+    const wrong = cover([a, b], job.laborId)
+    const w = await call(job.orderId, wrong)
+    expect(shown(wrong, w)).toMatchObject({ ok: true, message: 'No parts changed · 2 parts already reviewed — left unchanged' })
+    expect(await bulkRows(job.orderId)).toHaveLength(2)
+  })
+
+  it('duplicate ids in a request are one part; a part covered by a DIFFERENT line is not counted as covered by the chosen one', async () => {
+    const job = await seedEngineJob()
+    const [a] = job.partIds
+    const first = cover([a, a], job.weldId)
+    expect(shown(first, await call(job.orderId, first))).toMatchObject({ ok: true, message: '1 part marked as covered · Saved' })
+    const other = cover([a], job.laborId)
+    const r = await call(job.orderId, other)
+    expect(shown(other, r)).toMatchObject({ ok: true, message: 'No parts changed · 1 part already reviewed — left unchanged' })
+    expect(r.body.view.parts!.find((p) => p.id === a)?.laborServiceId).toBe(job.weldId)
+  })
+})
+
+describe('the one-part "Already included" picker', () => {
+  it('never offers a declined line, treats a stale pick as no pick, and the server refuses a stale declined selection', async () => {
+    const job = await seedEngineJob()
+    const opened = (await call(job.orderId, { action: 'prepare' })).body.view
+    expect(coverChoices(opened.services).map((s) => s.title).sort()).toEqual(['EGR valve weld', 'Installation Labor', 'Mini Detail'])
+    expect(validCoverId(opened.services, job.weldId)).toBe(job.weldId)
+
+    await call(job.orderId, { action: 'set_approval', serviceId: job.weldId, state: 'declined' })
+    const now = (await call(job.orderId, { action: 'prepare' })).body.view
+    expect(now.services.find((s) => s.id === job.weldId)?.declined).toBe(true)                 // still on the invoice…
+    expect(coverChoices(now.services).map((s) => s.title).sort()).toEqual(['Installation Labor', 'Mini Detail'])   // …but not offered
+    expect(validCoverId(now.services, job.weldId)).toBe('')                                    // a pick made before the decline is void
+    expect(validCoverId(now.services, 'not-a-line')).toBe('')
+
+    // A page that never refreshed still posts the declined line: refused, nothing written.
+    const partsBefore = await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, job.orderId))
+    const auditBefore = await laborEvents(job.orderId)
+    const edit = { action: 'part_labor', partId: job.partIds[0], labor: { action: 'included', serviceId: job.weldId } }
+    const r = await call(job.orderId, edit)
+    expect(r.status).toBe(500)
+    expect(r.body.error).toMatch(/Choose a labor line on this estimate/)
+    expect(interpretSave(edit, { ok: false, status: 500 }, r.body)).toMatchObject({ ok: false })
+    expect((await db.select().from(jobParts).where(eq(jobParts.serviceOrderId, job.orderId))).sort((a, b) => a.id.localeCompare(b.id))).toEqual(partsBefore.sort((a, b) => a.id.localeCompare(b.id)))
+    expect(await laborEvents(job.orderId)).toEqual(auditBefore)
   })
 })
 

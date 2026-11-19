@@ -150,7 +150,7 @@ export default function EstimateBuilder({ header, initialView }: { header: Heade
     try {
       const out = await saveEstimateEdit(header.id, payload)
       if (!out.ok) { setErr(out.error); setSaveMsg(labels.failed); setSaveState('error'); return false }
-      setView(out.view); setSaveMsg(labels.saved); setSaveState('saved'); setSavedOnce(true)
+      setView(out.view); setSaveMsg(out.message ?? labels.saved); setSaveState('saved'); setSavedOnce(true)
       // An item that's now gone (removed, converted to a part) closes its editor.
       const open = paneRef.current
       if ((open.kind === 'service' && !out.view.services.some((x) => x.id === open.id)) || (open.kind === 'part' && !(out.view.parts ?? []).some((x) => x.id === open.id))) closePaneRef.current()

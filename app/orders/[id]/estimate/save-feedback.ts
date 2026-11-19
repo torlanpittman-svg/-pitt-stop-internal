@@ -30,7 +30,8 @@ export interface EstimateViewData {
   qbInvoiced?: boolean
 }
 export type EstimateEdit = Record<string, unknown> & { action: string }
-export type SaveOutcome = { ok: true; view: EstimateViewData } | { ok: false; error: string }
+/** `message` (when present) is the confirmed outcome wording to show instead of the generic "saved" label. */
+export type SaveOutcome = { ok: true; view: EstimateViewData; message?: string } | { ok: false; error: string }
 
 const clean = (s: unknown) => String(s ?? '').replace(/\s+/g, ' ').trim()
 const quote = (s: string) => `“${s}”`
@@ -58,11 +59,11 @@ export function describeEdit(edit: EstimateEdit, view: EstimateViewData): { savi
     }
     case 'part_labor': return { saving: 'Saving labor review…', saved: 'Labor review saved', failed: 'Couldn’t save the labor review.' }
     case 'part_labor_bulk': {
-      const n = Array.isArray(edit.partIds) ? edit.partIds.length : 0
+      // "Saved" wording for a bulk review comes from the server's reply (bulkLaborOutcome), never from the request.
+      const n = Array.isArray(edit.partIds) ? new Set(edit.partIds.map(String)).size : 0
       const what = n === 1 ? '1 part' : `${n} parts`
-      return (edit.labor as { action?: string } | undefined)?.action === 'part_only'
-        ? { saving: `Marking ${what} as part only…`, saved: `${what} marked part only · Saved`, failed: 'Couldn’t save the labor review — the list below shows what is actually saved.' }
-        : { saving: `Marking ${what} as covered…`, saved: `${what} marked as covered · Saved`, failed: 'Couldn’t save the labor review — the list below shows what is actually saved.' }
+      const partOnly = (edit.labor as { action?: string } | undefined)?.action === 'part_only'
+      return { saving: partOnly ? `Marking ${what} as part only…` : `Marking ${what} as covered…`, saved: 'Labor review saved', failed: 'Couldn’t save the labor review — the list below shows what is actually saved.' }
     }
     case 'convert_to_part': return { saving: 'Converting to a part…', saved: `${name} is now a part · Saved`, failed: `Couldn’t convert ${name} — it’s still a service line, unchanged.` }
     case 'clarify_part': return { saving: 'Adding the part…', saved: 'Part added and linked · Saved', failed: `Couldn’t add the part for ${name} — nothing was changed.` }
@@ -119,15 +120,59 @@ function confirmsEdit(edit: EstimateEdit, view: EstimateViewData): string | null
       return p && p.laborStatus === want ? null : 'The server did not confirm the labor review.'
     }
     case 'part_labor_bulk': {
-      // Every selected part that is still on the job must no longer be open. (A part someone else
-      // already reviewed is left as it was — that still counts as reviewed, never as a failure.)
-      const ids = new Set(Array.isArray(edit.partIds) ? (edit.partIds as unknown[]).map(String) : [])
-      const still = (view.parts ?? []).filter((p) => ids.has(p.id) && p.laborStatus === 'needs_review').length
-      return still === 0 ? null : `${still} of the selected ${ids.size === 1 ? 'part' : 'parts'} still ${still === 1 ? 'needs' : 'need'} labor review. Try again.`
+      // Not saved while any selected part is still open in the server's view. (The statement is all-or-nothing.)
+      const { open, selected } = bulkLaborOutcome(edit, view)
+      return open === 0 ? null : `${open} of the selected ${selected === 1 ? 'part' : 'parts'} still ${open === 1 ? 'needs' : 'need'} labor review. Try again.`
     }
     default:
       return null
   }
+}
+
+export interface BulkLaborOutcome {
+  /** Distinct parts in the request. */
+  selected: number
+  /** Parts the server's view shows with EXACTLY the requested decision (and, for "covered", the requested labor line). */
+  confirmed: number
+  /** Parts on the invoice that carry a different, already-made decision — left as they were. */
+  unchanged: number
+  /** Parts no longer on the invoice (removed / cancelled). */
+  missing: number
+  /** Parts still waiting on a review — the request did not take for these. */
+  open: number
+}
+
+/**
+ * Reconcile a bulk labor request with the server's returned view, part by part. This — not the number
+ * of ids sent, and not the number of rows this particular request wrote — is what the page reports:
+ * an identical retry after a lost response writes nothing, yet every part still shows the requested
+ * decision, so it is confirmed again rather than failing or over/under-counting.
+ */
+export function bulkLaborOutcome(edit: EstimateEdit, view: EstimateViewData): BulkLaborOutcome {
+  const ids = [...new Set(Array.isArray(edit.partIds) ? (edit.partIds as unknown[]).map(String) : [])]
+  const lab = (edit.labor ?? {}) as { action?: unknown; serviceId?: unknown }
+  const byId = new Map((view.parts ?? []).map((p) => [p.id, p]))
+  const out: BulkLaborOutcome = { selected: ids.length, confirmed: 0, unchanged: 0, missing: 0, open: 0 }
+  for (const id of ids) {
+    const p = byId.get(id)
+    if (!p) out.missing++
+    else if (p.laborStatus === 'needs_review') out.open++
+    else if (lab.action === 'part_only' ? p.laborStatus === 'part_only' : lab.action === 'included' && p.laborStatus === 'included' && p.laborServiceId === lab.serviceId) out.confirmed++
+    else out.unchanged++
+  }
+  return out
+}
+
+/** The status-line wording for a confirmed bulk labor review: only what the server's view shows. */
+export function bulkLaborMessage(edit: EstimateEdit, o: BulkLaborOutcome): string {
+  const parts = (n: number) => (n === 1 ? '1 part' : `${n} parts`)
+  const partOnly = (edit.labor as { action?: string } | undefined)?.action === 'part_only'
+  const notes = [
+    o.unchanged ? `${parts(o.unchanged)} already reviewed — left unchanged` : null,
+    o.missing ? `${parts(o.missing)} no longer on the invoice` : null,
+  ].filter(Boolean)
+  if (o.confirmed === 0) return `No parts changed${notes.length ? ` · ${notes.join(' · ')}` : ''}`
+  return [`${parts(o.confirmed)} marked ${partOnly ? 'part only' : 'as covered'}`, ...notes, 'Saved'].join(' · ')
 }
 
 /** Interpret one estimate-edit response. */
@@ -139,7 +184,9 @@ export function interpretSave(edit: EstimateEdit, res: { ok: boolean; status: nu
   }
   if (!d.view || !Array.isArray(d.view.services)) return { ok: false, error: 'The server didn’t confirm the change.' }
   const mismatch = confirmsEdit(edit, d.view)
-  return mismatch ? { ok: false, error: mismatch } : { ok: true, view: d.view }
+  if (mismatch) return { ok: false, error: mismatch }
+  if (edit.action === 'part_labor_bulk') return { ok: true, view: d.view, message: bulkLaborMessage(edit, bulkLaborOutcome(edit, d.view)) }
+  return { ok: true, view: d.view }
 }
 
 /** POST one edit to the estimate route and interpret it. Never throws. */

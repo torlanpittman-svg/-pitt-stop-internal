@@ -102,9 +102,14 @@ export function PartLikeReview({ service, busy, post }: { service: ServiceView; 
   )
 }
 
+/** Lines that can cover installing a part: a declined line never can (the server applies the same rule on save). */
+export const coverChoices = (services: ServiceView[]): ServiceView[] => services.filter((s) => !s.declined)
+/** A picked line counts only while it is still one of the choices — a stale pick (since declined or removed) is no pick. */
+export const validCoverId = (services: ServiceView[], picked: string): string => (coverChoices(services).some((s) => s.id === picked) ? picked : '')
+
 /** Installation-labor lines on the invoice (catalog role 'installation'); declined lines never cover anything. */
 export function laborLineChoices(services: ServiceView[]): { choices: ServiceView[]; installOnly: boolean; preselectId: string } {
-  const work = services.filter((s) => !s.declined)
+  const work = coverChoices(services)
   const install = work.filter((s) => s.role === 'installation')
   // Exactly one installation line → use it. Several → the manager picks. None → any work line may be
   // chosen, but nothing unrelated (a detail, a wash) is ever preselected.
@@ -176,6 +181,8 @@ export function LaborControls({ part, services, busy, post }: { part: PartView; 
   const [reason, setReason] = useState('')
   const open = part.laborStatus === 'needs_review'
   const cover = services.find((s) => s.id === part.laborServiceId)
+  // Only a line that can still cover installation is offered or submitted (never a declined one, never a stale pick).
+  const linkId = validCoverId(services, coverId)
   const labor = (labor: Record<string, unknown>) => post({ action: 'part_labor', partId: part.id, labor }).then((ok) => { if (ok) setMode('none'); return ok })
 
   return (
@@ -203,13 +210,13 @@ export function LaborControls({ part, services, busy, post }: { part: PartView; 
         </form>
       )}
       {mode === 'included' && (
-        <form className="mt-2 space-y-2" onSubmit={(e) => { e.preventDefault(); if (coverId) void labor({ action: 'included', serviceId: coverId }) }}>
+        <form className="mt-2 space-y-2" onSubmit={(e) => { e.preventDefault(); if (linkId) void labor({ action: 'included', serviceId: linkId }) }}>
           <label className="text-gray-300 text-xs block" htmlFor={`cover-${part.id}`}>Which line already covers installing this part? (Painting or cleaning a part does not install it.)</label>
-          <select id={`cover-${part.id}`} value={coverId} onChange={(e) => setCoverId(e.target.value)} className={INPUT}>
+          <select id={`cover-${part.id}`} value={linkId} onChange={(e) => setCoverId(e.target.value)} className={INPUT}>
             <option value="">Choose a labor line…</option>
-            {services.map((s) => <option key={s.id} value={s.id}>{s.title}{s.detail ? ` — ${s.detail}` : ''}</option>)}
+            {coverChoices(services).map((s) => <option key={s.id} value={s.id}>{s.title}{s.detail ? ` — ${s.detail}` : ''}</option>)}
           </select>
-          <div className="flex gap-2"><button type="submit" disabled={busy || !coverId} className={`${BTN} bg-blue-600 text-white flex-1`}>Link</button><button type="button" onClick={() => setMode('none')} className={`${BTN} border border-gray-600 text-gray-200`}>Back</button></div>
+          <div className="flex gap-2"><button type="submit" disabled={busy || !linkId} className={`${BTN} bg-blue-600 text-white flex-1`}>Link</button><button type="button" onClick={() => setMode('none')} className={`${BTN} border border-gray-600 text-gray-200`}>Back</button></div>
         </form>
       )}
       {mode === 'waive' && (
