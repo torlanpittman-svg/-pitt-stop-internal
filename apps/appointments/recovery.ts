@@ -233,8 +233,21 @@ export async function unsubscribeUrlFor(customerId: string | null): Promise<stri
   return row?.unsubscribe_token ? `${publicBaseUrl()}/unsubscribe/${String(row.unsubscribe_token)}` : null
 }
 
+/**
+ * The link token is an HMAC under the server's secret, and only its hash is stored. A row written where that secret
+ * differs (the one-off historical import runs from a workstation, which does not hold the production secret) would
+ * carry a hash this server can never match — the customer's link would read "expired". So whichever server is about
+ * to ISSUE a link first makes the stored hash its own. Idempotent; a no-op when it already matches.
+ */
+export async function ensureRecoveryToken(recoveryId: string): Promise<void> {
+  if (!uuid(recoveryId)) return
+  const hash = hashToken(recoveryToken(recoveryId))
+  await exec(sql`UPDATE appointment_recoveries SET token_hash = ${hash} WHERE id = ${recoveryId}::uuid AND token_hash <> ${hash}`)
+}
+
 /** Render one recovery email for a real cancellation — used by the dispatcher AND the staff preview. Sends nothing. */
 export async function buildRecoveryEmail(step: RecoveryStep, appt: Appointment, recoveryId: string, cfg: BookingConfig): Promise<RecoveryEmail> {
+  await ensureRecoveryToken(recoveryId)
   return renderRecoveryEmail(step, appt, cfg, { rebook: recoveryUrl(recoveryId), unsubscribe: await unsubscribeUrlFor(appt.customerId) }, { quick: isQuickCancel(appt) })
 }
 

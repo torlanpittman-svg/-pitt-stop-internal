@@ -16,7 +16,7 @@ import { dispatchDue, type DeliveryResult, type EmailMessage, type Transactional
 import {
   enrollCancellation, enrollManually, startSequence, pauseSequence, resumeSequence, stopSequence, setStaffOutcome, sendNextNow,
   reviewRebookMatch, detectRebookings, getRecoveryForAppointment, listRecoveries, listCandidates, recoveryReport, PAUSED_NOTE, REASONS,
-  recordManagerEmailConsent, hasEmailConsent, reconcileRecoveries, recoverInterruptedEmails, refreshRecoveredPayments,
+  recordManagerEmailConsent, hasEmailConsent, getRecoveryByToken, buildRecoveryEmail, reconcileRecoveries, recoverInterruptedEmails, refreshRecoveredPayments,
 } from './recovery'
 import { recoveryToken } from './tokens'
 import { checkRecoveryStream, syncPostmarkSuppressions } from './postmark-sync'
@@ -867,5 +867,22 @@ describe('Postmark broadcast stream — suppression sync and stream check', () =
     expect(await stream({ Message: 'no such stream' }, 404)).toMatchObject({ ok: false, problem: expect.stringContaining('404') })
     expect(await checkRecoveryStream({ env: {} as NodeJS.ProcessEnv })).toMatchObject({ configured: false, ok: false })
     expect(await checkRecoveryStream({ env: PM, fetchImpl: (async () => { throw new TypeError('down') }) as unknown as typeof fetch })).toMatchObject({ ok: false })
+  })
+})
+
+describe('rebooking link survives an import made under a different secret', () => {
+  it('a row whose stored hash this server cannot match is corrected before any link is issued — in the preview and at send', async () => {
+    const { appt, cfg } = await bookAndCancel()
+    const rec = (await getRecoveryForAppointment(appt.id))!
+    await pg.query(`UPDATE appointment_recoveries SET token_hash = 'hash-written-under-another-secret' WHERE id = $1`, [rec.id])
+    expect(await getRecoveryByToken(recoveryToken(rec.id))).toBeNull()
+    const mail = await buildRecoveryEmail(1, appt, rec.id, cfg)
+    expect(mail.text).toContain(`/book/c/${recoveryToken(rec.id)}`)
+    expect((await getRecoveryByToken(recoveryToken(rec.id)))?.id).toBe(rec.id)
+    // And the dispatcher path does the same.
+    await pg.query(`UPDATE appointment_recoveries SET token_hash = 'wrong-again' WHERE id = $1`, [rec.id])
+    await runAt(appt.id, 'recovery_1')
+    expect(sent.length).toBe(1)
+    expect((await getRecoveryByToken(recoveryToken(rec.id)))?.id).toBe(rec.id)
   })
 })
