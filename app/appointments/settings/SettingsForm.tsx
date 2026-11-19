@@ -106,6 +106,23 @@ export default function SettingsForm({ cfg }: { cfg: BookingConfig }) {
       </section>
 
       <section className="space-y-3">
+        <h2 className="font-semibold">Lead Recovery (cancelled appointments)</h2>
+        <p className="text-xs text-gray-500">Cancelled appointments appear under Appointments → Lead Recovery whether or not email is on. Up to three follow-up emails go through the same email provider as confirmations, never to customers Pitt Stop cancelled on, anyone who unsubscribed, or anyone who has booked again.</p>
+        <Check name="recoveryEmailsEnabled" label="Allow recovery emails (master switch — off means none can be sent, by anyone)" on={cfg.recoveryEmailsEnabled} />
+        <Check name="recoveryAutoStart" label="Start follow-ups automatically when a customer cancels (off = a manager starts each one)" on={cfg.recoveryAutoStart} />
+        <div className="grid grid-cols-3 gap-3">
+          <Num name="recoveryDelayHours1" label="Email 1 (hours)" value={cfg.recoveryDelayHours[0]} hint="After the cancellation." />
+          <Num name="recoveryDelayHours2" label="Email 2 (hours)" value={cfg.recoveryDelayHours[1]} hint="72 = 3 days." />
+          <Num name="recoveryDelayHours3" label="Email 3 (hours)" value={cfg.recoveryDelayHours[2]} hint="168 = 7 days." />
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          <Num name="recoverySendStartHour" label="Send from (hour, 0–23)" value={cfg.recoverySendStartHour} />
+          <Num name="recoverySendEndHour" label="Send until (hour, 1–24)" value={cfg.recoverySendEndHour} hint="Emails due outside the window wait for it." />
+          <Num name="recoveryLinkDays" label="Rebooking link lasts (days)" value={cfg.recoveryLinkDays} />
+        </div>
+      </section>
+
+      <section className="space-y-3">
         <h2 className="font-semibold">Public page text</h2>
         {([['title', 'Title', cfg.title], ['intro', 'Intro', cfg.intro], ['phone', 'Phone', cfg.phone], ['address', 'Address', cfg.address]] as const).map(([n, l, v]) => (
           <label key={n} className="block text-sm text-gray-300">{l}<input name={n} defaultValue={v} className={box} /></label>

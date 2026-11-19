@@ -185,6 +185,83 @@ inline confirmation form with an optional reason (e.g. "price too high").
   `app/appointments/[id]/AppointmentActions.test.tsx`. Handoff:
   `docs/APPOINTMENT_ESTIMATE_DECLINED_2026-11-17.md`.
 
+## Lead Recovery — cancelled appointments (2026-11-19 — branch `feat/cancel-recovery`, NOT deployed; needs migration 0082)
+
+A cancelled appointment becomes a row in **`appointment_recoveries`** (one per appointment, unique — a cancellation can
+never get a second sequence). Managers work it at **`/appointments/recovery`**; when the owner switches recovery emails
+on, up to three follow-ups go out through the **existing** outbox and provider (`appointment_notifications` →
+`dispatchDue` → Postmark) as kinds `recovery_1..3`. No new provider, queue or dependency. Code: `apps/appointments/recovery.ts`.
+
+**Ships dark.** `booking_config.recoveryEmailsEnabled` (master switch) and `recoveryAutoStart` both default **false**.
+With the master switch off nothing can be queued or sent — automatically or by a manager — and anything already queued
+is held and the sequence paused (it is a kill switch; turning it back on releases nothing by itself).
+
+- **Who is enrolled** (`evaluateRecovery`, at cancel, best-effort after the cancel commits — it can never block one):
+  customer-cancelled → queued, and started automatically only when both switches are on; origin not recorded → queued
+  for **review** (never assumed to be the customer); **Pitt Stop-cancelled → never enrolled** and can never be emailed
+  (a manager may queue it for a personal follow-up); customer already has another appointment → not enrolled.
+  The staff cancel dialog now asks **"Who is cancelling?"** (Customer asked / Pitt Stop is cancelling), stored on the
+  `cancelled` event as `meta.initiator`. No email, an unsubscribe, or no customer record → queued for a phone follow-up.
+- **Older cancellations are never enrolled in bulk.** "Not in queue" lists them read-only with the verdict each would
+  get; a manager adds one at a time, and adding never starts emails.
+- **Timing:** emails at `recoveryDelayHours` (default 2 h / 72 h / 168 h after the cancellation, or after a manager
+  starts it), pushed into the shop-local send window (`recoverySendStartHour`–`recoverySendEndHour`, default 8–19).
+  The hourly `/api/cron/booking-follow-ups` dispatches recovery kinds only (`dispatchDue({ only: 'recovery' })`), so
+  confirmation/reminder timing is unchanged; the daily cron is the backstop. **If the hourly GitHub schedule is not
+  enabled, recovery emails go out once a day (~4–5 PM Central).**
+- **Send-time gate** (`recoveryGate`, on the current rows, for the already-claimed notice): master switch, sequence
+  still active, appointment still cancelled, not Pitt Stop-cancelled, valid email, **not opted out**, **email permission on record**
+  (`marketing_preferences` for the customer or any customer sharing the address), **no new booking**, link window open,
+  never two recovery emails at once. A provider-rejected address stops the sequence.
+- **Stops:** customer books again · opts out · address rejected · staff Stop / Not interested / Recovered · window ends.
+  Pause holds unsent emails; Resume re-times exactly those.
+- **Rebooking link:** `/book/c/<token>` (HMAC of the recovery id, no customer data, noindex, no-referrer; stops
+  pre-filling after `recoveryLinkDays`, default 30). Booking from it credits the cancellation (`rebook_match='link'`),
+  re-uses the **original marketing lead** (same source, no second lead, no new `marketing_attribution` row) and does
+  not fire the Google Ads booking conversion. Staff "Reschedule" from the queue → `rebook_match='staff'`. Any other
+  later booking by the same email/phone stops the emails but is `rebook_match='contact'`, `rebook_review='pending'`
+  until a manager confirms it.
+- **Opt-out:** every recovery email carries the shop name, postal address and a link to the existing
+  `/unsubscribe/<token>` page (also allowed on the booking host), plus a `List-Unsubscribe` header.
+- **Reporting:** `/marketing/report` → "Cancelled appointment recovery" (`recoveryReport`). A rebooking is not revenue:
+  money counts only when the credited appointment's job is completed **and** `job_estimates.qb_payment_status` /
+  `qb_payment_balance_state` is `paid`; one booking credits one cancellation (unique index). Kept apart from Google Ads
+  and source attribution.
+- **Estimated value** uses real `service_catalog` prices only — a floor ("at least"), with unpriced services listed.
+- **Email permission (added 2026-11-19):** the public booking form has an optional, **unchecked** "email me follow-ups
+  and offers" box (`apps/appointments/email-consent.ts`). Ticking it appends an `opt_in` row to
+  `marketing_consent_events` (channel `email`, source `website_form`, wording + version, time, IP, browser) and marks
+  the booking's own `booked` event. **Recovery email requires it** — being a past customer is not permission. No
+  permission → the lead waits in the queue for a phone follow-up; a manager can record permission the customer gave
+  in person ("Customer agreed to email", source `manager`, saved under their name). Confirmation / reminder /
+  reschedule / cancellation emails ignore the box entirely.
+- **Postmark stream:** recovery emails go on the server's **broadcast** stream (`recoveryMessageStream()`, default ID
+  `broadcast`; override with `APPOINTMENT_RECOVERY_MESSAGE_STREAM`). Booking notices stay on transactional `outbound`.
+  Postmark adds its own unsubscribe link to broadcast mail and keeps its own suppression list; a suppressed or
+  bounced address is then rejected at send (ErrorCode 406/300) and the sequence stops. Any other rejection (e.g. the
+  stream does not exist) fails that email but is treated as a setup fault, not an undeliverable customer.
+  **Before switching emails on, confirm in Postmark that the server has a broadcast stream with ID `broadcast`.**
+- **Schedule:** the GitHub "hourly" job is live but GitHub runs it only ~3×/day (measured 2026-11-19). `vercel.json`
+  therefore adds 13 once-a-day Vercel crons, one per hour 13:00–01:00 UTC (the 8 AM–7 PM Central window in both CST
+  and CDT), each hitting `/api/cron/recovery-follow-ups/<slot>` — recovery kinds only. Vercel Hobby fires each some
+  time within its hour, so an email goes out within about an hour of becoming due.
+- **Interrupted runs:** every claim and every provider call is timestamped in `appointment_recovery_events`
+  (`email_claimed`, `email_sending`). `recoverInterruptedEmails` (start of every run) turns a claim older than 15 min
+  into `uncertain` if the provider call had begun (never resent) or back to `pending` if it had not.
+- **Cancelled within 5 minutes of booking** (`isQuickCancel`): email 1 becomes "Need a hand with your booking?";
+  emails 2 and 3 are unchanged. Flagged in the queue.
+- **Payments taken directly in QuickBooks:** recognised by the existing Record Payment read path
+  (`previewRetailPayment`, which adopts a zero QuickBooks balance) — but only when someone opened it on that job.
+  The daily cron now calls it for recovered jobs that are completed, invoiced and not yet marked paid
+  (`refreshRecoveredPayments`, ≤20/day, read-only against QuickBooks).
+- **Historical import:** `scripts/recovery-backfill.ts` (dry run by default; `--apply` after 0082) queues the 8 past
+  customer cancellations for manager review only. All 8 were cancelled within 5 minutes of booking and none has email
+  permission on record, so none can be emailed until a manager records permission.
+- **Not tracked:** inbox delivery, opens and replies (no Postmark webhook; replies reach `service@` via Reply-To).
+- **Release order (each step needs owner approval):** apply `0082_appointment_recovery.sql` → deploy (queue works,
+  nothing sends) → review the queue and email previews → Booking settings: turn on "Allow recovery emails", then
+  optionally "Start follow-ups automatically". Tests: `apps/appointments/recovery.test.ts`, `recovery.integration.test.ts`.
+
 ## Rules (manager-editable at `/appointments/settings`, stored in `app_settings.booking_config`)
 
 | Setting | Default |

@@ -80,7 +80,7 @@ export const appointmentBlocks = pgTable('appointment_blocks', {
 export const appointmentNotifications = pgTable('appointment_notifications', {
   id:                uuid('id').primaryKey().defaultRandom(),
   appointmentId:     uuid('appointment_id').notNull().references(() => appointments.id),
-  kind:              varchar('kind', { length: 16 }).notNull(), // confirmation | reminder | cancellation | reschedule
+  kind:              varchar('kind', { length: 16 }).notNull(), // confirmation | reminder | cancellation | reschedule | recovery_1..3 (0082; gated by ./recovery.ts)
   channel:           varchar('channel', { length: 8 }).notNull().default('email'),
   toAddress:         varchar('to_address', { length: 240 }),
   dedupeKey:         varchar('dedupe_key', { length: 160 }).notNull(),
@@ -153,4 +153,42 @@ export const bookingDraftEvents = pgTable('booking_draft_events', {
   actor:     varchar('actor', { length: 200 }),
   meta:      jsonb('meta').$type<Record<string, unknown>>().notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * Cancelled-appointment recovery (migration 0082). ONE row per cancelled appointment (unique appointment_id), so a
+ * cancellation can never get a second sequence. The emails themselves are appointment_notifications rows
+ * (kinds recovery_1..3). appointment_recovery_events is append-only. See ./recovery.ts.
+ */
+export const appointmentRecoveries = pgTable('appointment_recoveries', {
+  id:                    uuid('id').primaryKey().defaultRandom(),
+  appointmentId:         uuid('appointment_id').notNull().references(() => appointments.id),
+  tokenHash:             varchar('token_hash', { length: 64 }).notNull(),
+  origin:                varchar('origin', { length: 12 }).notNull(),                   // customer | shop | unknown
+  status:                varchar('status', { length: 12 }).notNull().default('review'), // review | active | paused | stopped | rebooked | finished
+  reason:                text('reason'),
+  cancelledAt:           timestamp('cancelled_at', { withTimezone: true }).notNull(),
+  sequenceStartedAt:     timestamp('sequence_started_at', { withTimezone: true }),
+  startedBy:             varchar('started_by', { length: 200 }),
+  lastContactAt:         timestamp('last_contact_at', { withTimezone: true }),
+  staffOutcome:          varchar('staff_outcome', { length: 16 }),                      // contacted | not_interested | recovered
+  staffOutcomeBy:        varchar('staff_outcome_by', { length: 200 }),
+  staffOutcomeAt:        timestamp('staff_outcome_at', { withTimezone: true }),
+  rebookedAppointmentId: uuid('rebooked_appointment_id').references(() => appointments.id),
+  rebookMatch:           varchar('rebook_match', { length: 12 }),                       // link | staff | contact
+  rebookReview:          varchar('rebook_review', { length: 12 }),                      // contact only: pending | confirmed | rejected
+  rebookSameVehicle:     boolean('rebook_same_vehicle'),
+  rebookedAt:            timestamp('rebooked_at', { withTimezone: true }),
+  enrolledBy:            varchar('enrolled_by', { length: 200 }).notNull().default('system'),
+  createdAt:             timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:             timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+export const appointmentRecoveryEvents = pgTable('appointment_recovery_events', {
+  id:         uuid('id').primaryKey().defaultRandom(),
+  recoveryId: uuid('recovery_id').notNull().references(() => appointmentRecoveries.id),
+  eventType:  varchar('event_type', { length: 32 }).notNull(),
+  actor:      varchar('actor', { length: 200 }),
+  meta:       jsonb('meta').$type<Record<string, unknown>>().notNull().default({}),
+  createdAt:  timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })

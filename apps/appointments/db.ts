@@ -21,7 +21,8 @@ import { appSettings } from '@/apps/settings/schema'
 import { SETTINGS, updateSetting } from '@/apps/settings/db'
 import { findOrCreateIntakeCustomer } from '@/apps/directory/intake-customer'
 import { normalizePhone } from '@/apps/directory/customer-profile'
-import { grantSmsConsent } from '@/apps/marketing/consent'
+import { grantSmsConsent, recordConsentEvent } from '@/apps/marketing/consent'
+import { EMAIL_CONSENT_TEXT, EMAIL_CONSENT_VERSION } from './email-consent'
 import { createLead, updateLead } from '@/apps/marketing/leads'
 import { recordAttribution } from '@/apps/marketing/attribution'
 import { appointments, appointmentEvents, appointmentBlocks, appointmentNotifications } from './schema'
@@ -224,6 +225,8 @@ export const bookingInput = z.object({
   notes: trimmed(2000).default(''),
   internalNotes: trimmed(2000).default(''),
   smsMarketingOptIn: z.boolean().default(false),
+  /** The optional, unchecked email-marketing box on the public form (./email-consent.ts). Never affects appointment emails. */
+  emailMarketingOptIn: z.boolean().default(false),
   attribution: z.record(z.string(), z.unknown()).default({}),
   /** "How did you hear about us?" — the customer's own answer. REQUIRED for public bookings, optional for staff
    *  entries (decided in createAppointment, where the mode is known); "other" always needs a short explanation. */
@@ -232,6 +235,11 @@ export const bookingInput = z.object({
   externalRef: z.string().trim().max(120).optional(),
   /** The public page's unfinished-booking key: the draft is marked booked in the same transaction. */
   draftKey: z.string().trim().min(8).max(80).regex(/^[\w-]+$/).optional(),
+  /** Set when the customer booked from their private recovery link (/book/c/<token>): the new appointment is
+   *  credited to that cancellation after the booking commits. Never trusted for anything else. */
+  recoveryToken: z.string().trim().regex(/^[A-Za-z0-9_-]{32}$/).optional(),
+  /** Staff rebooking a customer from the Lead Recovery queue. */
+  recoveryId: z.uuid().optional(),
 })
 export type BookingInput = z.input<typeof bookingInput>
 
@@ -246,6 +254,8 @@ export interface CreateOptions {
   cfg?: BookingConfig
   /** Exact wording + version shown next to the optional SMS marketing checkbox (stored with consent). */
   smsConsent?: { text: string; version: string; ip?: string | null; userAgent?: string | null }
+  /** Request details stored with an email-marketing opt-in (the wording + version come from ./email-consent.ts). */
+  emailConsent?: { ip?: string | null; userAgent?: string | null }
   /** Test hook for the NHTSA model lookup used by public vehicle validation. */
   vehicleFetch?: typeof fetch
 }
@@ -357,7 +367,7 @@ export async function createAppointment(raw: BookingInput, opts: CreateOptions):
       RETURNING id
     ), ev AS (
       INSERT INTO appointment_events (appointment_id, event_type, actor, meta)
-      SELECT id, 'booked', ${opts.actor}, ${JSON.stringify({ source: opts.source, mode: opts.mode, override, date: input.date, time: input.time, services: services.labels })}::jsonb FROM ins
+      SELECT id, 'booked', ${opts.actor}, ${JSON.stringify({ source: opts.source, mode: opts.mode, override, date: input.date, time: input.time, services: services.labels, ...(opts.mode === 'public' && input.emailMarketingOptIn ? { emailMarketingOptIn: true, emailConsentVersion: EMAIL_CONSENT_VERSION } : {}) })}::jsonb FROM ins
     )${noticeCte}${draftCte}
     SELECT id FROM ins`
 
@@ -372,13 +382,35 @@ export async function createAppointment(raw: BookingInput, opts: CreateOptions):
     throw new BookingError('full', 'That time was just taken. Please pick another time.')
   }
 
-  await linkAfterBooking(id, input, opts, attribution, referral).catch((err) => console.error('[appointments] post-booking link failed (booking kept):', err))
+  // Lead Recovery (best-effort, AFTER the booking committed — it can never cost a customer their booking):
+  // credit the cancellation this booking answers, and stop its follow-up emails. The send-time gate re-checks for a
+  // new booking before every recovery email, so a failure here still cannot let one go out.
+  const recovered = await creditRecovery(id, input, opts).catch((err) => { console.error('[appointments] recovery link failed (booking kept):', err); return null })
+  await linkAfterBooking(id, input, opts, attribution, referral, recovered?.leadId ?? null).catch((err) => console.error('[appointments] post-booking link failed (booking kept):', err))
   const appointment = await getAppointment(id)
   return { appointment: appointment!, token, replayed: false }
 }
 
+/**
+ * Credit a cancellation for this new booking. A recovery link or a staff rebooking from the queue is a CERTAIN
+ * match and returns the original marketing lead, so the rebooking keeps the customer's original source instead of
+ * creating a second lead (which would count one customer as two acquisitions). Anything else is only a contact
+ * match, recorded for manager review by detectRebookings.
+ */
+async function creditRecovery(id: string, input: z.infer<typeof bookingInput>, opts: CreateOptions): Promise<{ leadId: string | null } | null> {
+  const recovery = await import('./recovery')
+  const certain = opts.mode === 'public' && input.recoveryToken
+    ? await recovery.linkRebooking({ token: input.recoveryToken, newAppointmentId: id, match: 'link', actor: 'customer' })
+    : opts.mode === 'staff' && input.recoveryId
+      ? await recovery.linkRebooking({ recoveryId: input.recoveryId, newAppointmentId: id, match: 'staff', actor: opts.actor })
+      : null
+  if (!certain) { await recovery.detectRebookings(); return null }
+  const [orig] = rowsOf(await getDb().execute(sql`SELECT a.marketing_lead_id FROM appointment_recoveries r JOIN appointments a ON a.id = r.appointment_id WHERE r.id = ${certain}::uuid`))
+  return { leadId: (orig?.marketing_lead_id as string | null) ?? null }
+}
+
 /** Best-effort, post-commit: canonical customer, explicit SMS marketing consent, Marketing lead. */
-async function linkAfterBooking(id: string, input: z.infer<typeof bookingInput>, opts: CreateOptions, attribution: BookingAttribution, referral: BookingReferral): Promise<void> {
+async function linkAfterBooking(id: string, input: z.infer<typeof bookingInput>, opts: CreateOptions, attribution: BookingAttribution, referral: BookingReferral, recoveredLeadId: string | null = null): Promise<void> {
   const name = `${input.firstName} ${input.lastName}`.trim()
   let customerId: string | null = null
   try {
@@ -397,8 +429,27 @@ async function linkAfterBooking(id: string, input: z.infer<typeof bookingInput>,
     } catch (err) { console.error('[appointments] sms consent record failed:', err) }
   }
 
+  // Email-marketing permission ONLY when the customer ticked the (unchecked-by-default) box on the public form.
+  // Booking itself never creates it, and staff entries never do. Append-only, with wording, version, time and source.
+  if (customerId && opts.mode === 'public' && input.emailMarketingOptIn && input.email) {
+    try {
+      await recordConsentEvent({
+        customerId, channel: 'email', event: 'opt_in', source: 'website_form', wordingVersion: EMAIL_CONSENT_VERSION, consentText: EMAIL_CONSENT_TEXT,
+        ip: opts.emailConsent?.ip ?? null, userAgent: opts.emailConsent?.userAgent ?? null, meta: { appointmentId: id, email: input.email.toLowerCase() },
+      })
+    } catch (err) { console.error('[appointments] email consent record failed:', err) }
+  }
+
   let leadId: string | null = null
-  try {
+  if (recoveredLeadId) {
+    // A recovered booking re-uses the ORIGINAL lead: same source, same first-touch attribution, no new lead and no
+    // new marketing_attribution row. The recovery influence lives on appointment_recoveries, not in attribution.
+    try {
+      await updateLead(recoveredLeadId, { status: 'booked', ...(customerId ? { customerId } : {}) }, opts.actor)
+      leadId = recoveredLeadId
+    } catch (err) { console.error('[appointments] recovered lead update failed:', err) }
+  }
+  if (!leadId) try {
     const source = classifySource(attribution)
     const vehicle = [input.vehicleYear, input.vehicleMake, input.vehicleModel].filter(Boolean).join(' ') || null
     const campaignId = campaignIdFrom(attribution)
@@ -443,7 +494,12 @@ const skipPending = (kinds: string[]) => sql`, sk AS (
     UPDATE appointment_notifications SET status = 'skipped' WHERE appointment_id IN (SELECT id FROM u) AND status = 'pending'
       AND kind IN (${sql.join(kinds.map((k) => sql`${k}`), sql`, `)}))`
 
-export async function cancelAppointment(id: string, opts: { actor: string | null; by: 'customer' | 'staff'; reason?: string | null; now?: Date; cfg?: BookingConfig }): Promise<Appointment> {
+export async function cancelAppointment(id: string, opts: {
+  actor: string | null; by: 'customer' | 'staff'; reason?: string | null; now?: Date; cfg?: BookingConfig
+  /** Staff cancels only: who asked for it. Recorded on the cancel event; decides Lead Recovery (./recovery.ts) —
+   *  'shop' is never followed up, and leaving it out means "not recorded", which waits for a manager's review. */
+  initiator?: 'customer' | 'shop' | null
+}): Promise<Appointment> {
   const appt = await getAppointment(id)
   if (!appt) throw new BookingError('not_found', 'Appointment not found.')
   if (appt.status === 'cancelled') return appt
@@ -459,9 +515,19 @@ export async function cancelAppointment(id: string, opts: { actor: string | null
     ? sql`, nt AS (INSERT INTO appointment_notifications (appointment_id, kind, to_address, dedupe_key)
         SELECT id, 'cancellation', email, ${`${id}:cancellation`} FROM u WHERE email IS NOT NULL ON CONFLICT (dedupe_key) DO NOTHING)`
     : sql``
-  await transition(id, ['confirmed'], sql`status = 'cancelled', cancelled_at = now()`, 'cancelled', opts.actor,
-    { by: opts.by, reason: opts.reason ?? null }, sql`${skipPending(['reminder', 'confirmation', 'reschedule'])}${notice}`)
-  return (await getAppointment(id))!
+  const initiator = opts.by === 'staff' && (opts.initiator === 'customer' || opts.initiator === 'shop') ? opts.initiator : null
+  const cancelled = await transition(id, ['confirmed'], sql`status = 'cancelled', cancelled_at = now()`, 'cancelled', opts.actor,
+    { by: opts.by, reason: opts.reason ?? null, ...(initiator ? { initiator } : {}) }, sql`${skipPending(['reminder', 'confirmation', 'reschedule'])}${notice}`)
+  const after = (await getAppointment(id))!
+  // Lead Recovery, best-effort and only for the call that actually cancelled: a problem here never undoes or
+  // blocks a cancellation. With recovery emails off (the default) this only adds the cancellation to the queue.
+  if (cancelled) {
+    try {
+      const recovery = await import('./recovery')
+      await recovery.enrollCancellation(after, recovery.cancelOrigin(opts.by, initiator), { actor: 'system', now: opts.now, cfg: opts.cfg })
+    } catch (err) { console.error('[appointments] recovery enrolment failed (cancellation kept):', err) }
+  }
+  return after
 }
 
 export async function markNoShow(id: string, actor: string | null, now = new Date()): Promise<Appointment> {

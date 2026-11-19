@@ -42,3 +42,10 @@ export function draftToken(draftId: string): string {
   return createHmac('sha256', secret()).update(`booking-draft:${draftId}`).digest('base64url').slice(0, 32)
 }
 export const resumeUrl = (draftId: string) => `${publicBaseUrl()}/book/r/${draftToken(draftId)}`
+
+/** Cancelled-appointment recovery link token: same HMAC scheme and secret, its own message prefix. Opaque — the
+ *  URL carries no customer data; the page behind it stops working when the link window closes (./recovery.ts). */
+export function recoveryToken(recoveryId: string): string {
+  return createHmac('sha256', secret()).update(`appointment-recovery:${recoveryId}`).digest('base64url').slice(0, 32)
+}
+export const recoveryUrl = (recoveryId: string) => `${publicBaseUrl()}/book/c/${recoveryToken(recoveryId)}`

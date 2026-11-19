@@ -13,14 +13,27 @@ const SOURCES = [
 
 const input = 'mt-1 h-11 w-full rounded-lg border border-gray-700 bg-gray-950 px-3 text-white placeholder-gray-600 focus:border-emerald-500 focus:outline-none'
 
-export default function NewAppointmentForm({ services, today, isManager }: { services: { key: string; label: string; enabled: boolean }[]; today: string; isManager: boolean }) {
+export interface RecoveryPrefill {
+  recoveryId: string; reference: string; serviceKeys: string[]
+  firstName: string; lastName: string; phone: string; email: string; year: string; make: string; model: string; color: string; plate: string; vin: string
+}
+
+export default function NewAppointmentForm({ services, today, isManager, prefill = null }: {
+  services: { key: string; label: string; enabled: boolean }[]; today: string; isManager: boolean
+  /** Rebooking a cancelled appointment from Lead Recovery: details filled in, and the new booking is credited to it. */
+  prefill?: RecoveryPrefill | null
+}) {
   const router = useRouter()
   const [pending, start] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [source, setSource] = useState('phone')
-  const [chosen, setChosen] = useState<string[]>([])
+  const [chosen, setChosen] = useState<string[]>(prefill?.serviceKeys.filter((k) => services.some((s) => s.key === k)) ?? [])
   const [slot, setSlot] = useState<{ date: string; time: string | null; override: boolean }>({ date: today, time: null, override: false })
-  const [f, setF] = useState({ firstName: '', lastName: '', phone: '', email: '', year: '', make: '', model: '', color: '', plate: '', vin: '', notes: '', internal: '', externalRef: '' })
+  const [f, setF] = useState({
+    firstName: prefill?.firstName ?? '', lastName: prefill?.lastName ?? '', phone: prefill?.phone ?? '', email: prefill?.email ?? '',
+    year: prefill?.year ?? '', make: prefill?.make ?? '', model: prefill?.model ?? '', color: prefill?.color ?? '', plate: prefill?.plate ?? '', vin: prefill?.vin ?? '',
+    notes: '', internal: prefill ? `Rebooked from cancelled appointment ${prefill.reference} (Lead Recovery).` : '', externalRef: '',
+  })
   // Optional on staff entries (the customer may not have been asked); the public form requires it.
   const [referral, setReferral] = useState({ source: '', detail: '' })
   const [idemKey] = useState(() => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `s${Date.now()}${Math.random().toString(36).slice(2)}`))
@@ -39,6 +52,7 @@ export default function NewAppointmentForm({ services, today, isManager }: { ser
         externalRef: source === 'autoleap_import' && f.externalRef.trim() ? `autoleap:${f.externalRef.trim()}` : undefined,
         source, override: slot.override, attribution: {},
         referralSource: referral.source, referralDetail: referral.source === 'other' ? referral.detail : '',
+        ...(prefill ? { recoveryId: prefill.recoveryId } : {}),
       })
       if (!r.ok) { setError(r.error); return }
       router.push(`/appointments/${r.id}`)
@@ -47,6 +61,11 @@ export default function NewAppointmentForm({ services, today, isManager }: { ser
 
   return (
     <div className="mt-5 space-y-6">
+      {prefill && (
+        <p className="rounded-lg border border-emerald-900/60 bg-emerald-950/30 p-3 text-sm text-emerald-100">
+          Rebooking cancelled appointment {prefill.reference}. Pick a new drop-off time — this booking will be credited to Lead Recovery and the follow-up emails will stop.
+        </p>
+      )}
       <section>
         <label className="block text-sm text-gray-300">Where did this booking come from?
           <select value={source} onChange={(e) => setSource(e.target.value)} className={input}>

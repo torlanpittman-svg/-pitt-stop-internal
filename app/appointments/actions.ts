@@ -19,6 +19,10 @@ import {
 import { checkInAppointment, type VehicleChoice } from '@/apps/appointments/checkin'
 import { dispatchDue, requeueNotification } from '@/apps/appointments/notify'
 import { mergeBookingConfig, WEEKDAYS, type BookingConfig, type DayView } from '@/apps/appointments/policy'
+import {
+  enrollManually, recordManagerEmailConsent, startSequence, pauseSequence, resumeSequence, stopSequence, setStaffOutcome, sendNextNow, reviewRebookMatch,
+  STAFF_OUTCOMES, type StaffOutcome,
+} from '@/apps/appointments/recovery'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** The staff's answer to "which vehicle is here?" — only a saved-vehicle id or an explicit "new vehicle"; anything else is no choice. */
@@ -58,6 +62,8 @@ export async function staffAvailability(date: string, serviceKeys: string[], exc
 export async function createStaffAppointment(input: BookingInput & { source: string; override?: boolean }): Promise<ActionResult> {
   try {
     const who = await staff()
+    // Crediting a Lead Recovery rebooking is manager-only, like the queue itself; anyone else's value is dropped.
+    if (input.recoveryId && !(await authorizedManagerStrict())) input = { ...input, recoveryId: undefined }
     const source = (APPOINTMENT_SOURCES as readonly string[]).includes(input.source) ? input.source as AppointmentSource : 'phone'
     if (input.override && !who.manager) return { ok: false, error: 'Only a manager can override the booking rules.' }
     const { appointment } = await createAppointment(input, { mode: 'staff', source, actor: who.name, override: !!input.override })
@@ -81,10 +87,10 @@ export async function noShowAction(id: string): Promise<ActionResult> {
   try { const who = await staff(); await markNoShow(id, who.name); revalidatePath('/appointments'); return { ok: true } } catch (e) { return fail(e) }
 }
 
-export async function cancelAction(id: string, reason: string): Promise<ActionResult> {
+export async function cancelAction(id: string, reason: string, initiator: 'customer' | 'shop' | null = null): Promise<ActionResult> {
   try {
     const name = await manager()
-    await cancelAppointment(id, { actor: name, by: 'staff', reason: reason.slice(0, 300) || null })
+    await cancelAppointment(id, { actor: name, by: 'staff', reason: reason.slice(0, 300) || null, initiator: initiator === 'customer' || initiator === 'shop' ? initiator : null })
     dispatchLater(id); revalidatePath('/appointments'); return { ok: true }
   } catch (e) { return fail(e) }
 }
@@ -188,9 +194,15 @@ export async function saveSettingsAction(_prev: ActionResult | null, form: FormD
       draftFollowUpDelayHours: Number(form.get('draftFollowUpDelayHours') ?? cur.draftFollowUpDelayHours),
       draftRetentionEnabled: form.get('draftRetentionEnabled') === 'on',
       draftRetentionDays: Number(form.get('draftRetentionDays') ?? cur.draftRetentionDays),
+      recoveryEmailsEnabled: form.get('recoveryEmailsEnabled') === 'on',
+      recoveryAutoStart: form.get('recoveryAutoStart') === 'on',
+      recoveryDelayHours: [0, 1, 2].map((i) => Number(form.get(`recoveryDelayHours${i + 1}`) ?? cur.recoveryDelayHours[i])) as [number, number, number],
+      recoverySendStartHour: Number(form.get('recoverySendStartHour') ?? cur.recoverySendStartHour),
+      recoverySendEndHour: Number(form.get('recoverySendEndHour') ?? cur.recoverySendEndHour),
+      recoveryLinkDays: Number(form.get('recoveryLinkDays') ?? cur.recoveryLinkDays),
     })
     await saveBookingConfig(next, name)
-    revalidatePath('/appointments'); revalidatePath('/book'); revalidatePath('/appointments/leads')
+    revalidatePath('/appointments'); revalidatePath('/book'); revalidatePath('/appointments/leads'); revalidatePath('/appointments/recovery')
     return { ok: true }
   } catch (e) { return fail(e) }
 }
@@ -231,4 +243,50 @@ export async function requeueLeadFollowUpAction(id: string): Promise<ActionResul
     if (!(await requeueDraftFollowUp(id, name))) return { ok: false, error: 'This email can’t be queued again (closed lead, no permission, already handled, or booked).' }
     revalidatePath('/appointments/leads'); return { ok: true }
   } catch (e) { return fail(e) }
+}
+
+// ── Lead Recovery (cancelled appointments) — managers/admins only, fail-closed ─
+
+/** One wrapper for every recovery action: strict manager check, typed-argument check, uniform errors + refresh. */
+async function recoveryAction(id: unknown, run: (id: string, name: string) => Promise<unknown>): Promise<ActionResult> {
+  try {
+    const name = await leadManager()
+    if (typeof id !== 'string' || !UUID.test(id)) return { ok: false, error: 'Invalid record.' }
+    await run(id, name)
+    revalidatePath('/appointments/recovery'); revalidatePath('/appointments'); revalidatePath('/marketing/report')
+    return { ok: true }
+  } catch (e) { return fail(e) }
+}
+
+/** Add an older (or Pitt Stop-cancelled) cancellation to the queue. Never starts emails. `id` = the appointment. */
+export async function recoveryEnrollAction(appointmentId: string): Promise<ActionResult> {
+  return recoveryAction(appointmentId, (id, name) => enrollManually(id, name))
+}
+export async function recoveryStartAction(id: string): Promise<ActionResult> {
+  return recoveryAction(id, (rid, name) => startSequence(rid, name))
+}
+export async function recoveryPauseAction(id: string): Promise<ActionResult> {
+  return recoveryAction(id, async (rid, name) => { if (!(await pauseSequence(rid, name))) throw new BookingError('conflict', 'Only running follow-ups can be paused.') })
+}
+export async function recoveryResumeAction(id: string): Promise<ActionResult> {
+  return recoveryAction(id, (rid, name) => resumeSequence(rid, name))
+}
+export async function recoveryStopAction(id: string): Promise<ActionResult> {
+  return recoveryAction(id, async (rid, name) => { if (!(await stopSequence(rid, name, 'Stopped by staff.'))) throw new BookingError('conflict', 'This lead is already closed or rebooked.') })
+}
+export async function recoveryOutcomeAction(id: string, outcome: string): Promise<ActionResult> {
+  if (!(STAFF_OUTCOMES as readonly string[]).includes(outcome)) return { ok: false, error: 'Choose a valid outcome.' }
+  return recoveryAction(id, (rid, name) => setStaffOutcome(rid, outcome as StaffOutcome, name))
+}
+export async function recoveryMatchAction(id: string, decision: string): Promise<ActionResult> {
+  if (decision !== 'confirmed' && decision !== 'rejected') return { ok: false, error: 'Choose a valid decision.' }
+  return recoveryAction(id, (rid, name) => reviewRebookMatch(rid, decision, name))
+}
+/** The customer told staff they agree to follow-up email. Appended to the consent trail under the manager's name. */
+export async function recoveryConsentAction(id: string): Promise<ActionResult> {
+  return recoveryAction(id, (rid, name) => recordManagerEmailConsent(rid, name))
+}
+/** Send the next recovery email now. It still passes the send-time gate, and nothing sends while the master switch is off. */
+export async function recoverySendNowAction(id: string): Promise<ActionResult> {
+  return recoveryAction(id, async (rid, name) => { const { appointmentId } = await sendNextNow(rid, name); dispatchLater(appointmentId) })
 }

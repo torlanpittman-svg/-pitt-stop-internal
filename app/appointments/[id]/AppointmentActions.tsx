@@ -46,6 +46,8 @@ export default function AppointmentActions({ id, status, hasJob, isManager, chec
   const [success, setSuccess] = useState<string | null>(null)
   const [panel, setPanel] = useState<'none' | 'reschedule' | 'cancel' | 'note' | 'decline'>('none')
   const [reason, setReason] = useState('')
+  // Who asked for the cancellation. Decides Lead Recovery: Pitt Stop cancellations are never followed up.
+  const [initiator, setInitiator] = useState<'' | 'customer' | 'shop'>('')
   const [declineReason, setDeclineReason] = useState('')
   const [note, setNote] = useState('')
   const declineReasonRef = useRef<HTMLInputElement>(null)
@@ -141,9 +143,21 @@ export default function AppointmentActions({ id, status, hasJob, isManager, chec
       )}
       {panel === 'cancel' && (
         <div className="mt-4 rounded-xl border border-red-900/70 bg-red-950/20 p-4">
-          <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason (optional)"
-            className="h-11 w-full rounded-lg border border-gray-700 bg-gray-950 px-3 text-white placeholder-gray-600" />
-          <button type="button" disabled={pending} onClick={() => run(() => cancelAction(id, reason))}
+          <fieldset>
+            <legend className="text-sm text-gray-300">Who is cancelling?</legend>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {([['customer', 'Customer asked'], ['shop', 'Pitt Stop is cancelling']] as const).map(([k, label]) => (
+                <label key={k} className={`flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border px-3 text-sm ${initiator === k ? 'border-red-400 bg-red-950/40 text-white' : 'border-gray-700 text-gray-300'}`}>
+                  <input type="radio" name="cancel-initiator" value={k} checked={initiator === k} onChange={() => setInitiator(k)} className="accent-red-400" />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <p className="mt-1.5 text-xs text-gray-500">Used for Lead Recovery. Customers Pitt Stop cancels on are never sent follow-ups; if you leave this blank a manager reviews it first.</p>
+          </fieldset>
+          <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason (optional)" aria-label="Reason (optional)"
+            className="mt-3 h-11 w-full rounded-lg border border-gray-700 bg-gray-950 px-3 text-white placeholder-gray-600" />
+          <button type="button" disabled={pending} onClick={() => run(() => cancelAction(id, reason, initiator || null))}
             className="mt-3 min-h-11 w-full rounded-lg bg-red-500 font-semibold text-white disabled:opacity-60">Cancel appointment (frees the time)</button>
         </div>
       )}

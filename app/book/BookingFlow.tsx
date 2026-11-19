@@ -17,6 +17,7 @@ import Combobox from './Combobox'
 import { formatUsPhone, validateContact, type ContactErrors } from '@/apps/appointments/contact'
 import { BOOKING_REFERRAL_OPTIONS, BOOKING_REFERRAL_PLACEHOLDER, REFERRAL_DETAIL_MAX, validateBookingReferral, bookingReferralLabel, type ReferralAnswer } from '@/apps/appointments/referral'
 import { fireBookingConversion } from './conversion'
+import { EMAIL_CONSENT_TEXT } from '@/apps/appointments/email-consent'
 
 interface Service { key: string; label: string; description: string }
 interface Shop { title: string; intro: string; phone: string; address: string; instructions: string; cancellationPolicy: string }
@@ -29,6 +30,8 @@ interface Contact { firstName: string; lastName: string; phone: string; email: s
 export interface ResumeState {
   draftKey: string; services: string[]; vehicle: Vehicle; contact: Contact; followUp: boolean
   preferredDate: string | null; preferredTime: string | null
+  /** Rebooking from a cancelled appointment's private link (/book/c/<token>): the customer's OWN earlier answer. */
+  referral?: ReferralAnswer
 }
 type ListState = { status: 'idle' | 'loading' | 'ok' | 'error'; items: string[]; source?: string }
 
@@ -91,10 +94,12 @@ function useVehicleList(url: string | null): ListState & { retry: () => void } {
   return { ...(have ?? { status: 'loading', items: [] }), retry }
 }
 
-export default function BookingFlow({ open, services, preselect, attribution, shop, years, smsLabel, privacyUrl, termsUrl, saveNotice, followUpText, resume, resumeNote }: {
+export default function BookingFlow({ open, services, preselect, attribution, shop, years, smsLabel, privacyUrl, termsUrl, saveNotice, followUpText, resume, resumeNote, recoveryToken }: {
   open: boolean; services: Service[]; preselect: string[]; attribution: Record<string, string>; shop: Shop; years: string[]
   smsLabel: string; privacyUrl: string; termsUrl: string; saveNotice: string; followUpText: string
   resume?: ResumeState | null; resumeNote?: string | null
+  /** Present only on /book/c/<token>: credits the new booking to the cancelled appointment it replaces. */
+  recoveryToken?: string | null
 }) {
   const startStep = resume && resume.services.length && resume.vehicle.type ? 1 : 0
   const [step, setStep] = useState(startStep)
@@ -107,9 +112,11 @@ export default function BookingFlow({ open, services, preselect, attribution, sh
   const [contact, setContact] = useState<Contact>(resume?.contact ?? { firstName: '', lastName: '', phone: '', email: '', notes: '' })
   const [touched, setTouched] = useState<Partial<Record<keyof Contact, boolean>>>({})
   // Required — the customer's own answer, never pre-filled from the link's tracking parameters (`attribution`).
-  const [referral, setReferral] = useState<ReferralAnswer>({ source: '', detail: '' })
+  const [referral, setReferral] = useState<ReferralAnswer>(resume?.referral ?? { source: '', detail: '' })
   const [followUp, setFollowUp] = useState(resume?.followUp ?? false)
   const [sms, setSms] = useState(false)
+  // Optional and unchecked: appointment emails are sent either way; this only allows follow-ups and offers.
+  const [emailOffers, setEmailOffers] = useState(false)
   const [website, setWebsite] = useState('') // honeypot
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [banner, setBanner] = useState<string | null>(null)
@@ -274,15 +281,17 @@ export default function BookingFlow({ open, services, preselect, attribution, sh
           idempotencyKey: idemKey, draftKey, date, time, serviceKeys: chosen,
           firstName: contact.firstName, lastName: contact.lastName, phone: contact.phone, email: contact.email.trim(),
           vehicleType: vehicle.type, vehicleYear: vehicle.year, vehicleMake: make, vehicleModel: model,
-          notes: contact.notes, smsMarketingOptIn: sms, attribution, website,
+          notes: contact.notes, smsMarketingOptIn: sms, emailMarketingOptIn: emailOffers, attribution, website,
           referralSource: referral.source, referralDetail: referral.source === 'other' ? referral.detail : '',
+          ...(recoveryToken ? { recoveryToken } : {}),
         }),
       })
       const d = await r.json().catch(() => ({}))
       if (d.ok) {
         doneRef.current = true
         // Google Ads "Booking confirmed" — fires once per NEW appointment (server says created=false on a replay).
-        if (d.created === true) fireBookingConversion(d.appointment?.reference)
+        // A rebooking from a recovery link is not a new acquisition, so it is never reported to Google Ads as one.
+        if (d.created === true && !recoveryToken) fireBookingConversion(d.appointment?.reference)
         setDone({ appt: d.appointment, token: d.token, emailQueued: d.confirmationEmail === 'queued' })
         return
       }
@@ -523,6 +532,14 @@ export default function BookingFlow({ open, services, preselect, attribution, sh
             <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-[var(--ps-line)] bg-white p-3.5">
               <input type="checkbox" checked={followUp} onChange={(e) => setFollowUp(e.target.checked)} className="mt-0.5 h-5 w-5 shrink-0 accent-[var(--ps-navy)]" />
               <span className="text-[0.95rem] text-[var(--ps-ink)]">{followUpText} <span className="text-[var(--ps-body)]">(optional)</span></span>
+            </label>
+            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-[var(--ps-line)] bg-white p-3.5">
+              <input type="checkbox" checked={emailOffers} onChange={(e) => setEmailOffers(e.target.checked)} className="mt-0.5 h-5 w-5 shrink-0 accent-[var(--ps-navy)]" />
+              <span className="text-xs leading-relaxed text-[var(--ps-body)]">
+                <span className="mb-1 block text-sm font-medium text-[var(--ps-ink)]">Optional: email me follow-ups and offers</span>
+                {EMAIL_CONSENT_TEXT} You&apos;ll get your appointment confirmation and reminder either way.
+                <span className="mt-1 block"><a href={privacyUrl} className="underline">Privacy Policy</a></span>
+              </span>
             </label>
             <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-[var(--ps-line)] bg-white p-3.5">
               <input type="checkbox" checked={sms} onChange={(e) => setSms(e.target.checked)} className="mt-0.5 h-5 w-5 shrink-0 accent-[var(--ps-navy)]" />

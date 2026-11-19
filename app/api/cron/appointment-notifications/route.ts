@@ -10,6 +10,7 @@ import { NextResponse } from 'next/server'
 import { dispatchDue } from '@/apps/appointments/notify'
 import { dispatchDraftFollowUps, purgeExpiredDrafts } from '@/apps/appointments/drafts'
 import { dispatchStaffAlerts } from '@/apps/staff-alerts/db'
+import { reconcileRecoveries, refreshRecoveredPayments } from '@/apps/appointments/recovery'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
@@ -22,6 +23,9 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })
   }
   try {
+    // Lead Recovery: stop follow-ups for customers who booked again BEFORE the dispatch below reaches them (the
+    // send-time gate checks again per email). Never allowed to fail the notices themselves.
+    await reconcileRecoveries().catch((err) => logger.error('cron:appointment-notifications', 'recovery_reconcile_failed', { error: err instanceof Error ? err.message : String(err) }))
     const tally = await dispatchDue({ limit: 200 })
     // Daily backstop for the hourly /api/cron/booking-follow-ups. Retention first, so expired drafts are never emailed.
     const retention = await purgeExpiredDrafts()
@@ -35,8 +39,14 @@ export async function GET(req: Request) {
       logger.error('cron:appointment-notifications', 'staff_alerts_failed', { error: err instanceof Error ? err.message : String(err) })
       return { error: 'dispatch failed' }
     })
+    // Lead Recovery revenue: re-check QuickBooks for recovered jobs that are completed but not yet marked paid, so a
+    // payment taken directly in QuickBooks is recognised without anyone opening the job. Read-only against QuickBooks.
+    const recoveredPayments = await refreshRecoveredPayments().catch((err) => {
+      logger.error('cron:appointment-notifications', 'recovered_payments_failed', { error: err instanceof Error ? err.message : String(err) })
+      return { error: 'check failed' }
+    })
     // Counts only — never customer details.
-    logger.info('cron:appointment-notifications', 'dispatched', { ...tally, followUps, retention, staffAlerts })
+    logger.info('cron:appointment-notifications', 'dispatched', { ...tally, followUps, retention, staffAlerts, recoveredPayments })
     return NextResponse.json({ ok: true, ...tally, followUps, retention, staffAlerts })
   } catch (err) {
     logger.error('cron:appointment-notifications', 'failed', { error: err instanceof Error ? err.message : String(err) })

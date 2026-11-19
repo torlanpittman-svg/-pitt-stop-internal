@@ -15,7 +15,10 @@ const TOKEN = '[A-Za-z0-9_-]{32}'
 export function publicBookingRoute(pathname: string, method: string): 'allow' | 'redirect' | 'deny' {
   const read = method === 'GET' || method === 'HEAD'
   if (pathname === '/' && read) return 'redirect'
-  if (read && (pathname === '/book' || new RegExp(`^/book/[ar]/${TOKEN}$`).test(pathname))) return 'allow'
+  // /book/c/<token> = rebook from a cancelled appointment's private recovery link.
+  if (read && (pathname === '/book' || new RegExp(`^/book/[arc]/${TOKEN}$`).test(pathname))) return 'allow'
+  // Recovery emails link to the existing marketing opt-out page from this host; POST is its confirm button.
+  if ((read || method === 'POST') && /^\/unsubscribe\/[0-9a-f-]{36}$/i.test(pathname)) return 'allow'
   if (read && pathname === '/quote') return 'allow'                   // public quote request form (ceramic / headliner)
   if (method === 'POST' && pathname === '/api/quote') return 'allow'
   if (read && /^\/book\/[\w-]+\.(png|webp)$/.test(pathname)) return 'allow'

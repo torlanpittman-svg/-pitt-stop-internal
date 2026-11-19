@@ -27,6 +27,7 @@ export interface NoticeView {
 
 const KIND: Record<string, string> = {
   confirmation: 'Confirmation', reminder: 'Reminder', reschedule: 'Reschedule', cancellation: 'Cancellation',
+  recovery_1: 'Recovery follow-up 1', recovery_2: 'Recovery follow-up 2', recovery_3: 'Recovery follow-up 3',
 }
 
 function describe(n: NoticeView): { label: string; tone: BadgeTone; detail: string } {

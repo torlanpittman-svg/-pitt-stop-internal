@@ -34,12 +34,18 @@ import { manageUrl, publicBaseUrl } from './tokens'
 import { getBookingConfig, type Appointment } from './db'
 
 export interface EmailAttachment { name: string; contentBase64: string; contentType: string }
-export interface EmailMessage { to: string; subject: string; text: string; html?: string; replyTo?: string | null; attachments?: EmailAttachment[] }
+export interface EmailMessage {
+  to: string; subject: string; text: string; html?: string; replyTo?: string | null; attachments?: EmailAttachment[]
+  /** Extra headers (recovery emails carry List-Unsubscribe). Omitted = none, exactly as before. */
+  headers?: { name: string; value: string }[]
+  /** Postmark message stream. Omitted = 'outbound', the stream every booking notice has always used. */
+  messageStream?: string
+}
 export type DeliveryResult =
   | { status: 'sent'; providerMessageId: string }
   | { status: 'not_configured' }
   /** Definitely NOT accepted. `retryable: false` = permanent (rejected address, bad credentials); default true. */
-  | { status: 'failed'; error: string; retryable?: boolean }
+  | { status: 'failed'; error: string; retryable?: boolean; /** Provider's own error code, when it gave one (Postmark ErrorCode). */ code?: number }
   /** The provider may have accepted it. Never resend automatically. */
   | { status: 'uncertain'; error: string }
   | { status: 'blocked'; reason: string }
@@ -80,7 +86,7 @@ export class PostmarkEmailProvider implements TransactionalEmailProvider {
       res = await this.fetchImpl('https://api.postmarkapp.com/email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Postmark-Server-Token': this.token },
-        body: JSON.stringify({ From: this.from, To: msg.to, Subject: msg.subject, TextBody: msg.text, HtmlBody: msg.html || undefined, ReplyTo: msg.replyTo || undefined, MessageStream: 'outbound', Attachments: msg.attachments?.length ? msg.attachments.map((a) => ({ Name: a.name, Content: a.contentBase64, ContentType: a.contentType })) : undefined }),
+        body: JSON.stringify({ From: this.from, To: msg.to, Subject: msg.subject, TextBody: msg.text, HtmlBody: msg.html || undefined, ReplyTo: msg.replyTo || undefined, MessageStream: msg.messageStream || 'outbound', Headers: msg.headers?.length ? msg.headers.map((h) => ({ Name: h.name, Value: h.value })) : undefined, Attachments: msg.attachments?.length ? msg.attachments.map((a) => ({ Name: a.name, Content: a.contentBase64, ContentType: a.contentType })) : undefined }),
         signal: AbortSignal.timeout(20_000),
       })
     } catch (err) {
@@ -103,7 +109,7 @@ export class PostmarkEmailProvider implements TransactionalEmailProvider {
     if (res.status >= 500) return { status: 'uncertain', error: short(`${UNCERTAIN_NOTE} (Postmark answered ${res.status}${message ? `: ${message}` : ''}.)`) }
     // 4xx: Postmark rejected the request (invalid or inactive recipient, sender, credentials…). Nothing was accepted,
     // and the same request would be rejected again — staff can queue it again after fixing the cause.
-    return { status: 'failed', retryable: false, error: short(`${res.status} ${message || 'Postmark rejected the message'}`) }
+    return { status: 'failed', retryable: false, error: short(`${res.status} ${message || 'Postmark rejected the message'}`), ...(typeof body?.ErrorCode === 'number' ? { code: body.ErrorCode } : {}) }
   }
 }
 
@@ -166,7 +172,7 @@ function details(a: Appointment, cfg: BookingConfig): string {
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 const FONT = "Roboto, Arial, Helvetica, sans-serif"
 
-export function brandedHtml(input: { preheader: string; heading: string; intro: string; rows?: [string, string][]; note?: string; button?: { label: string; href: string }; footnote?: string; cfg: Pick<BookingConfig, 'phone' | 'address'> }): string {
+export function brandedHtml(input: { preheader: string; heading: string; intro: string; rows?: [string, string][]; note?: string; button?: { label: string; href: string }; footnote?: string; footerLink?: { label: string; href: string }; cfg: Pick<BookingConfig, 'phone' | 'address'> }): string {
   const { cfg } = input
   const tel = cfg.phone.replace(/[^\d+]/g, '')
   const rows = (input.rows ?? []).map(([k, v]) => `<tr><td style="padding:10px 0;border-top:1px solid #e2e2e2;color:#555555;font-size:14px;width:96px;vertical-align:top">${esc(k)}</td><td style="padding:10px 0;border-top:1px solid #e2e2e2;color:#212934;font-size:15px;font-weight:${k === 'Drop-off' ? 700 : 400}">${esc(v)}</td></tr>`).join('')
@@ -185,7 +191,7 @@ ${input.note ? `<p style="margin:16px 0 0;color:#212934;font-size:15px;line-heig
 ${input.button ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0 8px"><tr><td style="border-radius:30px;background:#eb0523;background-image:linear-gradient(90deg,#eb0523,#ac1d0e)"><a href="${esc(input.button.href)}" style="display:inline-block;padding:14px 28px;color:#ffffff;font-size:16px;font-weight:500;text-decoration:none;border-radius:30px">${esc(input.button.label)}</a></td></tr></table>` : ''}
 ${input.footnote ? `<p style="margin:16px 0 0;color:#555555;font-size:13px;line-height:1.5">${esc(input.footnote)}</p>` : ''}
 </td></tr>
-<tr><td style="background:#ffffff;padding:16px 20px 24px;color:#555555;font-size:13px;line-height:1.5;border-top:1px solid #e2e2e2">Pitt Stop Detail &amp; Auto Sales<br>${esc(cfg.address)}<br><a href="tel:${tel}" style="color:#023456">${esc(cfg.phone)}</a></td></tr>
+<tr><td style="background:#ffffff;padding:16px 20px 24px;color:#555555;font-size:13px;line-height:1.5;border-top:1px solid #e2e2e2">Pitt Stop Detail &amp; Auto Sales<br>${esc(cfg.address)}<br><a href="tel:${tel}" style="color:#023456">${esc(cfg.phone)}</a>${input.footerLink ? `<br><a href="${esc(input.footerLink.href)}" style="color:#555555">${esc(input.footerLink.label)}</a>` : ''}</td></tr>
 </table></td></tr></table></body></html>`
 }
 
@@ -247,6 +253,29 @@ export function renderMessage(kind: string, a: Appointment, cfg: BookingConfig, 
 
 // ── Outbox dispatch ───────────────────────────────────────────────────────────
 
+/**
+ * Cancelled-appointment recovery emails share this outbox (kinds recovery_1..3, ./recovery.ts). They are the only
+ * kinds that are not operational notices, so every one passes an extra send-time gate in dispatchDue. The four
+ * booking notices never touch that code: recovery.ts is loaded only when a recovery kind is actually due.
+ */
+export const isRecoveryKind = (kind: string): boolean => /^recovery_[123]$/.test(kind)
+
+/**
+ * Postmark stream for recovery emails: the server's BROADCAST stream, never the transactional 'outbound' stream the
+ * booking notices use. Recovery follow-ups are opt-in, unsubscribable re-engagement mail — by Postmark's own
+ * transactional-vs-broadcast guide ("recipients can choose not to receive these messages" → Broadcast) they do not
+ * belong on a transactional stream, and keeping them off it protects confirmation/reminder deliverability.
+ * 'broadcast' is the ID of the default broadcast stream on every Postmark server; set
+ * APPOINTMENT_RECOVERY_MESSAGE_STREAM if the server's broadcast stream has another ID. Booking notices never read this.
+ */
+export function recoveryMessageStream(env: NodeJS.ProcessEnv = process.env): string {
+  return (env.APPOINTMENT_RECOVERY_MESSAGE_STREAM ?? '').trim() || 'broadcast'
+}
+
+/** Postmark codes that mean THIS ADDRESS cannot receive mail (300 invalid address, 406 inactive: bounced, complained
+ *  or unsubscribed at Postmark). Any other rejection (bad stream, sender, credentials) is a setup fault, not the customer's. */
+export const UNDELIVERABLE_CODES: readonly number[] = [300, 406]
+
 /** Why a due notice should no longer go out (appointment changed since it was queued). */
 /** How long after a drop-off a cancellation notice is still worth sending. */
 const CANCELLATION_GRACE_MS = 2 * 24 * 3_600_000
@@ -290,7 +319,11 @@ export function isMissedSend(kind: string, reason: string): boolean {
 }
 
 /** Send due notices. Safe to run concurrently: each row is claimed with a conditional update. */
-export async function dispatchDue(opts: { now?: Date; limit?: number; appointmentId?: string; provider?: TransactionalEmailProvider } = {}): Promise<{ sent: number; notConfigured: number; failed: number; uncertain: number; skipped: number; held: number }> {
+export async function dispatchDue(opts: {
+  now?: Date; limit?: number; appointmentId?: string; provider?: TransactionalEmailProvider
+  /** 'recovery' = only recovery follow-ups (the hourly job, so booking-notice timing is unchanged). Default: every kind. */
+  only?: 'recovery'
+} = {}): Promise<{ sent: number; notConfigured: number; failed: number; uncertain: number; skipped: number; held: number }> {
   const db = getDb()
   const now = opts.now ?? new Date()
   const provider = opts.provider ?? transactionalEmailProvider()
@@ -299,6 +332,7 @@ export async function dispatchDue(opts: { now?: Date; limit?: number; appointmen
   const due = await db.select().from(appointmentNotifications).where(and(
     eq(appointmentNotifications.status, 'pending'), lte(appointmentNotifications.sendAfter, now),
     ...(opts.appointmentId ? [eq(appointmentNotifications.appointmentId, opts.appointmentId)] : []),
+    ...(opts.only === 'recovery' ? [sql`${appointmentNotifications.kind} IN ('recovery_1', 'recovery_2', 'recovery_3')`] : []),
   )).orderBy(asc(appointmentNotifications.sendAfter)).limit(opts.limit ?? 50)
   const tally = { sent: 0, notConfigured: 0, failed: 0, uncertain: 0, skipped: 0, held: 0 }
   /** Only write an outcome onto the row we are still holding. If something else moved it on while the
@@ -318,23 +352,52 @@ export async function dispatchDue(opts: { now?: Date; limit?: number; appointmen
     const timedKey = appt && TIMED_KEY_KINDS.has(n.kind) ? `${n.appointmentId}:${n.kind}:` : ''
     const superseded = !!appt && !!timedKey && n.dedupeKey.startsWith(timedKey)
       && n.dedupeKey !== `${timedKey}${appt.startsAt.toISOString()}`
-    const stale = !appt ? 'appointment missing'
+    let stale = !appt ? 'appointment missing'
       : !n.toAddress ? 'no email address'
       : superseded ? 'superseded by a reschedule'
       : staleReason(n.kind, appt, now)
+    // Recovery follow-ups only: the send-time gate (master switch, sequence still active, no opt-out, no new
+    // booking). Booking notices skip this block entirely.
+    const recovery = isRecoveryKind(n.kind) ? await import('./recovery') : null
+    let recoveryId: string | null = null
+    if (recovery && appt && !stale) {
+      const gate = await recovery.recoveryGate(n, appt, now, cfg)
+      if (gate.action === 'defer') {
+        // Not this run: back to pending with the claim's attempt undone — nothing was sent.
+        await db.update(appointmentNotifications).set({ status: 'pending', sendAfter: gate.until, error: gate.reason, attempts: sql`greatest(${appointmentNotifications.attempts} - 1, 0)` }).where(sending(n.id))
+        tally.held++
+        continue
+      }
+      if (gate.action === 'skip') stale = gate.reason
+      else recoveryId = gate.recoveryId
+    }
     if (stale || !appt) {
       const reason = stale ?? 'appointment missing'
       await db.update(appointmentNotifications).set({ status: 'skipped', error: reason }).where(sending(n.id))
       // A miss is never silent: without this, a confirmation held through its own drop-off ended up
       // labelled "Not needed" on the staff screen with nothing in History to show the customer was missed.
-      if (appt && isMissedSend(n.kind, reason)) {
+      if (appt && !recovery && isMissedSend(n.kind, reason)) {
         await db.insert(appointmentEvents).values({ appointmentId: n.appointmentId, eventType: 'email_not_sent', actor: 'system', meta: { kind: n.kind, notificationId: n.id, reason } })
       }
       tally.skipped++
       continue
     }
-    const msg = renderMessage(n.kind, appt, cfg)
-    const res = await provider.send({ to: n.toAddress!, subject: msg.subject, text: msg.text, html: msg.html, replyTo })
+    const recoveryMsg = recovery && recoveryId ? await recovery.buildRecoveryEmail(recovery.recoveryStep(n.kind), appt, recoveryId, cfg) : null
+    const msg = recoveryMsg ?? renderMessage(n.kind, appt, cfg)
+    // Marks "the provider may have been called from here on" — what lets an interrupted run be told apart later.
+    if (recovery) await recovery.markRecoverySending(n).catch((err) => console.error('[appointments] recovery marker failed:', err))
+    const res = await provider.send({
+      to: n.toAddress!, subject: msg.subject, text: msg.text, html: msg.html, replyTo,
+      ...(recoveryMsg ? { headers: recoveryMsg.headers, messageStream: recoveryMessageStream() } : {}),
+    })
+    // Recovery bookkeeping (last contact, end of sequence, a rejected address stops the sequence). Never allowed
+    // to disturb the outbox write below: the notice's own status is the record of what was sent.
+    if (recovery && res.status !== 'blocked' && res.status !== 'not_configured') {
+      const final = res.status === 'failed' ? !(res.retryable !== false && claimed.attempts < MAX_ATTEMPTS) : true
+      const rejected = res.status === 'failed' && res.retryable === false && res.code != null && UNDELIVERABLE_CODES.includes(res.code)
+      if (final) await recovery.recordRecoveryDelivery(n, res.status, { rejected, provider: provider.name })
+        .catch((err) => console.error('[appointments] recovery bookkeeping failed:', err))
+    }
     if (res.status === 'sent') {
       await db.update(appointmentNotifications).set({ status: 'sent', sentAt: new Date(), provider: provider.name, providerMessageId: res.providerMessageId, error: null })
         .where(eq(appointmentNotifications.id, n.id))

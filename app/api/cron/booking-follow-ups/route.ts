@@ -14,6 +14,8 @@
 import { NextResponse } from 'next/server'
 import { dispatchDraftFollowUps, purgeExpiredDrafts } from '@/apps/appointments/drafts'
 import { dispatchStaffAlerts } from '@/apps/staff-alerts/db'
+import { dispatchDue } from '@/apps/appointments/notify'
+import { reconcileRecoveries } from '@/apps/appointments/recovery'
 import { logger } from '@/platform/logger'
 
 export const runtime = 'nodejs'
@@ -37,9 +39,16 @@ export async function GET(req: Request) {
       logger.error('cron:booking-follow-ups', 'staff_alerts_failed', { error: err instanceof Error ? err.message : String(err) })
       return { error: 'dispatch failed' }
     })
+    // Cancelled-appointment recovery follow-ups ONLY (`only: 'recovery'`) — confirmations and reminders keep their
+    // existing timing. A no-op until recovery emails are turned on in Booking settings. Customers who booked again
+    // are caught first, so nothing is sent to them. A problem here never fails the jobs above.
+    const recovery = await (async () => ({ ...(await reconcileRecoveries()), ...(await dispatchDue({ only: 'recovery', limit: 50 })) }))().catch((err) => {
+      logger.error('cron:booking-follow-ups', 'recovery_failed', { error: err instanceof Error ? err.message : String(err) })
+      return { error: 'dispatch failed' }
+    })
     // Counts only — never customer details.
-    logger.info('cron:booking-follow-ups', 'dispatched', { followUps, retention, staffAlerts })
-    return NextResponse.json({ ok: true, followUps, retention, staffAlerts })
+    logger.info('cron:booking-follow-ups', 'dispatched', { followUps, retention, staffAlerts, recovery })
+    return NextResponse.json({ ok: true, followUps, retention, staffAlerts, recovery })
   } catch (err) {
     logger.error('cron:booking-follow-ups', 'failed', { error: err instanceof Error ? err.message : String(err) })
     return NextResponse.json({ ok: false, error: 'dispatch failed' }, { status: 500 })

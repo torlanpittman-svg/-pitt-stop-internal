@@ -3,6 +3,7 @@ import { AdDataNotice } from '@/app/marketing/AdDataNotice'
 import { money, bigMoney, count, shortDate } from '@/app/lib/format'
 import { weeklyReport, reportForRange } from '@/apps/marketing/report'
 import { referralSourceBreakdown } from '@/apps/quick-entry/referral-report'
+import { recoveryReport, recoveryReportLastDays } from '@/apps/appointments/recovery'
 import { unavailableAdGuidance } from '@/apps/marketing/ad-notice'
 import { ACCOUNT_TIME_ZONE } from '@/apps/marketing/ad-dates'
 import { SERVICE_CATEGORY_LABELS, REPORT_CHANNEL_LABELS } from '@/apps/marketing/types'
@@ -37,6 +38,9 @@ export default async function WeeklyReportPage({ searchParams }: { searchParams:
   const comparisonLabel = customRange ? 'prior equal period' : 'last wk'
   // Self-reported intake answers for the same window — shown beside (never blended into) click attribution.
   const referral = await referralSourceBreakdown({ from: new Date(current.range.from), to: new Date(current.range.to) })
+  // Cancelled-appointment recovery: the last 30 days, or the custom range when one is chosen. Its own section and its
+  // own numbers — never added to ad attribution or to the totals above. Null = not available (e.g. before migration 0082).
+  const recovery = await (customRange ? recoveryReport({ from: from!, to: to! }) : recoveryReportLastDays(30)).catch(() => null)
   const adUnavailable = current.adData.status === 'unavailable'
   const adConfigured = current.adData.source === 'google_ads_api'
 
@@ -191,6 +195,30 @@ export default async function WeeklyReportPage({ searchParams }: { searchParams:
               ))}
             </tbody>
           </table>
+        )}
+      </Section>
+
+      <Section title={`Cancelled appointment recovery — ${customRange ? 'selected range' : 'last 30 days'}`}>
+        {!recovery ? <EmptyRow>Recovery reporting is not available yet.</EmptyRow> : (
+          <>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+              <StatTile label="Eligible cancellations" value={count(recovery.eligible)} note={recovery.awaitingReview ? `customer-cancelled · ${count(recovery.awaitingReview)} in the queue not started` : 'customer-cancelled'} />
+              <StatTile label="Customers contacted" value={count(recovery.contacted)} note={`${count(recovery.emailsSent)} emails accepted by the provider`} />
+              <StatTile label="Rebooked" value={count(recovery.rebooked)} note={recovery.rebookedUnconfirmed ? `+${count(recovery.rebookedUnconfirmed)} unconfirmed match` : 'link, staff or confirmed'} />
+              <StatTile label="Completed and paid" value={count(recovery.completedAndPaid)} note={`${count(recovery.completed)} completed`} />
+              <StatTile label="Rebooked value" value={bigMoney(recovery.recoveredValueCents)} note="quoted on rebooked jobs · NOT collected" />
+              <StatTile label="Collected revenue" value={bigMoney(recovery.recoveredRevenueCents)} note="completed jobs QuickBooks shows paid" />
+            </div>
+            <p className="mt-3 max-w-3xl text-xs text-gray-500">
+              Counted by cancellation date. <span className="text-gray-300">Rebooked value</span> is what the rebooked jobs are quoted at — it is pipeline, not money.
+              <span className="text-gray-300"> Collected revenue</span> counts a job only once it is completed and QuickBooks shows it paid; the two are never added together.
+              A rebooking with no job yet has no value shown.
+              Each new booking is credited to one cancellation only. Recovery is a rebooking influence, kept apart from Google Ads and
+              source attribution: a recovered customer keeps their original source and is not counted as a new lead.
+              {recovery.emailsUncertain || recovery.emailsFailed ? <> {count(recovery.emailsUncertain)} email(s) uncertain, {count(recovery.emailsFailed)} failed.</> : null}
+              {' '}Inbox delivery and replies are not tracked.
+            </p>
+          </>
         )}
       </Section>
 

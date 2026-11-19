@@ -8,6 +8,7 @@ import { PageContainer, PageHeader } from '@/app/components/ui/PageHeader'
 import { Badge } from '@/app/components/ui/Badge'
 import { authorizedManager, authorizedManagerStrict } from '@/apps/auth/employee-guard'
 import { countOpenDrafts } from '@/apps/appointments/drafts'
+import { countRecoveryAttention } from '@/apps/appointments/recovery'
 import { getBookingConfig, listAppointments, type Appointment } from '@/apps/appointments/db'
 import { formatDateLabel, formatTimeLabel, localParts } from '@/apps/appointments/policy'
 import AcknowledgeButton from './AcknowledgeButton'
@@ -24,6 +25,8 @@ export default async function AppointmentsPage({ searchParams }: { searchParams:
   const view: View = (VIEWS.map((v) => v[0]) as string[]).includes(sp.view ?? '') ? sp.view as View : 'today'
   const [cfg, mgr, leadMgr] = await Promise.all([getBookingConfig(), authorizedManager(), authorizedManagerStrict()])
   const openLeads = leadMgr ? await countOpenDrafts() : 0
+  // Never allowed to break the appointments screen (e.g. before migration 0082 is applied).
+  const recoveryOpen = leadMgr ? await countRecoveryAttention().catch(() => 0) : 0
   const [rows, fresh] = await Promise.all([
     listAppointments({ view, q: sp.q, tz: cfg.timezone }),
     listAppointments({ view: 'new', tz: cfg.timezone }),
@@ -40,6 +43,7 @@ export default async function AppointmentsPage({ searchParams }: { searchParams:
           actions={<>
             <Link href="/appointments/new" className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-gray-950">+ New appointment</Link>
             {leadMgr && <Link href="/appointments/leads" className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-200">Unfinished bookings{openLeads ? ` (${openLeads} new)` : ''}</Link>}
+            {leadMgr && <Link href="/appointments/recovery" className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-200">Lead Recovery{recoveryOpen ? ` (${recoveryOpen})` : ''}</Link>}
             {mgr && <Link href="/appointments/notifications" className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-200">Notifications</Link>}
             {mgr && <Link href="/appointments/settings" className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-200">Settings</Link>}
           </>}

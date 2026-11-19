@@ -24,6 +24,58 @@
     {
       "path": "/api/cron/appointment-notifications",
       "schedule": "0 22 * * *"
+    },
+    {
+      "path": "/api/cron/recovery-follow-ups/13",
+      "schedule": "20 13 * * *"
+    },
+    {
+      "path": "/api/cron/recovery-follow-ups/14",
+      "schedule": "20 14 * * *"
+    },
+    {
+      "path": "/api/cron/recovery-follow-ups/15",
+      "schedule": "20 15 * * *"
+    },
+    {
+      "path": "/api/cron/recovery-follow-ups/16",
+      "schedule": "20 16 * * *"
+    },
+    {
+      "path": "/api/cron/recovery-follow-ups/17",
+      "schedule": "20 17 * * *"
+    },
+    {
+      "path": "/api/cron/recovery-follow-ups/18",
+      "schedule": "20 18 * * *"
+    },
+    {
+      "path": "/api/cron/recovery-follow-ups/19",
+      "schedule": "20 19 * * *"
+    },
+    {
+      "path": "/api/cron/recovery-follow-ups/20",
+      "schedule": "20 20 * * *"
+    },
+    {
+      "path": "/api/cron/recovery-follow-ups/21",
+      "schedule": "20 21 * * *"
+    },
+    {
+      "path": "/api/cron/recovery-follow-ups/22",
+      "schedule": "20 22 * * *"
+    },
+    {
+      "path": "/api/cron/recovery-follow-ups/23",
+      "schedule": "20 23 * * *"
+    },
+    {
+      "path": "/api/cron/recovery-follow-ups/00",
+      "schedule": "20 0 * * *"
+    },
+    {
+      "path": "/api/cron/recovery-follow-ups/01",
+      "schedule": "20 1 * * *"
     }
   ]
 }

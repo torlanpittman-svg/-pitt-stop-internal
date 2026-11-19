@@ -21,7 +21,7 @@ export const maxDuration = 60
 const STATUS: Record<BookingError['code'], number> = { invalid: 400, closed: 409, full: 409, rate_limited: 429, not_found: 404, conflict: 409, too_late: 409 }
 
 export async function POST(req: Request) {
-  const body = await req.json().catch(() => null) as (BookingInput & { website?: string }) | null
+  const body = await req.json().catch(() => null) as (BookingInput & { website?: string; recoveryToken?: unknown }) | null
   if (!body || typeof body !== 'object') return NextResponse.json({ ok: false, error: 'Invalid request.' }, { status: 400 })
   // Honeypot: real customers never see or fill this field.
   if (typeof body.website === 'string' && body.website.trim()) return NextResponse.json({ ok: false, error: 'Unable to book online. Please call the shop.' }, { status: 400 })
@@ -33,12 +33,15 @@ export async function POST(req: Request) {
       firstName: body.firstName, lastName: body.lastName, phone: body.phone, email: body.email,
       vehicleType: body.vehicleType, vehicleYear: body.vehicleYear, vehicleMake: body.vehicleMake, vehicleModel: body.vehicleModel,
       vehicleColor: body.vehicleColor, vehiclePlate: body.vehiclePlate, vehicleVin: body.vehicleVin,
-      notes: body.notes, smsMarketingOptIn: body.smsMarketingOptIn === true, attribution: body.attribution ?? {},
+      notes: body.notes, smsMarketingOptIn: body.smsMarketingOptIn === true, emailMarketingOptIn: body.emailMarketingOptIn === true, attribution: body.attribution ?? {},
       referralSource: body.referralSource, referralDetail: body.referralDetail,
       draftKey: typeof body.draftKey === 'string' && body.draftKey ? body.draftKey : undefined,
+      // Only a well-formed token is passed on; a malformed one is ignored rather than failing the booking.
+      recoveryToken: typeof body.recoveryToken === 'string' && /^[A-Za-z0-9_-]{32}$/.test(body.recoveryToken) ? body.recoveryToken : undefined,
     }, {
       mode: 'public', source: 'website_booking', actor: null, ipHash: hashIp(ip),
       smsConsent: { text: smsDisclosureText(p), version: SMS_OPT_IN_VERSION, ip, userAgent: req.headers.get('user-agent') },
+      emailConsent: { ip, userAgent: req.headers.get('user-agent') },
     })
     if (!replayed) after(() => dispatchDue({ appointmentId: appointment.id }).catch((e) => console.error('[book] dispatch failed:', e)))
     // Staff alert — RECORDING AND DELIVERY BOTH AFTER THE RESPONSE. The booking is already

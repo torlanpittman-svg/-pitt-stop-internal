@@ -74,6 +74,20 @@ export interface BookingConfig {
   /** Unfinished-booking contact details are erased after this many days (when retention is turned on). */
   draftRetentionDays: number
   draftRetentionEnabled: boolean
+  /** Cancelled-appointment recovery emails (./recovery.ts). MASTER SWITCH — while false no recovery email can be
+   *  queued or sent, by the system or by staff. OFF until the owner approves. */
+  recoveryEmailsEnabled: boolean
+  /** When true (and the master switch is on) a customer-initiated cancellation starts the sequence by itself;
+   *  when false every cancellation waits in the Lead Recovery queue for a manager to start it. */
+  recoveryAutoStart: boolean
+  /** Hours after the cancellation (or after a manager starts the sequence) for emails 1, 2 and 3. */
+  recoveryDelayHours: [number, number, number]
+  /** Recovery emails are only scheduled inside this shop-local window (24 h clock, start inclusive, end exclusive). */
+  recoverySendStartHour: number
+  recoverySendEndHour: number
+  /** Days after the cancellation that the customer's private rebooking link keeps working, and that a later
+   *  booking can still be credited to the cancellation. */
+  recoveryLinkDays: number
 }
 
 const weekday = (open: boolean): DayHours => ({ open, start: '07:15', cutoff: '11:00' })
@@ -125,6 +139,13 @@ export const DEFAULT_BOOKING_CONFIG: BookingConfig = {
   draftFollowUpDelayHours: 24,
   draftRetentionDays: 90,
   draftRetentionEnabled: false,
+  // Recovery ships dark: nothing is queued or sent until the owner turns the master switch on.
+  recoveryEmailsEnabled: false,
+  recoveryAutoStart: false,
+  recoveryDelayHours: [2, 72, 168],
+  recoverySendStartHour: 8,
+  recoverySendEndHour: 19,
+  recoveryLinkDays: 30,
 }
 
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/
@@ -143,6 +164,10 @@ const bool = (v: unknown, d: boolean) => (typeof v === 'boolean' ? v : d)
 export function mergeBookingConfig(raw: unknown): BookingConfig {
   const r = (raw && typeof raw === 'object' ? raw : typeof raw === 'string' ? safeJson(raw) : {}) as Record<string, unknown>
   const d = DEFAULT_BOOKING_CONFIG
+  // A send window must be at least one hour wide; an inverted or empty one falls back to the default window.
+  const ws = intIn(r.recoverySendStartHour, 0, 23, d.recoverySendStartHour)
+  const we = intIn(r.recoverySendEndHour, 1, 24, d.recoverySendEndHour)
+  const [sendStart, sendEnd] = ws < we ? [ws, we] : [d.recoverySendStartHour, d.recoverySendEndHour]
   const rd = (r.days && typeof r.days === 'object' ? r.days : {}) as Record<string, Partial<DayHours>>
   const days = Object.fromEntries(WEEKDAYS.map((w) => {
     const x = rd[w] ?? {}
@@ -192,7 +217,21 @@ export function mergeBookingConfig(raw: unknown): BookingConfig {
     draftFollowUpDelayHours: intIn(r.draftFollowUpDelayHours, 1, 14 * 24, d.draftFollowUpDelayHours),
     draftRetentionDays: intIn(r.draftRetentionDays, 7, 730, d.draftRetentionDays),
     draftRetentionEnabled: bool(r.draftRetentionEnabled, d.draftRetentionEnabled),
+    recoveryEmailsEnabled: bool(r.recoveryEmailsEnabled, d.recoveryEmailsEnabled),
+    recoveryAutoStart: bool(r.recoveryAutoStart, d.recoveryAutoStart),
+    recoveryDelayHours: recoveryDelays(r.recoveryDelayHours, d.recoveryDelayHours),
+    recoverySendStartHour: sendStart,
+    recoverySendEndHour: sendEnd,
+    recoveryLinkDays: intIn(r.recoveryLinkDays, 7, 180, d.recoveryLinkDays),
   }
+}
+
+/** Three whole-hour delays, each 1 h – 60 days and strictly increasing; anything else falls back to the defaults. */
+function recoveryDelays(v: unknown, d: [number, number, number]): [number, number, number] {
+  if (!Array.isArray(v) || v.length !== 3) return d
+  const n = v.map((x) => (typeof x === 'number' ? x : Number(x)))
+  if (!n.every((x) => Number.isInteger(x) && x >= 1 && x <= 60 * 24)) return d
+  return n[0] < n[1] && n[1] < n[2] ? [n[0], n[1], n[2]] : d
 }
 
 function safeJson(s: string): unknown { try { return JSON.parse(s) } catch { return {} } }
