@@ -185,7 +185,24 @@ inline confirmation form with an optional reason (e.g. "price too high").
   `app/appointments/[id]/AppointmentActions.test.tsx`. Handoff:
   `docs/APPOINTMENT_ESTIMATE_DECLINED_2026-11-17.md`.
 
-## Lead Recovery — cancelled appointments (2026-11-19 — branch `feat/cancel-recovery`, NOT deployed; needs migration 0082)
+## Lead Recovery — cancelled appointments (DEPLOYED 2026-11-19, emails OFF)
+
+**Production state (2026-11-19):** migration `0082` applied; code live from `6739ef2` → `c75b4d6` → `ee788b6`
+(origin/main). `recoveryEmailsEnabled` and `recoveryAutoStart` are both **off** — no recovery email has ever been
+sent. The 8 pre-existing customer cancellations were imported for manager review only (`enrolled_by = 'backfill'`).
+The import ran from a workstation, which does not hold the production link secret; the server corrects each row's
+stored link hash before it issues a link (`ensureRecoveryToken`), so those links work.
+
+**What the 8 imported cancellations are (investigated 2026-11-19, read-only):** all were cancelled 11–197 seconds
+after booking. **Seven come from one cluster** — two devices tied together by one person who made five of them;
+every booking either device ever made was cancelled, they are next-day or same-day 11:00 slots, three carry a first
+name matching an employee, and none has a referral answer (they predate the question). They look like in-house test
+bookings, not lost customers. **Only `PS-BFJAJM` is an independent customer** (own device, came from a website
+service card, answered "drove by"), cancelled 16 seconds after booking. One case cannot establish a booking-page
+fault. What can be said: cancelling takes three deliberate taps (View or cancel → Cancel appointment → Yes, cancel),
+and the confirmation screen's primary button is labelled "View or cancel". Among genuine online bookings the
+cancellation rate is about 1 in 16.
+
 
 A cancelled appointment becomes a row in **`appointment_recoveries`** (one per appointment, unique — a cancellation can
 never get a second sequence). Managers work it at **`/appointments/recovery`**; when the owner switches recovery emails
@@ -264,9 +281,8 @@ is held and the sequence paused (it is a kill switch; turning it back on release
   customer cancellations for manager review only. All 8 were cancelled within 5 minutes of booking and none has email
   permission on record, so none can be emailed until a manager records permission.
 - **Not tracked:** inbox delivery, opens and replies (no Postmark webhook; replies reach `service@` via Reply-To).
-- **Release order (each step needs owner approval):** apply `0082_appointment_recovery.sql` → deploy (queue works,
-  nothing sends) → review the queue and email previews → Booking settings: turn on "Allow recovery emails", then
-  optionally "Start follow-ups automatically". Tests: `apps/appointments/recovery.test.ts`, `recovery.integration.test.ts`.
+- **To switch sending on (owner decision):** confirm the Lead Recovery page shows the Postmark stream as ready →
+  Booking settings: "Allow recovery emails", then optionally "Start follow-ups automatically". Tests: `apps/appointments/recovery.test.ts`, `recovery.integration.test.ts`.
 
 ## Rules (manager-editable at `/appointments/settings`, stored in `app_settings.booking_config`)
 
