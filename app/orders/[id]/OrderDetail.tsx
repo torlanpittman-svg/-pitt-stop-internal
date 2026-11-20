@@ -1452,7 +1452,7 @@ export default function OrderDetail({ initialOrder, workValueCents = null }: { i
           partsVisible={identity.partsVisible} busy={items.busy}
           onAddService={() => { setAddError(null); setAddingService(true) }}
           onAddExpense={() => setExpenseOpenSignal((n) => n + 1)}
-          onOpenService={items.openService} onOpenPart={items.openPart}
+          onOpenService={items.openService} onOpenPart={items.openPart} onSavePrice={items.savePrice}
           onRemoveServiceWithParts={items.removeServiceWithParts} onRemoveTextService={removeService}
           onChanged={() => { refreshItems(); void reload(); router.refresh() }}
           importPanel={<PartImportPanel key={order.id} orderId={order.id} onApplied={() => { refreshItems(); void reload(); router.refresh() }} />} />

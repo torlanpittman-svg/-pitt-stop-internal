@@ -171,3 +171,40 @@ describe('Add part form — what blocks it and what never does (markup; behavior
     expect(html).not.toContain('will not be added twice')
   })
 })
+
+describe('Job screen — a manager types a service price in its row', () => {
+  const unpriced = (id: string, title: string): ServiceView => ({ ...svc(id, title, 0), priceCents: null })
+  const JOB = [svc('w', 'Exterior Wash', 5000), unpriced('i', 'Interior Detail'), unpriced('x', 'Wax')]
+  const save = async () => ({ ok: true as const })
+  const boxes = (html: string) => html.match(/<input[^>]*data-service-price[^>]*>/g) ?? []
+
+  it('every service has a dollar box: the saved amount, or empty for an unpriced one — and no "Add price" text', () => {
+    const html = panel({ view: view(JOB, []), onSavePrice: save })
+    const b = boxes(html)
+    expect(b).toHaveLength(3)
+    expect(b[0]).toMatch(/aria-label="Price for Exterior Wash"/)
+    expect(b[0]).toMatch(/value="50.00"/)
+    expect(b[1]).toMatch(/aria-label="Price for Interior Detail"/)
+    expect(b[1]).toMatch(/value=""/)
+    expect(b[2]).toMatch(/aria-label="Price for Wax"/)
+    expect(html).not.toContain('Add price')
+    for (const x of b) { expect(x).toMatch(/inputMode="decimal"|inputmode="decimal"/); expect(x).not.toMatch(/disabled/) }
+  })
+
+  it('the box is not inside the button that opens the editor (tapping it stays on the Job)', () => {
+    const html = panel({ view: view(JOB, []), onSavePrice: save })
+    for (const button of html.match(/<button[\s\S]*?<\/button>/g) ?? []) expect(button).not.toContain('data-service-price')
+    expect(html).toMatch(/aria-label="Edit Interior Detail"/)   // the name still opens the editor
+  })
+
+  it('same permissions as the editor: no box for an employee, on a removed Job, or under a flat Work Total', () => {
+    const employee = panel({ view: view(JOB, []), manager: false, canEdit: false, onSavePrice: save })
+    expect(boxes(employee)).toHaveLength(0)
+    expect(employee).toContain('$50.00')
+    expect(employee).toContain('Not priced')
+    expect(boxes(panel({ view: view(JOB, []), canEdit: false, cancelled: true, onSavePrice: save }))).toHaveLength(0)
+    const flat = panel({ view: { ...view(JOB, []), flat: true }, onSavePrice: save })
+    expect(boxes(flat)).toHaveLength(0)
+    expect(flat).toContain('In flat total')
+  })
+})

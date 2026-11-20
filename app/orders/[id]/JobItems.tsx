@@ -11,6 +11,8 @@ import { describeEdit, saveEstimateEdit, type EstimateEdit, type EstimateViewDat
 import { PartEditor, ServiceEditor } from './estimate/ItemEditor'
 import { partSwipeRemove } from './estimate/ItemRows'
 import { groupJobItems, serviceRemovalConsequence } from '@/apps/parts/job-items-view'
+import { serialQueue } from './estimate/inline-price'
+import type { SavePrice } from './ServicePriceLine'
 
 type Pane = null | { kind: 'service'; id: string } | { kind: 'part'; id: string; confirmRemove?: boolean }
 const BTN = 'rounded-xl font-semibold text-sm px-4 py-3 min-h-11 active:opacity-80 disabled:opacity-40'
@@ -24,6 +26,9 @@ export interface JobItems {
   removeService: (id: string) => void
   /** Job screen "Remove service": the service and the parts attached to it, in one confirmed edit. */
   removeServiceWithParts: (id: string) => Promise<boolean>
+  /** Job screen price box: the item editor's own price edit (`set_service_price`), confirmed by the server.
+   *  Saves run one at a time in the order typed; the row that asked shows the outcome (no page-level banner). */
+  savePrice: SavePrice
   /** Swipe → Remove for a part (asks about linked labor first, like the editor). */
   removePart: (p: PartView) => () => void
   /** Re-read the view (after a change made elsewhere on the page, e.g. Add Service / parts tracker). */
@@ -161,6 +166,18 @@ export function useJobItems({ orderId, enabled, canEdit = enabled, vehicleLabel,
   const openService = useCallback((id: string) => { if (canEdit) openPane({ kind: 'service', id }) }, [openPane, canEdit])
   const openPart = useCallback((id: string, confirmRemove?: boolean) => { if (canEdit) openPane({ kind: 'part', id, confirmRemove }) }, [openPane, canEdit])
   const removeService = useCallback((id: string) => { void post({ action: 'remove_service', serviceId: id }) }, [post])
+  // Inline prices: same route, same edit and same server-confirmed check (saveEstimateEdit) as the editor's
+  // Save. Queued so consecutive rows are saved in order, each recalculating the totals on its own; after each
+  // one the Job and its Total price are re-read (onSaved). The box itself reports saving / saved / failed.
+  const [priceQueue] = useState(serialQueue)
+  const savePrice = useCallback<SavePrice>((serviceId, cents) => priceQueue(async () => {
+    if (!canEdit) return { ok: false, error: 'Manager access required.' }
+    const out = await saveEstimateEdit(orderId, { action: 'set_service_price', serviceId, cents })
+    if (!out.ok) return { ok: false, error: out.error }
+    setView(out.view)
+    await onSavedRef.current()
+    return { ok: true }
+  }), [orderId, canEdit, priceQueue])
   const removeServiceWithParts = useCallback((id: string) => post({ action: 'remove_service_with_parts', serviceId: id }), [post])
   const removePart = useCallback((p: PartView) => partSwipeRemove(p,
     () => { void post({ action: 'remove_part', partId: p.id, labor: { action: 'keep' } }) },
@@ -224,5 +241,5 @@ export function useJobItems({ orderId, enabled, canEdit = enabled, vehicleLabel,
     </>
   )
 
-  return { view: enabled ? view : null, busy, openService, openPart, removeService, removeServiceWithParts, removePart, refresh, ui }
+  return { view: enabled ? view : null, busy, openService, openPart, removeService, removeServiceWithParts, savePrice, removePart, refresh, ui }
 }

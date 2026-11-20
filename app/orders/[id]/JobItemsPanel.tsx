@@ -6,7 +6,8 @@
  * One list of services, each showing its name and price, with the parts attached to it (the parts
  * that service installs) nested underneath. A manager removes a service by swiping it left, or from
  * its editor (tap the name → Remove item); there is no per-row control, so prices line up on the
- * right edge. Whole-job parts get their own Parts list — shown only when there are any.
+ * right edge. A manager types a service's price right in its row (ServicePriceLine): the box sends the
+ * item editor's own price edit, and tapping it never leaves the Job. Whole-job parts get their own Parts list — shown only when there are any.
  *
  * Everything is added from ONE "+ Add" button beside Services: a menu (bottom sheet on a phone) with
  * Service, Part and Expense. Service opens the existing service picker; Part opens the add-part form
@@ -30,6 +31,7 @@ import { partPrice, servicePrice } from './estimate/ItemRows'
 import RemovableServiceRow from '@/app/components/RemovableServiceRow'
 import { groupJobItems, partAssignOptions, partsPostOutcome, placeOfAddedPart, removedAfterAddMessage, replayedAddMessage, resolvePartAssign, serviceRemovalConsequence, ASSIGN_GONE_MSG, INVOICED_NEEDS_MANAGER_MSG, LABOR_NEEDS_MANAGER_MSG, LABOR_STAYS_NOTE, WHOLE_JOB, type PartInput, type PartsPostOutcome } from '@/apps/parts/job-items-view'
 import { AddMenu, AddPartDialog, type AddChoice } from './AddToJob'
+import ServicePriceLine, { type SavePrice } from './ServicePriceLine'
 
 const BTN = 'rounded-xl font-semibold text-sm px-4 min-h-11 active:opacity-80 disabled:opacity-40'
 const LINK = 'min-h-11 inline-flex items-center px-1 text-sm font-semibold active:opacity-70 disabled:opacity-40'
@@ -65,6 +67,8 @@ export interface JobItemsPanelProps {
   onAddExpense?: () => void
   onOpenService: (id: string) => void
   onOpenPart: (id: string) => void
+  /** Manager: save one service's price from its row (the editor's own `set_service_price` edit). Omitted → prices are shown, not typed. */
+  onSavePrice?: SavePrice
   /** Manager: remove the service and its attached parts (estimate route). Resolves true when the server confirmed it. */
   onRemoveServiceWithParts: (id: string) => Promise<boolean>
   /** Manager: remove a text-only (not yet mirrored) service by its exact occurrence in textServices. */
@@ -311,16 +315,22 @@ export default function JobItemsPanel(p: JobItemsPanelProps) {
                       editor, whose Remove item runs the same path with the same warning. Other roles
                       can't remove a service, so they get no remove control at all. */}
                   {(() => {
-                    const header = (
+                    const name = canEdit ? (
+                      <button type="button" onClick={() => p.onOpenService(s.id)} aria-label={`Edit ${s.title}`}
+                        className="min-w-0 flex-1 text-left font-semibold text-white text-base leading-snug break-words min-h-11 flex items-center active:opacity-70">
+                        {s.title}
+                      </button>
+                    ) : (
+                      <span className="min-w-0 flex-1 font-semibold text-white text-base leading-snug break-words min-h-11 flex items-center">{s.title}</span>
+                    )
+                    // The price is typed in place wherever the editor's Price field is available: an editable Job
+                    // (manager, not cancelled) priced per service. A flat Work Total has no per-service price to
+                    // type (same as the editor), and everyone else sees the amount as text.
+                    const header = canEdit && !flat && p.onSavePrice ? (
+                      <ServicePriceLine s={s} name={name} onSave={p.onSavePrice} />
+                    ) : (
                       <div className="flex items-start justify-between gap-3">
-                        {canEdit ? (
-                          <button type="button" onClick={() => p.onOpenService(s.id)} aria-label={`Edit ${s.title}`}
-                            className="min-w-0 flex-1 text-left font-semibold text-white text-base leading-snug break-words min-h-11 flex items-center active:opacity-70">
-                            {s.title}
-                          </button>
-                        ) : (
-                          <span className="min-w-0 flex-1 font-semibold text-white text-base leading-snug break-words min-h-11 flex items-center">{s.title}</span>
-                        )}
+                        {name}
                         <span className="shrink-0 min-h-11 flex items-center tabular-nums text-base">{servicePrice(s, { flat, readOnly: !canEdit })}</span>
                       </div>
                     )

@@ -121,3 +121,79 @@ describe('price edits — a missing or unloaded amount is refused, never saved a
     expect(await priceOf(serviceId)).toEqual([26500])
   })
 })
+
+// The Job screen's inline price boxes send this same action, one save at a time (see inline-price.ts).
+describe('Job screen inline prices — consecutive rows through the editor’s own price edit', () => {
+  type View = { services: Array<{ id: string; title: string; priceCents: number | null }>; workTotalCents: number; flat: boolean; incomplete: boolean }
+  const prices = (v: View) => Object.fromEntries(v.services.map((s) => [s.title, s.priceCents]))
+  const save = async (orderId: string, serviceId: string, cents: number) => {
+    const res = await call(orderId, { action: 'set_service_price', serviceId, cents })
+    return (await res.json()) as { ok: boolean; view: View }
+  }
+  /** Checked in through Quick Entry: Exterior Wash entered at $50; Interior Detail and Wax with no price. */
+  async function quickEntryJob() {
+    const { createQuickEntryJob } = await import('@/apps/quick-entry/jobs-db')
+    const lines = [
+      { kind: 'package' as const, name: 'Exterior Wash', catalogId: null, priceCents: 5000 },
+      { kind: 'package' as const, name: 'Interior Detail', catalogId: null, priceCents: 0 },
+      { kind: 'addon' as const, name: 'Wax', catalogId: null, priceCents: 0 },
+    ]
+    const { serviceOrderId } = await createQuickEntryJob({
+      customerName: 'Pat Driver', vehicle: { year: '2019', make: 'Ford', model: 'F-150' }, createdBy: 'Torlan', lines,
+      agreedPriceCents: 5000, agreedServices: [{ originalText: 'Exterior Wash', confirmedCents: 5000 }],
+    })
+    const { getEstimateView } = await import('@/apps/workflow/estimate-db')
+    return { orderId: serviceOrderId, view: (await getEstimateView(serviceOrderId)) as View }
+  }
+  async function totals(orderId: string) {
+    const { getOrderRetailWorkValueCents } = await import('@/apps/workflow/production')
+    const { buildInvoiceDraft } = await import('@/apps/workflow/invoice-draft')
+    const { getFullEstimate } = await import('@/apps/workflow/estimate-db')
+    const { getOrderWithContext } = await import('@/apps/workflow/db')
+    const draft = buildInvoiceDraft({ order: (await getOrderWithContext(orderId))!, full: await getFullEstimate(orderId), paymentLabel: 'Card charge', role: 'manager' })
+    return { totalPrice: await getOrderRetailWorkValueCents(orderId), draftLines: draft.serviceBreakdown, draftWork: draft.workPriceCents }
+  }
+
+  it('$125.50 then $25 on the next row: both save, the Quick Entry $50 stays, Total price and the Invoice Draft agree', async () => {
+    const { orderId, view } = await quickEntryJob()
+    expect(prices(view)).toEqual({ 'Exterior Wash': 5000, 'Interior Detail': null, Wax: null })
+    expect((await totals(orderId)).totalPrice).toBe(5000)
+    const id = (title: string) => view.services.find((s) => s.title === title)!.id
+
+    const first = await save(orderId, id('Interior Detail'), 12550)
+    expect(first.ok).toBe(true)
+    expect(prices(first.view)).toEqual({ 'Exterior Wash': 5000, 'Interior Detail': 12550, Wax: null })
+    const second = await save(orderId, id('Wax'), 2500)
+    expect(prices(second.view)).toEqual({ 'Exterior Wash': 5000, 'Interior Detail': 12550, Wax: 2500 })
+    expect(second.view).toMatchObject({ workTotalCents: 20050, flat: false, incomplete: false })
+
+    expect(await totals(orderId)).toEqual({
+      totalPrice: 20050, draftWork: 20050,
+      draftLines: [{ title: 'Exterior Wash', cents: 5000 }, { title: 'Interior Detail', cents: 12550 }, { title: 'Wax', cents: 2500 }],
+    })
+
+    // Changing the price that came from Quick Entry is an ordinary price edit: only that line moves.
+    const third = await save(orderId, id('Exterior Wash'), 6000)
+    expect(prices(third.view)).toEqual({ 'Exterior Wash': 6000, 'Interior Detail': 12550, Wax: 2500 })
+    expect(await totals(orderId)).toMatchObject({ totalPrice: 21050, draftWork: 21050 })
+    // One price line per service — an edit updates the line, it never adds a second one.
+    const n = await db.execute(`SELECT count(*)::int AS n FROM job_line_items WHERE generated = false`)
+    expect((n.rows[0] as { n: number }).n).toBe(3)
+  })
+
+  it('an employee cannot save a price (403) and nothing changes', async () => {
+    const { orderId, view } = await quickEntryJob()
+    auth.role = 'employee'
+    const res = await call(orderId, { action: 'set_service_price', serviceId: view.services[1].id, cents: 12550 })
+    expect(res.status).toBe(403)
+    expect((await totals(orderId)).totalPrice).toBe(5000)
+  })
+
+  it('a removed (cancelled) Job refuses the price (409)', async () => {
+    const { orderId, view } = await quickEntryJob()
+    await db.update(serviceOrders).set({ status: 'cancelled' }).where(eq(serviceOrders.id, orderId))
+    const res = await call(orderId, { action: 'set_service_price', serviceId: view.services[1].id, cents: 12550 })
+    expect(res.status).toBe(409)
+    expect((await totals(orderId)).totalPrice).toBe(5000)
+  })
+})

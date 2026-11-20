@@ -1,5 +1,15 @@
 # Guided Services + Parts on the Job screen — 2026-11-03 (DEPLOYED)
 
+> **2026-11-20 — service prices typed on the Job screen (local, not deployed).** Each service row in the guided
+> Services list has a dollar box (`app/orders/[id]/ServicePriceLine.tsx`) in place of "Add price" / the amount, for
+> the same people and Jobs that can open the item editor (manager/admin, not cancelled, not a flat Work Total).
+> It sends the editor's own `set_service_price` edit through `saveEstimateEdit` (`useJobItems.savePrice`), one save
+> at a time (`serialQueue` in `estimate/inline-price.ts`), then re-reads the Job and Total price. Blank on an
+> unpriced line sends nothing; a failed save keeps the typed amount with an inline "Try again". Tab moves
+> price box → price box. The name still opens the editor. Branch `ux/inline-service-price` also carries the
+> Quick Entry price-persistence fix (864b132), which this depends on to show prices entered at check-in.
+
+
 Branch `feat/parts-guided-flow` (worktree `.ps-worktrees/parts-guided`), rebased onto production `origin/main` 688afb5 and
 fast-forward pushed to `main` on 2026-11-03 (deployment record: Claude memory `parts-guided-flow`). One migration
 (`0070_guided_job_items_enabled.sql` — a single `app_settings` row, the rollout switch; applied after the deploy was verified).
